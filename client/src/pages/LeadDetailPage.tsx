@@ -11,8 +11,21 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import {
   ArrowLeft, Loader2, Trash2, FileText, Send, ChevronRight, Briefcase,
-  Pencil, AlertTriangle,
+  Pencil, AlertTriangle, Plus,
+  // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
+  Info, StickyNote, Zap,
 } from "lucide-react";
+// 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
+// transition class. Mirrors Job Detail / Invoice Detail / Quote Detail.
+// Replaces the prior hand-rolled `grid-cols-[1fr_360px]` aside with the
+// icon-strip + expandable-panel rail flush to the page's right edge.
+import {
+  DetailRightRail,
+  RAIL_HEADER_ACTION_CLASS,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 // 2026-05-06 modal taxonomy alignment: destructive confirms (archive,
@@ -30,7 +43,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 // 2026-05-05 Lead Visits: canonical notes section + lead-visits card.
-import { EntityNotesSection } from "@/components/notes/EntityNotesSection";
+import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import { LeadVisitsCard } from "@/components/leads/LeadVisitsCard";
 // PR1: extracted shared lead-detail visual pieces. Same source rendered
 // here and on /leads/new so the two pages cannot drift visually.
@@ -94,6 +107,17 @@ export default function LeadDetailPage() {
   // Description edit state
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
+
+  // 2026-05-08 RALPH (rail migration): canonical right-rail tab state.
+  // `null` = no panel open (icon strip only). Default open: "details"
+  // — the most-frequently-read tab on this page (estimated value, next
+  // visit, captured-by, audit dates).
+  type LeadRailTab = "details" | "notes" | "actions";
+  const [leadRailTab, setLeadRailTab] = useState<LeadRailTab | null>("details");
+  // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
+  // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
+  // reacts via `openAddNoteSignal`.
+  const [notesAddSignal, setNotesAddSignal] = useState(0);
   // Touch user binding so the lint pass keeps the import even after
   // the bespoke notes state was removed.
   void user;
@@ -225,164 +249,241 @@ export default function LeadDetailPage() {
   const canConvert = (lead.status === "new" || lead.status === "contacted" || lead.status === "needs_review") && !lead.convertedQuoteId;
   const isTerminal = lead.status === "won" || lead.status === "lost";
 
+  // 2026-05-08 RALPH (rail migration): canonical 3-tab registry — Details,
+  // Notes, Actions. Each tab's content slot owns its content; the rail
+  // panel chrome (header + scroll) is provided by <DetailRightRail>.
+  // Notes moved out of the left column into the rail per spec.
+  // Actions are inlined as a flat button stack (no <Card> wrapper).
+  const leadRailTabs: DetailRailTab[] = [
+    {
+      id: "details",
+      label: "Details",
+      icon: Info,
+      testId: "lead-rail-tab-details",
+      content: (
+        <LeadDetailsRail
+          mode="saved"
+          estimatedValue={lead.estimatedValue}
+          capturedByName={lead.originTechnicianName ?? null}
+          createdByName={lead.createdByName ?? null}
+          hasVisits={leadVisits.length > 0}
+          nextVisit={
+            nextUpcomingVisit
+              ? {
+                  scheduledStart: nextUpcomingVisit.scheduledStart,
+                  assigneeName: nextVisitAssigneeName,
+                }
+              : null
+          }
+          createdAt={lead.createdAt}
+          updatedAt={lead.updatedAt}
+          convertedAt={lead.convertedAt}
+        />
+      ),
+    },
+    {
+      id: "notes",
+      label: "Notes",
+      icon: StickyNote,
+      testId: "lead-rail-tab-notes",
+      // 2026-05-08 Tier 4 Notes canonicalization — +Add affordance moved
+      // from inside the prior EntityNotesSection body to the canonical
+      // rail tab `action` slot.
+      action: (
+        <button
+          type="button"
+          onClick={() => setNotesAddSignal((n) => n + 1)}
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
+          data-testid="button-add-note-rail"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: (
+        <EntityNotesPanel
+          entityType="lead"
+          entityId={lead.id}
+          openAddNoteSignal={notesAddSignal}
+        />
+      ),
+    },
+    {
+      id: "actions",
+      label: "Actions",
+      icon: Zap,
+      testId: "lead-rail-tab-actions",
+      content: (
+        <div className="space-y-1.5" data-testid="lead-rail-actions">
+          {canConvert && !lead.convertedQuoteId && (
+            <Button
+              className="w-full justify-start gap-2 h-8 text-xs"
+              size="sm"
+              onClick={handleConvertToQuote}
+              data-testid="button-convert-to-quote"
+            >
+              <FileText className="h-3.5 w-3.5" />Convert to Quote
+            </Button>
+          )}
+          {canContact && (
+            <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs" size="sm" onClick={() => statusMutation.mutate("contacted")} disabled={statusMutation.isPending}>
+              <Send className="h-3.5 w-3.5" />Mark Contacted
+            </Button>
+          )}
+          {canMarkLost && (
+            <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs text-red-600 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => statusMutation.mutate("lost")} disabled={statusMutation.isPending}>
+              Mark Lost
+            </Button>
+          )}
+          <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-amber-700 hover:bg-amber-50" size="sm" onClick={() => setShowArchiveConfirm(true)}>
+            <Trash2 className="h-3.5 w-3.5" />Archive Lead
+          </Button>
+          <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => setShowHardDeleteConfirm(true)}>
+            <AlertTriangle className="h-3.5 w-3.5" />Delete Permanently
+          </Button>
+
+          {/* Quote section */}
+          <div className="border-t border-slate-100 pt-2 mt-1">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
+            {lead.convertedQuoteId ? (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-emerald-700">Converted {lead.convertedAt ? fmtDate(lead.convertedAt) : ""}</p>
+                <Button variant="outline" size="sm" className="w-full justify-start gap-2 h-8 text-xs" onClick={() => setLocation(`/quotes/${lead.convertedQuoteId}`)}>
+                  <ChevronRight className="h-3 w-3" />View Quote
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">No linked quote</p>
+            )}
+          </div>
+        </div>
+      ),
+    },
+  ];
+
   return (
-    <div className="bg-[#f1f5f9] h-full flex flex-col">
-      <div className="px-4 lg:px-6 py-4 flex-1 min-h-0">
+    <div
+      className="flex h-full flex-col lg:flex-row bg-[#f1f5f9]"
+      data-testid="lead-detail-page"
+    >
+      {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+      <div
+        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+        data-testid="lead-detail-left-column-shell"
+      >
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 lg:px-6 py-4 space-y-3">
 
-        {/* ── SINGLE TWO-COLUMN GRID for entire page ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-full">
+          {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard */}
+          <LeadSummaryCard
+            mode="saved"
+            lead={lead}
+            onBack={() => setLocation("/leads")}
+          />
 
-          {/* ── LEFT COLUMN ── */}
-          <div className="space-y-3 min-w-0 min-h-0 overflow-y-auto lg:pr-1">
-
-            {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard */}
-            <LeadSummaryCard
-              mode="saved"
-              lead={lead}
-              onBack={() => setLocation("/leads")}
-            />
-
-            {/* Description */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
-                <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-                  <Briefcase className="h-4 w-4 text-[#64748b]" />Description
-                </span>
-                {!editingDescription && !isTerminal && (
-                  <button
-                    onClick={() => { setDescriptionDraft(lead.description ?? ""); setEditingDescription(true); }}
-                    className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
-                    aria-label="Edit description"
-                  >
-                    <Pencil className="h-3 w-3" />Edit
-                  </button>
-                )}
-              </div>
-              <div className="px-5 py-3">
-                {editingDescription ? (
-                  <div className="space-y-2">
-                    <Textarea
-                      value={descriptionDraft}
-                      onChange={(e) => setDescriptionDraft(e.target.value)}
-                      placeholder="Add a description..."
-                      className="min-h-[96px] text-sm resize-y"
-                      rows={4}
-                      autoFocus
-                    />
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { setEditingDescription(false); setDescriptionDraft(""); }}
-                        disabled={updateDescriptionMutation.isPending}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() => updateDescriptionMutation.mutate(descriptionDraft.trim() || null)}
-                        disabled={updateDescriptionMutation.isPending}
-                      >
-                        {updateDescriptionMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-                ) : lead.description ? (
-                  <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{lead.description}</p>
-                ) : (
-                  <p className="text-xs text-slate-400 italic">No description</p>
-                )}
-              </div>
+          {/* Description */}
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
+              <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                <Briefcase className="h-4 w-4 text-[#64748b]" />Description
+              </span>
+              {!editingDescription && !isTerminal && (
+                <button
+                  onClick={() => { setDescriptionDraft(lead.description ?? ""); setEditingDescription(true); }}
+                  className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+                  aria-label="Edit description"
+                >
+                  <Pencil className="h-3 w-3" />Edit
+                </button>
+              )}
             </div>
-
-            {/* 2026-05-05 Lead Visits: pre-sales onsite scheduling card.
-                Sits between Description and Notes per ACCESS_CONTROL_MATRIX
-                product layout. */}
-            <LeadVisitsCard leadId={lead.id} leadLocationId={lead.locationId} />
-
-            {/* Notes — 2026-05-05: replaced bespoke inline editor with the
-                canonical EntityNotesSection. Same component used by
-                jobs / quotes / invoices, so author attribution +
-                attachments + edit/delete controls match across surfaces. */}
-            <EntityNotesSection entityType="lead" entityId={lead.id} />
+            <div className="px-5 py-3">
+              {editingDescription ? (
+                <div className="space-y-2">
+                  <Textarea
+                    value={descriptionDraft}
+                    onChange={(e) => setDescriptionDraft(e.target.value)}
+                    placeholder="Add a description..."
+                    className="min-h-[96px] text-sm resize-y"
+                    rows={4}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setEditingDescription(false); setDescriptionDraft(""); }}
+                      disabled={updateDescriptionMutation.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => updateDescriptionMutation.mutate(descriptionDraft.trim() || null)}
+                      disabled={updateDescriptionMutation.isPending}
+                    >
+                      {updateDescriptionMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              ) : lead.description ? (
+                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{lead.description}</p>
+              ) : (
+                <p className="text-xs text-slate-400 italic">No description</p>
+              )}
+            </div>
           </div>
 
-          {/* ── RIGHT RAIL ── */}
-          <aside className="space-y-3 min-h-0 overflow-y-auto">
-
-            {/* Details / Metadata — PR1: extracted to LeadDetailsRail */}
-            <LeadDetailsRail
-              mode="saved"
-              estimatedValue={lead.estimatedValue}
-              capturedByName={lead.originTechnicianName ?? null}
-              createdByName={lead.createdByName ?? null}
-              hasVisits={leadVisits.length > 0}
-              nextVisit={
-                nextUpcomingVisit
-                  ? {
-                      scheduledStart: nextUpcomingVisit.scheduledStart,
-                      assigneeName: nextVisitAssigneeName,
-                    }
-                  : null
-              }
-              createdAt={lead.createdAt}
-              updatedAt={lead.updatedAt}
-              convertedAt={lead.convertedAt}
-            />
-
-            {/* Actions + Quote — single card */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
-                <span className="text-sm font-semibold text-[#0f172a]">Actions</span>
-              </div>
-              <div className="px-4 py-2.5 space-y-1.5">
-                {canConvert && !lead.convertedQuoteId && (
-                  <Button
-                    className="w-full justify-start gap-2 h-8 text-xs"
-                    size="sm"
-                    onClick={handleConvertToQuote}
-                    data-testid="button-convert-to-quote"
-                  >
-                    <FileText className="h-3.5 w-3.5" />Convert to Quote
-                  </Button>
-                )}
-                {canContact && (
-                  <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs" size="sm" onClick={() => statusMutation.mutate("contacted")} disabled={statusMutation.isPending}>
-                    <Send className="h-3.5 w-3.5" />Mark Contacted
-                  </Button>
-                )}
-                {canMarkLost && (
-                  <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs text-red-600 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => statusMutation.mutate("lost")} disabled={statusMutation.isPending}>
-                    Mark Lost
-                  </Button>
-                )}
-                <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-amber-700 hover:bg-amber-50" size="sm" onClick={() => setShowArchiveConfirm(true)}>
-                  <Trash2 className="h-3.5 w-3.5" />Archive Lead
-                </Button>
-                <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => setShowHardDeleteConfirm(true)}>
-                  <AlertTriangle className="h-3.5 w-3.5" />Delete Permanently
-                </Button>
-
-                {/* Quote section */}
-                <div className="border-t border-slate-100 pt-2 mt-1">
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
-                  {lead.convertedQuoteId ? (
-                    <div className="space-y-1">
-                      <p className="text-xs font-medium text-emerald-700">Converted {lead.convertedAt ? fmtDate(lead.convertedAt) : ""}</p>
-                      <Button variant="outline" size="sm" className="w-full justify-start gap-2 h-8 text-xs" onClick={() => setLocation(`/quotes/${lead.convertedQuoteId}`)}>
-                        <ChevronRight className="h-3 w-3" />View Quote
-                      </Button>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-400">No linked quote</p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </aside>
+          {/* 2026-05-05 Lead Visits: pre-sales onsite scheduling card.
+              Stays in left column as primary content (rail hosts metadata
+              + drilldown only). */}
+          <LeadVisitsCard leadId={lead.id} leadLocationId={lead.locationId} />
         </div>
       </div>
+      {/* ═══ /LEFT COLUMN ═══ */}
+
+      {/* ═════════ RIGHT RAIL ═════════
+          Page-level sibling of the left column (mirrors Job Detail).
+          Width driven by `--lead-rail-width`:
+            - panel closed → 80px (icon strip only)
+            - panel open  → 380px (compact comfortable width)
+          Below `lg` the row collapses to a column and the rail
+          stacks under the body. */}
+      <aside
+        className={cn(
+          "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+          "border-t lg:border-t-0 lg:border-l border-slate-200",
+        )}
+        style={{
+          ["--lead-rail-width" as any]: `${leadRailTab === null ? 80 : 380}px`,
+        }}
+        data-testid="lead-detail-rail-column"
+        data-panel-open={leadRailTab === null ? "false" : "true"}
+      >
+        <div className="lg:hidden">
+          <DetailRightRail
+            tabs={leadRailTabs}
+            activeTabId={leadRailTab}
+            onActiveTabChange={(id) => setLeadRailTab(id as LeadRailTab | null)}
+            testIdPrefix="lead-side"
+            ariaLabel="Lead information rail"
+          />
+        </div>
+        <div
+          className={cn(
+            "hidden lg:flex h-full w-[var(--lead-rail-width)] flex-col relative",
+            RAIL_WIDTH_TRANSITION,
+          )}
+        >
+          <DetailRightRail
+            tabs={leadRailTabs}
+            activeTabId={leadRailTab}
+            onActiveTabChange={(id) => setLeadRailTab(id as LeadRailTab | null)}
+            testIdPrefix="lead-side"
+            ariaLabel="Lead information rail"
+          />
+        </div>
+      </aside>
 
       {/* ── CONFIRMATION DIALOGS ──
           2026-05-06: migrated from raw <Dialog> to canonical

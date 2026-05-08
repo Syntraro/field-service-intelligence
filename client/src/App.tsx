@@ -145,6 +145,12 @@ import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
 // products>. Legacy URLs redirect via the Route entries below so any
 // bookmarked links still land on the right tab.
 const ImportCenterPage = lazy(() => import("@/pages/ImportCenterPage"));
+// 2026-05-08: internal/admin-only typography style guide. Visual reference
+// for every semantic typography token. Lazy-loaded — the page is admin-only
+// and rarely visited, so it stays out of the main bundle.
+const StyleGuideTypographyPage = lazy(
+  () => import("@/pages/StyleGuideTypographyPage"),
+);
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
@@ -217,6 +223,14 @@ import Locations from "@/pages/Locations";
 import DispatchBoard from "@/pages/DispatchPreview";
 import PMWorkspacePage from "@/pages/PMWorkspacePage";
 import PMWizardPage from "@/pages/PMWizardPage";
+// 2026-05-08 — Inventory module foundation. The route is gated by
+// `<ProtectedRoute>` for auth + admin role; capability gating happens
+// inside the page (it short-circuits to a "Inventory not available"
+// canonical message when `useFeatureEnabled("inventory_core")` is
+// false). The server-side requireFeature gate on /api/inventory/* is
+// the authoritative gate — the client check is just a UX improvement
+// so users don't see a broken page on a 403.
+import InventoryPage from "@/pages/InventoryPage";
 import PMDetailPage from "@/pages/PMDetailPage";
 // 2026-04-26: PMEditPage was merged into PMDetailPage (unified view+edit
 // surface). The /pm/:id/edit route now renders the same component, which
@@ -598,6 +612,16 @@ function Router() {
           <PartsManagementPage />
         </ProtectedRoute>
       </Route>
+      {/* 2026-05-08 — Inventory module. The page itself short-circuits
+          on `useFeatureEnabled("inventory_core") === false` to a
+          canonical "Inventory not available" message; the server
+          requireFeature gate on /api/inventory/* enforces capability
+          authoritatively. Pin: tests/inventory-foundation.test.ts. */}
+      <Route path="/inventory">
+        <ProtectedRoute>
+          <InventoryPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings/team">
         {/* 2026-04-20 Phase 2: canonical Team Management hub. The 2026-
             05-05 member-centric restructure relabels the tabs as
@@ -733,6 +757,16 @@ function Router() {
       </Route>
       <Route path="/settings/import-products">
         <Redirect to="/settings/import?type=products" />
+      </Route>
+      {/* 2026-05-08 — internal/admin-only typography style guide. Visual
+          reference for every semantic typography token. Linked from the
+          Settings > Advanced section. Owner / admin role only via
+          requireAdmin; technicians, dispatchers, managers, and client-
+          portal users do NOT reach this surface. */}
+      <Route path="/style-guide/typography">
+        <ProtectedRoute requireAdmin>
+          <StyleGuideTypographyPage />
+        </ProtectedRoute>
       </Route>
       {/* /company-settings redirect removed 2026-04-10: legacy path with zero navigation entries */}
       {/* /manage-technicians route removed 2026-04-10: duplicate of /settings/team, zero navigation entries */}

@@ -18,9 +18,16 @@ interface ConversationPanelProps {
   thread: CommunicationThread | null;
   messages: readonly CommunicationMessage[];
   onSend: (input: { channel: "sms" | "internal_note"; body: string }) => void;
+  /** 2026-05-08 Phase 5: tenant has an active phone provider. */
+  smsAvailable?: boolean;
 }
 
-export function ConversationPanel({ thread, messages, onSend }: ConversationPanelProps) {
+export function ConversationPanel({
+  thread,
+  messages,
+  onSend,
+  smsAvailable = false,
+}: ConversationPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-scroll to the most recent bubble whenever the thread or message
@@ -144,7 +151,12 @@ export function ConversationPanel({ thread, messages, onSend }: ConversationPane
       </div>
 
       {/* Sticky composer */}
-      <ConversationComposer showChannelTabs={showChannelTabs} onSend={onSend} />
+      <ConversationComposer
+        showChannelTabs={showChannelTabs}
+        onSend={onSend}
+        smsAvailable={smsAvailable}
+        threadSupportsSms={thread.threadType !== "team_chat"}
+      />
     </section>
   );
 }

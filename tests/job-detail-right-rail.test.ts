@@ -232,29 +232,22 @@ describe("JobDetailPage rail — terse panel-header action labels", () => {
 
 // ── 3. Notes tab — suppress duplicated inner Notes header ──────────
 
-describe("JobDetailPage Notes tab — no duplicated inner Notes header", () => {
-  it("Notes tab's content slot mounts <EntityNotesSection entityType=\"job\" embedded>", () => {
+describe("JobDetailPage Notes tab — canonical EntityNotesPanel mount", () => {
+  // 2026-05-08 Tier 4 Notes canonicalization. The rail Notes tab now
+  // mounts `<EntityNotesPanel entityType="job" entityId={job.id}>`. The
+  // legacy `embedded`, `hideHeader`, `hideAddButton`, and `cardStyle`
+  // prop pins are retired — EntityNotesPanel never renders its own
+  // header (the rail tab descriptor owns title + count + action) and
+  // always renders rows via `<RailContentCard>` (the prior `cardStyle`
+  // opt-in is now the single render path).
+
+  it("Notes tab's content slot mounts <EntityNotesPanel entityType=\"job\" entityId={job.id}>", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,3000}?<EntityNotesSection[\s\S]{0,400}?entityType="job"[\s\S]{0,400}?embedded=\{true\}/,
+      /id:\s*"notes"[\s\S]{0,3000}?<EntityNotesPanel[\s\S]{0,400}?entityType="job"[\s\S]{0,400}?entityId=\{job\.id\}/,
     );
   });
 
-  it("Notes tab passes `hideHeader` AND `hideAddButton` so EntityNotesSection's own header chrome is suppressed", () => {
-    // The rail panel header already provides the title + the `+ Add`
-    // action — EntityNotesSection's internal header would visually
-    // duplicate it.
-    expect(jobDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,3000}?hideHeader=\{true\}/,
-    );
-    expect(jobDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,3000}?hideAddButton=\{true\}/,
-    );
-  });
-
-  it("Notes tab feeds `notesAddSignal` into EntityNotesSection's `openAddNoteSignal` controlled prop", () => {
-    // The rail panel header `+ Add` button bumps `notesAddSignal`;
-    // EntityNotesSection's existing `openAddNoteSignal` useEffect
-    // opens the create dialog when the counter changes.
+  it("Notes tab feeds `notesAddSignal` into EntityNotesPanel's `openAddNoteSignal` controlled prop", () => {
     expect(jobDetailSrc).toMatch(/setNotesAddSignal\(\(n\)\s*=>\s*n\s*\+\s*1\)/);
     expect(jobDetailSrc).toMatch(
       /id:\s*"notes"[\s\S]{0,3000}?openAddNoteSignal=\{notesAddSignal\}/,
@@ -270,20 +263,27 @@ describe("JobDetailPage Notes tab — no duplicated inner Notes header", () => {
     );
   });
 
-  it("Notes tab opts into the canonical rail card styling via `cardStyle={true}`", () => {
-    // 2026-05-07: the rail Notes tab opts into `<RailContentCard>`
-    // chrome + canonical typography by passing `cardStyle={true}`
-    // to EntityNotesSection. Other surfaces (Invoice/Quote/Lead)
-    // mount EntityNotesSection without this prop and keep their
-    // existing row-style rendering — pinned via the
-    // entity-notes-section.test.ts contract.
+  it("Notes tab carries the canonical +Add action button (button-add-note-rail testId)", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,3000}?cardStyle=\{true\}/,
+      /id:\s*"notes"[\s\S]{0,3000}?action:\s*\([\s\S]{0,800}?data-testid="button-add-note-rail"/,
     );
   });
 
   it("the Notes wrapper still carries `data-testid=\"card-notes\"` for downstream selectors", () => {
     expect(jobDetailSrc).toMatch(/data-testid="card-notes"/);
+  });
+
+  it("does NOT pass any retired chrome props (embedded / hideHeader / hideAddButton / cardStyle) to EntityNotesPanel", () => {
+    // Inverse pin — these props belonged to EntityNotesSection. Anchor
+    // ONLY on the JSX self-closing block so surrounding migration
+    // comments (which legitimately reference the prior prop names)
+    // don't trip the inverse match.
+    const notesJsx = jobDetailSrc.match(/<EntityNotesPanel\b[\s\S]+?\/>/);
+    expect(notesJsx, "Notes tab must contain a self-closing <EntityNotesPanel ... /> JSX").not.toBeNull();
+    expect(notesJsx![0]).not.toMatch(/\bembedded\b/);
+    expect(notesJsx![0]).not.toMatch(/\bhideHeader\b/);
+    expect(notesJsx![0]).not.toMatch(/\bhideAddButton\b/);
+    expect(notesJsx![0]).not.toMatch(/\bcardStyle\b/);
   });
 });
 
@@ -572,6 +572,11 @@ describe("JobDetailPage — legacy stacked Notes + Labour cards removed", () => 
     expect(codeOnly).not.toMatch(
       /<div\s+className="overflow-hidden rounded-md border border-border-default bg-white"\s+data-testid="card-notes"/,
     );
+    // 2026-05-08 Tier 4 Notes canonicalization — the EntityNotesSection
+    // primitive itself is retired; Notes flow through EntityNotesPanel.
+    // Use `codeOnly` (comment-stripped) so legitimate migration prose
+    // referencing the prior name doesn't trip the inverse match.
+    expect(codeOnly).not.toMatch(/<EntityNotesSection\b/);
   });
 
   it("the legacy `data-testid=\"trigger-labour\"` header strip is gone (subsumed by the rail panel header + summary line)", () => {
@@ -619,10 +624,13 @@ describe("JobDetailPage rail — Notes / Labour / Equipment share the canonical 
     );
   });
 
-  it("Notes + Equipment opt into RailContentCard via `cardStyle={true}` props (no bespoke wrappers)", () => {
-    expect(jobDetailSrc).toMatch(
-      /<EntityNotesSection[\s\S]{0,2400}?cardStyle=\{true\}/,
-    );
+  it("Equipment opts into RailContentCard via `cardStyle={true}` (Notes always uses RailContentCard via EntityNotesPanel)", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization: the prior
+    // `cardStyle={true}` opt-in on EntityNotesSection collapsed into
+    // the single render path of EntityNotesPanel — every notes row now
+    // uses `<RailContentCard>` unconditionally. Equipment's parallel
+    // opt-in is preserved (its migration is a separate phase).
+    expect(jobDetailSrc).toMatch(/<EntityNotesPanel\b/);
     expect(jobDetailSrc).toMatch(
       /<JobEquipmentSection[\s\S]{0,2400}?cardStyle=\{true\}/,
     );

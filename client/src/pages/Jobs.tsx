@@ -24,6 +24,8 @@ import {
   Search, ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// 2026-05-08 chip Phase 2: lifecycle + workflow filter buttons → FilterChip.
+import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { getJobStatusMeta, toneToStatusPillVariant } from "@/lib/statusBadges";
@@ -667,17 +669,15 @@ export default function Jobs() {
                 <FilterSection label="Status">
                   <div className="flex flex-wrap gap-1.5">
                     {(["all", "open", "completed", "invoiced", "archived"] as LifecycleStatusFilter[]).map((val) => (
-                      <Button
+                      <FilterChip
                         key={val}
-                        variant={lifecycleFilter === val ? "default" : "outline"}
-                        size="sm"
-                        className="h-7 text-caption rounded-full"
+                        selected={lifecycleFilter === val}
                         onClick={() => setLifecycleFilter(val)}
                         data-testid={`button-filter-status-${val}`}
                       >
                         {val === "all" ? `All (${totalCount})` :
                          `${val.charAt(0).toUpperCase() + val.slice(1)} (${counts.lifecycle[val as keyof typeof counts.lifecycle]})`}
-                      </Button>
+                      </FilterChip>
                     ))}
                   </div>
                 </FilterSection>
@@ -693,16 +693,14 @@ export default function Jobs() {
                         { val: "on_route" as const, label: `On Route (${counts.openSubStatus.on_route})` },
                         { val: "on_hold" as const, label: `On Hold (${counts.openSubStatus.on_hold})` },
                       ]).map(({ val, label }) => (
-                        <Button
+                        <FilterChip
                           key={val}
-                          variant={openSubStatusFilter === val ? "default" : "outline"}
-                          size="sm"
-                          className="h-7 text-caption rounded-full"
+                          selected={openSubStatusFilter === val}
                           onClick={() => setOpenSubStatusFilter(val)}
                           data-testid={val === "any" ? "filter-substatus-any" : `filter-substatus-${val}`}
                         >
                           {label}
-                        </Button>
+                        </FilterChip>
                       ))}
                     </div>
                   </FilterSection>

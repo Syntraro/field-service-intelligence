@@ -31,26 +31,32 @@ interface ConversationComposerProps {
   showChannelTabs?: boolean;
   onSend: (input: { channel: ComposerChannel; body: string }) => void;
   disabled?: boolean;
+  /** 2026-05-08 Phase 5: tenant has an active phone provider. Defaults
+   *  to false so unmigrated callers keep the prior behavior. */
+  smsAvailable?: boolean;
+  /** 2026-05-08 Phase 5: thread supports SMS (false for team_chat). */
+  threadSupportsSms?: boolean;
 }
 
 export function ConversationComposer({
   showChannelTabs = true,
   onSend,
   disabled = false,
+  smsAvailable = false,
+  threadSupportsSms = true,
 }: ConversationComposerProps) {
-  // Default to the working tab — Internal Note. SMS still appears in the
-  // tab list so users see the surface, but the Send action is disabled
-  // until provider integration lands.
-  const [channel, setChannel] = useState<ComposerChannel>("internal_note");
+  // 2026-05-08 Phase 5: SMS tab enabled only when both gates are open.
+  // Internal Note remains always available.
+  const smsEnabled = smsAvailable && threadSupportsSms;
+  const [channel, setChannel] = useState<ComposerChannel>(
+    smsEnabled ? "sms" : "internal_note",
+  );
   const [body, setBody] = useState("");
 
   const trimmed = body.trim();
-  // Phase 4: SMS sending is disabled until a phone provider is wired up.
-  // Block the Send action when the SMS tab is active. The Internal Note
-  // tab keeps the canonical blank-body + over-limit checks.
-  const smsDisabled = channel === "sms";
+  const smsBlocked = channel === "sms" && !smsEnabled;
   const canSend =
-    !disabled && !smsDisabled && trimmed.length > 0 && body.length <= SMS_LIMIT;
+    !disabled && !smsBlocked && trimmed.length > 0 && body.length <= SMS_LIMIT;
 
   const handleSend = () => {
     if (!canSend) return;
@@ -67,7 +73,12 @@ export function ConversationComposer({
           className="mb-2"
         >
           <TabsList className="h-7">
-            <TabsTrigger value="sms" className="text-helper px-2.5">
+            <TabsTrigger
+              value="sms"
+              className="text-helper px-2.5"
+              aria-disabled={!smsEnabled || undefined}
+              data-testid="conversation-composer-sms-tab"
+            >
               SMS
             </TabsTrigger>
             <TabsTrigger value="internal_note" className="text-helper px-2.5">
@@ -80,19 +91,21 @@ export function ConversationComposer({
       <Textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        placeholder={smsDisabled ? "SMS sending is disabled — switch to Internal Note." : "Type a message…"}
+        placeholder={smsBlocked ? "SMS sending is disabled — switch to Internal Note." : "Type a message…"}
         rows={2}
         className="resize-none text-row min-h-[48px]"
         data-testid="conversation-composer-textarea"
         disabled={disabled}
       />
 
-      {smsDisabled && (
+      {smsBlocked && (
         <p
           className="mt-1.5 text-helper text-muted-foreground"
           data-testid="conversation-composer-sms-disabled"
         >
-          SMS sending requires a phone provider connection.
+          {threadSupportsSms
+            ? "Connect a phone provider to send SMS."
+            : "This thread does not support SMS."}
         </p>
       )}
 

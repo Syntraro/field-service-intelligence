@@ -40,6 +40,9 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CardShell } from "@/components/ui/card";
+// 2026-05-08 chip Phase 2: severity-tinted count badge → StatusChip.
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 import type { DashboardActionMode } from "@/components/DashboardActionModal";
 
 /**
@@ -182,16 +185,17 @@ export function OperationalAlertsCard({
     setManualCollapsed(next);
   };
 
-  // Badge severity:
-  //   • Requires attention > 0 → red.
-  //   • Else past due > 0      → orange.
+  // Badge severity → canonical StatusChip tone:
+  //   • Requires attention > 0 → danger (red soft-tint).
+  //   • Else past due > 0      → warning (amber soft-tint, replaces
+  //                              the orange tint — semantic match).
   //   • Else                   → neutral slate.
-  const badgeColor =
+  const badgeTone: ChipTone =
     requiresAttentionCount > 0
-      ? "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+      ? "danger"
       : pastDueCount > 0
-        ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300"
-        : "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300";
+        ? "warning"
+        : "neutral";
 
   // 2026-05-07 RALPH (height fix):
   //   • `w-full h-full` lets the card fill the dashboard grid cell
@@ -230,12 +234,13 @@ export function OperationalAlertsCard({
             Operational alerts
           </h3>
           {!isLoading && (
-            <span
-              className={`text-xs font-semibold tabular-nums px-2 py-0.5 rounded-full shrink-0 ${badgeColor}`}
+            <StatusChip
+              tone={badgeTone}
+              className="tabular-nums shrink-0"
               data-testid="operational-alerts-count-badge"
             >
               {totalCount}
-            </span>
+            </StatusChip>
           )}
         </div>
         {/* Chevron rotates with the collapse state — down = expand, up = collapse. */}

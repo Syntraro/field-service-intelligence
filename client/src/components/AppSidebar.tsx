@@ -52,7 +52,12 @@ import {
   Plus,
   CheckSquare,
   BookMarked,
+  // 2026-05-08 — Inventory nav. Boxes glyph reads as physical stock /
+  // warehouse / shelves; the entry is gated on the inventory_core
+  // entitlement so tenants without the feature never see it.
+  Boxes,
 } from "lucide-react";
+import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import {
@@ -96,6 +101,13 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
+  // 2026-05-08 Inventory module: nav entry is hidden when the
+  // `inventory_core` capability is disabled. The hook returns
+  // `undefined` while loading; treat that as "not yet known" and hide
+  // (the nav re-renders the moment entitlements resolve, no flash).
+  // Server route is gated by requireFeature("inventory_core") so even
+  // a stale client cannot reach the API.
+  const inventoryEnabled = useFeatureEnabled("inventory_core") === true;
   // `state` is "expanded" | "collapsed" — used to swap the Create New
   // button between an icon-only square (collapsed) and a full label
   // (expanded). The canonical Sidebar primitive owns the state.
@@ -229,6 +241,21 @@ export function AppSidebar({
       testId: "nav-price-book",
       hoverText: "Catalogue of priced products and services"
     });
+    // 2026-05-08 Inventory — capability-gated. The entry is pushed only
+    // when `inventory_core` is enabled for the tenant; the server-side
+    // requireFeature gate on /api/inventory/* is the authoritative
+    // enforcement. Pin: tests/inventory-foundation.test.ts.
+    if (inventoryEnabled) {
+      menuItems.push({
+        title: "Inventory",
+        icon: Boxes,
+        href: "/inventory",
+        isActive:
+          location === "/inventory" || location.startsWith("/inventory/"),
+        testId: "nav-inventory",
+        hoverText: "Track items, stock levels, and locations"
+      });
+    }
 
     // --- Group 4 leader: Clients → Suppliers (relationships) ---
     menuItems.push({

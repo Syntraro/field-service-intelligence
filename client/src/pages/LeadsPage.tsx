@@ -12,6 +12,8 @@ import {
   Plus, Search, FileText, Users, Briefcase, TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// 2026-05-08 chip Phase 2: status filter buttons → FilterChip.
+import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/StatusBadge";
 import { getLeadStatusMeta } from "@/lib/statusBadges";
@@ -230,17 +232,15 @@ export default function LeadsPage() {
             <FilterSection label="Status">
               <div className="flex flex-wrap gap-1.5">
                 {(["all", "needs_action", "quoted", "won", "lost"] as LeadFilterStatus[]).map((f) => (
-                  <Button
+                  <FilterChip
                     key={f}
-                    variant={activeFilter === f ? "default" : "outline"}
-                    size="sm"
-                    className="h-7 text-caption rounded-full"
+                    selected={activeFilter === f}
                     onClick={() => setActiveFilter(f)}
                     data-testid={`button-filter-${f}`}
                   >
                     {f === "all" ? "All" : f === "needs_action" ? "Needs Action" : f.charAt(0).toUpperCase() + f.slice(1)}
                     {` (${statusCounts[f]})`}
-                  </Button>
+                  </FilterChip>
                 ))}
               </div>
             </FilterSection>

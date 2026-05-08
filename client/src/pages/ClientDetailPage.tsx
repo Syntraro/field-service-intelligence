@@ -51,6 +51,9 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+// 2026-05-08 chip canonicalization: the local FilterChips generic
+// below now composes the canonical <FilterChip> from chip.tsx.
+import { FilterChip } from "@/components/ui/chip";
 import {
   Popover, PopoverTrigger, PopoverContent,
 } from "@/components/ui/popover";
@@ -94,7 +97,7 @@ import { formatRailActivity } from "@/components/activity-feed/formatRailActivit
 // location prefill.
 import { CreateNewDialog } from "@/components/CreateNewDialog";
 import LocationFormModal from "@/components/LocationFormModal";
-import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
+import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
@@ -375,7 +378,11 @@ function JobRow({ job, locationLabel, onNavigate }: {
 }
 
 /** Filter chip row — shared UI for Jobs/Invoices/Quotes tab filters.
- *  Keeps the chip styling consistent across all workspace tabs. */
+ *  Composes the canonical `<FilterChip>` primitive from
+ *  `@/components/ui/chip` so the chip visual (height, radius, focus
+ *  ring, selected fill) lives in one place. The local generic stays
+ *  to keep the count-trailing layout co-located with the workspace
+ *  tab logic. */
 function FilterChips<T extends string>({
   options, value, onChange,
 }: {
@@ -385,29 +392,26 @@ function FilterChips<T extends string>({
 }) {
   return (
     <div className="flex items-center gap-1 flex-wrap mb-2" data-testid="workspace-filter-chips">
-      {options.map(opt => (
-        <button
-          key={opt.key}
-          type="button"
-          onClick={() => onChange(opt.key)}
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors",
-            value === opt.key
-              ? "bg-[#76B054] text-white"
-              : "bg-slate-100 text-slate-600 hover:bg-slate-200",
-          )}
-        >
-          {opt.label}
-          {typeof opt.count === "number" && (
-            <span className={cn(
-              "tabular-nums",
-              value === opt.key ? "text-white/80" : "text-slate-400",
-            )}>
-              {opt.count}
-            </span>
-          )}
-        </button>
-      ))}
+      {options.map(opt => {
+        const isSelected = value === opt.key;
+        return (
+          <FilterChip
+            key={opt.key}
+            selected={isSelected}
+            onClick={() => onChange(opt.key)}
+            size="compact"
+            trailingIcon={
+              typeof opt.count === "number" ? (
+                <span className={cn("tabular-nums", isSelected ? "text-white/80" : "text-text-muted")}>
+                  {opt.count}
+                </span>
+              ) : undefined
+            }
+          >
+            {opt.label}
+          </FilterChip>
+        );
+      })}
     </div>
   );
 }
@@ -651,7 +655,12 @@ export default function ClientDetailPage() {
   // stays presentation-only.
   const companyContactsRef = useRef<ContactsCompactRef | null>(null);
   const locContactsRef = useRef<ContactsCompactRef | null>(null);
-  const notesRef = useRef<NotesPanelRef | null>(null);
+  // 2026-05-08 Tier 4 Notes canonicalization: NotesPanel's imperative
+  // `notesRef.startAdding()` handle is replaced by the declarative
+  // `openAddNoteSignal` contract shared with every other notes
+  // consumer. The rail tab's +Add button bumps the signal counter;
+  // EntityNotesPanel reacts via a useEffect.
+  const [notesAddSignal, setNotesAddSignal] = useState(0);
 
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1243,7 +1252,7 @@ export default function ClientDetailPage() {
       action: (
         <button
           type="button"
-          onClick={() => notesRef.current?.startAdding()}
+          onClick={() => setNotesAddSignal((n) => n + 1)}
           className={RAIL_ACTION_BTN_CLASS}
           data-testid="client-side-panel-action-add-note"
         >
@@ -1251,15 +1260,24 @@ export default function ClientDetailPage() {
           Add Note
         </button>
       ),
+      // 2026-05-08 Tier 4 Notes canonicalization — the legacy
+      // NotesPanel component was retired. Both company + location
+      // scopes now flow through the canonical EntityNotesPanel
+      // (entityType="company" | "location"). The rail tab header owns
+      // the +Add affordance via the `action` slot above; the panel
+      // reacts to the bump via `openAddNoteSignal`.
       content: scopeType === "company" && companyId ? (
-        <NotesPanel ref={notesRef} scope="company" companyId={companyId} hideAddButton />
+        <EntityNotesPanel
+          entityType="company"
+          entityId={companyId}
+          openAddNoteSignal={notesAddSignal}
+        />
       ) : scopeType === "location" && selectedLocationId ? (
-        <NotesPanel
-          ref={notesRef}
-          scope="location"
+        <EntityNotesPanel
+          entityType="location"
+          entityId={selectedLocationId}
           companyId={ownerCompanyId}
-          locationId={selectedLocationId}
-          hideAddButton
+          openAddNoteSignal={notesAddSignal}
         />
       ) : (
         <DetailRightRailEmpty

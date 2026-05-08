@@ -179,6 +179,13 @@ const SECTIONS: SettingsSection[] = [
       // 2026-04-22 Import Center consolidation: one entry covers all three
       // entity imports. Pick the type inside the wizard.
       { title: "Import Center", description: "Import clients, historical jobs, or products & services from CSV", href: "/settings/import", icon: Upload },
+      // 2026-05-08: internal/admin-only Typography Style Guide. Visual
+      // reference for every semantic typography token. Owner / admin role
+      // only; technicians/dispatchers/managers/portal users never reach
+      // it (gated by requireAdmin on the route). Lives in Advanced
+      // because it's a developer/design-tool surface, not an
+      // operational setting.
+      { title: "Typography Style Guide", description: "Visual reference for semantic typography tokens (internal)", href: "/style-guide/typography", icon: FileText },
     ],
   },
 ];

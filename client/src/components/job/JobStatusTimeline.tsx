@@ -5,6 +5,10 @@ import { Clock, ChevronDown, ChevronRight, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
+// 2026-05-08 chip Phase 3a: local StatusBadge migrated to canonical
+// StatusChip. The h-2 w-2 timeline marker dot below stays as decoration.
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 import type { JobStatusEvent } from "@shared/schema";
 
 interface JobStatusTimelineProps {
@@ -218,22 +222,29 @@ function TimelineEvent({ event }: { event: DisplayEvent }) {
   );
 }
 
+// 2026-05-08 chip Phase 3a: maps the legacy variant strings produced by
+// `getJobStatusDisplay` (default/secondary/outline/destructive/warning/
+// success) onto the canonical 5-tone palette. Each pair of from→to
+// status badges in the audit-log row renders via <StatusChip>, so the
+// rounded-full / text-helper / soft-tint contract is shared with every
+// other status indicator in the app. The legacy variantClasses Record
+// + hand-rolled `bg-yellow-100` / `bg-green-100` palette is gone.
+function variantToTone(variant: string): ChipTone {
+  switch (variant) {
+    case "destructive": return "danger";
+    case "warning":     return "warning";
+    case "success":     return "success";
+    case "default":
+    case "secondary":
+    case "outline":
+    default:            return "neutral";
+  }
+}
+
 function StatusBadge({ label, variant }: { label: string; variant: string }) {
-  // Map variants to colors
-  const variantClasses: Record<string, string> = {
-    default: "bg-muted text-muted-foreground",
-    secondary: "bg-secondary text-secondary-foreground",
-    outline: "bg-background text-foreground border border-border",
-    destructive: "bg-destructive/10 text-destructive",
-    warning: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
-    success: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-  };
-
-  const classes = variantClasses[variant] || variantClasses.default;
-
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${classes}`}>
+    <StatusChip size="compact" tone={variantToTone(variant)}>
       {label}
-    </span>
+    </StatusChip>
   );
 }

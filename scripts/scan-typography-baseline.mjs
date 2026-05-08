@@ -1,0 +1,102 @@
+/**
+ * scan-typography-baseline (2026-05-08).
+ *
+ * Walks `client/src/**` (.ts/.tsx), strips comments, and records the
+ * count of legacy typography-ramp classes (`text-xs/-sm/-base/-lg/
+ * -xl/-2xl/-3xl/-4xl`) and arbitrary `text-[Npx]` values per file.
+ * The output is `tests/semantic-typography-baseline.json` — the
+ * frozen baseline consumed by `tests/semantic-typography-guard.test.ts`.
+ *
+ * Re-run this script after a deliberate migration sweep that lowers
+ * counts (so the baseline reflects the new floor). Do NOT re-run to
+ * mask new drift — the test exists to catch new drift early.
+ *
+ * Usage:
+ *   node scripts/scan-typography-baseline.mjs
+ *
+ * Files explicitly exempted from the baseline (see ALLOWED_FILES below):
+ *   - `client/src/pages/StyleGuideTypographyPage.tsx` — the typography
+ *     style-guide page itself intentionally renders every token in the
+ *     legacy ramp for visual comparison.
+ */
+import { readdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, "..");
+const SCAN_DIR = join(ROOT, "client/src");
+const OUT_PATH = join(ROOT, "tests/semantic-typography-baseline.json");
+
+const ALLOWED_FILES = new Set([
+  "client/src/pages/StyleGuideTypographyPage.tsx",
+]);
+
+const LEGACY_RAMP_RE = /\btext-(xs|sm|base|lg|xl|2xl|3xl|4xl)\b/g;
+const ARBITRARY_TEXT_RE = /\btext-\[[^\]]+\]/g;
+
+function walk(dir) {
+  const out = [];
+  let entries = [];
+  try { entries = readdirSync(dir); } catch { return out; }
+  for (const name of entries) {
+    const full = join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...walk(full));
+    else if (full.endsWith(".tsx") || full.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+function relPath(abs) {
+  const rootFs = ROOT.split("\\").join("/");
+  const absFs = abs.split("\\").join("/");
+  return absFs.replace(rootFs + "/", "");
+}
+
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+    .replace(/\/\/[^\n]*/g, "");
+}
+
+const files = walk(SCAN_DIR).sort();
+const baseline = {};
+for (const f of files) {
+  const r = relPath(f);
+  if (ALLOWED_FILES.has(r)) continue;
+  const src = stripComments(readFileSync(f, "utf-8"));
+  const legacy = (src.match(LEGACY_RAMP_RE) || []).length;
+  const arbitrary = (src.match(ARBITRARY_TEXT_RE) || []).length;
+  if (legacy === 0 && arbitrary === 0) continue;
+  baseline[r] = { legacy, arbitrary };
+}
+
+const totalLegacy = Object.values(baseline).reduce((a, b) => a + b.legacy, 0);
+const totalArbitrary = Object.values(baseline).reduce(
+  (a, b) => a + b.arbitrary,
+  0,
+);
+
+writeFileSync(
+  OUT_PATH,
+  JSON.stringify(
+    {
+      generatedAt: "2026-05-08",
+      description:
+        "Frozen baseline of legacy typography-ramp + arbitrary text-[Npx] usage. tests/semantic-typography-guard.test.ts fails when any file's count increases or a new file introduces these classes. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
+      totalLegacy,
+      totalArbitrary,
+      files: baseline,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+console.log(
+  `Baseline written: ${OUT_PATH}\n` +
+    `  files=${Object.keys(baseline).length}\n` +
+    `  totalLegacy=${totalLegacy}\n` +
+    `  totalArbitrary=${totalArbitrary}`,
+);

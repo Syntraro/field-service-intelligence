@@ -308,8 +308,14 @@ describe("CreateQuotePage — reuses Quote Detail components in draft mode", () 
     // signal that the page is not mounting them. Tightened regexes
     // (no JSX-shape pins; comments mentioning the component name are
     // acceptable but imports/mounts are not).
+    // 2026-05-08 Tier 4 Notes canonicalization — pin both names so
+    // a future refactor that re-exposes notes on the create page
+    // through either the retired or the canonical primitive fails.
     expect(createQuotePageSrc).not.toMatch(
       /import\s+\{[^}]*EntityNotesSection[^}]*\}\s+from/,
+    );
+    expect(createQuotePageSrc).not.toMatch(
+      /import\s+\{[^}]*EntityNotesPanel[^}]*\}\s+from/,
     );
     expect(createQuotePageSrc).not.toMatch(
       /import\s+\{[^}]*ActivityCard[^}]*\}\s+from/,

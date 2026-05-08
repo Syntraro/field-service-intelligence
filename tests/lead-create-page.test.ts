@@ -220,11 +220,14 @@ describe("CreateLeadPage — reuses Lead Detail components in draft mode", () =>
     );
   });
 
-  it("does NOT render LeadVisitsCard, EntityNotesSection, or convert-to-quote on the create page", () => {
+  it("does NOT render LeadVisitsCard, EntityNotesPanel, or convert-to-quote on the create page", () => {
     // Saved-only sections must stay off /leads/new — they have no
-    // meaning before first save.
+    // meaning before first save. 2026-05-08 Tier 4: pin both legacy
+    // `EntityNotesSection` (retired) and canonical `EntityNotesPanel`
+    // for forward-compat.
     expect(createLeadPageSrc).not.toMatch(/<LeadVisitsCard[\s/>]/);
     expect(createLeadPageSrc).not.toMatch(/<EntityNotesSection[\s/>]/);
+    expect(createLeadPageSrc).not.toMatch(/<EntityNotesPanel[\s/>]/);
     expect(createLeadPageSrc).not.toMatch(/Convert to Quote/);
     expect(createLeadPageSrc).not.toMatch(/Mark Contacted/);
     expect(createLeadPageSrc).not.toMatch(/Archive Lead/);

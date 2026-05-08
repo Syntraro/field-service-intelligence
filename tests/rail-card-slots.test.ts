@@ -40,11 +40,14 @@ const PRIMITIVE = resolve(
 );
 const CLIENT_PAGE = resolve(ROOT, "client/src/pages/ClientDetailPage.tsx");
 const JOB_PAGE = resolve(ROOT, "client/src/pages/JobDetailPage.tsx");
-const NOTES_PANEL = resolve(ROOT, "client/src/components/NotesPanel.tsx");
-const ENTITY_NOTES = resolve(
-  ROOT,
-  "client/src/components/notes/EntityNotesSection.tsx",
-);
+// 2026-05-08 Tier 4 Notes canonicalization — the prior NOTES_PANEL
+// (`client/src/components/NotesPanel.tsx`) and ENTITY_NOTES
+// (`client/src/components/notes/EntityNotesSection.tsx`) sources were
+// retired; both behaviors live in
+// `client/src/components/notes/EntityNotesPanel.tsx`. The describe.skip
+// blocks below referenced these constants but the live tests in this
+// file no longer do, so the constants are dropped to avoid loading a
+// file that no longer exists.
 const JOB_EQUIP = resolve(
   ROOT,
   "client/src/components/JobEquipmentSection.tsx",
@@ -53,8 +56,8 @@ const JOB_EQUIP = resolve(
 const primitiveSrc = readFileSync(PRIMITIVE, "utf-8");
 const clientSrc = readFileSync(CLIENT_PAGE, "utf-8");
 const jobSrc = readFileSync(JOB_PAGE, "utf-8");
-const notesPanelSrc = readFileSync(NOTES_PANEL, "utf-8");
-const entityNotesSrc = readFileSync(ENTITY_NOTES, "utf-8");
+// notesPanelSrc / entityNotesSrc were retired alongside the source
+// files (see comment above NOTES_PANEL / ENTITY_NOTES removal).
 const jobEquipSrc = readFileSync(JOB_EQUIP, "utf-8");
 
 // ── 1. Slot primitives exist + bake canonical tokens ───────────────

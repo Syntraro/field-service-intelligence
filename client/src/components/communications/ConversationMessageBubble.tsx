@@ -23,6 +23,30 @@ function formatBubbleTime(iso: string): string {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * Phase 5 (2026-05-08): outbound-SMS status indicator.
+ * queued / sent / delivered → muted; failed / undelivered → destructive,
+ * still compact. Internal notes and inbound bubbles do not render this.
+ */
+function smsStatusLabel(
+  status: string,
+): { text: string; tone: "muted" | "destructive" } | null {
+  switch (status) {
+    case "queued":
+      return { text: "Queued", tone: "muted" };
+    case "sent":
+      return { text: "Sent", tone: "muted" };
+    case "delivered":
+      return { text: "Delivered", tone: "muted" };
+    case "failed":
+      return { text: "Failed", tone: "destructive" };
+    case "undelivered":
+      return { text: "Undelivered", tone: "destructive" };
+    default:
+      return null;
+  }
+}
+
 export function ConversationMessageBubble({ message }: ConversationMessageBubbleProps) {
   const isOutbound = message.direction === "outbound";
   const isInternal = message.channel === "internal_note";
@@ -36,6 +60,11 @@ export function ConversationMessageBubble({ message }: ConversationMessageBubble
       ? "bg-blue-50 text-foreground ring-1 ring-blue-100"
       : "bg-muted text-foreground ring-1 ring-border/50";
 
+  const statusInfo =
+    isOutbound && message.channel === "sms"
+      ? smsStatusLabel(message.status ?? "")
+      : null;
+
   return (
     <div
       className={cn("flex flex-col gap-0.5", align)}
@@ -48,6 +77,19 @@ export function ConversationMessageBubble({ message }: ConversationMessageBubble
         {message.senderDisplayName ? `${message.senderDisplayName} · ` : ""}
         {formatBubbleTime(message.createdAt)}
         {isInternal ? " · Internal note" : ""}
+        {statusInfo && (
+          <>
+            {" · "}
+            <span
+              className={cn(
+                statusInfo.tone === "destructive" ? "text-destructive" : undefined,
+              )}
+              data-testid={`conversation-message-sms-status-${message.id}`}
+            >
+              {statusInfo.text}
+            </span>
+          </>
+        )}
       </div>
     </div>
   );

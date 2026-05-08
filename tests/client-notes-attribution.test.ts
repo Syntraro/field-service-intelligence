@@ -320,12 +320,11 @@ describe("Client notes — security: route schemas reject author spoofing", () =
 
 // ─── Frontend mapper guard ─────────────────────────────────────────────────
 
-describe("NotesPanel — fallback to 'Unknown' is the only path that produces that label", () => {
+describe("EntityNotesPanel — fallback to 'Unknown' is the only path that produces that label", () => {
   it("renders createdByName when it's a non-empty string and only falls back on null/undefined/empty", () => {
-    // Source-level guard: the only place "Unknown" should appear in the
-    // panel is the `||` fallback expression. Any other reference would
-    // be suspicious (e.g. a sibling field accidentally also rendering
-    // "Unknown").
+    // 2026-05-08 Tier 4 Notes canonicalization — `NotesPanel` is gone;
+    // the client-scoped render path now lives inside EntityNotesPanel.
+    // The "Unknown" fallback contract is preserved verbatim.
     const src = fs.readFileSync(
       path.resolve(
         __dirname,
@@ -333,7 +332,8 @@ describe("NotesPanel — fallback to 'Unknown' is the only path that produces th
         "client",
         "src",
         "components",
-        "NotesPanel.tsx",
+        "notes",
+        "EntityNotesPanel.tsx",
       ),
       "utf8",
     );

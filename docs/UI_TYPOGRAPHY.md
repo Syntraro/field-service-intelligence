@@ -2,6 +2,19 @@
 
 Owner: frontend · Last updated: 2026-05-01 (Typography Phase C — sizes bumped to detail-page scale)
 
+> **⚠ Source-of-truth notice (2026-05-08).** Some tables in this document
+> reflect the pre-2026-05-08 token sizes (e.g. `text-section-title: 18/24/600`,
+> `text-row-emphasis: 15/22/500`). After the 2026-05-08 typography
+> recalibration both tokens resolve to **17/24/600**, and `text-row` bakes
+> weight 500. The CURRENT source of truth is:
+>
+> 1. `tailwind.config.ts > theme.extend.fontSize` — the live token definitions.
+> 2. `docs/SEMANTIC_TOKENS_AUDIT.md` — the canonical inventory + drift findings.
+> 3. `/style-guide/typography` — the visual preview page (admin-only).
+>
+> If a value here contradicts those, trust those — this doc is being
+> rewritten in a follow-up sweep.
+
 ## Canonical semantic tokens (2026-05-01 Typography Phase C)
 
 The app exposes 10 named typography tokens via Tailwind utilities. **Use

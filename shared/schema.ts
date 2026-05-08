@@ -890,6 +890,10 @@ export const items = pgTable("items", {
   // Item fields (products/services - QBO aligned)
   name: text("name"),
   sku: text("sku"), // Internal item code or SKU
+  // 2026-05-08 inventory foundation: optional manufacturer / model
+  // number, distinct from sku. Common in HVAC/R inventory (e.g.
+  // "TPS300", "GE-7012"). Nullable; only Product items typically use it.
+  model: text("model"),
   description: text("description"),
   // Pricing fields (for products and services)
   cost: numeric("cost", { precision: 12, scale: 2 }), // Cost price in dollars
@@ -7609,6 +7613,50 @@ export type CommunicationCallRow = typeof communicationCalls.$inferSelect;
 export type InsertCommunicationCall = typeof communicationCalls.$inferInsert;
 
 // ────────────────────────────────────────────────────────────────────
+// Communication Provider Settings — Phase 5 (2026-05-08)
+// ────────────────────────────────────────────────────────────────────
+// Encrypted-at-rest tenant credential row for the SMS infrastructure.
+// See `migrations/2026_05_08_communication_provider_settings.sql` and
+// `server/services/communications/providerCredentialCrypto.ts`.
+export const communicationProviderSettings = pgTable(
+  "communication_provider_settings",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    providerId: text("provider_id").notNull(),
+    phoneNumber: text("phone_number").notNull(),
+    normalizedPhone: text("normalized_phone").notNull(),
+    isActive: boolean("is_active").notNull().default(false),
+    accountIdentifier: text("account_identifier"),
+    encryptedCredential: text("encrypted_credential").notNull(),
+    credentialIv: text("credential_iv").notNull(),
+    credentialTag: text("credential_tag").notNull(),
+    encryptedWebhookSecret: text("encrypted_webhook_secret").notNull(),
+    webhookSecretIv: text("webhook_secret_iv").notNull(),
+    webhookSecretTag: text("webhook_secret_tag").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+  },
+  (table) => ({
+    companyProviderIdx: index("idx_comm_provider_settings_company_provider").on(
+      table.companyId,
+      table.providerId,
+    ),
+  }),
+);
+
+export type CommunicationProviderSettingsRow =
+  typeof communicationProviderSettings.$inferSelect;
+export type InsertCommunicationProviderSettings =
+  typeof communicationProviderSettings.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
 // Technician Time Off (2026-05-07 RALPH)
 // ────────────────────────────────────────────────────────────────────
 // First-class technician time-off scheduling. Each row blocks a single
@@ -7721,3 +7769,365 @@ export type TechnicianTimeOffInsertInput = z.infer<
 export type TechnicianTimeOffUpdateInput = z.infer<
   typeof updateTechnicianTimeOffSchema
 >;
+
+// ============================================================================
+// INVENTORY MODULE (2026-05-08 foundation)
+// ============================================================================
+//
+// Capability-gated extension layer over the canonical items table.
+// Tables: inventory_locations, inventory_quantities, inventory_transactions.
+//
+// Architecture invariants:
+//   1. items + pricebook stay canonical. Inventory references items via FK.
+//   2. Quantity mutations always go through inventory_transactions; the
+//      storage layer inserts the transaction in the same Drizzle tx as
+//      the quantity update.
+//   3. Available quantity is DERIVED at read time as on_hand - reserved.
+//      Never stored.
+//   4. Tenant-scoped via company_id ON DELETE CASCADE.
+//
+// Feature gate: requireFeature("inventory_core") on the inventory router
+// (server/routes/inventory.ts).
+// Permissions: inventory.view (read) + inventory.manage (write).
+
+export const inventoryLocationTypeEnum = [
+  "warehouse",
+  "vehicle",
+  "office",
+  "storage",
+  "temporary",
+  "other",
+] as const;
+export type InventoryLocationType = (typeof inventoryLocationTypeEnum)[number];
+
+export const inventoryTransactionTypeEnum = [
+  "initial",
+  "transfer",
+  "adjustment",
+  "job_consumption",
+  "return",
+  "count_correction",
+  // Phase 3 (2026-05-08): job_return is the canonical movement type
+  // for stock returned from a specific job_inventory_usage row. The
+  // older `return` value above stays for the AdjustStockModal's
+  // "Return to stock" reason — that surface predates the per-job
+  // consumption flow and is not tied to a job_inventory_usage row.
+  "job_return",
+] as const;
+export type InventoryTransactionType =
+  (typeof inventoryTransactionTypeEnum)[number];
+
+export const inventoryLocations = pgTable(
+  "inventory_locations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    assignedUserId: varchar("assigned_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    address: text("address"),
+    address2: text("address2"),
+    city: text("city"),
+    provinceState: text("province_state"),
+    postalCode: text("postal_code"),
+    country: text("country"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => ({
+    companyIdx: index("inventory_locations_company_idx").on(table.companyId),
+    companyActiveIdx: index("inventory_locations_company_active_idx").on(
+      table.companyId,
+      table.isActive,
+    ),
+  }),
+);
+
+export const insertInventoryLocationSchema = createInsertSchema(
+  inventoryLocations,
+)
+  .omit({ id: true, companyId: true, createdAt: true, updatedAt: true })
+  .extend({
+    name: z.string().min(1).max(120),
+    type: z.enum(inventoryLocationTypeEnum),
+    isActive: z.boolean().optional(),
+    assignedUserId: z.string().nullable().optional(),
+    address: z.string().nullable().optional(),
+    address2: z.string().nullable().optional(),
+    city: z.string().nullable().optional(),
+    provinceState: z.string().nullable().optional(),
+    postalCode: z.string().nullable().optional(),
+    country: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+  });
+
+export const updateInventoryLocationSchema = z.object({
+  name: z.string().min(1).max(120).optional(),
+  type: z.enum(inventoryLocationTypeEnum).optional(),
+  isActive: z.boolean().optional(),
+  assignedUserId: z.string().nullable().optional(),
+  address: z.string().nullable().optional(),
+  address2: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+  provinceState: z.string().nullable().optional(),
+  postalCode: z.string().nullable().optional(),
+  country: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export type InsertInventoryLocation = z.infer<
+  typeof insertInventoryLocationSchema
+>;
+export type UpdateInventoryLocation = z.infer<
+  typeof updateInventoryLocationSchema
+>;
+export type InventoryLocation = typeof inventoryLocations.$inferSelect;
+
+export const inventoryQuantities = pgTable(
+  "inventory_quantities",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    itemId: varchar("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    locationId: varchar("location_id")
+      .notNull()
+      .references(() => inventoryLocations.id, { onDelete: "cascade" }),
+    onHandQuantity: numeric("on_hand_quantity", { precision: 14, scale: 4 })
+      .notNull()
+      .default("0"),
+    reservedQuantity: numeric("reserved_quantity", { precision: 14, scale: 4 })
+      .notNull()
+      .default("0"),
+    minimumQuantity: numeric("minimum_quantity", { precision: 14, scale: 4 }),
+    reorderPoint: numeric("reorder_point", { precision: 14, scale: 4 }),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    itemLocationUniq: uniqueIndex(
+      "inventory_quantities_item_location_uniq",
+    ).on(table.itemId, table.locationId),
+    companyIdx: index("inventory_quantities_company_idx").on(table.companyId),
+    itemIdx: index("inventory_quantities_item_idx").on(
+      table.companyId,
+      table.itemId,
+    ),
+    locationIdx: index("inventory_quantities_location_idx").on(
+      table.companyId,
+      table.locationId,
+    ),
+  }),
+);
+
+export const updateInventoryQuantitySettingsSchema = z.object({
+  minimumQuantity: z.string().nullable().optional(),
+  reorderPoint: z.string().nullable().optional(),
+});
+
+export type UpdateInventoryQuantitySettings = z.infer<
+  typeof updateInventoryQuantitySettingsSchema
+>;
+export type InventoryQuantity = typeof inventoryQuantities.$inferSelect;
+
+export const inventoryTransactions = pgTable(
+  "inventory_transactions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    itemId: varchar("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    fromLocationId: varchar("from_location_id").references(
+      () => inventoryLocations.id,
+      { onDelete: "set null" },
+    ),
+    toLocationId: varchar("to_location_id").references(
+      () => inventoryLocations.id,
+      { onDelete: "set null" },
+    ),
+    quantity: numeric("quantity", { precision: 14, scale: 4 }).notNull(),
+    transactionType: text("transaction_type").notNull(),
+    referenceType: text("reference_type"),
+    referenceId: varchar("reference_id"),
+    unitCost: numeric("unit_cost", { precision: 12, scale: 2 }),
+    notes: text("notes"),
+    createdBy: varchar("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    companyIdx: index("inventory_transactions_company_idx").on(
+      table.companyId,
+    ),
+    itemRecentIdx: index("inventory_transactions_item_recent_idx").on(
+      table.companyId,
+      table.itemId,
+      table.createdAt,
+    ),
+    locationRecentIdx: index(
+      "inventory_transactions_location_recent_idx",
+    ).on(
+      table.companyId,
+      table.fromLocationId,
+      table.toLocationId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const transferInventorySchema = z.object({
+  itemId: z.string().min(1),
+  fromLocationId: z.string().min(1),
+  toLocationId: z.string().min(1),
+  quantity: z.string().refine((v) => Number(v) > 0, "quantity must be > 0"),
+  unitCost: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export const adjustInventorySchema = z.object({
+  itemId: z.string().min(1),
+  locationId: z.string().min(1),
+  deltaQuantity: z
+    .string()
+    .refine((v) => Number(v) !== 0, "deltaQuantity cannot be 0"),
+  // Optional in the wire shape; the service defaults to "adjustment"
+  // when omitted. Kept optional (not `.default()`) so the inferred input
+  // type stays aligned with what the route handler passes through to
+  // the service after validation — the route code does NOT re-narrow
+  // the parsed shape.
+  reason: z
+    .enum(["adjustment", "count_correction", "initial", "return"])
+    .optional(),
+  unitCost: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export type TransferInventoryInput = z.infer<typeof transferInventorySchema>;
+export type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
+export type InventoryTransaction = typeof inventoryTransactions.$inferSelect;
+
+// ============================================================================
+// JOB INVENTORY USAGE (2026-05-08 — Inventory Phase 3)
+// ============================================================================
+//
+// Two-row return model: every row carries a positive quantity; `kind`
+// drives accounting direction. Returns reference their parent
+// consumption row via `parent_usage_id`. Job cost contribution =
+//   SUM(consumption.quantity * unit_cost_snapshot)
+//   - SUM(return.quantity * unit_cost_snapshot)
+//
+// `unit_cost_snapshot` is captured at consumption time. Later changes
+// to items.cost do NOT mutate historical job costs.
+//
+// Every quantity movement still routes through inventory_transactions
+// (single-tx invariant from Phase 1). The per-row link is the optional
+// `inventory_transaction_id` FK — set in the same Drizzle tx as the
+// audit row.
+
+export const jobInventoryUsageKindEnum = ["consumption", "return"] as const;
+export type JobInventoryUsageKind = (typeof jobInventoryUsageKindEnum)[number];
+
+export const jobInventoryUsage = pgTable(
+  "job_inventory_usage",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    jobId: varchar("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    itemId: varchar("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "restrict" }),
+    locationId: varchar("location_id")
+      .notNull()
+      .references(() => inventoryLocations.id, { onDelete: "restrict" }),
+    kind: text("kind").notNull(), // jobInventoryUsageKindEnum
+    parentUsageId: varchar("parent_usage_id"),
+    quantity: numeric("quantity", { precision: 14, scale: 4 }).notNull(),
+    unitCostSnapshot: numeric("unit_cost_snapshot", {
+      precision: 12,
+      scale: 2,
+    }).notNull(),
+    consumedByUserId: varchar("consumed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    notes: text("notes"),
+    inventoryTransactionId: varchar("inventory_transaction_id").references(
+      () => inventoryTransactions.id,
+      { onDelete: "set null" },
+    ),
+    deletedAt: timestamp("deleted_at"),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => ({
+    companyIdx: index("job_inventory_usage_company_idx").on(table.companyId),
+    jobIdx: index("job_inventory_usage_job_idx").on(
+      table.companyId,
+      table.jobId,
+      table.createdAt,
+    ),
+    itemRecentIdx: index("job_inventory_usage_item_recent_idx").on(
+      table.companyId,
+      table.itemId,
+      table.createdAt,
+    ),
+    locationRecentIdx: index("job_inventory_usage_location_recent_idx").on(
+      table.companyId,
+      table.locationId,
+      table.createdAt,
+    ),
+    parentIdx: index("job_inventory_usage_parent_idx").on(table.parentUsageId),
+  }),
+);
+
+export const consumeInventoryForJobSchema = z.object({
+  itemId: z.string().min(1),
+  locationId: z.string().min(1),
+  quantity: z
+    .string()
+    .refine((v) => Number(v) > 0, "quantity must be > 0"),
+  notes: z.string().nullable().optional(),
+});
+
+export const returnInventoryFromJobSchema = z.object({
+  // The parent consumption row to return against. Returns are scoped
+  // to a specific consumption — we never return "in general" because
+  // the return needs a unit_cost_snapshot and a destination location,
+  // both of which come from the parent.
+  usageId: z.string().min(1),
+  quantity: z
+    .string()
+    .refine((v) => Number(v) > 0, "quantity must be > 0"),
+  notes: z.string().nullable().optional(),
+});
+
+export type ConsumeInventoryForJobInput = z.infer<
+  typeof consumeInventoryForJobSchema
+>;
+export type ReturnInventoryFromJobInput = z.infer<
+  typeof returnInventoryFromJobSchema
+>;
+export type JobInventoryUsage = typeof jobInventoryUsage.$inferSelect;

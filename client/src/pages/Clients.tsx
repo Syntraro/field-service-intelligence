@@ -9,6 +9,10 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Plus, X, Tag, MapPin, Users, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
+// 2026-05-08 chip Phase 2: Active/Inactive status filter → FilterChip.
+// The tag filter below stays raw — it uses per-tag user-defined colors
+// (not the canonical palette), so it's Cat B and remains hand-rolled.
+import { FilterChip } from "@/components/ui/chip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 // 2026-03-21: Canonical CreateClientModal replaces navigation to /clients/new
@@ -486,18 +490,16 @@ export default function Clients() {
           <FilterSection label="Status">
             <div className="flex gap-1.5">
               {(["active", "inactive"] as const).map((tab) => (
-                <Button
+                <FilterChip
                   key={tab}
-                  variant={activeTab === tab ? "default" : "outline"}
-                  size="sm"
-                  className="h-7 text-xs rounded-full"
+                  selected={activeTab === tab}
                   onClick={() => setActiveTab(tab)}
                   data-testid={`tab-${tab}`}
                 >
                   {tab === "active"
                     ? `Active (${companyGroups.filter((g) => g.hasActiveLocation).length})`
                     : `Inactive (${companyGroups.filter((g) => g.allInactive).length})`}
-                </Button>
+                </FilterChip>
               ))}
             </div>
           </FilterSection>

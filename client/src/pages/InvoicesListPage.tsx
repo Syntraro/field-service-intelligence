@@ -22,6 +22,11 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Button } from "@/components/ui/button";
+// 2026-05-08 chip Phase 2: status filter buttons → FilterChip. The QBO
+// sync filter below stays on Button — it uses `variant="destructive"`
+// for the selected state, which is a Cat B concern (FilterChip's
+// selected tone is currently locked to brand-active).
+import { FilterChip } from "@/components/ui/chip";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
@@ -524,32 +529,46 @@ export default function InvoicesListPage() {
             <FilterSection label="Status">
               <div className="flex flex-wrap gap-1.5">
                 {(["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
-                  <Button
+                  <FilterChip
                     key={filter}
-                    variant={activeFilter === filter ? "default" : "outline"}
-                    size="sm"
-                    className="h-7 text-caption rounded-full"
+                    selected={activeFilter === filter}
                     onClick={() => setActiveFilter(filter)}
                     data-testid={`button-filter-${filter}`}
                   >
                     {filter === "all" ? "All" : filter === "awaiting_payment" ? "Unpaid" : filter === "partial_paid" ? "Partial" : filter === "overdue" ? "Overdue" : filter.charAt(0).toUpperCase() + filter.slice(1)}
                     {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
-                  </Button>
+                  </FilterChip>
                 ))}
               </div>
             </FilterSection>
             {(statusCounts["qbo_synced"] || statusCounts["qbo_out_of_sync"]) ? (
               <FilterSection label="QuickBooks Sync">
+                {/* 2026-05-08 chip Phase 3a: migrated from
+                    <Button variant={"default"|"destructive"|"outline"}>
+                    to canonical <FilterChip>. The "Out of Sync" filter
+                    keeps its destructive selected style via
+                    `selectedTone="danger"` (which routes to the
+                    canonical `bg-destructive text-destructive-foreground`
+                    solid variant in chipVariants.ts). */}
                 <div className="flex flex-wrap gap-1.5">
-                  <Button variant={activeFilter === "qbo_synced" ? "default" : "outline"} size="sm" className="h-7 text-caption rounded-full gap-1" onClick={() => setActiveFilter("qbo_synced")} data-testid="button-filter-qbo-synced">
-                    <RefreshCw className="h-3 w-3" />
+                  <FilterChip
+                    selected={activeFilter === "qbo_synced"}
+                    onClick={() => setActiveFilter("qbo_synced")}
+                    leadingIcon={<RefreshCw className="h-3 w-3" />}
+                    data-testid="button-filter-qbo-synced"
+                  >
                     Synced {statusCounts["qbo_synced"] ? `(${statusCounts["qbo_synced"]})` : ""}
-                  </Button>
+                  </FilterChip>
                   {statusCounts["qbo_out_of_sync"] > 0 && (
-                    <Button variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"} size="sm" className="h-7 text-caption rounded-full gap-1" onClick={() => setActiveFilter("qbo_out_of_sync")} data-testid="button-filter-qbo-out-of-sync">
-                      <AlertTriangle className="h-3 w-3" />
+                    <FilterChip
+                      selected={activeFilter === "qbo_out_of_sync"}
+                      selectedTone="danger"
+                      onClick={() => setActiveFilter("qbo_out_of_sync")}
+                      leadingIcon={<AlertTriangle className="h-3 w-3" />}
+                      data-testid="button-filter-qbo-out-of-sync"
+                    >
                       Out of Sync ({statusCounts["qbo_out_of_sync"]})
-                    </Button>
+                    </FilterChip>
                   )}
                 </div>
               </FilterSection>

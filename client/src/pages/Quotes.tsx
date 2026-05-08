@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+// 2026-05-08 chip Phase 2: status filter buttons migrated to FilterChip.
+import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -331,17 +333,15 @@ export default function Quotes() {
             <FilterSection label="Status">
               <div className="flex flex-wrap gap-1.5">
                 {(["all", "draft", "sent", "approved", "declined", "converted"] as QuoteStatusFilter[]).map((filter) => (
-                  <Button
+                  <FilterChip
                     key={filter}
-                    variant={activeFilter === filter ? "default" : "outline"}
-                    size="sm"
-                    className="h-7 text-caption rounded-full"
+                    selected={activeFilter === filter}
                     onClick={() => setActiveFilter(filter)}
                     data-testid={`button-filter-${filter}`}
                   >
                     {filter === "all" ? "All" : filter.charAt(0).toUpperCase() + filter.slice(1)}
                     {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
-                  </Button>
+                  </FilterChip>
                 ))}
               </div>
             </FilterSection>

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
@@ -13,17 +13,25 @@ import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCar
 import { useToast } from "@/hooks/use-toast";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
-  ArrowLeft, Send, MoreHorizontal, Plus, Trash2,
-  FileText, Check, X, Phone, Mail, MapPin, Clock, Edit, Loader2, Info, ClipboardList,
-  Download, Eye, AlertTriangle, ExternalLink, Tag,
-  DollarSign, Pencil, ChevronDown, ChevronRight, MessageSquare,
+  Loader2, Plus,
+  // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
+  DollarSign, StickyNote, Tag, GitBranch, Activity as ActivityIcon,
 } from "lucide-react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+// 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
+// transition class. Mirrors Job Detail / Invoice Detail / Lead Detail.
+// The prior <DetailPageShell rightRail> stacked-cards layout is replaced
+// with the icon-strip + expandable-panel rail flush to the page's right
+// edge. <DetailPageShell> itself is preserved for any other consumer.
+import {
+  DetailRightRail,
+  RAIL_HEADER_ACTION_CLASS,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getQuoteStatusBadge } from "@/lib/statusBadges";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -83,7 +91,7 @@ import { QuoteDescriptionCard } from "@/components/quotes/QuoteDescriptionCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
 // Canonical notes section. Quote notes share the same UI + dialog +
 // attachment pipeline as job / invoice notes.
-import EntityNotesSection from "@/components/notes/EntityNotesSection";
+import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 // 2026-04-29 (Phase 2 canonical extraction): the local CreateOrSelectField
 // + useProductSearch + product-helper imports have moved into the canonical
 // `<LineItemsCard>` / `<LineItemRow>` / `<AddLineItemForm>` components.
@@ -103,8 +111,6 @@ import {
   useLineItemsDrafts,
   type LineItemsAdapter,
 } from "@/components/line-items";
-import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
-import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 interface QuoteDetails {
   quote: Quote;
@@ -140,11 +146,15 @@ export default function QuoteDetailPage() {
   // inline add-row state likewise migrates to the hook's `appendNew`.
   // Quote-specific adapter is built further down, after the mutations.
 
-  // 2026-05-06: description card now owns its own collapsed/edit state
-  // (extracted into <QuoteDescriptionCard mode="saved">). Only the Notes
-  // collapse/open-signal state stays here — that's still page-owned.
-  const [notesExpanded, setNotesExpanded] = useState(false);
-  const [notesOpenSignal, setNotesOpenSignal] = useState(0);
+  // 2026-05-08 RALPH (rail migration): canonical right-rail tab state.
+  // `null` = no panel open (icon strip only). Default open: "summary"
+  // — the most-frequently-read tab on this page (totals at a glance).
+  type QuoteRailTab = "summary" | "notes" | "references" | "workflow" | "activity";
+  const [quoteRailTab, setQuoteRailTab] = useState<QuoteRailTab | null>("summary");
+  // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
+  // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
+  // reacts via `openAddNoteSignal`.
+  const [notesAddSignal, setNotesAddSignal] = useState(0);
 
   // Canonical Product/Service create flow — same pattern as Invoice.
   // One AddProductModal instance lives at the page level; the canonical
@@ -595,17 +605,143 @@ export default function QuoteDetailPage() {
     window.open(`/api/quotes/${quoteId}/pdf/preview`, "_blank");
   };
 
+  // 2026-05-08 RALPH (rail migration): canonical 5-tab registry — Summary,
+  // Notes, References, Workflow, Activity. Each tab's content slot owns
+  // its own card chrome (or none, when the rail panel's chrome is enough).
+  // The Workflow tab inlines the owner select + assessment lifecycle
+  // controls without a wrapping <Card>: the rail panel header already
+  // provides the title + container, and double-card layering looks heavy.
+  const quoteRailTabs: DetailRailTab[] = [
+    {
+      id: "summary",
+      label: "Summary",
+      icon: DollarSign,
+      testId: "quote-rail-tab-summary",
+      content: (
+        <QuoteSummaryCard
+          subtotal={quote.subtotal}
+          taxTotal={quote.taxTotal}
+          total={quote.total}
+        />
+      ),
+    },
+    {
+      id: "notes",
+      label: "Notes",
+      icon: StickyNote,
+      testId: "quote-rail-tab-notes",
+      // 2026-05-08 Tier 4 Notes canonicalization — +Add affordance moved
+      // from inside the prior EntityNotesSection body to the canonical
+      // rail tab `action` slot.
+      action: (
+        <button
+          type="button"
+          onClick={() => setNotesAddSignal((n) => n + 1)}
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
+          data-testid="button-add-note-rail"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: (
+        <EntityNotesPanel
+          entityType="quote"
+          entityId={quote.id}
+          openAddNoteSignal={notesAddSignal}
+        />
+      ),
+    },
+    {
+      id: "references",
+      label: "References",
+      icon: Tag,
+      testId: "quote-rail-tab-references",
+      content: <ReferenceFieldsSection entityType="quote" entityId={quote.id} />,
+    },
+    {
+      id: "workflow",
+      label: "Workflow",
+      icon: GitBranch,
+      testId: "quote-rail-tab-workflow",
+      content: (
+        // Drop the prior <Card>/<CardHeader>/<CardContent> wrapper —
+        // the rail panel chrome already provides title + container.
+        <div className="space-y-2 text-sm" data-testid="quote-rail-workflow">
+          <div className="flex justify-between items-center">
+            <span className="text-muted-foreground">Owner</span>
+            <select
+              className="text-sm border rounded px-2 py-1 max-w-[140px]"
+              value={(quote as any).salesOwnerUserId || ""}
+              onChange={(e) => updateOwnerMutation.mutate(e.target.value || null)}
+              disabled={updateOwnerMutation.isPending}
+            >
+              <option value="">Unassigned</option>
+              {teamMembers.map(u => (
+                <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ")}</option>
+              ))}
+            </select>
+          </div>
+          <div className="pt-2 border-t flex justify-between items-center">
+            <span className="text-muted-foreground">Assessment</span>
+            {!(quote as any).assessmentStatus ? (
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => toggleAssessmentMutation.mutate(true)}>
+                Mark needed
+              </Button>
+            ) : (quote as any).assessmentStatus === "required" ? (
+              <div className="flex items-center gap-1">
+                <Badge variant="outline" className="text-xs border-amber-300 text-amber-700">Needed</Badge>
+                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowScheduleAssessment(true)}>
+                  Schedule
+                </Button>
+                <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => toggleAssessmentMutation.mutate(false)}>
+                  Clear
+                </Button>
+              </div>
+            ) : (quote as any).assessmentStatus === "scheduled" ? (
+              <div className="flex items-center gap-1">
+                <Badge variant="outline" className="text-xs border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
+                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => completeAssessmentMutation.mutate()}>
+                  Complete
+                </Button>
+                <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => cancelAssessmentMutation.mutate()}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (quote as any).assessmentStatus === "completed" ? (
+              <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700">Completed</Badge>
+            ) : null}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "activity",
+      label: "Activity",
+      icon: ActivityIcon,
+      testId: "quote-rail-tab-activity",
+      content: <ActivityCard entityType="quote" entityId={quote.id} />,
+    },
+  ];
+
   return (
     <>
-      {/* 2026-04-29 Color Phase 2.5: dropped `background="#F4F8F4"` so
-          the shell stays transparent and the new canonical `bg-app-bg`
-          on App.tsx's <main> shows through. The shell still accepts
-          `background` as an escape hatch for pages that need a
-          page-specific surface. */}
-      <DetailPageShell
-        dataTestId="quote-detail-page"
-        leftColumn={
-          <>
+      {/* 2026-05-08 RALPH (rail migration): outer container is now a
+          page-level flex shell that mirrors Job Detail / Invoice Detail.
+          The prior <DetailPageShell rightRail={...}> stacked-cards
+          aside is replaced by a sibling <aside> hosting the canonical
+          <DetailRightRail> primitive. <DetailPageShell> stays alive for
+          any other consumer. */}
+      <div
+        className="flex h-full flex-col lg:flex-row bg-app-bg"
+        data-testid="quote-detail-page"
+      >
+        {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+        <div
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          data-testid="quote-detail-left-column-shell"
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 lg:px-6 py-4 space-y-4">
             <QuoteHeaderCard
               quote={quote}
               location={location}
@@ -677,134 +813,53 @@ export default function QuoteDetailPage() {
               />
 
             </div>
-        </>
-      }
-      rightRail={
-        <>
+          </div>
+        </div>
+        {/* ═══ /LEFT COLUMN ═══ */}
 
-              {/* 1. Quote Summary — 2026-05-06: extracted into
-                  <QuoteSummaryCard> so CreateQuotePage's draft-mode rail
-                  shares the same DOM/CSS. Profitability BLOCKED until
-                  quote_lines.unit_cost column lands (see audit). */}
-              <QuoteSummaryCard
-                subtotal={quote.subtotal}
-                taxTotal={quote.taxTotal}
-                total={quote.total}
-              />
-
-              {/* 2. Notes — 2026-04-14 Phase 3E parity pass. Mirrors
-                  JobDetailPage notes card byte-for-byte: Collapsible
-                  shell, bg-[#f8fafc] header bar with MessageSquare icon,
-                  ghost "+" button that stops propagation, ChevronDown
-                  (open) / ChevronRight (closed). EntityNotesSection is
-                  rendered in `embedded hideHeader hideAddButton` mode so
-                  the parent drives the header affordance, same as the
-                  Job Detail invocation. */}
-              <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-quote-notes">
-                <Collapsible open={notesExpanded} onOpenChange={setNotesExpanded}>
-                  <CollapsibleTrigger asChild>
-                    <div className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors cursor-pointer">
-                      <button type="button" className="flex items-center gap-2 flex-1 min-w-0">
-                        <MessageSquare className="h-4 w-4 text-[#64748b]" />
-                        <span className="text-sm font-semibold text-[#0f172a]">Notes</span>
-                      </button>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={(e) => { e.stopPropagation(); setNotesExpanded(true); setNotesOpenSignal((n) => n + 1); }}
-                          title="Add Note"
-                          data-testid="button-add-note"
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                        </Button>
-                        {notesExpanded
-                          ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
-                          : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
-                      </div>
-                    </div>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="border-t border-slate-200">
-                      <EntityNotesSection
-                        entityType="quote"
-                        entityId={quote.id}
-                        embedded
-                        hideHeader
-                        hideAddButton
-                        openAddNoteSignal={notesOpenSignal}
-                      />
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              </div>
-
-              {/* 3. Reference — canonical cross-entity references. */}
-              <ReferenceFieldsSection entityType="quote" entityId={quote.id} />
-
-              {/* 4. Workflow — quote-specific sales controls that have no
-                  canonical home elsewhere (owner, assessment lifecycle). */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Workflow</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground">Owner</span>
-                    <select
-                      className="text-sm border rounded px-2 py-1 max-w-[140px]"
-                      value={(quote as any).salesOwnerUserId || ""}
-                      onChange={(e) => updateOwnerMutation.mutate(e.target.value || null)}
-                      disabled={updateOwnerMutation.isPending}
-                    >
-                      <option value="">Unassigned</option>
-                      {teamMembers.map(u => (
-                        <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ")}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="pt-2 border-t flex justify-between items-center">
-                    <span className="text-muted-foreground">Assessment</span>
-                    {!(quote as any).assessmentStatus ? (
-                      <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => toggleAssessmentMutation.mutate(true)}>
-                        Mark needed
-                      </Button>
-                    ) : (quote as any).assessmentStatus === "required" ? (
-                      <div className="flex items-center gap-1">
-                        <Badge variant="outline" className="text-xs border-amber-300 text-amber-700">Needed</Badge>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowScheduleAssessment(true)}>
-                          Schedule
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => toggleAssessmentMutation.mutate(false)}>
-                          Clear
-                        </Button>
-                      </div>
-                    ) : (quote as any).assessmentStatus === "scheduled" ? (
-                      <div className="flex items-center gap-1">
-                        <Badge variant="outline" className="text-xs border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => completeAssessmentMutation.mutate()}>
-                          Complete
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => cancelAssessmentMutation.mutate()}>
-                          Cancel
-                        </Button>
-                      </div>
-                    ) : (quote as any).assessmentStatus === "completed" ? (
-                      <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700">Completed</Badge>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* 5. Activity — canonical timeline (send / view / approve /
-                  decline / convert) sourced from the events table.
-                  Backend accepts entityType="quote" via eventEntityTypeEnum;
-                  ActivityCard frontend union extended in the same commit. */}
-              <ActivityCard entityType="quote" entityId={quote.id} />
-          </>
-        }
-      />
+        {/* ═════════ RIGHT RAIL ═════════
+            Page-level sibling of the left column (mirrors Job Detail).
+            Width driven by `--quote-rail-width`:
+              - panel closed → 80px (icon strip only)
+              - panel open  → 380px (compact comfortable width)
+            Below `lg` the row collapses to a column and the rail
+            stacks under the body. */}
+        <aside
+          className={cn(
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+            "border-t lg:border-t-0 lg:border-l border-slate-200",
+          )}
+          style={{
+            ["--quote-rail-width" as any]: `${quoteRailTab === null ? 80 : 380}px`,
+          }}
+          data-testid="quote-detail-rail-column"
+          data-panel-open={quoteRailTab === null ? "false" : "true"}
+        >
+          <div className="lg:hidden">
+            <DetailRightRail
+              tabs={quoteRailTabs}
+              activeTabId={quoteRailTab}
+              onActiveTabChange={(id) => setQuoteRailTab(id as QuoteRailTab | null)}
+              testIdPrefix="quote-side"
+              ariaLabel="Quote information rail"
+            />
+          </div>
+          <div
+            className={cn(
+              "hidden lg:flex h-full w-[var(--quote-rail-width)] flex-col relative",
+              RAIL_WIDTH_TRANSITION,
+            )}
+          >
+            <DetailRightRail
+              tabs={quoteRailTabs}
+              activeTabId={quoteRailTab}
+              onActiveTabChange={(id) => setQuoteRailTab(id as QuoteRailTab | null)}
+              testIdPrefix="quote-side"
+              ariaLabel="Quote information rail"
+            />
+          </div>
+        </aside>
+      </div>
 
       {/* Phase 12 (2026-04-12): Jobber-style send modal. Recipients + subject
           + body loaded from backend preview; Send submits with overrides.

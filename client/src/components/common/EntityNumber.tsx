@@ -1,5 +1,6 @@
 /**
- * EntityNumber (2026-05-02)
+ * EntityNumber (2026-05-02; primary variant migrated to canonical
+ * EntityChip 2026-05-08).
  *
  * Single canonical primitive for rendering Job / Invoice / Quote entity
  * numbers consistently across every surface (detail pages, list rows,
@@ -7,9 +8,15 @@
  *
  * Design language:
  *   primary  — current/primary entity number on THIS surface.
- *              Subtle blue pill: identifier, not a loud badge.
+ *              Subtle entity-tinted pill: identifier, not a loud badge.
+ *              Now renders via the canonical `<EntityChip>` so the
+ *              blue palette lives in `chipVariants.ts` and stays in
+ *              sync with notes-visibility chips and other entity
+ *              references.
  *   linked   — related/cross-entity number that navigates elsewhere.
- *              Green clickable text.
+ *              Green clickable text. Stays as a custom inline link
+ *              treatment (not chip-shaped) because it sits inside
+ *              dense table cells where a chip outline would be noisy.
  *   missing  — value is null/undefined. Renders muted em dash.
  *
  * Usage examples:
@@ -20,7 +27,10 @@
  *   <EntityNumber variant="missing" />
  *
  * The component does NOT change semantics:
- *   - `primary` renders a `<span>` (read-only identifier).
+ *   - `primary` renders an `<EntityChip entity="job">` (compact size,
+ *     read-only span) — visual is byte-equivalent to the previous
+ *     hand-rolled blue pill (the same blue tones live in
+ *     chipVariants.ts).
  *   - `linked` renders a `<button>` when `onClick` is provided, else a
  *     `<span>` (so consumers that wrap their own anchor/Link can use
  *     it for styling alone).
@@ -31,6 +41,7 @@
 
 import { type ReactNode, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
+import { EntityChip } from "@/components/ui/chip";
 
 export type EntityNumberVariant = "primary" | "linked" | "missing";
 
@@ -49,14 +60,6 @@ export interface EntityNumberProps {
   /** Optional aria-label override. */
   "aria-label"?: string;
 }
-
-const PRIMARY_CLS = [
-  "inline-flex items-center",
-  "rounded-md border",
-  "bg-blue-50/70 text-blue-700 border-blue-100",
-  "px-2 py-0.5",
-  "font-medium tabular-nums",
-].join(" ");
 
 const LINKED_CLS = [
   "inline-flex items-center",
@@ -115,10 +118,21 @@ export function EntityNumber({
     );
   }
 
-  // primary
+  // Primary variant — canonical entity chip. The previous hand-rolled
+  // class string (`bg-blue-50/70 text-blue-700 border-blue-100 px-2
+  // py-0.5 rounded-md font-medium tabular-nums`) is preserved
+  // visually but composed via the chip primitive's `entity="job"`
+  // tone (info palette). The `compact` size + `tabular-nums` className
+  // override matches the historic 24px height and numeric alignment.
   return (
-    <span className={cn(PRIMARY_CLS, className)} data-testid={testId} aria-label={ariaLabel}>
+    <EntityChip
+      entity="job"
+      size="compact"
+      className={cn("tabular-nums", className)}
+      data-testid={testId}
+      aria-label={ariaLabel}
+    >
       {children}
-    </span>
+    </EntityChip>
   );
 }

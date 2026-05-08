@@ -38,6 +38,15 @@ import {
   searchContactCandidates,
   type LinkContactTarget,
 } from "../services/communications/threadService";
+// 2026-05-08 Phase 5: provider-neutral SMS outbound + provider-settings read.
+import {
+  sendOutboundSms,
+  SmsServiceError,
+} from "../services/communications/smsService";
+import {
+  getActiveForCompany,
+  listProviderSettingsForCompany,
+} from "../storage/communicationProviderSettings";
 
 const router = Router();
 
@@ -289,6 +298,61 @@ router.post(
       res.json(updated);
     } catch (err) {
       rewriteWriteError(err);
+    }
+  }),
+);
+
+// ────────────────────────────────────────────────────────────────────
+// 2026-05-08 Phase 5: provider-neutral SMS endpoints
+// ────────────────────────────────────────────────────────────────────
+
+router.get(
+  "/provider-settings",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId;
+    if (!tenantId) throw createError(401, "Missing tenant context");
+    const settings = await listProviderSettingsForCompany(tenantId);
+    res.json({ settings });
+  }),
+);
+
+const smsMessageBodySchema = z.object({
+  body: z.string().min(1).max(1600),
+});
+
+router.post(
+  "/threads/:threadId/messages/sms",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId;
+    if (!tenantId) throw createError(401, "Missing tenant context");
+    const viewer = { userId: req.user?.id ?? null, role: req.user?.role ?? null };
+    const thread = await getCommunicationThread({
+      tenantId,
+      threadId: req.params.threadId,
+      viewer,
+    });
+    if (!thread) throw createError(404, "Conversation not found");
+
+    const settings = await getActiveForCompany(tenantId);
+    if (!settings) {
+      throw createError(409, "Connect a phone provider to send SMS.");
+    }
+    const { body } = validateSchema(smsMessageBodySchema, req.body);
+    try {
+      const sent = await sendOutboundSms({
+        tenantId,
+        threadId: req.params.threadId,
+        body,
+        senderUserId: viewer.userId,
+        senderDisplayName: null,
+        settings,
+      });
+      res.status(201).json(sent);
+    } catch (err) {
+      if (err instanceof SmsServiceError) {
+        throw createError(err.status, err.message);
+      }
+      throw err;
     }
   }),
 );

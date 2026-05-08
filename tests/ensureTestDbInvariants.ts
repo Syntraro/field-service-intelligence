@@ -46,6 +46,55 @@ if (process.env.NODE_ENV !== "test") {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const SCHEMA_PATCHES: Array<{ label: string; ddl: string }> = [
+  // ── communication_provider_settings (Phase 5, 2026-05-08) ───────────
+  // Mirrors migrations/2026_05_08_communication_provider_settings.sql so
+  // SMS-related tests can hit the table without running the full
+  // migration suite. Idempotent.
+  {
+    label: "communication_provider_settings table",
+    ddl: `
+      CREATE TABLE IF NOT EXISTS communication_provider_settings (
+        id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id varchar NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        provider_id text NOT NULL,
+        phone_number text NOT NULL,
+        normalized_phone text NOT NULL,
+        is_active boolean NOT NULL DEFAULT false,
+        account_identifier text,
+        encrypted_credential text NOT NULL,
+        credential_iv text NOT NULL,
+        credential_tag text NOT NULL,
+        encrypted_webhook_secret text NOT NULL,
+        webhook_secret_iv text NOT NULL,
+        webhook_secret_tag text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `,
+  },
+  {
+    label: "comm_provider_settings active-per-tenant unique index",
+    ddl: `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_comm_provider_settings_one_active_per_tenant
+        ON communication_provider_settings (company_id)
+        WHERE is_active = true
+    `,
+  },
+  {
+    label: "comm_provider_settings (company, provider) lookup index",
+    ddl: `
+      CREATE INDEX IF NOT EXISTS idx_comm_provider_settings_company_provider
+        ON communication_provider_settings (company_id, provider_id)
+    `,
+  },
+  {
+    label: "comm_messages tenant+provider_message_id index",
+    ddl: `
+      CREATE INDEX IF NOT EXISTS idx_comm_messages_tenant_provider_msg
+        ON communication_messages (company_id, provider_message_id)
+        WHERE provider_message_id IS NOT NULL
+    `,
+  },
   // ── jobs.open_sub_status (2026-01-26 normalize_job_status) ────────────
   {
     label: "jobs.open_sub_status column",

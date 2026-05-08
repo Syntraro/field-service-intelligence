@@ -508,15 +508,19 @@ describe("source pins — invariants", () => {
     expect(src).toMatch(/\| "lead_note"/);
   });
 
-  it("EntityNotesSection accepts entityType='lead'", () => {
+  it("EntityNotesPanel accepts entityType='lead'", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization — EntityNotesSection
+    // absorbed into EntityNotesPanel. Lead support contract preserved
+    // (entityType union includes "lead"; reads route through
+    // /api/leads/:entityId/notes).
     const src = readFileSync(
       resolve(
         __dirname,
-        "../client/src/components/notes/EntityNotesSection.tsx",
+        "../client/src/components/notes/EntityNotesPanel.tsx",
       ),
       "utf-8",
     );
-    expect(src).toMatch(/EntityNotesEntityType\s*=\s*"job"\s*\|\s*"invoice"\s*\|\s*"quote"\s*\|\s*"lead"/);
+    expect(src).toMatch(/EntityNotesType[\s\S]{0,400}?"lead"/);
     expect(src).toMatch(/\/api\/leads\/\$\{entityId\}\/notes/);
   });
 
@@ -532,13 +536,16 @@ describe("source pins — invariants", () => {
     expect(src).toMatch(/return "lead_note"/);
   });
 
-  it("LeadDetailPage replaces inline notes with EntityNotesSection entityType='lead'", () => {
+  it("LeadDetailPage replaces inline notes with EntityNotesPanel entityType='lead'", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization — EntityNotesSection
+    // retired; the canonical mount is now `<EntityNotesPanel
+    // entityType="lead" entityId={lead.id} openAddNoteSignal=...>`.
     const src = readFileSync(
       resolve(__dirname, "../client/src/pages/LeadDetailPage.tsx"),
       "utf-8",
     );
     expect(src).toMatch(
-      /<EntityNotesSection\s+entityType="lead"\s+entityId=\{lead\.id\}\s*\/>/,
+      /<EntityNotesPanel[\s\S]{0,400}?entityType="lead"[\s\S]{0,400}?entityId=\{lead\.id\}/,
     );
     // Bespoke notes mutations + state are gone.
     expect(src).not.toMatch(/addNoteMutation/);

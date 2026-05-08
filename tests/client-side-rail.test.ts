@@ -291,18 +291,17 @@ describe("Client Detail Contacts panel — flat list, no duplicate headings", ()
     expect(pageSrc).not.toMatch(/Other\s+Contacts/);
   });
 
-  it("contacts panel does NOT mount <NotesPanel> (notes content must be Notes-panel-only)", () => {
-    // Pin that the contacts tab's `content:` slot never renders
-    // <NotesPanel>. Slice the source between the canonical
-    // `id: "contacts"` and `id: "notes"` tab-array entries and assert
-    // the slice carries no NotesPanel mount — sidesteps the greedy
-    // `[\s\S]{0,N}` match that would otherwise reach into the next
-    // branch.
+  it("contacts panel does NOT mount <EntityNotesPanel> (notes content must be Notes-panel-only)", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization — primitive renamed
+    // from <NotesPanel> to <EntityNotesPanel>. Same isolation rule:
+    // the contacts tab's content slot must not render any notes
+    // surface.
     const contactsStart = pageSrc.indexOf('id: "contacts"');
     const notesStart = pageSrc.indexOf('id: "notes"');
     expect(contactsStart).toBeGreaterThan(-1);
     expect(notesStart).toBeGreaterThan(contactsStart);
     const contactsBranchSlice = pageSrc.slice(contactsStart, notesStart);
+    expect(contactsBranchSlice).not.toMatch(/<EntityNotesPanel/);
     expect(contactsBranchSlice).not.toMatch(/<NotesPanel/);
   });
 
@@ -315,14 +314,23 @@ describe("Client Detail Contacts panel — flat list, no duplicate headings", ()
 // ── Notes panel ──────────────────────────────────────────────────────
 
 describe("Client Detail Notes panel — notes only, empty-state copy preserved", () => {
-  it("the Notes panel mounts <NotesPanel hideAddButton> with a notesRef", () => {
-    // The Notes tab's `content:` slot mounts <NotesPanel hideAddButton>
-    // with a `ref={notesRef}`; the panel-header action button calls
-    // `notesRef.current?.startAdding()`.
+  it("the Notes panel mounts <EntityNotesPanel> with the canonical openAddNoteSignal contract", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization — `<NotesPanel
+    // ref={notesRef} hideAddButton>` retired in favor of declarative
+    // `<EntityNotesPanel openAddNoteSignal={notesAddSignal}>`. Both
+    // company and location scopes route through the same primitive
+    // (entityType="company" | "location"). The rail tab's +Add button
+    // bumps `notesAddSignal` instead of calling an imperative ref.
     expect(pageSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,2000}?<NotesPanel[\s\S]{0,400}?hideAddButton/,
+      /id:\s*"notes"[\s\S]{0,2000}?<EntityNotesPanel[\s\S]{0,400}?entityType="company"/,
     );
-    expect(pageSrc).toMatch(/notesRef\.current\?\.startAdding\(\)/);
+    expect(pageSrc).toMatch(
+      /id:\s*"notes"[\s\S]{0,2000}?<EntityNotesPanel[\s\S]{0,1200}?entityType="location"/,
+    );
+    expect(pageSrc).toMatch(/setNotesAddSignal\(\(n\)\s*=>\s*n\s*\+\s*1\)/);
+    // Inverse pin — the imperative `notesRef.startAdding()` flow is gone.
+    expect(pageSrc).not.toMatch(/notesRef\.current\?\.startAdding\(\)/);
+    expect(pageSrc).not.toMatch(/<NotesPanel\b/);
   });
 
   it("Notes empty-state copy matches the spec", () => {

@@ -105,18 +105,41 @@ export type CommunicationProviderEvent =
   | SmsStatusWebhookEvent
   | CallWebhookEvent;
 
+// ────────────────────────────────────────────────────────────────────
+// Phase 5 (2026-05-08): canonical SMS message status union.
+// ────────────────────────────────────────────────────────────────────
+export const CANONICAL_SMS_STATUSES = [
+  "queued",
+  "sent",
+  "delivered",
+  "failed",
+  "undelivered",
+] as const;
+export type CanonicalSmsStatus = (typeof CANONICAL_SMS_STATUSES)[number];
+
 export interface VerifyWebhookInput {
+  /** Absolute URL the provider POSTed to. */
+  url: string;
   rawBody: string;
+  /** Form-encoded body parsed into a flat map. */
+  parsedBody: Record<string, string>;
   /** Provider's signature header(s). */
   headers: Record<string, string>;
+  /** Decrypted webhook secret for the tenant on this provider. */
+  webhookSecret: string;
 }
 
 export interface VerifyWebhookResult {
   ok: boolean;
-  /** Populated only when `ok === true`. */
-  event?: CommunicationProviderEvent;
-  /** Reason string when verification fails — for telemetry only, never user-facing. */
+  /** Reason string when verification fails — telemetry-only. */
   reason?: string;
+}
+
+export interface NormalizeInboundSmsInput {
+  parsedBody: Record<string, string>;
+}
+export interface NormalizeMessageStatusInput {
+  parsedBody: Record<string, string>;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -148,19 +171,47 @@ export interface GetTranscriptionResult {
 // The adapter interface every provider satisfies
 // ────────────────────────────────────────────────────────────────────
 
+export interface SendSmsConnection {
+  /** Account identifier (e.g. Twilio AccountSid). */
+  accountIdentifier: string;
+  /** Decrypted credential — request-stack only, never logged. */
+  credential: string;
+}
+
 export interface CommunicationsProvider {
   readonly id: CommunicationProviderId;
 
-  sendSms(input: SendSmsInput): Promise<SendSmsResult>;
+  sendSms(input: SendSmsInput, connection: SendSmsConnection): Promise<SendSmsResult>;
   startCall(input: StartCallInput): Promise<StartCallResult>;
   verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult>;
+  normalizeInboundSms(input: NormalizeInboundSmsInput): InboundSmsWebhookEvent | null;
+  normalizeMessageStatus(input: NormalizeMessageStatusInput): SmsStatusWebhookEvent | null;
   getRecording(input: GetRecordingInput): Promise<GetRecordingResult>;
   getTranscription(input: GetTranscriptionInput): Promise<GetTranscriptionResult>;
 }
 
-/**
- * Phase 2 will add `resolveForCompany(companyId)` here that loads the
- * tenant's chosen provider config and returns the matching adapter.
- * Mirrors `paymentProviderResolver` in shape — keep that contract in
- * mind when implementing.
- */
+/** Decrypted-on-read row used by the routes during a single request. */
+export interface ResolvedProviderSettings {
+  id: string;
+  companyId: string;
+  providerId: CommunicationProviderId;
+  phoneNumber: string;
+  normalizedPhone: string;
+  isActive: boolean;
+  accountIdentifier: string | null;
+  /** Plaintext — never persisted in this form, never returned to client. */
+  credential: string;
+  /** Plaintext webhook secret — request-stack only. */
+  webhookSecret: string;
+}
+
+/** Public DTO returned to client. Stripped of every secret-bearing field. */
+export interface ProviderSettingsPublic {
+  providerId: CommunicationProviderId;
+  phoneNumber: string;
+  isActive: boolean;
+  /** Last-four digits only — never the full identifier. */
+  accountIdentifierLast4: string | null;
+  createdAt: string;
+  updatedAt: string;
+}

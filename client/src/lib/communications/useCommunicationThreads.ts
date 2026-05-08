@@ -117,6 +117,37 @@ export function useCreateInternalMessage() {
 }
 
 /**
+ * 2026-05-08 Phase 5 — outbound SMS send. Provider-neutral; the route
+ * resolves the tenant's active provider and adapter under the hood.
+ */
+export function useSendSmsMessage() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    {
+      messageId: string;
+      threadId: string;
+      providerMessageId: string;
+      status: "queued" | "sent" | "delivered" | "failed" | "undelivered";
+    },
+    Error,
+    { threadId: string; body: string }
+  >({
+    mutationFn: async ({ threadId, body }) => {
+      return apiRequest(
+        `/api/communications/threads/${encodeURIComponent(threadId)}/messages/sms`,
+        { method: "POST", body: JSON.stringify({ body }) },
+      );
+    },
+    onSuccess: (_msg, vars) => {
+      queryClient.invalidateQueries({ queryKey: [...COMMUNICATION_THREADS_KEY] });
+      queryClient.invalidateQueries({
+        queryKey: [...COMMUNICATION_MESSAGES_KEY_BASE, vars.threadId],
+      });
+    },
+  });
+}
+
+/**
  * Mark a thread read. Idempotent on the server (no-op when unread is 0).
  * Returns the updated thread DTO for optimistic-cache patches.
  */

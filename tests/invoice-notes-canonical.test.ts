@@ -209,13 +209,15 @@ describe("Invoice notes — InvoiceDetailPage canonical wiring", () => {
     expect(source).not.toMatch(/<DraftNotesCard/);
   });
 
-  it("mounts EntityNotesSection with entityType='invoice' and NO writeEntityId indirection", () => {
-    // The canonical mount: entityType="invoice" + entityId={invoiceId},
-    // no writeEntityId prop. Locks both invariants in one regex.
+  it("mounts EntityNotesPanel with entityType='invoice' and NO writeEntityId indirection", () => {
+    // 2026-05-08 Tier 4 Notes canonicalization — primitive renamed
+    // from `EntityNotesSection` to `EntityNotesPanel`. The
+    // `writeEntityId` indirection retired in 2026-05-03 stays
+    // forbidden.
     const block = source.match(
-      /<EntityNotesSection[\s\S]+?\/>/,
+      /<EntityNotesPanel[\s\S]+?\/>/,
     );
-    expect(block, "EntityNotesSection mount must exist on InvoiceDetailPage").not.toBeNull();
+    expect(block, "EntityNotesPanel mount must exist on InvoiceDetailPage").not.toBeNull();
     expect(block![0]).toMatch(/entityType="invoice"/);
     expect(block![0]).toMatch(/entityId=\{invoiceId\}/);
     expect(block![0]).not.toMatch(/writeEntityId=/);

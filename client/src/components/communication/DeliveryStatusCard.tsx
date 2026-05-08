@@ -17,6 +17,11 @@ import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+// 2026-05-08 chip Phase 2: local StatusBadge migrated to canonical
+// StatusChip. The leading icon + label remain; tones come from the
+// canonical 7-tone palette.
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -60,16 +65,22 @@ export interface DeliveryStatusCardProps {
   onResendSuccess?: (newDeliveryId: string) => void;
 }
 
+// 2026-05-08 chip Phase 2: tones now resolve to the canonical
+// 7-tone palette in `chipVariants.ts`. The pre-migration table
+// distinguished `sent` (lighter green) from `delivered` (saturated
+// green); both collapse to `success` here. The visual delta is
+// deliberate (the chip palette is the new canonical truth) and the
+// label text continues to differentiate the two states.
 const STATUS_META: Record<
   DeliverySummary["status"],
-  { label: string; icon: typeof CheckCircle2; className: string }
+  { label: string; icon: typeof CheckCircle2; tone: ChipTone }
 > = {
-  queued:     { label: "Queued",     icon: Clock,        className: "bg-slate-100 text-slate-700 border-slate-200" },
-  sent:       { label: "Sent",       icon: CheckCircle2, className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  delivered:  { label: "Delivered",  icon: CheckCircle2, className: "bg-emerald-100 text-emerald-800 border-emerald-300" },
-  failed:     { label: "Failed",     icon: XCircle,      className: "bg-red-50 text-red-700 border-red-200" },
-  bounced:    { label: "Bounced",    icon: MailWarning,  className: "bg-amber-50 text-amber-700 border-amber-200" },
-  complained: { label: "Spam",       icon: ShieldAlert,  className: "bg-rose-50 text-rose-700 border-rose-200" },
+  queued:     { label: "Queued",    icon: Clock,        tone: "neutral" },
+  sent:       { label: "Sent",      icon: CheckCircle2, tone: "success" },
+  delivered:  { label: "Delivered", icon: CheckCircle2, tone: "success" },
+  failed:     { label: "Failed",    icon: XCircle,      tone: "danger" },
+  bounced:    { label: "Bounced",   icon: MailWarning,  tone: "warning" },
+  complained: { label: "Spam",      icon: ShieldAlert,  tone: "danger" },
 };
 
 function formatTime(iso: string | null): string {
@@ -85,13 +96,13 @@ function StatusBadge({ status }: { status: DeliverySummary["status"] }) {
   const meta = STATUS_META[status];
   const Icon = meta.icon;
   return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${meta.className}`}
+    <StatusChip
+      tone={meta.tone}
+      leadingIcon={<Icon className="h-3 w-3" />}
       data-testid={`badge-delivery-status-${status}`}
     >
-      <Icon className="h-3 w-3" />
       {meta.label}
-    </span>
+    </StatusChip>
   );
 }
 

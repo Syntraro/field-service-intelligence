@@ -21,8 +21,15 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 
 const ROOT = resolve(__dirname, "..");
+// 2026-05-08 Tier 4 Notes canonicalization — `EntityNotesSection`
+// retired and absorbed into `EntityNotesPanel`. The `cardStyle` prop
+// is gone: every notes row now renders inside `<RailContentCard>`
+// unconditionally (the prior opt-in collapsed into the single render
+// path). The pins below now read the canonical
+// `EntityNotesPanel.tsx` and verify the always-on RailContentCard
+// contract; the `cardStyle` prop-contract assertions are retired.
 const NOTES_SRC = readFileSync(
-  resolve(ROOT, "client/src/components/notes/EntityNotesSection.tsx"),
+  resolve(ROOT, "client/src/components/notes/EntityNotesPanel.tsx"),
   "utf-8",
 );
 const EQUIP_SRC = readFileSync(
@@ -30,30 +37,25 @@ const EQUIP_SRC = readFileSync(
   "utf-8",
 );
 
-// ── EntityNotesSection ─────────────────────────────────────────────
+// ── EntityNotesPanel ───────────────────────────────────────────────
 
-// 2026-05-07 Phase 8: Notes is out-of-scope per the user spec
-// (only Equipment migrates this phase). The pins below were
-// previously asserting slot-primitive composition inside the
-// EntityNotesSection cardStyle branch. Parallel in-flight work
-// restructured the file so cardStyle uses className-based
-// ternaries on a single `<RailContentCard>` wrapper. The remaining
-// pins below stay at the prop-contract level (cardStyle declared,
-// default value, wrapper used) and skip the slot-composition
-// assertions.
-describe("EntityNotesSection — `cardStyle` prop contract", () => {
-  it("declares `cardStyle?: boolean` in the props interface", () => {
-    expect(NOTES_SRC).toMatch(/^\s*cardStyle\?:\s*boolean;/m);
-  });
-
+describe("EntityNotesPanel — RailContentCard is the single render path", () => {
   it("imports the canonical `<RailContentCard>` wrapper primitive", () => {
     expect(NOTES_SRC).toMatch(
-      /import\s*\{\s*RailContentCard\s*\}\s*from\s*["']@\/components\/detail-rail\/RailContentCard["']/,
+      /import\s*\{[\s\S]*?\bRailContentCard\b[\s\S]*?\}\s*from\s*["']@\/components\/detail-rail\/RailContentCard["']/,
     );
   });
 
-  it("default `cardStyle = false` keeps legacy surfaces unchanged", () => {
-    expect(NOTES_SRC).toMatch(/cardStyle\s*=\s*false,?\s*\}/);
+  it("renders each note inside a `<RailContentCard>` row (no className-ternary opt-out)", () => {
+    expect(NOTES_SRC).toMatch(/<RailContentCard\b/);
+  });
+
+  it("does NOT expose a retired `cardStyle?` prop", () => {
+    // The opt-in is gone — RailContentCard is now always the chrome.
+    // A future regression that re-introduces the flag would defeat
+    // the canonicalization.
+    expect(NOTES_SRC).not.toMatch(/^\s*cardStyle\?:\s*boolean;/m);
+    expect(NOTES_SRC).not.toMatch(/cardStyle\s*=\s*false,?\s*\}/);
   });
 });
 

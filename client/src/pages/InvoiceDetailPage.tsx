@@ -13,7 +13,22 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Trash2, GripVertical,
   ChevronDown, Pencil, MoreHorizontal,
+  // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
+  Eye, StickyNote, Receipt,
 } from "lucide-react";
+// 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
+// transition class. Mirrors Job Detail / Lead Detail / Quote Detail.
+// The prior <InvoiceDetailShell rightRail> stacked-cards layout is
+// replaced with the icon-strip + expandable-panel rail flush to the
+// page's right edge. <InvoiceDetailShell> itself is preserved for
+// `/invoices/new` (the draft builder still consumes it).
+import {
+  DetailRightRail,
+  RAIL_HEADER_ACTION_CLASS,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+import { cn } from "@/lib/utils";
 import {
   DndContext,
   closestCenter,
@@ -42,7 +57,7 @@ import { Badge } from "@/components/ui/badge";
 // /api/invoices/:id/notes (so the invoice-specific show_on_invoices
 // flag is honored) and writes through /api/jobs/:jobId/notes
 // (entityType="invoice" + writeEntityId=jobId).
-import EntityNotesSection from "@/components/notes/EntityNotesSection";
+import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
 import { PaymentHistoryCard } from "@/components/invoice/PaymentHistoryCard";
 import { Input } from "@/components/ui/input";
@@ -654,6 +669,17 @@ export default function InvoiceDetailPage() {
   const [showCollectPaymentDialog, setShowCollectPaymentDialog] = useState(false);
   // 2026-04-29 Stripe completion: refund target. `null` when closed.
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
+
+  // 2026-05-08 RALPH (rail migration): canonical right-rail tab state.
+  // `null` = no panel open (icon strip only). Default open: "visibility"
+  // — the most-frequently-edited tab on this page (per-invoice client
+  // visibility overrides).
+  type InvoiceRailTab = "visibility" | "notes" | "payments";
+  const [invoiceRailTab, setInvoiceRailTab] = useState<InvoiceRailTab | null>("visibility");
+  // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
+  // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
+  // reacts via `openAddNoteSignal`. Declarative, no imperative ref.
+  const [notesAddSignal, setNotesAddSignal] = useState(0);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("e-transfer");
   const [paymentReference, setPaymentReference] = useState("");
@@ -1801,6 +1827,97 @@ export default function InvoiceDetailPage() {
   })).filter((g) => g.rows.length > 0);
   const ungroupedFallback = linesByGroup.length <= 1; // collapse single-group view to flat table
 
+  // 2026-05-08 RALPH (rail migration): canonical Job-Detail-style tab
+  // registry. Three tabs — Visibility (per-invoice client visibility
+  // overrides), Notes (EntityNotesSection), Payments (PaymentHistoryCard
+  // with per-row refund initiator). The prior <InvoiceDetailShell
+  // rightRail> stacked these as three always-visible cards; the
+  // canonical rail shows one panel at a time and toggles via the icon
+  // strip. The Visibility "Custom" badges, Reset-to-defaults flow, and
+  // the Payments per-row refund button are preserved verbatim — only
+  // the outer card chrome is dropped (rail panel header replaces it).
+  const invoiceRailTabs: DetailRailTab[] = [
+    {
+      id: "visibility",
+      label: "Visibility",
+      icon: Eye,
+      testId: "invoice-rail-tab-visibility",
+      content: (
+        <ClientVisibilityCardV2
+          draft={visibilityDraft}
+          server={serverVisibility}
+          onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
+          onSave={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
+          onReset={() => setVisibilityDraft(serverVisibility)}
+          dirty={isVisibilityDirty}
+          isSaving={updateInvoiceFieldsMutation.isPending}
+          rawInvoiceFlags={rawInvoiceFlags}
+          tenantDefaults={tenantInvoiceDisplay ? {
+            showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
+            showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
+            showQuantity: tenantInvoiceDisplay.invoiceShowQuantities,
+            showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices,
+            showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
+          } : undefined}
+          onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
+            // PATCH `null` for each of the 5 per-invoice override
+            // flags. The resolver will then fall back to tenant
+            // defaults at render time, and the Custom badges will
+            // disappear because the stored values are no longer
+            // real booleans.
+            updateInvoiceFieldsMutation.mutate({
+              showJobDescription: null,
+              showLineItems: null,
+              showQuantity: null,
+              showUnitPrice: null,
+              showLineTotals: null,
+            });
+          } : undefined}
+        />
+      ),
+    },
+    {
+      id: "notes",
+      label: "Notes",
+      icon: StickyNote,
+      testId: "invoice-rail-tab-notes",
+      // 2026-05-08 Tier 4 Notes canonicalization — +Add affordance
+      // moved from inside the prior EntityNotesSection body to the
+      // canonical rail tab `action` slot. Bumping `notesAddSignal`
+      // opens the create dialog inside EntityNotesPanel.
+      action: (
+        <button
+          type="button"
+          onClick={() => setNotesAddSignal((n) => n + 1)}
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
+          data-testid="button-add-note-rail"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: (
+        <EntityNotesPanel
+          entityType="invoice"
+          entityId={invoiceId}
+          openAddNoteSignal={notesAddSignal}
+        />
+      ),
+    },
+    {
+      id: "payments",
+      label: "Payments",
+      icon: Receipt,
+      testId: "invoice-rail-tab-payments",
+      content: (
+        <PaymentHistoryCard
+          payments={payments as any}
+          onRefund={(p) => setRefundTarget(p as unknown as Payment)}
+        />
+      ),
+    },
+  ];
+
   return (
     <>
       {/* 2026-05-03: outer container, body wrapper, grid, left-column
@@ -1808,9 +1925,17 @@ export default function InvoiceDetailPage() {
           page mounts the shell with its three slot props; /invoices/new
           mounts the same shell so the two pages render byte-equivalent
           chrome. */}
-      <InvoiceDetailShell
-        testId="invoice-detail-page"
-        header={
+      <div
+        className="flex h-full flex-col lg:flex-row bg-app-bg"
+        data-testid="invoice-detail-page"
+      >
+        {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+        <div
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          data-testid="invoice-detail-left-column-shell"
+        >
+          {/* Canonical detail header — same JSX <InvoiceDetailShell>
+              previously rendered in its `header` slot. */}
           <CanonicalDetailHeader
           testId="invoice-detail-header"
           // 2026-05-03: canonical title fallback chain. Prefers the
@@ -1944,9 +2069,10 @@ export default function InvoiceDetailPage() {
             </>
           )}
         />
-        }
-        leftColumn={
-          <>
+          {/* Body wrapper — left-column scroll surface. Mirrors the
+              spacing the prior <InvoiceDetailShell> applied
+              (`px-4 lg:px-6 pt-0 pb-4` + `space-y-2.5`). */}
+          <div className="px-4 lg:px-6 pt-0 pb-4 flex-1 min-w-0 min-h-0 overflow-y-auto space-y-2.5">
             <QboSyncBanner invoice={invoice} />
 
               {/* 2026-04-27 — Identity card (per Studio reference). 2026-04-29:
@@ -2291,99 +2417,56 @@ export default function InvoiceDetailPage() {
                 defaultValue={tenantInvoiceDisplay?.invoiceDefaultClientMessage ?? null}
                 resetToDefaultLabel="Reset message to default"
               />
-          </>
-        }
-        rightRail={
-          <>
-            {/* ─── Client visibility toggles.
-                2026-05-06: collapsed by default. Tenant defaults flow
-                through the resolver so the Switch positions reflect what
-                the customer will actually see. "Custom" badges appear
-                only on rows whose stored invoice flag is a real boolean
-                AND differs from the tenant default. "Reset to defaults"
-                PATCHes null on the five visibility columns — the
-                resolver then falls back to tenant defaults at render
-                time. */}
-            <ClientVisibilityCardV2
-                draft={visibilityDraft}
-                server={serverVisibility}
-                onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
-                onSave={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
-                onReset={() => setVisibilityDraft(serverVisibility)}
-                dirty={isVisibilityDirty}
-                isSaving={updateInvoiceFieldsMutation.isPending}
-                rawInvoiceFlags={rawInvoiceFlags}
-                tenantDefaults={tenantInvoiceDisplay ? {
-                  showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
-                  showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
-                  showQuantity: tenantInvoiceDisplay.invoiceShowQuantities,
-                  showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices,
-                  showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
-                } : undefined}
-                onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
-                  // PATCH `null` for each of the 5 per-invoice override
-                  // flags. The resolver will then fall back to tenant
-                  // defaults at render time, and the Custom badges will
-                  // disappear because the stored values are no longer
-                  // real booleans.
-                  updateInvoiceFieldsMutation.mutate({
-                    showJobDescription: null,
-                    showLineItems: null,
-                    showQuantity: null,
-                    showUnitPrice: null,
-                    showLineTotals: null,
-                  });
-                } : undefined}
-              />
+          </div>
+        </div>
+        {/* ═══ /LEFT COLUMN ═══ */}
 
-              {/* ─── Canonical invoice notes.
-                  2026-05-03 rewrite: invoice notes are now first-class
-                  (`/api/invoices/:id/notes`) and no longer require a
-                  linked job. Every saved invoice — job-linked or
-                  standalone — mounts the same EntityNotesSection with
-                  `entityType="invoice"`. The previous `writeEntityId
-                  ={jobId}` indirection and the `DraftNotesCard` fallback
-                  for no-job invoices are gone. The `notes_internal`
-                  schema column continues to round-trip via
-                  `updateInvoiceFieldsMutation` for non-UI consumers
-                  (QBO PrivateNote mapper, import-pipeline snapshots)
-                  but is no longer surfaced as a user-facing notes
-                  editor. */}
-              <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-notes">
-                <EntityNotesSection
-                  entityType="invoice"
-                  entityId={invoiceId}
-                  embedded
-                  hideHeader={false}
-                  showCount={false}
-                />
-              </div>
-
-              {/* ─── Payment history. */}
-              {/* 2026-04-29 Stripe completion: per-row refund initiator.
-                  PaymentHistoryCard owns visibility (only paymentType='payment'
-                  rows with remaining refundable amount get a refund button);
-                  this page owns the dialog state. */}
-              <PaymentHistoryCard
-                payments={payments as any}
-                onRefund={(p) => setRefundTarget(p as unknown as Payment)}
-              />
-
-              {/* 2026-04-29: Activity timeline removed from this page per
-                  product request. The InvoiceTimelineCard component is still
-                  exported and used elsewhere; only the right-rail mount on
-                  InvoiceDetailPage is gone. Backend audit / email / payment
-                  history sources are unchanged. */}
-
-            {/* 2026-04-29: Reference card removed from the invoice right
-                rail. Reference fields already render inline in the meta
-                card (see InvoiceMetaCard reference rows). The
-                ReferenceFieldsSection component is unchanged and stays
-                mounted on Job Detail / Customer pages. Backend reference
-                field schema, mutations, and storage are not touched. */}
-          </>
-        }
-      />
+        {/* ═════════ RIGHT RAIL ═════════
+            Page-level sibling of the left column (mirrors Job Detail).
+            Width driven by `--invoice-rail-width`:
+              - panel closed → 80px (icon strip only)
+              - panel open  → 380px (compact comfortable width)
+            Below `lg` the row collapses to a column and the rail
+            stacks under the body. The prior <InvoiceDetailShell>
+            stacked-cards 360px aside is gone — the canonical rail
+            shows one panel at a time and the user toggles via the
+            icon strip. */}
+        <aside
+          className={cn(
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+            "border-t lg:border-t-0 lg:border-l border-slate-200",
+          )}
+          style={{
+            ["--invoice-rail-width" as any]: `${invoiceRailTab === null ? 80 : 380}px`,
+          }}
+          data-testid="invoice-detail-rail-column"
+          data-panel-open={invoiceRailTab === null ? "false" : "true"}
+        >
+          <div className="lg:hidden">
+            <DetailRightRail
+              tabs={invoiceRailTabs}
+              activeTabId={invoiceRailTab}
+              onActiveTabChange={(id) => setInvoiceRailTab(id as InvoiceRailTab | null)}
+              testIdPrefix="invoice-side"
+              ariaLabel="Invoice information rail"
+            />
+          </div>
+          <div
+            className={cn(
+              "hidden lg:flex h-full w-[var(--invoice-rail-width)] flex-col relative",
+              RAIL_WIDTH_TRANSITION,
+            )}
+          >
+            <DetailRightRail
+              tabs={invoiceRailTabs}
+              activeTabId={invoiceRailTab}
+              onActiveTabChange={(id) => setInvoiceRailTab(id as InvoiceRailTab | null)}
+              testIdPrefix="invoice-side"
+              ariaLabel="Invoice information rail"
+            />
+          </div>
+        </aside>
+      </div>
 
       {/* 2026-04-29 v3: Canonical Product/Service create modal — one
           instance per page; opened via `requestCreateProduct(name)`

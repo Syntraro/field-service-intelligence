@@ -194,10 +194,21 @@ function RailGroupedPanelHeaderRow({
       className="flex items-baseline justify-between gap-2 px-1 pb-3 mb-2 border-b border-border-default"
       data-testid={header.testId}
     >
-      <span className="text-label uppercase tracking-wide text-text-muted">
+      {/* 2026-05-08 Labour typography remap — `text-label` already bakes
+          uppercase + 0.04em tracking via the @layer rule. The prior
+          `uppercase tracking-wide` modifiers re-applied uppercase
+          (no-op) and overrode the canonical 0.04em tracking with
+          0.025em. Keeping `text-label` alone preserves the canonical
+          tracking and matches the panel-header label "Notes" / "Labour"
+          / "Equipment" exactly. */}
+      <span className="text-label text-text-muted">
         {header.label}
       </span>
-      <span className="flex items-baseline gap-2 font-mono">
+      {/* 2026-05-08 Labour typography remap — dropped `font-mono` from the
+          values wrapper. `tabular-nums` on each value gives column
+          alignment without a family swap, so the totals row reads in
+          the same sans-serif as the rest of the rail panels. */}
+      <span className="flex items-baseline gap-2">
         {header.values.map((v, idx) => (
           <Fragment key={idx}>
             {idx > 0 && <span className="text-text-disabled">·</span>}
@@ -245,10 +256,19 @@ function RailCardFromDescriptor({ card }: { card: RailCardDescriptor }) {
           className="items-baseline pb-2 border-b border-slate-100"
           data-testid={card.sectionHeader.testId}
         >
-          <span className="text-label uppercase tracking-wide text-text-muted">
+          {/* 2026-05-08 Labour typography remap — see RailGroupedPanelHeaderRow
+              for the rationale on dropping the redundant `uppercase
+              tracking-wide` modifiers. The `text-label` token bakes
+              both already; the prior overrides flattened tracking from
+              the canonical 0.04em to 0.025em. */}
+          <span className="text-label text-text-muted">
             {card.sectionHeader.label}
           </span>
-          <span className="text-caption tabular-nums text-text-primary font-mono shrink-0">
+          {/* 2026-05-08 Labour typography remap — dropped `font-mono` from
+              the per-date total. The date-card aggregate now renders
+              in the same sans-serif family as Equipment / Notes meta;
+              `tabular-nums` keeps the value column-aligned. */}
+          <span className="text-caption tabular-nums text-text-primary shrink-0">
             {card.sectionHeader.value}
           </span>
         </RailContentCardHeader>
@@ -605,11 +625,22 @@ function RailMetaRowFromDescriptor({
  *   - Inter-row dividers (`mt-1 pt-2 border-t border-slate-100` on
  *     every sub-row after the first — page never specifies them).
  *   - Top-row layout (`flex items-baseline justify-between gap-2`).
- *   - Top-row title typography via `<RailContentCardTitle as="span">`
- *     (text-row / semibold) and the trailing-value typography
- *     (text-row / semibold / tabular-nums / font-mono).
- *   - Bottom-row meta (`flex items-baseline justify-between gap-2
- *     font-mono` + per-span tabular-nums).
+ *   - Top-row title typography is row-level (`text-row text-text-primary
+ *     truncate min-w-0`) — NOT card-title typography. Subrows are
+ *     entry rows nested inside a card, not mini-cards. Routing them
+ *     through `<RailContentCardTitle>` (which bakes
+ *     `text-row-emphasis` = 17/600) made each entry print at
+ *     card-title scale and stacked 3+ heavy lines per (tech, date)
+ *     card. Row-level typography matches the body/meta hierarchy
+ *     used by Equipment + Notes.
+ *   - Trailing value typography (`text-row tabular-nums
+ *     text-text-primary shrink-0`). `tabular-nums` keeps the value
+ *     column-aligned without the family swap that `font-mono`
+ *     introduced previously.
+ *   - Bottom-row meta (`flex items-baseline justify-between gap-2`)
+ *     in `RailContentCardMeta`'s baked `text-helper` chrome plus
+ *     per-span `tabular-nums`. No `font-mono` — the meta line now
+ *     reads in the same sans-serif as Equipment meta lines.
  */
 function RailSubrowFromDescriptor({
   subrow,
@@ -626,18 +657,32 @@ function RailSubrowFromDescriptor({
       className={cn(!isFirst && "mt-1 pt-2 border-t border-slate-100")}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <RailContentCardTitle as="span">
+        {/* 2026-05-08 Labour typography remap — subrow title prints at
+            row-level, NOT card-title-level. The prior
+            `<RailContentCardTitle>` baked text-row-emphasis (17/600)
+            so every Labour entry "On-site" / "Travel" rendered at the
+            same scale as the technician group heading. Truncation +
+            min-width are preserved so long values still clip. */}
+        <span className="text-row text-text-primary truncate min-w-0">
           {subrow.title.text}
-        </RailContentCardTitle>
+        </span>
         {subrow.title.chip && <RailChipFromDescriptor chip={subrow.title.chip} />}
         {subrow.title.value && (
-          <span className="text-row-emphasis tabular-nums text-text-primary font-mono shrink-0">
+          /* 2026-05-08 Labour typography remap — trailing value moves
+             from text-row-emphasis font-mono (17/600 mono) to
+             text-row sans-serif. tabular-nums keeps the value column-
+             aligned without the family swap. */
+          <span className="text-row tabular-nums text-text-primary shrink-0">
             {subrow.title.value}
           </span>
         )}
       </div>
       {subrow.meta && (
-        <RailContentCardMeta className="flex items-baseline justify-between gap-2 font-mono">
+        /* 2026-05-08 Labour typography remap — meta wrapper drops
+           font-mono. The inner spans keep tabular-nums for column
+           alignment; family stays sans-serif so the meta line matches
+           Equipment's meta line. */
+        <RailContentCardMeta className="flex items-baseline justify-between gap-2">
           <span
             className={cn(
               "tabular-nums",

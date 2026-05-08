@@ -403,6 +403,91 @@ import {
 - The list-page constants (`listPrimaryClass`, `listHeaderRowClass`) still ship from `list-surface.tsx` for back-compat with the existing list pages. Phase H1 makes those derive from the new typography primitives where the values match (`listPrimaryClass = ENTITY_NAME_CLASS`); Phase H2 migrates list-page consumers to the primitive components.
 - `<MetaRow>` (`components/ui/meta-row.tsx`) — kept for now; will migrate in H2.
 
+### Canonical Chip System (2026-05-08)
+
+The app has ONE canonical chip primitive. Pre-canonicalization the codebase shipped at least four parallel chip-shaped surfaces (`Badge`, `StatusPill`, `RailContentCardChip`, `EntityNumber`'s blue pill) plus a one-off `FilterChips` generic in `ClientDetailPage`, each encoding its own tone palette inline. The Phase 1 chip canonicalization consolidated all of them onto a single cva config.
+
+**Files (single source of truth):**
+
+- `client/src/lib/chipVariants.ts` — the cva config + tone palette. ALL chip-shaped tones live here, nowhere else.
+- `client/src/components/ui/chip.tsx` — the four primitives: `Chip` (base), `StatusChip`, `EntityChip`, `FilterChip`. Wrappers compose `chipVariants(...)`; they DO NOT redeclare class strings.
+- `tests/chip-canonical.test.ts` — drift-prevention pins.
+
+**When to use which primitive:**
+
+| Use case | Primitive |
+|---|---|
+| Job / invoice / quote / lead status pill | `<StatusChip tone={meta.tone}>` (or `<StatusChip status="paid">`) |
+| Job number, related-entity reference, notes-scope visibility (Jobs/Invoices/Quotes) | `<EntityChip entity="job">` / `entity="invoice"` / `entity="quote"` / `entity="maintenance"` |
+| List-page filter toggle (selected/unselected) | `<FilterChip selected={isActive} onClick={...}>` |
+| Anything else chip-shaped (rare) | `<Chip>` directly |
+
+**Sizes.**
+
+- `default` (28px tall, `h-7 px-3`) — new uses (filter chips, entity chips, notes-visibility chips). Compose with `default` unless explicitly preserving back-compat.
+- `compact` (24px tall, `h-6 px-2.5`) — `StatusChip`'s default (preserves the historical `StatusPill` height) and dense rail surfaces.
+
+**Tones (canonical palette — defined in `chipVariants.ts`).**
+
+| Tone | Use |
+|---|---|
+| `neutral` | Inert / placeholder (draft, archived, voided, default unselected filter). |
+| `success` | Terminal-good (paid, won, completed, invoiced, approved). |
+| `warning` | Needs-action (partial paid, requires-invoicing, due-soon, overdue, expired). |
+| `danger` | Bad/blocked (cancelled, declined, escalated, on-hold). |
+| `info` | Pending/in-flight (scheduled, in-progress, on-route, sent). |
+| `purple` | Reserved for the `quote` entity tone. Do not use elsewhere. |
+| `active` | Selected `FilterChip` only. Brand-fill, NOT a soft tint. |
+
+**Status → tone mapping** lives in two places — both authoritative:
+
+- `STATUS_TO_CHIP_TONE` (in `chipVariants.ts`) — keyed on raw lifecycle strings. `<StatusChip status="paid">` uses this directly.
+- `getInvoiceStatusMeta` / `getQuoteStatusMeta` / `getJobStatusMeta` / `getLeadStatusMeta` (in `lib/statusBadges.ts`) — own the precedence rules (Past Due > Due Soon > lifecycle, etc.) and return a `StatusMeta { label, tone }` that flows into `<StatusChip tone={...}>`.
+
+**Forbidden patterns in feature components.**
+
+- `<span className="rounded-full px-2 py-0.5 text-xs font-medium ...">` ad-hoc chips. Reach for one of the four primitives.
+- `bg-emerald-50 text-emerald-700 border-emerald-200` (or any other ad-hoc color triplet) for chip-shaped surfaces. Add a tone in `chipVariants.ts` if a real new tone is needed; otherwise reuse the canonical 7-tone palette.
+- `bg-[#76B054] text-white` selected-filter classes. Use `<FilterChip selected={true}>`.
+- Local `FilterChips` / `StatusPill` re-implementations on a page. The canonical wrappers exist to prevent that drift.
+- `font-bold` / `font-semibold` overrides on top of `text-helper`. The role token already locks the weight (500).
+
+**What stays as-is.**
+
+- `<Badge>` (shadcn) — kept for non-chip badge uses (counts, role tags) where the visual is genuinely different. New status / entity / filter chips MUST use the canonical primitives.
+- `<RailContentCardChip>` (in `components/detail-rail/RailContentCard.tsx`) — kept as the dense rail-internal chip for detail-rail panels (it ships at `text-helper px-1.5 py-0.5 rounded`, NOT the canonical `rounded-full` capsule). Its visibility-pill use in NotesPanel migrated to `<EntityChip>` 2026-05-08.
+- `<StatusPill>` (in `components/ui/status-pill.tsx`) — now a thin re-export of `<StatusChip>` for back-compat. The 14+ existing call-sites continue to work; new code should reach for `<StatusChip>` directly.
+- `<EntityNumber variant="primary">` — internal rendering migrated to `<EntityChip entity="job">` 2026-05-08; the API surface is unchanged.
+
+**Standard usage:**
+
+```tsx
+import { StatusChip, EntityChip, FilterChip } from "@/components/ui/chip";
+import { getInvoiceStatusMeta } from "@/lib/statusBadges";
+
+// Status pill (canonical replacement for StatusPill)
+const meta = getInvoiceStatusMeta(invoice.status, invoice.isPastDue, invoice.dueDate);
+<StatusChip tone={meta.tone}>{meta.label}</StatusChip>
+
+// Entity chip — clickable job number
+<EntityChip entity="job" href={`/jobs/${job.id}`}>{job.jobNumber}</EntityChip>
+
+// Filter chip with count
+<FilterChip
+  selected={filter === "active"}
+  onClick={() => setFilter("active")}
+  trailingIcon={<span className="tabular-nums">{count}</span>}
+>
+  Active
+</FilterChip>
+```
+
+**Migration plan.**
+
+- **Phase 1 (this PR)** — primitives + `chipVariants.ts` + tests. Migrated surfaces: `StatusPill` → re-export of `StatusChip`, `EntityNumber` primary variant → `EntityChip`, `ClientDetailPage > FilterChips` → canonical `FilterChip`, `NotesPanel` Jobs/Invoices/Quotes visibility pills → `EntityChip`.
+- **Phase 2 (later)** — migrate `InvoiceDetailPage`'s local uppercase-tracked StatusPill (deliberate variant — needs design alignment first), `Jobs.tsx` StatusBadge call-sites if a tonal shift to canonical is desired, and the 47+ ad-hoc `rounded-full px-2 py-0.5` spans across pages and feature components.
+- **Phase 3 (token cleanup)** — migrate the soft-tint RGB literals in `chipVariants.ts` to `hsl(var(--success) / 0.12)` etc. so the chip tones inherit from the semantic CSS variables.
+
 ## Customizable Dashboard Widgets (2026-05-07 framework)
 
 The dashboard pages (currently `FinancialDashboard`) are driven by a per-user widget framework with **one canonical registry** at `shared/dashboardWidgetRegistry.ts`. Visibility + ordering are persisted to `user_dashboard_widgets` and edited via the right-side customize drawer.

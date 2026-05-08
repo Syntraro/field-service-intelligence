@@ -38,6 +38,7 @@ import {
 } from "@shared/communicationsTypes";
 import { useCommunicationsUrlState } from "@/lib/communications/useCommunicationsUrlState";
 import { useResolveContact } from "@/lib/communications/useResolveContact";
+import { useCommunicationProvider } from "@/lib/communications/useCommunicationProvider";
 import {
   useCommunicationMessages,
   useCommunicationThreads,
@@ -45,6 +46,7 @@ import {
   useCreateInternalMessage,
   useLinkCommunicationThreadContact,
   useMarkCommunicationThreadRead,
+  useSendSmsMessage,
   useSystemContacts,
   useTeamMembers,
   type CommunicationsTeamMember,
@@ -137,8 +139,11 @@ export default function CommunicationsHub() {
 
   // ── Phase 4: write paths ─────────────────────────────────────────
   const createInternalMessage = useCreateInternalMessage();
+  const sendSmsMessage = useSendSmsMessage();
   const markThreadRead = useMarkCommunicationThreadRead();
   const linkThreadContact = useLinkCommunicationThreadContact();
+  // 2026-05-08 Phase 5 — provider availability gates the SMS composer tab.
+  const providerStatus = useCommunicationProvider();
 
   // Mark-read: when a thread is selected with `unreadCount > 0`, fire a
   // single mark-read mutation. The server is idempotent on `unreadCount=0`
@@ -290,15 +295,30 @@ export default function CommunicationsHub() {
             <ConversationPanel
               thread={activeThread}
               messages={messages}
+              smsAvailable={providerStatus.hasActive}
               onSend={(input) => {
-                // Phase 4: only `internal_note` is enabled. The composer
-                // disables Send while `sms` is selected so this branch
-                // is the only one a click reaches.
-                if (!activeThread || input.channel !== "internal_note") return;
-                createInternalMessage.mutate({
-                  threadId: activeThread.id,
-                  body: input.body,
-                });
+                if (!activeThread) return;
+                if (input.channel === "internal_note") {
+                  createInternalMessage.mutate({
+                    threadId: activeThread.id,
+                    body: input.body,
+                  });
+                  return;
+                }
+                if (input.channel === "sms") {
+                  // 2026-05-08 Phase 5: defense-in-depth — composer
+                  // already disables Send when SMS isn't available.
+                  if (
+                    !providerStatus.hasActive ||
+                    activeThread.threadType === "team_chat"
+                  ) {
+                    return;
+                  }
+                  sendSmsMessage.mutate({
+                    threadId: activeThread.id,
+                    body: input.body,
+                  });
+                }
               }}
             />
           ) : isContacts ? (

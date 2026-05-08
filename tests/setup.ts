@@ -16,6 +16,13 @@ import { beforeAll, afterAll, vi } from "vitest";
 // (it refuses to load when NODE_ENV !== "test")
 process.env.NODE_ENV = "test";
 
+// 2026-05-08 Phase 5: provider-credential encryption key (AES-256-GCM,
+// 32-byte base64). The crypto helper fails-closed when missing.
+if (!process.env.COMMUNICATION_CREDENTIAL_KEY) {
+  process.env.COMMUNICATION_CREDENTIAL_KEY =
+    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+}
+
 import { ensureTestDbInvariants } from "./ensureTestDbInvariants";
 
 // Increase test timeout for database operations

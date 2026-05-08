@@ -71,7 +71,7 @@ import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderC
 // the manual "refresh from job" flow.
 // Canonical notes section — one component for job / invoice / quote
 // detail surfaces. Same query keys, same backend write paths.
-import EntityNotesSection from "@/components/notes/EntityNotesSection";
+import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
 import { getJobStatusDisplay } from "@/components/job";
 import { TimeEntryModal } from "@/components/time";
@@ -147,6 +147,10 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // preserves the page's heavier typography + truncate + hide-when-empty
 // behavior byte-for-byte.
 import { AddressBlock } from "@/components/common/AddressBlock";
+// 2026-05-08 — Inventory Phase 3: capability-gated section that
+// auto-hides when the tenant doesn't have inventory_core. Mounts
+// between Line Items and Billing Summary in the main column.
+import { JobInventoryUsageSection } from "@/components/inventory/JobInventoryUsageSection";
 // 2026-05-06 RALPH: dedupe-resolver for the service-address location
 // label. Shared with InvoiceDetailPage so both surfaces apply the same
 // raw-only / no-customer-duplicate rule.
@@ -1632,8 +1636,8 @@ export default function JobDetailPage() {
       count: notesCount ?? undefined,
       // Terse "+ Add" label per spec — the rail panel title to the
       // left already says "Notes". Bumping `notesAddSignal` opens
-      // EntityNotesSection's create dialog via its existing
-      // `openAddNoteSignal` controlled prop — no Notes-logic change.
+      // the canonical create dialog via the panel's
+      // `openAddNoteSignal` controlled prop.
       action: (
         <button
           type="button"
@@ -1647,24 +1651,18 @@ export default function JobDetailPage() {
       ),
       content: (
         <div data-testid="card-notes">
-          <EntityNotesSection
+          {/* 2026-05-08: Tier 4 Notes canonicalization — replaces the
+              prior `<EntityNotesSection cardStyle={true}>` mount with
+              the canonical `<EntityNotesPanel>`. Panel title, count
+              badge, and +Add affordance live on this `DetailRailTab`
+              (label / count / action above) per the rail-shell
+              architecture. EntityNotesPanel owns only the per-row
+              cards + create dialog wiring. */}
+          <EntityNotesPanel
             entityType="job"
             entityId={job.id}
-            embedded={true}
-            // Suppress EntityNotesSection's internal header (icon +
-            // "Notes" + "+ Add Note" button) — the rail panel header
-            // already provides title + action.
-            hideHeader={true}
-            hideAddButton={true}
-            // Page-level controlled trigger replaces the suppressed
-            // "+ Add Note" button.
             openAddNoteSignal={notesAddSignal}
             onCountChange={setNotesCount}
-            // 2026-05-07: opt into the canonical rail card chrome
-            // (`<RailContentCard>` per note + canonical typography
-            // tokens). Matches the Equipment + Labour rail cards so
-            // the panel reads as one design system.
-            cardStyle={true}
           />
         </div>
       ),
@@ -2280,6 +2278,14 @@ export default function JobDetailPage() {
                 jobId={jobId!}
                 onTotalsChange={setBillingTotals}
               />
+
+              {/* INVENTORY USAGE — 2026-05-08 Phase 3. Capability-gated
+                  (the section auto-hides via useFeatureEnabled when the
+                  tenant doesn't have inventory_core). Sits between
+                  Line Items (catalog selections) and Billing Summary
+                  (totals) so the page composition reads:
+                  catalog ► inventory consumed ► totals. */}
+              <JobInventoryUsageSection jobId={jobId!} />
 
               {/* BILLING SUMMARY — Expenses sub-section + Totals panel.
                   Kept as a separate Studio-styled card (warm cream chrome)
