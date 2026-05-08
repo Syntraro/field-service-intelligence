@@ -31,15 +31,18 @@ const pmSrc = readFileSync(
 // ── Header row ───────────────────────────────────────────────────────
 
 describe("PMWorkspacePage — compact header row", () => {
-  it("page title is 'Maintenance' (the new sidebar destination label)", () => {
-    // The H1 must read "Maintenance" — matches the trimmed sidebar
-    // and the 2026-05-06 nav rename. The old "Maintenance Plans"
-    // string is gone from the render.
+  it("page title is 'Service Plans' (matches the renamed sidebar destination label)", () => {
+    // The H1 must read "Service Plans" — matches the 2026-05-07
+    // module rename. Both the older "Maintenance Plans" string and
+    // the intermediate "Maintenance" H1 are gone from the render.
     expect(pmSrc).toMatch(
-      /<h1[^>]*data-testid="pm-page-title"[^>]*>\s*Maintenance\s*<\/h1>/,
+      /<h1[^>]*data-testid="pm-page-title"[^>]*>\s*Service Plans\s*<\/h1>/,
     );
     expect(pmSrc).not.toMatch(
       /<h1[^>]*>\s*Maintenance Plans\s*<\/h1>/,
+    );
+    expect(pmSrc).not.toMatch(
+      /<h1[^>]*>\s*Maintenance\s*<\/h1>/,
     );
   });
 
@@ -83,9 +86,12 @@ describe("PMWorkspacePage — compact header row", () => {
 
   it("the '+ New Plan' header dropdown trigger is preserved", () => {
     expect(pmSrc).toMatch(/data-testid="header-new-plan"/);
-    // The two existing dropdown actions (Maintenance plan / Recurring job)
+    // The two existing dropdown actions (Service plan / Recurring job)
     // remain — the brief explicitly preserves recurrence behavior.
-    expect(pmSrc).toMatch(/Maintenance plan/);
+    // 2026-05-07 rename: "Maintenance plan" → "Service plan" inside
+    // the dropdown so the verb in the trigger menu matches the
+    // module identity.
+    expect(pmSrc).toMatch(/Service plan/);
     expect(pmSrc).toMatch(/Recurring job/);
   });
 });
@@ -167,7 +173,7 @@ describe("PMWorkspacePage — backend + endpoints + generation behavior unchange
   it("recurrence-behavior copy is preserved (Recurring job CTA, Make Recurring flow)", () => {
     // The brief: "Do not rename recurrence-related backend/internal
     // concepts." The header's New Plan dropdown still lists
-    // "Recurring job" alongside "Maintenance plan".
+    // "Recurring job" alongside the renamed "Service plan" item.
     expect(pmSrc).toMatch(/<Repeat[^>]*\/>\s*Recurring job/);
   });
 });

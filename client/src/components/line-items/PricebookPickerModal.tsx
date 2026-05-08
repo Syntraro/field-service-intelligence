@@ -54,15 +54,38 @@ import { formatCurrency } from "@/lib/formatters";
 import type { LineItemDraft } from "@shared/lineItem";
 import type { LineItemsAdapter } from "./types";
 import {
+  buildPricebookSubmitEntries,
   decrementSelection,
+  expandedGroupChildCount,
   filterPricebookItems,
   incrementSelection,
   pricebookSubmitLabel,
   selectedCount,
+  selectedGroupsTotal,
   selectedTotal,
-  selectionsToDrafts,
+  toggleGroupSelection,
+  type PricebookGroupSelections,
   type PricebookSelections,
 } from "./pricebookHelpers";
+import { PricebookGroupsRail } from "./PricebookGroupsRail";
+import { PricebookGroupModal } from "./PricebookGroupModal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  recordPricebookGroupUsage,
+  useDeletePricebookGroup,
+  usePricebookGroups,
+  type RecordPricebookGroupUsageBody,
+} from "@/lib/pricebook/usePricebookGroups";
+import type { PricebookGroupSummaryDto } from "./pricebookHelpers";
 
 export interface PricebookPickerModalProps {
   open: boolean;
@@ -81,9 +104,21 @@ export interface PricebookPickerModalProps {
 
 /**
  * Pricebook fetch — single bulk read of the catalog. Server endpoint is
- * `/api/items` (canonical catalog list). `q` is sent so server-side
- * search still owns the dataset; typing also filters client-side via
- * `filterPricebookItems` for instant feedback.
+ * `/api/items` (canonical catalog list).
+ *
+ *   • Empty search  → `?sort=most_used&limit=200`. The route ranks
+ *     items by historical usage count across invoice_lines,
+ *     quote_lines, and job_parts (tenant-scoped). Top-12 most-used
+ *     surface in the first row of the grid; items with zero usage
+ *     fall to the end alphabetical. This is the picker's default
+ *     "what does this tenant tend to add?" experience.
+ *   • Non-empty search → `?q=…&limit=200`. Server applies the
+ *     existing case-insensitive ILIKE search across name / sku /
+ *     description. Sort defaults to alphabetical for search results
+ *     (relevance-ish — the user is already filtering by typed text).
+ *
+ * Typing also filters client-side via `filterPricebookItems` for
+ * instant feedback before the server query settles.
  */
 function usePricebookItems(searchText: string) {
   return useQuery<ProductOption[]>({
@@ -92,7 +127,7 @@ function usePricebookItems(searchText: string) {
       const trimmed = searchText.trim();
       const qs = trimmed
         ? `?q=${encodeURIComponent(trimmed)}&limit=200`
-        : "?limit=200";
+        : "?sort=most_used&limit=200";
       const res = await apiRequest<any>(`/api/items${qs}`);
       const rows = Array.isArray(res) ? res : (res?.data ?? res?.items ?? []);
       return rows.map(normalizeProductRow);
@@ -109,6 +144,26 @@ export function PricebookPickerModal({
 }: PricebookPickerModalProps) {
   const [search, setSearch] = useState("");
   const [selections, setSelections] = useState<PricebookSelections>(new Map());
+  // 2026-05-07 RALPH (Pricebook Groups): saved bundles selected via
+  // the right rail. Group selection is independent of item selection;
+  // submit fans both into one merged draft list (with duplicate
+  // merging — see `buildPricebookSubmitEntries`).
+  const [groupSelections, setGroupSelections] = useState<PricebookGroupSelections>(
+    new Set(),
+  );
+  // 2026-05-07 RALPH (Pricebook Groups — edit/delete UX): one
+  // modal instance for both create + edit. `groupModalMode` flips
+  // between "create" and "edit"; `editingGroup` carries the snapshot
+  // for the edit path. Delete uses a separate AlertDialog.
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupModalMode, setGroupModalMode] = useState<"create" | "edit">("create");
+  const [editingGroup, setEditingGroup] = useState<PricebookGroupSummaryDto | null>(
+    null,
+  );
+  const [deleteTarget, setDeleteTarget] = useState<PricebookGroupSummaryDto | null>(
+    null,
+  );
+  const deleteMutation = useDeletePricebookGroup();
 
   // Selection survives search filter changes (per brief). Cleared only
   // on close — re-opening yields a fresh canvas.
@@ -116,11 +171,21 @@ export function PricebookPickerModal({
     if (!open) {
       setSelections(new Map());
       setSearch("");
+      setGroupSelections(new Set());
+      setGroupModalOpen(false);
+      setGroupModalMode("create");
+      setEditingGroup(null);
+      setDeleteTarget(null);
     }
   }, [open]);
 
   const { data: serverItems = [], isLoading, isError, refetch } =
     usePricebookItems(search);
+
+  // Saved groups for the right rail. Only fetched while the picker is
+  // open so closed pickers don't pay for the round-trip.
+  const groupsQuery = usePricebookGroups({ enabled: open });
+  const groups = groupsQuery.data ?? [];
 
   // Client-side filter as a preview while typing — keeps the grid
   // responsive even before the server query settles.
@@ -129,11 +194,22 @@ export function PricebookPickerModal({
     [serverItems, search],
   );
 
-  const count = selectedCount(selections);
-  const total = useMemo(
+  const itemCount = selectedCount(selections);
+  const itemTotal = useMemo(
     () => selectedTotal(selections, serverItems),
     [selections, serverItems],
   );
+  const groupCount = groupSelections.size;
+  const expandedItemCount = useMemo(
+    () => expandedGroupChildCount(groups, groupSelections),
+    [groups, groupSelections],
+  );
+  const groupsTotal = useMemo(
+    () => selectedGroupsTotal(groups, groupSelections),
+    [groups, groupSelections],
+  );
+  const totalLineCount = itemCount + expandedItemCount;
+  const grandTotal = itemTotal + groupsTotal;
 
   // Stable per-item callbacks. Passing these to the memoized card
   // means clicking + on one card does NOT re-render the others —
@@ -145,17 +221,102 @@ export function PricebookPickerModal({
   const onDecrement = useCallback((itemId: string) => {
     setSelections((prev) => decrementSelection(prev, itemId));
   }, []);
+  const onToggleGroup = useCallback((groupId: string) => {
+    setGroupSelections((prev) => toggleGroupSelection(prev, groupId));
+  }, []);
+
+  // Map the picker surface onto the usage-tracking target enum. The
+  // service treats any unrecognized value as "job", so the fallback
+  // is safe.
+  const usageTarget: RecordPricebookGroupUsageBody["target"] =
+    surface === "invoice"
+      ? "invoice"
+      : surface === "quote"
+        ? "quote"
+        : surface === "quote-template"
+          ? "quote_template"
+          : "job";
 
   const handleSubmit = useCallback(() => {
-    const drafts = selectionsToDrafts(selections, serverItems);
-    if (drafts.length === 0) return;
-    onSubmit(drafts);
+    const entries = buildPricebookSubmitEntries(
+      selections,
+      serverItems,
+      groups,
+      groupSelections,
+    );
+    if (entries.length === 0) return;
+    onSubmit(entries);
+    // Fire-and-forget usage increments per selected group. Failures
+    // are intentionally swallowed — usage tracking is advisory and
+    // must never block the bulk-add UX.
+    if (groupSelections.size > 0) {
+      groupSelections.forEach((groupId) => {
+        recordPricebookGroupUsage(groupId, { target: usageTarget }).catch(
+          () => undefined,
+        );
+      });
+    }
     setSelections(new Map());
+    setGroupSelections(new Set());
     onOpenChange(false);
-  }, [selections, serverItems, onSubmit, onOpenChange]);
+  }, [
+    selections,
+    serverItems,
+    groups,
+    groupSelections,
+    onSubmit,
+    onOpenChange,
+    usageTarget,
+  ]);
 
   const submitLabel = pricebookSubmitLabel(surface);
-  const submitDisabled = count === 0;
+  const submitDisabled = itemCount === 0 && groupCount === 0;
+
+  // ── Group lifecycle handlers (rail action plumbing) ──
+  // Open the New Group flow.
+  const openNewGroup = useCallback(() => {
+    setGroupModalMode("create");
+    setEditingGroup(null);
+    setGroupModalOpen(true);
+  }, []);
+  // Open the Edit Group flow. Carries the current snapshot so the
+  // modal preloads name / description / children without a refetch.
+  const openEditGroup = useCallback((group: PricebookGroupSummaryDto) => {
+    setGroupModalMode("edit");
+    setEditingGroup(group);
+    setGroupModalOpen(true);
+  }, []);
+  // Stage a delete confirmation. The actual hard-delete fires from
+  // the AlertDialog confirm handler below.
+  const askDeleteGroup = useCallback((group: PricebookGroupSummaryDto) => {
+    setDeleteTarget(group);
+  }, []);
+  const cancelDelete = useCallback(() => setDeleteTarget(null), []);
+  const confirmDelete = useCallback(async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    try {
+      await deleteMutation.mutateAsync(target.id);
+      // If the deleted group was selected, drop it from the
+      // selection set so the footer summary reflects reality. The
+      // list query is invalidated by the mutation so the rail
+      // disappears the card on its own.
+      setGroupSelections((prev) => {
+        if (!prev.has(target.id)) return prev;
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+      setDeleteTarget(null);
+    } catch {
+      // Mutation surfaces the error on the AlertDialog body via
+      // `deleteMutation.error`. Keep the dialog open so the user
+      // can retry.
+      // (Hard-delete is irreversible from the UI; once committed,
+      // the user must re-create the group from scratch — that's the
+      // intended UX for v1.)
+    }
+  }, [deleteMutation, deleteTarget]);
 
   return (
     <ModalShell
@@ -209,103 +370,180 @@ export function PricebookPickerModal({
         </div>
       </ModalHeader>
 
+      {/*
+        2026-05-07 RALPH (Pricebook Groups): the picker body is now a
+        2-column flex on desktop / iPad landscape — items grid on the
+        left, groups rail on the right. On narrow widths the rail
+        wraps below the items grid (flex-wrap), keeping the existing
+        item card density unchanged. The grid + rail share one scroll
+        ancestor so the scroll feel matches the prior single-pane
+        layout.
+      */}
       <div
-        // 2026-05-07 sizing pass (default-height fix) — body owns the
-        // scroll surface.
-        //   • `flex-1` distributes leftover shell height into the body
-        //     (now possible because the shell has an explicit `sm:h-…`).
-        //   • `sm:min-h-[480px]` is a belt-and-suspenders floor: even
-        //     if the shell's height calc gives an unexpected result
-        //     (e.g. an embedded iframe with a quirky vh), the body
-        //     still reserves room for ≈3 compact card rows on
-        //     tablets+. Mobile (< sm) intentionally has no min so the
-        //     modal stays content-sized.
-        //   • `max-h-[min(620px,calc(100vh-220px))]` keeps the scroll
-        //     surface inside the viewport when the catalog is large
-        //     and the shell's allotted height happens to be tall.
-        //     220px subtracts header (~96px), footer (~52px), and
-        //     viewport breathing room (~72px).
-        className="flex-1 sm:min-h-[480px] max-h-[min(620px,calc(100vh-220px))] overflow-y-auto px-4 py-3 bg-app-bg"
+        className="flex-1 sm:min-h-[480px] max-h-[min(620px,calc(100vh-220px))] overflow-y-auto px-4 py-3 bg-app-bg flex flex-col md:flex-row gap-3 md:gap-3 min-h-0"
         data-testid="pricebook-body"
       >
-        {isLoading ? (
-          <div
-            className="grid gap-2"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
-          >
-            {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-              <Skeleton key={i} className="h-[96px] w-full rounded-md" />
-            ))}
-          </div>
-        ) : isError ? (
-          <div
-            className="rounded-md border border-rose-200 bg-rose-50 px-4 py-6 text-center"
-            data-testid="pricebook-error"
-          >
-            <p className="text-sm text-rose-700">
-              Couldn't load pricebook items. Please try again.
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-3 h-8 text-xs"
-              onClick={() => refetch()}
-            >
-              Retry
-            </Button>
-          </div>
-        ) : visibleItems.length === 0 ? (
-          search.trim().length > 0 ? (
+        <div
+          className="flex-1 min-w-0 min-h-0"
+          data-testid="pricebook-items-pane"
+        >
+          {isLoading ? (
             <div
-              className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
-              data-testid="pricebook-empty-search"
+              className="grid gap-2"
+              style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
             >
-              <p className="text-sm text-slate-600">
-                No pricebook items match "{search.trim()}".
-              </p>
+              {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+                <Skeleton key={i} className="h-[96px] w-full rounded-md" />
+              ))}
             </div>
+          ) : isError ? (
+            <div
+              className="rounded-md border border-rose-200 bg-rose-50 px-4 py-6 text-center"
+              data-testid="pricebook-error"
+            >
+              <p className="text-sm text-rose-700">
+                Couldn't load pricebook items. Please try again.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 h-8 text-xs"
+                onClick={() => refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : visibleItems.length === 0 ? (
+            search.trim().length > 0 ? (
+              <div
+                className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
+                data-testid="pricebook-empty-search"
+              >
+                <p className="text-sm text-slate-600">
+                  No pricebook items match "{search.trim()}".
+                </p>
+              </div>
+            ) : (
+              <div
+                className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
+                data-testid="pricebook-empty"
+              >
+                <p className="text-sm text-slate-600">
+                  You don't have any saved pricebook items yet.
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Add items from Settings → Pricebook to use the bulk picker.
+                </p>
+              </div>
+            )
           ) : (
-            <div
-              className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
-              data-testid="pricebook-empty"
+            <ul
+              className="grid gap-2"
+              style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
+              data-testid="pricebook-items"
             >
-              <p className="text-sm text-slate-600">
-                You don't have any saved pricebook items yet.
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Add items from Settings → Pricebook to use the bulk picker.
-              </p>
-            </div>
-          )
-        ) : (
-          // 2026-05-07 density polish: CSS grid with `auto-fill /
-          // minmax(200px, 1fr)`. Yields ≈4 columns on a 1040px modal,
-          // 2–3 columns on tablet widths, 1 column on mobile — without
-          // hard breakpoint thresholds. Tailwind's arbitrary-grid
-          // utility expands to the same `repeat(auto-fill, minmax(...))`
-          // declaration; we use the inline style fallback here so the
-          // contract is also visible to source-pin tests.
-          <ul
-            className="grid gap-2"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
-            data-testid="pricebook-items"
-          >
-            {visibleItems.map((item) => {
-              const qty = selections.get(item.id) ?? 0;
-              return (
-                <li key={item.id}>
-                  <PricebookItemCard
-                    item={item}
-                    quantity={qty}
-                    onIncrement={onIncrement}
-                    onDecrement={onDecrement}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        )}
+              {visibleItems.map((item) => {
+                const qty = selections.get(item.id) ?? 0;
+                return (
+                  <li key={item.id}>
+                    <PricebookItemCard
+                      item={item}
+                      quantity={qty}
+                      onIncrement={onIncrement}
+                      onDecrement={onDecrement}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <PricebookGroupsRail
+          groups={groups}
+          isLoading={groupsQuery.isLoading}
+          isError={groupsQuery.isError}
+          selectedGroupIds={groupSelections}
+          onToggleGroup={onToggleGroup}
+          onNewGroup={openNewGroup}
+          onEditGroup={openEditGroup}
+          onDeleteGroup={askDeleteGroup}
+          disabled={deleteMutation.isPending}
+        />
       </div>
+
+      <PricebookGroupModal
+        open={groupModalOpen}
+        onOpenChange={setGroupModalOpen}
+        mode={groupModalMode}
+        group={editingGroup}
+        onCreated={(groupId) => {
+          // Auto-select the freshly created group so it shows up in
+          // the footer summary immediately. The list query is
+          // invalidated by the create mutation so the rail picks up
+          // the new card on its own.
+          setGroupSelections((prev) => {
+            const next = new Set(prev);
+            next.add(groupId);
+            return next;
+          });
+        }}
+        onUpdated={(_groupId) => {
+          // Selection persists across edits — if the edited group
+          // was selected before save, it remains selected after.
+          // The list query invalidation refreshes its `children`
+          // snapshot in the rail automatically.
+        }}
+      />
+
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(next) => {
+          if (!next) cancelDelete();
+        }}
+      >
+        <AlertDialogContent data-testid="pricebook-group-delete-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete group?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget
+                ? `This deletes the group "${deleteTarget.name}" only. Pricebook items inside it will not be deleted.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteMutation.isError ? (
+            <p
+              className="text-xs text-rose-700 px-1"
+              role="alert"
+              data-testid="pricebook-group-delete-error"
+            >
+              {(deleteMutation.error as Error)?.message ??
+                "Could not delete the group. Please try again."}
+            </p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={deleteMutation.isPending}
+              data-testid="pricebook-group-delete-cancel"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Prevent Radix from auto-closing before the mutation
+                // resolves; we close manually on success.
+                e.preventDefault();
+                void confirmDelete();
+              }}
+              disabled={deleteMutation.isPending}
+              data-testid="pricebook-group-delete-confirm"
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete group"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
 
       <ModalFooter className="justify-between">
         <ModalSecondaryAction
@@ -319,9 +557,14 @@ export function PricebookPickerModal({
             className="text-xs text-slate-600 tabular-nums"
             data-testid="pricebook-summary"
           >
-            {count === 0
+            {submitDisabled
               ? "No items selected"
-              : `${count} item${count === 1 ? "" : "s"} · ${formatCurrency(total)}`}
+              : formatPickerSummary({
+                  itemCount,
+                  groupCount,
+                  totalLineCount,
+                  grandTotal,
+                })}
           </span>
           <ModalPrimaryAction
             onClick={handleSubmit}
@@ -334,6 +577,36 @@ export function PricebookPickerModal({
       </ModalFooter>
     </ModalShell>
   );
+}
+
+/** Footer summary: combines individual item and group counts into one
+ *  human line. Shape: "{N groups} {M items} {· total}". When only
+ *  one side is selected, the other side is omitted. Exposed as a
+ *  helper so the source-pin tests can assert the shape without
+ *  rendering. */
+function formatPickerSummary({
+  itemCount,
+  groupCount,
+  totalLineCount,
+  grandTotal,
+}: {
+  itemCount: number;
+  groupCount: number;
+  totalLineCount: number;
+  grandTotal: number;
+}): string {
+  const parts: string[] = [];
+  if (groupCount > 0) {
+    parts.push(`${groupCount} group${groupCount === 1 ? "" : "s"} selected`);
+  }
+  if (totalLineCount > 0) {
+    parts.push(`${totalLineCount} item${totalLineCount === 1 ? "" : "s"}`);
+  }
+  const summary = parts.join(" · ");
+  if (totalLineCount === 0 && grandTotal === 0) {
+    return summary;
+  }
+  return `${summary} · Estimated total ${formatCurrency(grandTotal)}`;
 }
 
 // ── Item card ────────────────────────────────────────────────────────

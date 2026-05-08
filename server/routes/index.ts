@@ -13,6 +13,7 @@ import invitationsRouter from "./invitations";
 import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
+import pricebookGroupsRouter from "./pricebookGroups";
 import companySettingsRouter from "./companySettings";
 // 2026-05-05: tenant-level Invoice Display policy. Companion endpoint to
 // /api/company-settings — see `server/routes/invoiceDisplaySettings.ts`.
@@ -62,6 +63,7 @@ import filesRouter from "./files";
 import { fileUploadsRouter, jobNoteFilesRouter } from "./fileUploads";
 import dashboardRouter from "./dashboard";
 import dashboardLayoutRouter from "./dashboardLayout";
+import technicianTimeOffRouter from "./technicianTimeOff";
 import reportsRouter from "./reports";
 import { timesheetReportsRouter } from "./timesheetReports";
 import paymentsRouter from "./payments";
@@ -351,6 +353,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/onboarding", onboardingRouter);
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
+  app.use("/api/pricebook-groups", pricebookGroupsRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/invoice-display-settings", invoiceDisplaySettingsRouter);
   app.use("/api/company-tax-registrations", companyTaxRegistrationsRouter);
@@ -374,6 +377,10 @@ export function registerRoutes(app: Express): Server {
   // intact. The mount-level permission gate lives inside the router
   // itself (matches `dashboard.view`).
   app.use("/api/dashboard-layout", dashboardLayoutRouter);
+  // Technician time off (2026-05-07 RALPH) — admin/dispatcher CRUD
+  // for blocking technician availability. Permission gate lives
+  // inside the router (requireAuth + requireRole(MANAGER_ROLES)).
+  app.use("/api/technician-time-off", technicianTimeOffRouter);
   app.use("/api/reports", reportsRouter);
   // Timesheet Report (2026-04-12): mounts /api/reports/timesheets + payroll-settings.
   app.use("/api/reports", timesheetReportsRouter);

@@ -1,6 +1,16 @@
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cn } from "@/lib/utils"
+// 2026-05-07 Phase H1: list-surface typography is now derived from the
+// top-level canonical primitives in `@/components/ui/typography`. New
+// code MUST import from `typography` directly; the `list*Class` exports
+// stay as a back-compat surface for existing list-page consumers
+// (Clients, ProductsServices, etc.) so this PR doesn't trigger a wide
+// migration.
+import {
+  ENTITY_NAME_CLASS,
+  SECTION_LABEL_CLASS,
+} from "./typography"
 
 /**
  * Shared class constants for list/table surfaces.
@@ -15,22 +25,19 @@ export const tableRowClass = "cursor-pointer hover:bg-[#f8fafc] dark:hover:bg-gr
 
 // Standardized list-page typography tokens (Jobber-style dense layout).
 //
-// 2026-04-29 Typography Phase D: migrated to canonical semantic
-// tokens. Visual size targets are unchanged or tighter:
-//   - listPrimaryClass:    text-sm font-medium (17.1px)        → text-row-emphasis (13/18 + weight 500)
-//   - listSecondaryClass:  text-xs text-muted-foreground (15.2px, legacy color) → text-caption text-text-muted (12/16 + canonical text-muted)
-//   - listHeaderRowClass:  text-xs font-medium (15.2px)        → text-label (11/14 + weight 500 + 0.04em tracking + uppercase via @layer components)
-//
-// `font-medium` is dropped from the migrated tokens because the new
-// fontSize tuples bundle weight 500 already. `listBadgeClass` and
-// `listResultsClass` keep their `text-xs` for now — Phase D explicitly
-// scoped to header / primary / secondary rows; badge + results-count
-// migrations are a separate Phase pass.
+// 2026-04-29 Typography Phase D: migrated to canonical semantic tokens.
+// 2026-05-07 Phase H1: `listPrimaryClass` and the typography portion of
+// `listHeaderRowClass` are now derived from the top-level canonical
+// primitives in `@/components/ui/typography`. `listSecondaryClass` is
+// kept literal for visual back-compat with the list pages that already
+// ship it — migrating to the canonical entity-meta token (`text-helper +
+// text-muted-foreground`) would visually shift every list page today.
+// Phase H2 owns that migration.
 
 /** Table header row: background, border, padding, text */
-export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-label text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
+export const listHeaderRowClass = `grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 ${SECTION_LABEL_CLASS} bg-[#f8fafc] dark:bg-gray-900/50`
 /** Primary cell text (company name, job location, invoice client) */
-export const listPrimaryClass = "text-row-emphasis truncate"
+export const listPrimaryClass = ENTITY_NAME_CLASS
 /** Secondary cell text (contact, sublocation, description) */
 export const listSecondaryClass = "text-caption text-text-muted truncate"
 /** Status/tag badge sizing */

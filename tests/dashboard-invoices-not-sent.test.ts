@@ -1,17 +1,28 @@
 /**
- * Needs Attention narrowing + invoices_not_sent mode (2026-05-06 RALPH).
+ * Invoices not sent — bottom row of OperationalAlertsCard
+ * (2026-05-07 consolidation).
+ *
+ * History
+ * -------
+ * - 2026-05-06: the standalone Needs Attention card was narrowed to a
+ *   single row ("Invoices not sent") that opened the shared
+ *   <DashboardActionModal mode="invoices_not_sent">.
+ * - 2026-05-07: the standalone Needs Attention card was removed
+ *   entirely. The "Invoices not sent" row was absorbed into the
+ *   bottom of OperationalAlertsCard. Same shared modal, same source
+ *   data, same canonical mode — only the host card moved.
  *
  * Locks the contract that:
- *   • Needs Attention surfaces ONLY actionable billing/admin items.
- *     Quote follow-up, stale leads, and payments-pending are dropped.
- *   • The "Invoices not sent" View routes through the SHARED
- *     <DashboardActionModal mode="invoices_not_sent"> — no parallel
- *     invoice modal component is introduced.
+ *   • The "Invoices not sent" row lives in OperationalAlertsCard with
+ *     the canonical row key/mode `invoices_not_sent`.
+ *   • The row routes to the SHARED <DashboardActionModal mode="invoices_not_sent">
+ *     — no parallel invoice modal component is introduced.
  *   • The new mode reuses the canonical OperationalActionModal shell
  *     (same chrome / typography / footer rhythm as the four operational
  *     modes), the canonical /api/invoices/list feed (filtered to
  *     status=draft), and the canonical SendCommunicationModal for the
  *     Send action.
+ *   • The retired NeedsAttentionCard does NOT come back.
  */
 
 import { describe, it, expect } from "vitest";
@@ -21,116 +32,177 @@ import { resolve, join } from "path";
 const ROOT = resolve(__dirname, "..");
 const MODAL_PATH = resolve(ROOT, "client/src/components/DashboardActionModal.tsx");
 const DASHBOARD_PATH = resolve(ROOT, "client/src/pages/FinancialDashboard.tsx");
+const ALERTS_CARD_PATH = resolve(ROOT, "client/src/components/dashboard/OperationalAlertsCard.tsx");
 const INVOICES_ROUTE_PATH = resolve(ROOT, "server/routes/invoices.ts");
+const REGISTRY_PATH = resolve(ROOT, "shared/dashboardWidgetRegistry.ts");
 
 const modalSrc = readFileSync(MODAL_PATH, "utf-8");
 const dashSrc = readFileSync(DASHBOARD_PATH, "utf-8");
+const alertsCardSrc = readFileSync(ALERTS_CARD_PATH, "utf-8");
 const invoicesRouteSrc = readFileSync(INVOICES_ROUTE_PATH, "utf-8");
+const registrySrc = readFileSync(REGISTRY_PATH, "utf-8");
 
-/**
- * Extract the NeedsAttentionCard function source — from its `function`
- * declaration up to (but not including) the next top-level `function`
- * declaration in the file. The naive `[\s\S]+?^}/m` regex stops at the
- * destructured-params close-brace, so use a forward-anchored slice instead.
- */
-function needsAttentionBlock(src: string): string {
-  const start = src.indexOf("function NeedsAttentionCard(");
-  expect(start, "NeedsAttentionCard function must exist").toBeGreaterThan(-1);
-  const rest = src.slice(start + "function NeedsAttentionCard(".length);
-  // The next top-level function (e.g. `TodaysScheduleCard`) is the
-  // unambiguous boundary in this file.
-  const nextFn = rest.search(/\nfunction\s+\w+\s*\(/);
-  return src.slice(start, start + (nextFn > 0 ? nextFn : rest.length));
-}
+// ── Retired card stays retired ──────────────────────────────────────
 
-const naBlock = needsAttentionBlock(dashSrc);
-
-// ── Needs Attention card narrowing ──────────────────────────────────
-
-describe("NeedsAttentionCard — narrowed to billing/admin only", () => {
-  it("removes the quote-follow-up row", () => {
-    expect(naBlock).not.toMatch(/Quotes not followed up/);
-    expect(naBlock).not.toMatch(/quotesNotFollowedUp/);
+describe("NeedsAttentionCard — retired (2026-05-07)", () => {
+  it("the standalone card component is removed from the dashboard page", () => {
+    expect(dashSrc).not.toMatch(/function NeedsAttentionCard\(/);
+    expect(dashSrc).not.toMatch(/interface NeedsAttentionCardProps\b/);
+    expect(dashSrc).not.toMatch(/<NeedsAttentionCard\b/);
   });
 
-  it("removes the stale-leads row", () => {
-    // The schema field on the FinancialSummary interface MAY still carry
-    // leadsNotConvertedCount (other surfaces may consume it). The CARD
-    // body must not reference it though.
-    expect(naBlock).not.toMatch(/Stale leads/);
-    expect(naBlock).not.toMatch(/leadsNotConverted/);
-    expect(naBlock).not.toMatch(/staleLeads/);
+  it("the retired widget key is gone from the registry", () => {
+    // The registry is the source of truth for what renders. Removing
+    // the entry orphans persisted user-layout rows, but the resolver
+    // iterates the registry (not the override rows) so old layouts
+    // degrade safely.
+    expect(registrySrc).not.toMatch(/key:\s*"needs_attention"/);
   });
 
-  it("removes any payments-pending row", () => {
-    expect(naBlock).not.toMatch(/payments_pending/i);
-    expect(naBlock).not.toMatch(/Payments pending/i);
-    expect(naBlock).not.toMatch(/Payments processing/i);
+  it("the page renderer map does not carry the needs_attention key", () => {
+    expect(dashSrc).not.toMatch(/needs_attention:\s*\(/);
   });
 
-  it("renders the empty state copy verbatim when no items are actionable", () => {
-    expect(naBlock).toMatch(/No billing\/admin items need attention\./);
-    expect(naBlock).toMatch(/data-testid="needs-attention-empty"/);
-  });
-
-  it("typography avoids text-[10px] / text-[11px] inside the card", () => {
-    expect(naBlock).not.toMatch(/text-\[10px\]/);
-    expect(naBlock).not.toMatch(/text-\[11px\]/);
-    // Positive pin: the card uses the readable text-xs / text-sm tokens
-    // (matches Operational Alerts + Collections rhythm).
-    expect(naBlock).toMatch(/text-sm/);
-    expect(naBlock).toMatch(/text-xs/);
+  it("the prior in-card testids are gone (no orphaned card chrome)", () => {
+    expect(dashSrc).not.toMatch(/data-testid="needs-attention"/);
+    expect(dashSrc).not.toMatch(/data-testid="needs-attention-empty"/);
+    expect(dashSrc).not.toMatch(/data-testid=\{`needs-attention-/);
   });
 });
 
-// ── Needs Attention row layout polish (2026-05-06 RALPH polish) ─────
+// ── Invoices not sent row lives in OperationalAlertsCard ────────────
 
-describe("NeedsAttentionCard — compact single-line clickable rows", () => {
-  it("does not render an inline View button or `-view` testid in the card", () => {
-    // Row is now the click target itself, not a wrapper around a View button.
-    expect(naBlock).not.toMatch(/>\s*View\s*</);
-    expect(naBlock).not.toMatch(/-view"/);
+describe("OperationalAlertsCard — Invoices not sent row (absorbed 2026-05-07)", () => {
+  it("declares the invoices_not_sent row key in the OperationalAlertRowKey union", () => {
+    expect(alertsCardSrc).toMatch(
+      /export type OperationalAlertRowKey\s*=[\s\S]+?\|\s*"invoices_not_sent"/,
+    );
   });
 
-  it("each row is a <button> bound to its onView handler", () => {
-    expect(naBlock).toMatch(/<button\b/);
-    expect(naBlock).toMatch(/onClick=\{it\.onView\}/);
-    // Empty bucket → button is disabled. Native <button> + `disabled`
-    // gives us tabIndex / Enter / Space and a free muted state.
-    expect(naBlock).toMatch(/disabled=\{!hasItems\}/);
+  it("accepts the optional invoicesNotSentCount prop with default 0", () => {
+    // Optional so callers without the financial-summary query in scope
+    // (e.g. the Operations dashboard, if it ever re-mounts this card)
+    // can omit the prop and the row simply renders muted at 0.
+    expect(alertsCardSrc).toMatch(/invoicesNotSentCount\?:\s*number/);
+    expect(alertsCardSrc).toMatch(/invoicesNotSentCount\s*=\s*0/);
   });
 
-  it("count renders to the right of the label inside the row", () => {
-    const labelIdx = naBlock.indexOf("{it.label}");
-    const countIdx = naBlock.indexOf("{it.count}");
-    expect(labelIdx).toBeGreaterThan(-1);
-    expect(countIdx).toBeGreaterThan(-1);
-    expect(labelIdx).toBeLessThan(countIdx);
-    // Count carries the Operational-Alerts / Pipeline numeric style.
-    expect(naBlock).toMatch(/text-sm font-semibold tabular-nums/);
-    // Label is the flex-1 element pushing the count to the right edge.
-    expect(naBlock).toMatch(/flex-1 text-xs font-medium truncate/);
+  it("registers the invoices_not_sent row with the canonical mode + label + icon", () => {
+    expect(alertsCardSrc).toMatch(
+      /invoices_not_sent:\s*\{[\s\S]+?label:\s*"Invoices not sent"[\s\S]+?icon:\s*FileText[\s\S]+?mode:\s*"invoices_not_sent"/,
+    );
   });
 
-  it("density matches Pipeline / Operational Alerts (px-3 py-1.5 gap-2, single-line)", () => {
-    expect(naBlock).toMatch(/px-3 py-1\.5/);
-    expect(naBlock).toMatch(/gap-2/);
-    // Two-line affordances from the previous shape are gone.
-    expect(naBlock).not.toMatch(/flex-wrap/);
-    expect(naBlock).not.toMatch(/items-baseline/);
-    // Currency rendering is dropped from the compact card row per the brief.
-    expect(naBlock).not.toMatch(/formatCurrency/);
-    expect(naBlock).not.toMatch(/invoicesNotSentValue/);
+  it("places invoices_not_sent at the bottom of the canonical default order (lower urgency)", () => {
+    // Canonical ordering puts billing-side items below
+    // scheduling/dispatch items so highest operational urgency stays
+    // at the top of the card.
+    expect(alertsCardSrc).toMatch(
+      /DEFAULT_ALERT_ORDER:\s*OperationalAlertRowKey\[\]\s*=\s*\[\s*"ready_to_invoice",\s*"past_due",\s*"unscheduled",\s*"requires_attention",\s*"invoices_not_sent",?\s*\]/,
+    );
   });
 
-  it("hover + focus styling is visible on active rows", () => {
-    expect(naBlock).toMatch(/hover:bg-\[#F0F5F0\]/);
-    expect(naBlock).toMatch(/focus-visible:/);
+  it("folds invoicesNotSentCount into the totalCount (so the card doesn't auto-collapse while billing waits)", () => {
+    expect(alertsCardSrc).toMatch(
+      /const totalCount\s*=\s*readyToInvoiceCount\s*\+\s*pastDueCount\s*\+\s*unscheduledCount\s*\+\s*requiresAttentionCount\s*\+\s*invoicesNotSentCount/,
+    );
   });
 
-  it("zero-count row is muted but still renders the label + count", () => {
-    expect(naBlock).toMatch(/hasItems\s*\?\s*"text-slate-700"\s*:\s*"text-slate-400"/);
-    expect(naBlock).toMatch(/hasItems\s*\?\s*"text-\[#111827\]"\s*:\s*"text-slate-400"/);
+  it("loading skeleton renders 5 rows (matches the 5 canonical row count)", () => {
+    expect(alertsCardSrc).toMatch(/\[0,\s*1,\s*2,\s*3,\s*4\]\.map/);
+  });
+});
+
+// ── Page wiring: count + handler thread through to OperationalAlertsCard ──
+
+describe("FinancialDashboard — wires invoicesNotSentCount into OperationalAlertsCard", () => {
+  it("threads the financial-summary count into OperationalAlertsCard", () => {
+    // Same shape the retired NeedsAttentionCard consumed — no new
+    // query, no new endpoint, no client-side aggregation.
+    expect(dashSrc).toMatch(
+      /<OperationalAlertsCard\b[\s\S]+?invoicesNotSentCount=\{data\?\.needsAttention\.invoicesNotSentCount\s*\?\?\s*0\}/,
+    );
+  });
+
+  it("passes the 5-element canonical order with invoices_not_sent at the bottom", () => {
+    expect(dashSrc).toMatch(
+      /order=\{\["requires_attention", "past_due", "unscheduled", "ready_to_invoice", "invoices_not_sent"\]\}/,
+    );
+  });
+
+  it("Operational Alerts is added to the financial query gate so its new row's data loads", () => {
+    // Hidden-widget rule: the financial summary query must fire when
+    // Operational Alerts is visible (because invoicesNotSentCount lives
+    // on that summary), so the row never sticks at 0 when the workflow
+    // query alone is enabled.
+    //
+    // Strip line comments inside the array literal so explanatory
+    // prose (which legitimately references the retired key by name)
+    // doesn't false-trigger the negative pin below.
+    const queryGateBlock = dashSrc.match(
+      /FINANCIAL_QUERY_WIDGETS:[\s\S]+?\];/,
+    );
+    expect(queryGateBlock).toBeTruthy();
+    const codeOnly = queryGateBlock![0]
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).toMatch(/"operational_alerts"/);
+    // Inverse pin: no string-literal entry for the retired key.
+    expect(codeOnly).not.toMatch(/"needs_attention"/);
+  });
+
+  it("page state starts at requires_attention; the row → mode dispatch lives on OperationalAlertsCard", () => {
+    // The default mode does not change — we still initialize on
+    // requires_attention. After consolidation the literal
+    // openActionModal("invoices_not_sent") call no longer lives on
+    // the PAGE (the previous NeedsAttentionCard mount used it
+    // directly); it now flows through OperationalAlertsCard's
+    // onOpenActionModal(row.mode) where row.mode === "invoices_not_sent".
+    expect(dashSrc).toMatch(/useState<DashboardActionMode>\("requires_attention"\)/);
+    // Cross-check the alerts card carries the row + mode literal.
+    expect(alertsCardSrc).toMatch(/mode:\s*"invoices_not_sent"/);
+    // And the page wires openActionModal into the alerts card so the
+    // dispatch reaches the modal.
+    expect(dashSrc).toMatch(
+      /<OperationalAlertsCard\b[\s\S]+?onOpenActionModal=\{openActionModal\}/,
+    );
+  });
+
+  it("does NOT navigate to /invoices?filter=draft for the Invoices not sent View", () => {
+    // The prior implementation called setLocation('/invoices?filter=draft').
+    // That path is now superseded by the shared dashboard modal.
+    expect(dashSrc).not.toMatch(/setLocation\("\/invoices\?filter=draft"\)/);
+  });
+
+  it("mounts the shared DashboardActionModal once (single JSX instance)", () => {
+    // The page renders ONE <DashboardActionModal> element; mode switches
+    // in place via setActionModalMode. Anchor on the actual JSX mount
+    // by matching the mode prop binding (which only appears on the live
+    // element, not in import statements or comment references).
+    const matches = dashSrc.match(/<DashboardActionModal\b[\s\S]*?mode=\{actionModalMode\}/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  it("does NOT re-introduce duplicate invoice-row rendering on the page", () => {
+    // After consolidation there must be exactly ONE place in the
+    // dashboard tree where the "Invoices not sent" row is rendered:
+    // the OperationalAlertsCard's row map. The old NeedsAttentionCard
+    // location is gone.
+    //
+    // Strip comments first — explanatory in-source prose legitimately
+    // mentions the absorbed-row label by name, and a substring count
+    // would over-report.
+    const codeOnly = dashSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    // No `label: "Invoices not sent"` declaration on the page — the
+    // row config moved to OperationalAlertsCard.
+    expect(codeOnly).not.toMatch(/label:\s*"Invoices not sent"/);
+    // The label literal lives in the alerts card now (single source).
+    expect(alertsCardSrc).toMatch(/label:\s*"Invoices not sent"/);
+    const cardMatches = alertsCardSrc.match(/label:\s*"Invoices not sent"/g) ?? [];
+    expect(cardMatches.length).toBe(1);
   });
 });
 
@@ -172,36 +244,7 @@ describe("/api/invoices/list — lenient pagination (invoices_not_sent feed fix)
   });
 });
 
-// ── Wiring: View → DashboardActionModal mode=invoices_not_sent ──────
-
-describe("FinancialDashboard — Invoices not sent View opens shared modal", () => {
-  it("page state starts at requires_attention and routes invoices_not_sent through openActionModal", () => {
-    // The default mode does not change — we still initialize on
-    // requires_attention. The Invoices not sent button is just one of
-    // the modes the page can switch to.
-    expect(dashSrc).toMatch(/useState<DashboardActionMode>\("requires_attention"\)/);
-    expect(dashSrc).toMatch(
-      /onViewInvoicesNotSent=\{\(\)\s*=>\s*openActionModal\("invoices_not_sent"\)\}/,
-    );
-  });
-
-  it("does NOT navigate to /invoices?filter=draft for the Invoices not sent View", () => {
-    // The prior implementation called setLocation('/invoices?filter=draft').
-    // That path is now superseded by the shared dashboard modal.
-    expect(dashSrc).not.toMatch(/setLocation\("\/invoices\?filter=draft"\)/);
-  });
-
-  it("mounts the shared DashboardActionModal once (single JSX instance)", () => {
-    // The page renders ONE <DashboardActionModal> element; mode switches
-    // in place via setActionModalMode. Anchor on the actual JSX mount
-    // by matching the mode prop binding (which only appears on the live
-    // element, not in import statements or comment references).
-    const matches = dashSrc.match(/<DashboardActionModal\b[\s\S]*?mode=\{actionModalMode\}/g) ?? [];
-    expect(matches.length).toBe(1);
-  });
-});
-
-// ── Modal: invoices_not_sent contract ───────────────────────────────
+// ── Modal: invoices_not_sent contract (unchanged) ───────────────────
 
 describe("DashboardActionModal — invoices_not_sent mode wiring", () => {
   it("MODE_CONFIG.invoices_not_sent has title 'Invoices Not Sent' + sources=[unsent_invoices]", () => {
@@ -326,5 +369,35 @@ describe("No parallel invoice modal component introduced", () => {
     // No new pattern wrapper invented for invoices.
     expect(modalSrc).not.toMatch(/<InvoicesActionModal\b/);
     expect(modalSrc).not.toMatch(/<DraftInvoicesModal\b/);
+  });
+});
+
+// ── Layout persistence: orphan needs_attention rows degrade safely ──
+
+describe("Persisted user layouts referencing the retired widget degrade safely", () => {
+  it("the cleanup migration sweeps orphan needs_attention rows for hygiene", () => {
+    const sql = readFileSync(
+      resolve(ROOT, "migrations/2026_05_07_drop_needs_attention_widget.sql"),
+      "utf-8",
+    );
+    expect(sql).toMatch(
+      /DELETE FROM user_dashboard_widgets[\s\S]+?WHERE widget_key\s*=\s*'needs_attention'/i,
+    );
+  });
+
+  it("the customize drawer iterates the registry, not persisted rows (orphans never render)", () => {
+    // The drawer renders a row per widget the resolver returns, and the
+    // resolver iterates the registry (see useDashboardLayout +
+    // userDashboardWidgetsRepository.listForUser). A persisted
+    // needs_attention row is silently ignored — there is no toggle to
+    // re-enable a widget the registry no longer knows about.
+    const drawer = readFileSync(
+      resolve(ROOT, "client/src/dashboard/DashboardCustomizeDrawer.tsx"),
+      "utf-8",
+    );
+    // Drawer reads from layout.widgets (the resolver output), not raw
+    // override rows. Pin that the drawer never references the retired
+    // widget key directly.
+    expect(drawer).not.toMatch(/needs_attention/);
   });
 });

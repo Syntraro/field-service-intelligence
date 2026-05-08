@@ -1,0 +1,37 @@
+-- =====================================================================
+-- Migration: 2026-05-07 — sweep orphan needs_attention widget rows
+-- =====================================================================
+-- The standalone "Needs Attention" dashboard card was retired today.
+-- Its single user-facing row ("Invoices not sent") moved to the bottom
+-- of the Operational Alerts card. The `needs_attention` widget key is
+-- gone from `shared/dashboardWidgetRegistry.ts`.
+--
+-- Why a sweep migration instead of leaving the rows alone
+-- ---------------------------------------------------------
+-- The dashboard layout resolver iterates the REGISTRY (not the
+-- override rows) when building the GET response, so persisted
+-- `widget_key='needs_attention'` rows are silently ignored at read
+-- time — old layouts degrade safely without this migration. We sweep
+-- anyway for hygiene: orphan rows accumulate forever otherwise, they
+-- show up in audit queries, and a future widget that re-uses the
+-- `needs_attention` key (unlikely but possible) would inherit stale
+-- visibility / order overrides.
+--
+-- Safety
+-- ------
+-- - Idempotent: a second run is a no-op (the rows are already gone).
+-- - Scoped: only deletes rows whose `widget_key='needs_attention'`. No
+--   other widget rows (todays_schedule, pipeline_snapshot, etc.) are
+--   touched.
+-- - The unique index `(user_id, dashboard_key, widget_key)` and the
+--   lookup index `(user_id, dashboard_key, order_index)` are
+--   unaffected — they remain valid for every other widget row.
+-- - Does NOT renumber `order_index` on surviving rows. The resolver
+--   re-derives the visual order at read time from the registry's
+--   `defaultOrder` (when no override exists for a widget) merged with
+--   the override rows' `order_index` (when an override exists). Gaps
+--   in the override rows' integer sequence are tolerated.
+-- =====================================================================
+
+DELETE FROM user_dashboard_widgets
+WHERE widget_key = 'needs_attention';

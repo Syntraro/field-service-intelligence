@@ -45,7 +45,10 @@ describe("FinancialDashboard layout — registry-driven widget grid (2026-05-07 
     expect(dashSrc).toMatch(/pipeline_snapshot:\s*\(/);
     expect(dashSrc).toMatch(/collections_overview:\s*\(/);
     expect(dashSrc).toMatch(/scheduled_revenue:\s*\(/);
-    expect(dashSrc).toMatch(/needs_attention:\s*\(/);
+    // 2026-05-07: needs_attention renderer entry is intentionally GONE.
+    // The card's only row ("Invoices not sent") was absorbed into
+    // Operational Alerts. Inverse pin — no orphan renderer remains.
+    expect(dashSrc).not.toMatch(/needs_attention:\s*\(/);
   });
 
   it("page no longer carries the prior hardcoded `md:grid-cols-3` / `xl:grid-cols-[…]` row containers", () => {
@@ -118,17 +121,31 @@ describe("Today's Schedule — compact capacity indicators in header", () => {
   });
 });
 
-// ── Operational Alerts unchanged ──
+// ── Operational Alerts (2026-05-07: now also carries Invoices Not Sent) ──
 
-describe("Operational Alerts — unchanged contract", () => {
-  it("OperationalAlertsCard mount preserves its prop set", () => {
+describe("Operational Alerts — extended with invoices_not_sent row", () => {
+  it("OperationalAlertsCard mount preserves the four legacy props", () => {
     expect(dashSrc).toMatch(/<OperationalAlertsCard\b/);
     expect(dashSrc).toMatch(/requiresAttentionCount={requiresAttentionCount}/);
     expect(dashSrc).toMatch(/pastDueCount={pastDueCount}/);
     expect(dashSrc).toMatch(/unscheduledCount={unscheduledJobsCount}/);
     expect(dashSrc).toMatch(/readyToInvoiceCount={readyToInvoiceCount}/);
     expect(dashSrc).toMatch(/onOpenActionModal={openActionModal}/);
-    expect(dashSrc).toMatch(/order=\{\["requires_attention", "past_due", "unscheduled", "ready_to_invoice"\]\}/);
+  });
+
+  it("OperationalAlertsCard now threads invoicesNotSentCount + the 5-row order", () => {
+    // 2026-05-07: the Needs Attention card was retired and its single
+    // "Invoices not sent" row absorbed into Operational Alerts. The
+    // count comes from the same financial-summary field the retired
+    // card consumed — no new query, no new endpoint.
+    expect(dashSrc).toMatch(
+      /invoicesNotSentCount=\{data\?\.needsAttention\.invoicesNotSentCount\s*\?\?\s*0\}/,
+    );
+    // Canonical row ordering puts invoices_not_sent at the bottom
+    // (lower operational urgency than scheduling/dispatch issues).
+    expect(dashSrc).toMatch(
+      /order=\{\["requires_attention", "past_due", "unscheduled", "ready_to_invoice", "invoices_not_sent"\]\}/,
+    );
   });
 });
 
@@ -276,68 +293,64 @@ describe("Scheduled Revenue — excludes jobs without reliable value", () => {
   });
 });
 
-// ── Needs Attention — narrowed to billing/admin (2026-05-06 RALPH) ──
+// ── Needs Attention card — RETIRED (2026-05-07) ──
 
-describe("Needs Attention — narrowed to actionable billing/admin only", () => {
-  it("renders ONLY the invoices-not-sent bucket", () => {
-    expect(dashSrc).toMatch(/data-testid="needs-attention"/);
-    // Per-item keys feed the rendered testid via `needs-attention-${it.key}`.
-    expect(dashSrc).toMatch(/key:\s*"invoices-not-sent"/);
-    // Negative pins for the dropped buckets — these MUST NOT come back.
-    expect(dashSrc).not.toMatch(/key:\s*"quotes-stale"/);
-    expect(dashSrc).not.toMatch(/key:\s*"leads-stale"/);
-    expect(dashSrc).not.toMatch(/key:\s*"payments-pending"/);
-    // Must NOT introduce a "ready to invoice" / "completed jobs not invoiced" key here.
-    expect(dashSrc).not.toMatch(/key:\s*"ready-to-invoice"/);
-    expect(dashSrc).not.toMatch(/key:\s*"completed-not-invoiced"/);
+describe("Needs Attention card — removed; row absorbed into Operational Alerts", () => {
+  it("the inline NeedsAttentionCard component is gone from the page source", () => {
+    // The standalone card was a placeholder that duplicated the
+    // operational-alert concept. Its single row ("Invoices not sent")
+    // moved to the bottom of OperationalAlertsCard. Removing the
+    // component declaration prevents accidental re-mount.
+    expect(dashSrc).not.toMatch(/function NeedsAttentionCard\(/);
+    expect(dashSrc).not.toMatch(/interface NeedsAttentionCardProps\b/);
+    expect(dashSrc).not.toMatch(/<NeedsAttentionCard\b/);
   });
 
-  it("Ready to Invoice remains exclusive to Operational Alerts", () => {
-    // The OperationalAlertsCard is the ONLY consumer of readyToInvoiceCount.
-    const matches = dashSrc.match(/readyToInvoiceCount/g) ?? [];
-    // Expected refs: declaration + OperationalAlertsCard prop. NOT in NeedsAttentionCard.
-    expect(matches.length).toBeGreaterThanOrEqual(1);
-    // Cross-check: NeedsAttentionCard's items array doesn't reference it.
-    const naBlock = dashSrc.match(/function NeedsAttentionCard\([\s\S]+?^}/m);
-    expect(naBlock).toBeTruthy();
-    expect(naBlock![0]).not.toMatch(/readyToInvoice/i);
-    expect(naBlock![0]).not.toMatch(/completedNotInvoiced/i);
+  it("the renderer map no longer carries the needs_attention key", () => {
+    expect(dashSrc).not.toMatch(/needs_attention:\s*\(/);
   });
 
-  it("does NOT mount a stale-quotes / stale-leads / payments view handler on the card", () => {
-    // The dropped rows had dedicated `onViewStaleQuotes` / `onViewStaleLeads`
-    // / `onViewPaymentsPending` props — those props must not reappear.
-    expect(dashSrc).not.toMatch(/onViewStaleQuotes/);
-    expect(dashSrc).not.toMatch(/onViewStaleLeads/);
-    expect(dashSrc).not.toMatch(/onViewPaymentsPending/);
-    // The card mount supplies only the invoices-not-sent handler.
-    expect(dashSrc).toMatch(/<NeedsAttentionCard\b[\s\S]+?onViewInvoicesNotSent=\{[^}]+\}\s*\/>/);
-  });
-
-  it("renders the empty state when there are no actionable billing/admin items", () => {
-    // The new copy is a hard pin — the empty state is what the user sees
-    // when their billing inbox is clear.
-    expect(dashSrc).toMatch(/No billing\/admin items need attention\./);
-    expect(dashSrc).toMatch(/data-testid="needs-attention-empty"/);
-  });
-
-  it("Invoices not sent View opens the shared DashboardActionModal", () => {
-    // The handler must route through the page-level openActionModal —
-    // NOT a router redirect to /invoices?filter=draft (the prior behavior).
-    expect(dashSrc).toMatch(
-      /onViewInvoicesNotSent=\{\(\)\s*=>\s*openActionModal\("invoices_not_sent"\)\}/,
+  it("the financial query gate now lists operational_alerts (so its new row's data still loads)", () => {
+    // The Invoices-not-sent count comes from the financial summary;
+    // when only Operational Alerts is visible, the financial query
+    // must still fire so that row populates. Strip comments from the
+    // matched block so explanatory prose doesn't false-trigger the
+    // negative pin.
+    const queryGateBlock = dashSrc.match(
+      /FINANCIAL_QUERY_WIDGETS:[\s\S]+?\];/,
     );
+    expect(queryGateBlock).toBeTruthy();
+    const codeOnly = queryGateBlock![0]
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).toMatch(/"operational_alerts"/);
+    expect(codeOnly).not.toMatch(/"needs_attention"/);
+  });
+
+  it("the Invoices Not Sent dispatch still routes through OperationalAlertsCard's onOpenActionModal", () => {
+    // The mode itself is unchanged. After consolidation the literal
+    // `openActionModal("invoices_not_sent")` call on the page is gone
+    // (it lived inside the now-deleted NeedsAttentionCard mount). The
+    // dispatch path now goes:
+    //   page.openActionModal → <OperationalAlertsCard onOpenActionModal=>
+    //   row.mode === "invoices_not_sent"
+    expect(dashSrc).toMatch(
+      /<OperationalAlertsCard\b[\s\S]+?onOpenActionModal=\{openActionModal\}/,
+    );
+    // No router redirect fallback — the prior `?filter=draft` URL
+    // path was retired in 2026-05-06 and must not return.
     expect(dashSrc).not.toMatch(/setLocation\("\/invoices\?filter=draft"\)/);
   });
 
-  it("typography uses readable tokens (no text-[10px] / text-[11px] in NeedsAttentionCard)", () => {
-    const naBlock = dashSrc.match(/function NeedsAttentionCard\([\s\S]+?^}/m);
-    expect(naBlock).toBeTruthy();
-    // Per the brief: avoid the sub-12px arbitrary sizes — use `text-xs`
-    // and `text-sm` so the card matches Operational Alerts /
-    // Collections readability.
-    expect(naBlock![0]).not.toMatch(/text-\[10px\]/);
-    expect(naBlock![0]).not.toMatch(/text-\[11px\]/);
+  it("the financial summary endpoint + storage helper are unchanged", () => {
+    // Hard pin: removing the card MUST NOT remove the underlying SQL
+    // helper or the API field — Operational Alerts now consumes the
+    // same `data.needsAttention.invoicesNotSentCount` shape.
+    expect(storeSrc).toMatch(/async function getNeedsAttention/);
+    expect(storeSrc).toMatch(/needsAttention:\s*\{/);
+    expect(dashSrc).toMatch(
+      /data\?\.needsAttention\.invoicesNotSentCount/,
+    );
   });
 });
 

@@ -24,6 +24,7 @@ import { schedulingRepository } from "./scheduling";
 import { teamRepository } from "./team";
 import { businessHoursRepository } from "./businessHours";
 import { companyRepository } from "./company";
+import { technicianTimeOffRepository } from "./technicianTimeOff";
 import {
   DEFAULT_TIMEZONE,
   filterSchedulableTechnicians,
@@ -64,7 +65,7 @@ export type CapacityState =
  * the same "operationally meaningful" view.
  */
 export interface ScheduleBlock {
-  kind: "booked" | "open";
+  kind: "booked" | "open" | "time_off";
   startISO: string;
   endISO: string;
   durationMinutes: number;
@@ -81,6 +82,17 @@ export interface ScheduleBlock {
   visitId?: string;
   jobId?: string;
   visitStatus?: string;
+  /**
+   * 2026-05-07 RALPH (technician time off): present on time_off blocks
+   * only. Reason is the validated string union from
+   * `TECHNICIAN_TIME_OFF_REASONS`. Note is the optional admin-supplied
+   * free-form text. timeOffId lets the dashboard wire a click-to-edit
+   * action without re-fetching the row.
+   */
+  reason?: string;
+  note?: string | null;
+  timeOffId?: string;
+  allDay?: boolean;
 }
 
 export interface TechnicianCapacity {
@@ -328,18 +340,79 @@ function buildOpenGapBlocks(
  * per-tech loop and is unaffected by this refactor — it always read
  * `busyByTech` directly, never the schedule-block list.
  */
+/**
+ * 2026-05-07 RALPH: emit `kind: "time_off"` schedule blocks for the
+ * tech tile. Each block is clipped to the workday window so a
+ * multi-day vacation only paints today's slice. The `freeSlots`
+ * computation upstream of this helper already treats time-off
+ * intervals as busy (they were folded into `busyByTech`), so the
+ * gap math is consistent.
+ */
+interface TimeOffForBlocks {
+  start: number;
+  end: number;
+  reason: string;
+  note: string | null;
+  timeOffId: string;
+  allDay: boolean;
+}
+function buildTimeOffBlocks(
+  workStartMs: number,
+  workEndMs: number,
+  timeOff: TimeOffForBlocks[],
+): ScheduleBlock[] {
+  if (workEndMs <= workStartMs) return [];
+  const out: ScheduleBlock[] = [];
+  for (const t of timeOff) {
+    const clippedStart = Math.max(t.start, workStartMs);
+    const clippedEnd = Math.min(t.end, workEndMs);
+    if (clippedEnd <= clippedStart) continue;
+    out.push({
+      kind: "time_off",
+      startISO: new Date(clippedStart).toISOString(),
+      endISO: new Date(clippedEnd).toISOString(),
+      durationMinutes: Math.round((clippedEnd - clippedStart) / 60_000),
+      reason: t.reason,
+      note: t.note,
+      timeOffId: t.timeOffId,
+      allDay: t.allDay,
+    });
+  }
+  return out;
+}
+
 function buildScheduleBlocks(
   workStartMs: number,
   workEndMs: number,
   visits: VisitForBlocks[],
+  timeOff: TimeOffForBlocks[] = [],
 ): ScheduleBlock[] {
   const booked = buildBookedBlocks(visits);
-  const gaps = buildOpenGapBlocks(workStartMs, workEndMs, visits);
-  return [...booked, ...gaps].sort((a, b) => {
+  const timeOffBlocks = buildTimeOffBlocks(workStartMs, workEndMs, timeOff);
+  // Open gaps are computed against booked + time-off as a unified
+  // "busy" set so a tech on time-off doesn't show open slots inside
+  // their blocked window.
+  const busyForGaps: VisitForBlocks[] = [
+    ...visits,
+    ...timeOff.map((t) => ({
+      start: t.start,
+      end: t.end,
+      title: "",
+      visitId: "",
+      jobId: "",
+      visitStatus: "",
+    })),
+  ];
+  const gaps = buildOpenGapBlocks(workStartMs, workEndMs, busyForGaps);
+  return [...booked, ...timeOffBlocks, ...gaps].sort((a, b) => {
     const aStart = Date.parse(a.startISO);
     const bStart = Date.parse(b.startISO);
     if (aStart !== bStart) return aStart - bStart;
-    if (a.kind !== b.kind) return a.kind === "booked" ? -1 : 1;
+    // booked first, then time_off, then open — so a tech with a
+    // booked visit overlapping a time-off entry reads correctly.
+    const kindRank = (k: ScheduleBlock["kind"]) =>
+      k === "booked" ? 0 : k === "time_off" ? 1 : 2;
+    if (a.kind !== b.kind) return kindRank(a.kind) - kindRank(b.kind);
     return Date.parse(a.endISO) - Date.parse(b.endISO);
   });
 }
@@ -596,6 +669,67 @@ export async function getTodayCapacity(
     return a.technicianName.localeCompare(b.technicianName);
   });
 
+  // 2026-05-07 RALPH (technician time off): read overlapping time-off
+  // rows for the day window. Each row blocks the tech's availability
+  // — we fold them into busyByTech so the gap math sees them, and
+  // emit them as `kind: "time_off"` schedule blocks for the tile.
+  // Capacity math is unchanged for techs with no time-off; the
+  // existing visit-based path is the dominant case.
+  //
+  // RESILIENCE: this query is wrapped in try/catch so a missing
+  // `technician_time_off` table (e.g., when the migration hasn't
+  // been applied to the running database) cannot crash the canonical
+  // capacity endpoint that drives the entire dashboard. A failure
+  // here is logged once per request and treated as "no time-off
+  // entries" — capacity math degrades gracefully back to the
+  // pre-time-off behaviour. Without this guard, an unmigrated dev
+  // DB caused React Query to retry the failed request with backoff
+  // (~30 s) before settling on an empty response, which surfaced as
+  // "No technicians in the selected scope" with the team selector
+  // and Column/Stacked toggle hidden.
+  const timeOffByTech = new Map<string, TimeOffForBlocks[]>();
+  let todaysTimeOff: Awaited<
+    ReturnType<typeof technicianTimeOffRepository.listOverlapping>
+  > = [];
+  try {
+    todaysTimeOff = await technicianTimeOffRepository.listOverlapping(
+      companyId,
+      { windowStart: dayStart, windowEnd: dayEnd },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[capacity] listOverlapping(time_off) failed; treating as empty. ${msg}`,
+    );
+  }
+  for (const t of todaysTimeOff) {
+    if (!schedulableIds.has(t.technicianUserId)) continue;
+    const start = new Date(t.startsAt).getTime();
+    const end = new Date(t.endsAt).getTime();
+    if (!(end > start)) continue;
+    const clippedStart = Math.max(start, dayStartMs);
+    const clippedEnd = Math.min(end, dayEndMs);
+    if (clippedEnd <= clippedStart) continue;
+    const arr = timeOffByTech.get(t.technicianUserId) ?? [];
+    arr.push({
+      start: clippedStart,
+      end: clippedEnd,
+      reason: t.reason,
+      note: t.note ?? null,
+      timeOffId: t.id,
+      allDay: t.allDay,
+    });
+    timeOffByTech.set(t.technicianUserId, arr);
+    // Fold time-off intervals into busyByTech so freeSlots clips
+    // around them. A tech on full-day vacation will see zero
+    // remaining slots and fall through to the off-today / fully-
+    // booked branch below.
+    const busyArr = busyByTech.get(t.technicianUserId) ?? [];
+    busyArr.push({ start: clippedStart, end: clippedEnd });
+    busyByTech.set(t.technicianUserId, busyArr);
+  }
+
   // 2026-05-05 Lead Visits: pre-sales onsite appointments BLOCK
   // technician availability today (we don't want to double-book a
   // tech against a quote-bound onsite). They do NOT count as jobs:
@@ -691,26 +825,43 @@ export async function getTodayCapacity(
     // job — accidental bookings became invisible to dispatchers. The
     // off_today state is preserved on the response so the client can label
     // the tech "(off shift)" while still rendering the blocks.
+    // 2026-05-07 RALPH: time-off blocks are emitted alongside booked
+    // visits via the same `buildScheduleBlocks` helper.
+    const techTimeOff = timeOffByTech.get(member.id) ?? [];
     const scheduleBlocks: ScheduleBlock[] = (() => {
       if (hasValidWorkday) {
         return buildScheduleBlocks(
           dayStartMs + workStartMin! * 60_000,
           dayStartMs + workEndMin! * 60_000,
           techVisits,
+          techTimeOff,
         );
       }
-      if (techVisits.length === 0) return [];
-      // No workday but there ARE assigned visits — derive a window from the
-      // visits themselves (earliest start → latest end) so buildScheduleBlocks
-      // has bounds. Clamp at the calendar day so a runaway visit doesn't
-      // produce a malformed window.
-      const minVisitStart = Math.min(...techVisits.map((v) => v.start));
-      const maxVisitEnd = Math.max(...techVisits.map((v) => v.end));
+      if (techVisits.length === 0 && techTimeOff.length === 0) return [];
+      // No workday but there ARE assigned visits or time-off entries —
+      // derive a window from those so buildScheduleBlocks has bounds.
+      // Clamp at the calendar day so a runaway entry doesn't produce a
+      // malformed window.
+      const allStarts: number[] = [
+        ...techVisits.map((v) => v.start),
+        ...techTimeOff.map((t) => t.start),
+      ];
+      const allEnds: number[] = [
+        ...techVisits.map((v) => v.end),
+        ...techTimeOff.map((t) => t.end),
+      ];
+      const minStart = Math.min(...allStarts);
+      const maxEnd = Math.max(...allEnds);
       const dayEndMs = dayStartMs + 24 * 60 * 60_000;
-      const windowStart = Math.max(dayStartMs, minVisitStart);
-      const windowEnd = Math.min(dayEndMs, maxVisitEnd);
+      const windowStart = Math.max(dayStartMs, minStart);
+      const windowEnd = Math.min(dayEndMs, maxEnd);
       if (windowEnd <= windowStart) return [];
-      return buildScheduleBlocks(windowStart, windowEnd, techVisits);
+      return buildScheduleBlocks(
+        windowStart,
+        windowEnd,
+        techVisits,
+        techTimeOff,
+      );
     })();
 
     if (!hasValidWorkday) {
@@ -785,10 +936,18 @@ export async function getTodayCapacity(
     );
 
     if (meaningful.length === 0) {
+      // 2026-05-07 RALPH (technician time off): when zero remaining
+      // minutes is caused by time-off (not by booked visits), report
+      // `off_today` so the dashboard's grouped Available column reads
+      // "Off" instead of "Fully booked." Mixed case (some visits AND
+      // time-off) keeps the "fully_booked" semantics — the tech still
+      // has assigned work today, just no remaining capacity.
+      const isFullyOffByTimeOff =
+        techVisits.length === 0 && techTimeOff.length > 0;
       return {
         technicianId: member.id,
         name,
-        state: "fully_booked",
+        state: isFullyOffByTimeOff ? "off_today" : "fully_booked",
         slot: null,
         totalAvailableMinutes: 0,
         meaningfulSlotCount: 0,

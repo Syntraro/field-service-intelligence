@@ -216,13 +216,17 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
     expect(rows[1]).toHaveLength(1);
   });
 
-  it("packs the canonical financial layout into the brief's 3 clean rows", () => {
-    // Brief default: TS(2) + Pipeline(1) | Coll(1) + Sch(1) + OA(1) | NA(3).
+  it("packs the canonical financial layout into the brief's 2 clean rows", () => {
+    // 2026-05-07: the standalone Needs Attention card was retired and
+    // its single row absorbed into Operational Alerts. Default layout:
+    //   row 1: TS(2) + Pipeline(1)
+    //   row 2: Collections(1) + Scheduled Revenue(1) + Operational Alerts(1)
+    // (No row 3 — NA is gone.)
     const widgets = FINANCIAL_DASHBOARD_WIDGETS.map((d) =>
       w(d.key, d.sizePreset),
     );
     const rows = packDashboardRows(widgets);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
     expect(rows[0].map((x) => x.widgetKey)).toEqual([
       "todays_schedule",
       "pipeline_snapshot",
@@ -232,15 +236,16 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
       "scheduled_revenue",
       "operational_alerts",
     ]);
-    expect(rows[2].map((x) => x.widgetKey)).toEqual(["needs_attention"]);
+    // Inverse pin: the retired widget MUST NOT reappear in the packed rows.
+    const flatKeys = rows.flat().map((r) => r.widgetKey);
+    expect(flatKeys).not.toContain("needs_attention");
   });
 
   it("respects width overrides during packing (TS at 1 unit)", () => {
     // Today's Schedule shrunk to 1 unit (only 1 visible team member).
-    // Default order is now all-thirds-except-TS, so 6 thirds pack
-    // cleanly into 2 rows of 3:
+    // The five canonical widgets (TS + 4 thirds) pack into:
     //   row 1: TS(1) + Pipeline(1) + Collections(1) = 3 units
-    //   row 2: Scheduled(1) + OA(1) + Needs Attention(1) = 3 units
+    //   row 2: Scheduled(1) + OA(1) = 2 units (slack 1/3)
     const widgets = FINANCIAL_DASHBOARD_WIDGETS.map((d) =>
       w(d.key, d.sizePreset),
     );
@@ -254,7 +259,6 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
     expect(rows[1].map((x) => x.widgetKey)).toEqual([
       "scheduled_revenue",
       "operational_alerts",
-      "needs_attention",
     ]);
   });
 });
@@ -302,11 +306,12 @@ describe("spanClassFor — every widget always renders at its natural width", ()
   });
 
   it("when Today's Schedule is hidden, surviving 1-cols stay 1-col on desktop", () => {
-    // New default order minus TS: [Pipeline, Collections, Scheduled, OA, NA]
-    // All five are 1-unit; greedy 3-unit packing →
+    // 2026-05-07: NA gone. Default order minus TS: [Pipeline,
+    // Collections, Scheduled, OA] — four 1-unit widgets, greedy 3-unit
+    // packing →
     //   row 1: Pipeline + Collections + Scheduled (3 units, intact)
-    //   row 2: OA + NA (2 units) — both STAY at xl:col-span-4, NOT
-    //          promoted to halves. Empty trailing 1/3 is acceptable.
+    //   row 2: OA (1 unit) — stays at xl:col-span-4, NOT promoted to
+    //          full width. Empty trailing 2/3 is acceptable.
     const visible = FINANCIAL_DASHBOARD_WIDGETS
       .filter((d) => d.key !== "todays_schedule")
       .map((d) => w(d.key, d.sizePreset));
@@ -322,10 +327,7 @@ describe("spanClassFor — every widget always renders at its natural width", ()
         "col-span-12 md:col-span-6 xl:col-span-4",
       );
     }
-    expect(rows[1].map((x) => x.widgetKey)).toEqual([
-      "operational_alerts",
-      "needs_attention",
-    ]);
+    expect(rows[1].map((x) => x.widgetKey)).toEqual(["operational_alerts"]);
     for (const widget of rows[1]) {
       expect(spanClassFor(widget, rows[1])).toBe(
         "col-span-12 md:col-span-6 xl:col-span-4",
@@ -333,11 +335,11 @@ describe("spanClassFor — every widget always renders at its natural width", ()
     }
   });
 
-  it("hiding Operational Alerts keeps Collections + Scheduled + NA at 1/3 each (no stretch)", () => {
-    // Default order minus OA: [TS, Pipeline, Collections, Scheduled, NA]
-    // Greedy 3-unit packing →
+  it("hiding Operational Alerts keeps Collections + Scheduled at 1/3 each (no stretch)", () => {
+    // 2026-05-07: NA gone. Default order minus OA: [TS, Pipeline,
+    // Collections, Scheduled]. Greedy 3-unit packing →
     //   row 1: TS(2) + Pipeline(1) = 3 units, intact
-    //   row 2: Collections(1) + Scheduled(1) + NA(1) = 3 units, intact.
+    //   row 2: Collections(1) + Scheduled(1) = 2 units, slack 1/3.
     const visible = FINANCIAL_DASHBOARD_WIDGETS
       .filter((d) => d.key !== "operational_alerts")
       .map((d) => w(d.key, d.sizePreset));
@@ -346,7 +348,6 @@ describe("spanClassFor — every widget always renders at its natural width", ()
     expect(rows[1].map((x) => x.widgetKey)).toEqual([
       "collections_overview",
       "scheduled_revenue",
-      "needs_attention",
     ]);
     for (const widget of rows[1]) {
       expect(spanClassFor(widget, rows[1])).toBe(
@@ -366,9 +367,13 @@ describe("spanClassFor — every widget always renders at its natural width", ()
     }
   });
 
-  it("Needs Attention always renders at full width regardless of neighbours", () => {
-    const na = w("needs_attention", "full");
-    expect(spanClassFor(na, [na])).toBe("col-span-12");
+  it("a full-preset widget always renders at full width regardless of neighbours", () => {
+    // 2026-05-07: the canonical full-width consumer (Needs Attention)
+    // was retired; this property test now exercises the spanClassFor
+    // contract for any future full-preset widget without referencing
+    // a registry key that no longer exists.
+    const fullWidget = w("synthetic_full", "full");
+    expect(spanClassFor(fullWidget, [fullWidget])).toBe("col-span-12");
   });
 });
 
@@ -572,15 +577,16 @@ describe("Registry — size + height presets", () => {
     expect(def?.heightPreset).toBe("summary");
   });
 
-  it("Needs Attention is sized third + heightPreset summary", () => {
-    // 2026-05-07 RALPH: NA dropped to third per the brief; height
-    // also standardized to `summary` so every dashboard card lands
-    // on the same visual rhythm.
+  it("Needs Attention is no longer in the registry (retired 2026-05-07)", () => {
+    // 2026-05-07: the standalone Needs Attention card was retired and
+    // its single row ("Invoices not sent") absorbed into Operational
+    // Alerts. Inverse pin so a future PR can't silently re-introduce
+    // the widget — the page-level renderer map would have no matching
+    // entry and the resolver would surface a console warn at mount.
     const def = FINANCIAL_DASHBOARD_WIDGETS.find(
       (d) => d.key === "needs_attention",
     );
-    expect(def?.sizePreset).toBe("third");
-    expect(def?.heightPreset).toBe("summary");
+    expect(def).toBeUndefined();
   });
 
   it("every default-financial widget shares heightPreset summary", () => {
@@ -706,29 +712,30 @@ describe("DashboardWidgetGrid — height + structure", () => {
   });
 });
 
-// ─── 10. Drag handle visible affordance ────────────────────────────
+// ─── 10. Drag handle visible affordance (lives on the GRID now) ────
+//
+// 2026-05-07 RALPH (drag relocation): drag/reorder was originally
+// placed in the customize drawer rows. It is now on the live
+// dashboard grid — every grid cell carries a small handle button in
+// the top-right corner. The drawer is a pure toggle list.
 
-describe("DashboardWidgetRenderer — drag handle is visibly a button", () => {
-  const code = read(RENDERER_PATH);
+describe("DashboardWidgetGrid — drag handle is visibly a button", () => {
+  const code = read(GRID_PATH);
 
-  it("the handle has a default surface (bg-surface-subtle), not just on hover", () => {
-    expect(code).toMatch(/bg-surface-subtle/);
+  it("the handle is positioned absolutely in the cell corner", () => {
+    expect(code).toMatch(/absolute[\s\S]*?top-1\.5[\s\S]*?right-1\.5/);
   });
 
-  it("the handle has a default border so the button frame reads at a glance", () => {
+  it("the handle has a default surface (with backdrop-blur for legibility over content)", () => {
+    expect(code).toMatch(/backdrop-blur-sm/);
+  });
+
+  it("the handle has a border so the button frame reads at a glance", () => {
     expect(code).toMatch(/border\s+border-card-border/);
   });
 
-  it("the handle uses a darker default text token (text-text-secondary)", () => {
-    expect(code).toMatch(/text-text-secondary/);
-  });
-
-  it("the handle keeps the 32×32 hit area (h-8 w-8)", () => {
-    expect(code).toMatch(/h-8\s+w-8/);
-  });
-
-  it("the GripVertical icon itself is unchanged at h-4 w-4", () => {
-    expect(code).toMatch(/<GripVertical[\s\S]*?h-4\s+w-4/);
+  it("the GripVertical icon itself is sized for the 28×28 cell handle (h-3.5 w-3.5)", () => {
+    expect(code).toMatch(/<GripVertical[\s\S]*?h-3\.5\s+w-3\.5/);
   });
 
   it("the handle is the dnd-kit activator (carries attributes + listeners)", () => {
@@ -739,34 +746,41 @@ describe("DashboardWidgetRenderer — drag handle is visibly a button", () => {
       expect(buttonMatch[0]).toMatch(/\.\.\.listeners/);
     }
   });
+});
 
-  it("the row wrapper does NOT spread dnd-kit listeners (whole row is NOT draggable)", () => {
-    const rowMatch = code.match(/return\s*\(\s*<div\s+ref=\{setNodeRef\}[\s\S]*?>/);
-    expect(rowMatch).not.toBeNull();
-    if (rowMatch) {
-      expect(rowMatch[0]).not.toMatch(/\.\.\.listeners/);
-    }
+describe("DashboardWidgetRenderer — toggle row carries no drag wiring", () => {
+  const code = read(RENDERER_PATH);
+
+  it("renderer does NOT spread dnd-kit listeners (drag is on the grid)", () => {
+    expect(code).not.toMatch(/\.\.\.listeners/);
+    expect(code).not.toMatch(/\.\.\.attributes/);
   });
 
-  it("the visibility Switch is independently clickable (no listener spread)", () => {
+  it("renderer does NOT call useSortable (drag is on the grid)", () => {
+    expect(code).not.toMatch(/useSortable\(/);
+  });
+
+  it("the visibility Switch is independently clickable", () => {
     const switchMatch = code.match(/<Switch[\s\S]*?\/>/);
     expect(switchMatch).not.toBeNull();
     if (switchMatch) {
-      expect(switchMatch[0]).not.toMatch(/\.\.\.listeners/);
       expect(switchMatch[0]).toMatch(/onCheckedChange/);
     }
   });
 });
 
-// ─── 11. Drawer helper text matches the brief ──────────────────────
+// ─── 11. Drawer helper text reflects the new split ─────────────────
 
-describe("DashboardCustomizeDrawer — brief-mandated helper copy", () => {
+describe("DashboardCustomizeDrawer — relocated-drag helper copy", () => {
   const drawerPath = path("client/src/dashboard/DashboardCustomizeDrawer.tsx");
   const code = read(drawerPath);
 
-  it('uses the brief\'s exact copy: "Drag widgets to reorder. Toggle widgets to show or hide them."', () => {
-    expect(code).toMatch(/Drag widgets to reorder\./);
-    expect(code).toMatch(/Toggle widgets to show or hide them\./);
+  it("the drawer copy points users to the dashboard grid for reorder", () => {
+    expect(code).toMatch(/[Dd]rag widgets directly on the dashboard to reorder/);
+  });
+
+  it("the drawer copy still explains toggle behaviour", () => {
+    expect(code).toMatch(/Toggle widgets to show or hide them/);
   });
 
   it("renders the helper copy with the canonical text-caption + text-text-muted tokens", () => {

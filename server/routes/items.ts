@@ -55,15 +55,30 @@ function toDbNumericString(value: string | number | null | undefined): string | 
 // ROUTES
 // ========================================
 
-// GET /api/items - List items with optional search
+// GET /api/items - List items with optional search and sort.
+//
+// Query params:
+//   q       — case-insensitive search across name / sku / description.
+//   sort    — `"name"` (default) | `"most_used"`. The latter ranks
+//             items by historical usage count across invoice_lines,
+//             quote_lines, and job_parts (tenant-scoped). Items with
+//             zero usage fall to the end, alphabetical among
+//             themselves. Used by the Pricebook picker on default
+//             empty-search open. Validated to the safe enum below
+//             so an arbitrary SQL fragment can never reach storage.
+//   limit / offset / cursor — standard pagination via
+//             parsePaginationLenient.
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 
   const { params, explicit } = parsePaginationLenient(req.query);
   const q = String((req.query as any)?.q ?? "").trim();
+  const sortRaw = String((req.query as any)?.sort ?? "").trim();
+  const sort: "name" | "most_used" =
+    sortRaw === "most_used" ? "most_used" : "name";
 
-  const allRows = await storage.getItems(companyId, q || undefined);
+  const allRows = await storage.getItems(companyId, q || undefined, sort);
 
   const offset = params.offset ?? 0;
   const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);

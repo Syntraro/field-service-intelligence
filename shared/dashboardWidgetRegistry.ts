@@ -241,27 +241,22 @@ export const FINANCIAL_DASHBOARD_WIDGETS: readonly DashboardWidgetDefinition[] =
     // 2026-05-07 RALPH: moved from row-1 (next to TS) to row-2 to
     // match the brief's expected default layout. The widget key is
     // unchanged, so users who already saved a custom order keep it.
+    //
+    // 2026-05-07 (later): the retired Needs Attention card's
+    // "Invoices not sent" row was absorbed into Operational Alerts as
+    // the bottom-most lower-urgency entry. The standalone
+    // `needs_attention` widget definition is gone — orphan persisted
+    // rows in `user_dashboard_widgets` are silently ignored by the
+    // resolver (it iterates THIS registry, not the override rows).
+    // Existing user layouts degrade safely: the card simply stops
+    // rendering. The migration `2026_05_07_drop_needs_attention_widget.sql`
+    // sweeps the orphan rows for hygiene.
     key: "operational_alerts",
     dashboardKey: "financial",
     title: "Operational Alerts",
-    description: "Past due, requires attention, ready to invoice, unscheduled.",
+    description: "Past due, requires attention, ready to invoice, unscheduled, invoices not sent.",
     defaultVisible: true,
     defaultOrder: 50,
-    requiredPermission: null,
-    sizePreset: "third",
-    heightPreset: "summary",
-  },
-  {
-    // 2026-05-07 RALPH: heightPreset is now `summary` like every
-    // other dashboard card. The dashboard's visual rhythm is one
-    // standard card height; NA's empty bottom space inside the card
-    // is acceptable and preferable to mismatched card heights.
-    key: "needs_attention",
-    dashboardKey: "financial",
-    title: "Needs Attention",
-    description: "Billing / admin items waiting on action (invoices not sent).",
-    defaultVisible: true,
-    defaultOrder: 60,
     requiredPermission: null,
     sizePreset: "third",
     heightPreset: "summary",

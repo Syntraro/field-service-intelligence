@@ -321,16 +321,27 @@ describe("PricebookPickerModal — modal source contract", () => {
     expect(modalSrc).toMatch(/WebkitLineClamp:\s*2/);
   });
 
-  it("submit button is disabled when the selection is empty", () => {
+  it("submit button is disabled when both individual items AND groups are empty", () => {
+    // 2026-05-07 RALPH (Pricebook Groups): submitDisabled is now
+    // derived from BOTH counts being zero. Either selection alone is
+    // enough to enable the CTA.
     expect(modalSrc).toMatch(/disabled=\{submitDisabled\}/);
-    // submitDisabled is derived from `count === 0` directly above the
-    // JSX — pin both halves so an accidental refactor either holds.
-    expect(modalSrc).toMatch(/const submitDisabled = count === 0/);
+    expect(modalSrc).toMatch(
+      /const submitDisabled = itemCount === 0 && groupCount === 0/,
+    );
   });
 
-  it("submit handler routes through selectionsToDrafts and onOpenChange(false)", () => {
-    expect(modalSrc).toMatch(/selectionsToDrafts\(selections,\s*serverItems\)/);
-    expect(modalSrc).toMatch(/onSubmit\(drafts\)/);
+  it("submit handler routes through buildPricebookSubmitEntries and onOpenChange(false)", () => {
+    // 2026-05-07 RALPH (Pricebook Groups): the canonical submit path
+    // now goes through `buildPricebookSubmitEntries`, which fans
+    // both individual-item selections AND group selections into one
+    // merged draft list (with duplicate handling). The previous
+    // `selectionsToDrafts(selections, serverItems)` path is now
+    // wrapped INSIDE the resolver.
+    expect(modalSrc).toMatch(
+      /buildPricebookSubmitEntries\([\s\S]+?selections[\s\S]+?serverItems[\s\S]+?groups[\s\S]+?groupSelections/,
+    );
+    expect(modalSrc).toMatch(/onSubmit\(entries\)/);
     expect(modalSrc).toMatch(/onOpenChange\(false\)/);
   });
 

@@ -47,7 +47,12 @@
 import { getWallClockInTimezone } from "./schedulingConstants";
 
 export interface CapacityBlock {
-  kind: "booked" | "open";
+  // 2026-05-07 — `time_off` widening so the dashboard's `CapacityBlockDto`
+  // (which already carries that variant) satisfies `B extends CapacityBlock`
+  // when passed to `clampOpenBlockToNow`. The clamp logic only mutates
+  // `open` blocks (see line ~580), so the new variant is a passthrough
+  // for the algorithm — same way `booked` blocks already are.
+  kind: "booked" | "open" | "time_off";
   startISO: string;
   endISO: string;
   durationMinutes: number;

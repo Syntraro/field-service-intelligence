@@ -147,19 +147,22 @@ describe("Communications Hub — routing + sidebar absence", () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe("Communications Hub — far-right rail visibility", () => {
-  it("rail surfaces all 7 canonical modules", () => {
+  it("rail surfaces the 6 canonical operational modules (Templates dropped 2026-05-07 Phase 4)", () => {
     expect(COMMUNICATION_MODULES).toEqual([
       "inbox",
       "calls",
       "call_history",
       "contacts",
       "team_chat",
-      "templates",
       "settings",
     ]);
+    expect(COMMUNICATION_MODULES).not.toContain("templates");
     for (const m of COMMUNICATION_MODULES) {
       expect(railSrc).toContain(`module: "${m}"`);
     }
+    // Templates must NOT survive in the rail source either.
+    expect(railSrc).not.toContain('module: "templates"');
+    expect(railSrc).not.toContain("Templates");
   });
 
   it("isCommunicationModule rejects non-canonical strings", () => {
@@ -253,9 +256,13 @@ describe("Communications Hub — thread access predicate", () => {
     ).toBe(false);
   });
 
-  it("page composes the role-aware filter (filterThreadsForViewer)", () => {
-    expect(pageSrc).toMatch(/filterThreadsForViewer\(viewer, MOCK_THREADS\)/);
+  it("page composes the role-aware filter (filterThreadsForViewer) over the API result", () => {
+    // Phase 3: the page swapped from `MOCK_THREADS` to the API hook
+    // result (`threadsQuery.data`). The shared filter still runs as
+    // defense-in-depth. The server applies the SAME predicate first.
+    expect(pageSrc).toMatch(/filterThreadsForViewer\(viewer,\s*threadsQuery\.data/);
     expect(pageSrc).toMatch(/getVisibleCommunicationsModules\(/);
+    expect(pageSrc).toMatch(/useCommunicationThreads/);
   });
 });
 
@@ -409,6 +416,53 @@ describe("getInitials helper", () => {
 // ────────────────────────────────────────────────────────────────────
 // Provider abstraction stub — Phase 3 contract is locked now
 // ────────────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 2 — Details panel uses real resolution + Link Contact entry points
+// ────────────────────────────────────────────────────────────────────
+
+describe("Communications Hub — Phase 2 details + linking", () => {
+  const HOOK_PATH = join(ROOT, "client/src/lib/communications/useResolveContact.ts");
+  const DIALOG_PATH = join(ROOT, "client/src/components/communications/LinkContactDialog.tsx");
+  const hookSrc = readFileSync(HOOK_PATH, "utf-8");
+  const dialogSrc = readFileSync(DIALOG_PATH, "utf-8");
+
+  it("details panel accepts the resolution result + emits link intent", () => {
+    expect(detailsSrc).toMatch(/resolution\?:\s*ContactResolutionResult/);
+    expect(detailsSrc).toMatch(/onRequestLink\?:/);
+    // Unknown / multi banner branches surface the spec'd testids; the
+    // testid string is passed via an internal prop name (e.g.
+    // `actionTestId="..."`) so we match the raw string regardless of prop.
+    expect(detailsSrc).toContain('"details-link-contact-unknown"');
+    expect(detailsSrc).toContain('"details-link-contact-conflict"');
+    expect(detailsSrc).toMatch(/Unknown contact/);
+    expect(detailsSrc).toMatch(/Multiple contacts match/);
+  });
+
+  it("hook calls /api/communications/resolve-contact and gates on isMatchableE164Like", () => {
+    expect(hookSrc).toMatch(/\/api\/communications\/resolve-contact/);
+    expect(hookSrc).toMatch(/isMatchableE164Like/);
+  });
+
+  it("LinkContactDialog supports unknown + conflict modes with no auto-pick", () => {
+    expect(dialogSrc).toMatch(/mode === "unknown"/);
+    expect(dialogSrc).toMatch(/mode === "conflict"/);
+    // Phase 4: unknown-mode now uses a real candidate search picker
+    // (not the previous three placeholder action rows). The "create new
+    // contact" action row is the only legacy entry point that survives.
+    expect(dialogSrc).toContain('"link-contact-search-input"');
+    expect(dialogSrc).toContain('"link-contact-candidate-list"');
+    expect(dialogSrc).toContain('"link-contact-action-create-new"');
+    // The conflict primary action MUST be disabled until the user picks one.
+    expect(dialogSrc).toMatch(/disabled=\{!selectedSourceId\s*\|\|\s*linking\}/);
+  });
+
+  it("page wires the hook into the details panel and mounts the dialog", () => {
+    expect(pageSrc).toMatch(/useResolveContact\(activePhone\)/);
+    expect(pageSrc).toMatch(/<LinkContactDialog/);
+    expect(pageSrc).toMatch(/resolution=\{resolveQuery\.data\}/);
+  });
+});
 
 describe("Communications provider abstraction (Phase 3 stub)", () => {
   const expectedMethods = [

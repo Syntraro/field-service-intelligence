@@ -430,12 +430,12 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
             </Button>
           </Link>
           <div>
-            {/* 2026-05-06 nav rename: page heading matches the new
-                "Maintenance" sidebar label. The card title below
+            {/* 2026-05-07 Service Plans rename: page heading matches the
+                renamed sidebar label. The card title below
                 ("Recurring Jobs") still names the listed templates
                 because they ARE recurring-job records — that's
                 behavior copy, not a destination label. */}
-            <h1 className="text-page-title font-bold">Maintenance</h1>
+            <h1 className="text-page-title font-bold">Service Plans</h1>
             <p className="text-muted-foreground">
               Manage recurring job templates and generate backlog jobs automatically.
             </p>

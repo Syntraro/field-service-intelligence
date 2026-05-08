@@ -80,6 +80,46 @@ import { cn } from "@/lib/utils";
 export const RAIL_WIDTH_TRANSITION =
   "transition-[width] duration-300 ease-in-out motion-reduce:transition-none";
 
+/**
+ * 2026-05-07 — canonical structural class string for buttons rendered
+ * into the panel header `action` slot ("+ Add", "Edit", "+ Time", etc.).
+ *
+ * The action slot is caller-controlled JSX, but the structural chrome
+ * (hit target, padding, hover, focus ring) should stay consistent
+ * across every page that mounts this primitive. Bakes:
+ *
+ *   - inline-flex / items-center / gap-1   (icon + label layout)
+ *   - h-7 px-2 rounded                     (28px hit target, compact)
+ *   - hover:bg-slate-100                   (neutral hover affordance)
+ *   - focus-visible:ring-2 focus-visible:ring-[#76B054]/40 (canonical
+ *                                          green focus ring)
+ *
+ * Typography + color are deliberately NOT baked — callers compose with
+ * `text-helper` (canonical 13px secondary-navigation scale, matches the
+ * corrected rail-tab scale) plus their chosen color (`text-brand` for
+ * primary "+ Add" affordances; `text-slate-700` / `text-text-secondary`
+ * for neutral edit affordances). Keeping typography at the call site
+ * follows the Phase H1 pattern and keeps the canonical typography
+ * guard happy (the guard forbids local typography constants in feature
+ * components — by NOT baking `text-helper` into this constant, we let
+ * the role token live at the consumer where it's most visible).
+ *
+ * Earlier drift this constant retires:
+ *   - JobDetailPage rail action buttons used
+ *     `text-caption font-medium text-[#76B054]` — heavier weight,
+ *     larger size (14px), and an arbitrary literal hex instead of
+ *     the canonical `text-brand` token.
+ *   - ClientDetailPage's `RAIL_ACTION_BTN_CLASS` constant used
+ *     `text-caption font-medium text-slate-700` — heavier weight
+ *     and a larger size than the corrected rail-tab scale.
+ *
+ * Canonical caller pattern:
+ *   `${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`
+ *   `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`
+ */
+export const RAIL_HEADER_ACTION_CLASS =
+  "inline-flex items-center gap-1 h-7 px-2 rounded hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40";
+
 /** Internal — kept in sync with `RAIL_WIDTH_TRANSITION`'s duration so
  *  the panel section's deferred unmount waits exactly long enough for
  *  the parent's width animation to finish before the panel disappears
@@ -231,10 +271,18 @@ export function DetailRightRail({
               aria-pressed={isActive}
               className={cn(
                 "relative w-full px-1 py-2 flex flex-col items-center justify-center gap-0.5",
-                "text-[11px] font-medium transition-colors",
+                // 2026-05-07 rail tab typography correction: regular-weight
+                // text-helper (canonical 13px non-uppercase). The earlier
+                // `font-medium` modifier read "button copy" rather than
+                // "secondary navigation" and made the strip feel oversized
+                // relative to panel content. Active emphasis now lives in
+                // color + bg + the left accent bar — not in font weight.
+                // text-label was rejected because its uppercase tracking
+                // overflows the 76px column on "MAINTENANCE".
+                "text-helper transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
                 isActive
-                  ? "text-[#76B054] bg-white"
+                  ? "text-brand bg-white"
                   : "text-slate-600 hover:text-slate-900 hover:bg-white",
               )}
               data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
@@ -250,7 +298,12 @@ export function DetailRightRail({
               <span className="leading-tight">{tab.label}</span>
               {typeof tab.count === "number" && (
                 <span
-                  className="text-[10px] font-medium text-slate-500 tabular-nums leading-none"
+                  // 2026-05-07: count chip rides the same typography scale
+                  // as the tab label (regular-weight text-helper) so the
+                  // two reads as one navigation row, not a label + emphasized
+                  // numeric chip. Visual emphasis on active tabs comes from
+                  // text-brand color via the parent button, not weight.
+                  className="text-helper text-slate-500 tabular-nums leading-none"
                   data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
                 >
                   {tab.count}
@@ -289,7 +342,7 @@ export function DetailRightRail({
             className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 min-w-0"
             data-testid={`${testIdPrefix}-panel-header-${displayedTab.id}`}
           >
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex-shrink-0">
+            <span className="text-label text-slate-700 flex-shrink-0">
               {displayedTab.label}
             </span>
             <span className="flex-1" />
@@ -343,8 +396,8 @@ export function DetailRightRailEmpty({
       className="text-center py-6 px-2 space-y-1"
       data-testid={`${testIdPrefix}-panel-empty`}
     >
-      <p className="text-sm text-slate-600">{message}</p>
-      {hint && <p className="text-xs text-slate-400">{hint}</p>}
+      <p className="text-row text-slate-600">{message}</p>
+      {hint && <p className="text-helper text-slate-400">{hint}</p>}
     </div>
   );
 }

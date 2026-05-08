@@ -16,11 +16,33 @@ import { getTaskPosition } from "./DispatchTaskBlock";
 import { checkOverlap } from "./dispatchOverlapUtils";
 import DispatchVisitBlock from "./DispatchVisitBlock";
 import DispatchTaskBlock from "./DispatchTaskBlock";
+import { TimeOffOverlay } from "./TimeOffOverlay";
+
+/** 2026-05-07 RALPH (technician time off): one entry of off-time
+ *  for THIS tech that overlaps the visible day. The lane paints
+ *  it as an amber-tinted background block behind the visit cards
+ *  so dispatchers can see at a glance that the tech is unavailable
+ *  during this window. */
+export interface DispatchLaneTimeOff {
+  id: string;
+  startsAt: string;
+  endsAt: string;
+  reason: string;
+  allDay: boolean;
+}
 
 type Props = {
   tech: Technician;
   visits: DispatchVisit[];
   tasks?: DispatchTask[];
+  /** 2026-05-07 RALPH (technician time off): per-tech time-off
+   *  entries clipped to the visible day. Empty array (default)
+   *  means "no time off in this view" and the lane paints
+   *  identically to the pre-feature behaviour. */
+  timeOff?: DispatchLaneTimeOff[];
+  /** ISO of the day the lane is rendering — used to clamp time-off
+   *  starts/ends to the day window. */
+  dayDateISO?: string;
   isLast: boolean;
   savingIds: Set<string>;
   selectedVisitId?: string | null;
@@ -45,7 +67,8 @@ type Props = {
 /** PERF-08: Memoized to skip re-renders for non-active lanes during drag
  * (dragTick increments ~60Hz but only the active drop-target lane receives changed props). */
 export default memo(function DispatchLaneRow({
-  tech, visits, tasks = [], isLast, savingIds,
+  tech, visits, tasks = [], timeOff = [], dayDateISO,
+  isLast, savingIds,
   selectedVisitId, selectedTaskId, onSelectVisit, onSelectTask,
   onUnschedule, onResize, onResizeTask, dragPreview, hasOverlap,
   timelineHours: hours = TIMELINE_HOURS,
@@ -100,6 +123,73 @@ export default memo(function DispatchLaneRow({
 
   const totalWidth = hours.length * HOUR_WIDTH_PX;
 
+  // 2026-05-07 RALPH (technician time off): clip + position each
+  // time-off interval against the lane's hour range. Uses the same
+  // pixel-per-minute math as `getVisitPosition` so the shading
+  // aligns perfectly with the visit grid. All-day entries paint as
+  // a full-width lane band; partial-day entries paint only the
+  // overlapping window. Past-day-end and pre-day-start time-off is
+  // clipped to the visible hours.
+  const timeOffSegments = useMemo(() => {
+    if (!timeOff.length) return [] as Array<{
+      id: string;
+      left: number;
+      width: number;
+      reason: string;
+      allDay: boolean;
+      endsAtISO: string;
+    }>;
+    const dayBase = dayDateISO ? new Date(dayDateISO) : new Date();
+    const dayStart = new Date(
+      dayBase.getFullYear(),
+      dayBase.getMonth(),
+      dayBase.getDate(),
+      startHour,
+      0,
+      0,
+    ).getTime();
+    const lastHour = endHour ?? hours[hours.length - 1] + 1;
+    const dayEnd = new Date(
+      dayBase.getFullYear(),
+      dayBase.getMonth(),
+      dayBase.getDate(),
+      lastHour,
+      0,
+      0,
+    ).getTime();
+    const pxPerMin = HOUR_WIDTH_PX / 60;
+    const out: Array<{
+      id: string;
+      left: number;
+      width: number;
+      reason: string;
+      allDay: boolean;
+      endsAtISO: string;
+    }> = [];
+    for (const t of timeOff) {
+      const startMs = Date.parse(t.startsAt);
+      const endMs = Date.parse(t.endsAt);
+      if (!isFinite(startMs) || !isFinite(endMs)) continue;
+      const clippedStart = Math.max(startMs, dayStart);
+      const clippedEnd = Math.min(endMs, dayEnd);
+      if (clippedEnd <= clippedStart) continue;
+      const left = ((clippedStart - dayStart) / 60_000) * pxPerMin;
+      const width = ((clippedEnd - clippedStart) / 60_000) * pxPerMin;
+      out.push({
+        id: t.id,
+        left: Math.max(0, left),
+        width: Math.max(width, 4),
+        reason: t.reason,
+        allDay: t.allDay,
+        // Pass the ORIGINAL endsAt (not the clipped value) so the
+        // primitive can compute "Returning <date>" correctly even
+        // when the off window extends past today's hour bounds.
+        endsAtISO: t.endsAt,
+      });
+    }
+    return out;
+  }, [timeOff, dayDateISO, hours, startHour, endHour]);
+
   // Guard: suppress quick-create clicks immediately after resize/drag interactions
   const lastBlockInteractionRef = useRef(0);
 
@@ -150,6 +240,32 @@ export default memo(function DispatchLaneRow({
           key={h}
           className={`border-r border-dashed border-slate-150 ${idx % 2 === 0 ? "bg-slate-50/40" : ""}`}
           style={{ width: HOUR_WIDTH_PX, height: LANE_HEIGHT_PX }}
+        />
+      ))}
+
+      {/* 2026-05-07 RALPH (technician time off): canonical
+          unavailable overlay rendered via the shared
+          `<TimeOffOverlay variant="lane-band">` primitive. The
+          primitive owns: reason → palette mapping, return-day
+          phrasing ("Returning May 12"), striped bg pattern,
+          aria-label, and title-on-truncation. Painted AFTER the
+          hour grid (so it overlays the alternating fill) and
+          BEFORE the visit blocks (so visits remain clickable +
+          visible on top). pointer-events-none keeps the lane a
+          valid drop target — the drag handler guards the actual
+          assignment via the time-off confirm dialog. */}
+      {timeOffSegments.map((seg) => (
+        <TimeOffOverlay
+          key={`time-off-${seg.id}`}
+          variant="lane-band"
+          reason={seg.reason}
+          endsAtISO={seg.endsAtISO}
+          allDay={seg.allDay}
+          technicianName={tech.name}
+          left={seg.left}
+          width={seg.width}
+          height={LANE_HEIGHT_PX}
+          testId={`dispatch-lane-time-off-${seg.id}`}
         />
       ))}
 

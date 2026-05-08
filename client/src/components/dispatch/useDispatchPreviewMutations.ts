@@ -112,6 +112,11 @@ interface RescheduleParams {
   /** When true, reschedule as all-day/any-time visit (UTC midnight→23:59:59) */
   allDay?: boolean;
   visitNotes?: string | null;
+  /** 2026-05-07 RALPH (technician time off): when true, the
+   *  server bypasses the time-off conflict check. The dispatch
+   *  page sets this AFTER the user confirms the "Assign anyway"
+   *  dialog. Default false. */
+  overrideTimeOffConflict?: boolean;
 }
 
 interface UnscheduleParams {
@@ -856,7 +861,7 @@ export function useDispatchPreviewMutations() {
 
   /** Reschedule an existing scheduled visit. */
   const rescheduleVisit = useCallback(async (params: RescheduleParams): Promise<DispatchMutationResult> => {
-    const { visitId, jobId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
+    const { visitId, jobId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes, overrideTimeOffConflict } = params;
 
     const snapshot = snapshotDispatchCache(queryClient);
 
@@ -892,6 +897,12 @@ export function useDispatchPreviewMutations() {
           };
           if (assignedTechnicianIds !== undefined) {
             body.assignedTechnicianIds = assignedTechnicianIds;
+          }
+          // 2026-05-07 RALPH (technician time off): when the client
+          // has just confirmed an "Assign anyway" dialog, forward the
+          // override flag so the server bypasses its time-off check.
+          if (overrideTimeOffConflict === true) {
+            body.overrideTimeOffConflict = true;
           }
           resp = await apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
             method: "PATCH",

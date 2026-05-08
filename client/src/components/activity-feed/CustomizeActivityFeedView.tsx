@@ -69,7 +69,7 @@ export function CustomizeActivityFeedView() {
   }
   if (isError) {
     return (
-      <div className="px-4 py-6 text-sm text-destructive">
+      <div className="px-4 py-6 text-helper text-destructive">
         Failed to load preferences.
       </div>
     );
@@ -77,7 +77,7 @@ export function CustomizeActivityFeedView() {
 
   return (
     <div className="px-3 py-2" data-testid="activity-feed-customize-view">
-      <p className="px-1 py-2 text-xs text-muted-foreground">
+      <p className="px-1 py-2 text-helper text-muted-foreground">
         Choose which kinds of activity show up in your feed. You can change this anytime.
       </p>
       <div className="rounded-md border border-border/60">
@@ -94,8 +94,8 @@ export function CustomizeActivityFeedView() {
               data-testid={`activity-category-row-${cat.key}`}
             >
               <Label htmlFor={id} className="flex-1 cursor-pointer">
-                <div className="text-sm font-medium text-foreground">{cat.label}</div>
-                <div className="text-xs text-muted-foreground font-normal mt-0.5">
+                <div className="text-row-emphasis text-foreground">{cat.label}</div>
+                <div className="text-helper text-muted-foreground font-normal mt-0.5">
                   {cat.description}
                 </div>
               </Label>

@@ -12,6 +12,7 @@ import type { DispatchVisit, DispatchTask, DispatchLeadVisit, Technician } from 
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { formatHour } from "./dispatchPreviewUtils";
 import WeekDayColumn from "./WeekDispatchCell";
+import { TimeOffOverlay } from "./TimeOffOverlay";
 
 // Week calendar layout constants — defaults for standard hours mode
 export const WEEK_START_HOUR = 6;
@@ -44,6 +45,32 @@ type Props = {
   onResize?: (visit: DispatchVisit, newEndTime: string) => void;
   /** 2026-03-31: 24-hour mode — shared with Day view via same toggle state */
   show24Hour?: boolean;
+  /** 2026-05-07 RALPH (technician time off): per-day count of techs
+   *  with any time-off entry that day. Used to render a small "N
+   *  off" summary chip when ≥ 2 techs are off; ignored when the
+   *  per-entry list (`timeOffEntriesByDay`) supplies enough room
+   *  for the canonical per-tech chips. Optional — empty map paints
+   *  exactly as the pre-feature view. */
+  techsOnTimeOffByDay?: Map<string, Set<string>>;
+  /** 2026-05-07 RALPH (technician time off): per-day list of
+   *  rich time-off entries (with technician name + reason +
+   *  endsAt for the "Returning …" label). When present, each day
+   *  column header renders one canonical `<TimeOffOverlay
+   *  variant="chip">` per tech (1 tech off → "Time off · Sick";
+   *  2+ techs → falls back to a summary chip to keep the column
+   *  header dense). */
+  timeOffEntriesByDay?: Map<
+    string,
+    Array<{
+      id: string;
+      technicianUserId: string;
+      technicianName: string;
+      reason: string;
+      startsAt: string;
+      endsAt: string;
+      allDay: boolean;
+    }>
+  >;
 };
 
 /**
@@ -97,7 +124,7 @@ function NowIndicator({ startHour, hourHeight }: { startHour: number; hourHeight
 export default function WeekDispatchGrid({
   technicians, weekDays, visitsByTechByDay, tasksByTechByDay, leadVisitsByDay,
   selectedItemId, savingIds, onSelectVisit, onSelectTask, onOpenLead, onResize,
-  show24Hour,
+  show24Hour, techsOnTimeOffByDay, timeOffEntriesByDay,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -144,6 +171,9 @@ export default function WeekDispatchGrid({
           {weekDays.map(day => {
             const today = isToday(day);
             const weekend = isWeekend(day);
+            const dayKey = format(day, "yyyy-MM-dd");
+            const offCount =
+              techsOnTimeOffByDay?.get(dayKey)?.size ?? 0;
             return (
               <div
                 key={day.toISOString()}
@@ -151,6 +181,7 @@ export default function WeekDispatchGrid({
                   today ? "bg-emerald-50/40" : ""
                 }`}
                 style={{ height: DAY_HEADER_HEIGHT }}
+                data-week-day={dayKey}
               >
                 <span className={`text-xs uppercase tracking-wide font-semibold ${
                   today ? "text-emerald-600" : weekend ? "text-slate-400" : "text-muted-foreground"
@@ -162,6 +193,45 @@ export default function WeekDispatchGrid({
                 }`}>
                   {format(day, "d")}
                 </span>
+                {/* 2026-05-07 RALPH (technician time off): per-day
+                    chips. When 1 tech is off, render a canonical
+                    `<TimeOffOverlay variant="chip">` with the
+                    full "Technician off · Reason · Returning …"
+                    label so dispatchers see the reason at a
+                    glance. When 2+ techs are off, fall back to a
+                    compact summary chip to keep the day-column
+                    header dense (the per-tech detail is reachable
+                    by drilling into the day view). */}
+                {offCount === 1 && timeOffEntriesByDay?.get(dayKey)?.[0] && (() => {
+                  const entry = timeOffEntriesByDay.get(dayKey)![0];
+                  return (
+                    <div
+                      className="mt-0.5 max-w-full px-1"
+                      data-testid={`week-day-off-chip-${dayKey}`}
+                    >
+                      <TimeOffOverlay
+                        variant="chip"
+                        reason={entry.reason}
+                        endsAtISO={entry.endsAt}
+                        allDay={entry.allDay}
+                        technicianName={entry.technicianName}
+                        testId={`week-day-off-entry-${dayKey}-${entry.technicianUserId}`}
+                      />
+                      <div className="text-[10px] text-amber-700/80 truncate text-center mt-0.5">
+                        {entry.technicianName}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {offCount > 1 && (
+                  <span
+                    className="mt-0.5 inline-block rounded-full border border-amber-300 bg-amber-100 px-1.5 py-px text-[10px] font-semibold text-amber-700"
+                    data-testid={`week-day-off-chip-${dayKey}`}
+                    title={`${offCount} technicians off`}
+                  >
+                    {offCount} off
+                  </span>
+                )}
               </div>
             );
           })}

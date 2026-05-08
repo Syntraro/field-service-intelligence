@@ -90,6 +90,7 @@ import { clampOpenBlockToNow, roundUpToNextInterval } from "@/lib/findNextAvaila
 import { useDashboardLayout } from "@/dashboard/useDashboardLayout";
 import { DashboardWidgetGrid } from "@/dashboard/DashboardWidgetGrid";
 import { DashboardCustomizeDrawer } from "@/dashboard/DashboardCustomizeDrawer";
+import { TechnicianTimeOffModal } from "@/components/team/TechnicianTimeOffModal";
 import { Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -347,7 +348,13 @@ export default function FinancialDashboard() {
     "pipeline_snapshot",
     "collections_overview",
     "scheduled_revenue",
-    "needs_attention",
+    // 2026-05-07: operational_alerts joined this set because its new
+    // bottom row ("Invoices not sent") consumes
+    // data.needsAttention.invoicesNotSentCount from the financial
+    // summary. The retired needs_attention widget is gone from the
+    // registry; persisted layouts referencing it degrade safely
+    // (resolver iterates the registry, not the override rows).
+    "operational_alerts",
   ];
   const WORKFLOW_QUERY_WIDGETS: readonly string[] = [
     "operational_alerts",
@@ -440,13 +447,48 @@ export default function FinancialDashboard() {
     }
     return scheduleScopeIds.length;
   }, [scheduleTechs, scheduleScopeIds]);
-  // Clamp to 1 / 2 / 3 — more than 3 visible techs still occupies the
-  // full 3-column row; the schedule card's internal scroll handles
-  // overflow rather than expanding the dashboard grid.
+  // Filter the capacity techs by the user's scope selection — same
+  // logic the schedule card uses internally to derive `visibleTechs`.
+  // Lifted here so the page can estimate stacked content size for the
+  // row-span heuristic without duplicating the filter inside the card.
+  // Declared before `scheduleActiveTechCount` because that memo reads
+  // it (the prior order produced a TS2448 use-before-declare).
+  const scheduleVisibleTechs = useMemo(() => {
+    if (scheduleTechs.length <= 1) return scheduleTechs;
+    if (
+      scheduleScopeIds.length === 0 ||
+      scheduleScopeIds.length === scheduleTechs.length
+    ) {
+      return scheduleTechs;
+    }
+    return scheduleTechs.filter((t) => scheduleScopeIds.includes(t.technicianId));
+  }, [scheduleTechs, scheduleScopeIds]);
+  // 2026-05-07 RALPH (idle grouping): width is now derived from
+  // the count of ACTIVE technicians (those with at least one
+  // booked block today). Idle technicians (no booked work) are
+  // collapsed into a single grouped "Available" column inside the
+  // card and DO NOT widen the dashboard cell. This keeps the
+  // dashboard dense — a team of 5 with 2 actively booked techs
+  // renders in a 2-unit cell with a grouped "Available" column
+  // tucked alongside, instead of forcing the schedule to full
+  // width to host 3 empty columns.
+  //
+  // Mapping:
+  //   • 0 active (all idle)  → 1 unit (compact)
+  //   • 1 active             → 1 unit
+  //   • 2–3 active           → 2 units
+  //   • 4+ active            → 3 units (full width)
+  const scheduleActiveTechCount = useMemo(
+    () =>
+      scheduleVisibleTechs.filter((t) =>
+        t.scheduleBlocks.some((b) => b.kind === "booked"),
+      ).length,
+    [scheduleVisibleTechs],
+  );
   const todaysScheduleWidthUnits: 1 | 2 | 3 =
-    scheduleVisibleTechCount <= 1
+    scheduleActiveTechCount <= 1
       ? 1
-      : scheduleVisibleTechCount === 2
+      : scheduleActiveTechCount <= 3
         ? 2
         : 3;
   // 2026-05-07 RALPH: schedule display mode lifted to the page so the
@@ -459,20 +501,6 @@ export default function FinancialDashboard() {
   const [scheduleDisplayMode, setScheduleDisplayMode] = useState<
     "column" | "stacked"
   >("column");
-  // Filter the capacity techs by the user's scope selection — same
-  // logic the schedule card uses internally to derive `visibleTechs`.
-  // Lifted here so the page can estimate stacked content size for the
-  // row-span heuristic without duplicating the filter inside the card.
-  const scheduleVisibleTechs = useMemo(() => {
-    if (scheduleTechs.length <= 1) return scheduleTechs;
-    if (
-      scheduleScopeIds.length === 0 ||
-      scheduleScopeIds.length === scheduleTechs.length
-    ) {
-      return scheduleTechs;
-    }
-    return scheduleTechs.filter((t) => scheduleScopeIds.includes(t.technicianId));
-  }, [scheduleTechs, scheduleScopeIds]);
   // Heuristic for "stacked content exceeds standard card height".
   // Each tech section in stacked mode is ≈ 1 header row + N slot
   // rows × ~30 px each, plus the card chrome (~46 px header). 7+
@@ -588,6 +616,7 @@ export default function FinancialDashboard() {
           widgets={layout.visibleWidgets}
           widthOverrides={widgetWidthOverrides}
           rowSpanOverrides={widgetRowSpanOverrides}
+          onReorder={layout.setOrder}
           renderers={{
             todays_schedule: (
               <TodaysScheduleCard
@@ -607,9 +636,10 @@ export default function FinancialDashboard() {
                 pastDueCount={pastDueCount}
                 unscheduledCount={unscheduledJobsCount}
                 readyToInvoiceCount={readyToInvoiceCount}
-                isLoading={workflowQuery.isLoading}
+                invoicesNotSentCount={data?.needsAttention.invoicesNotSentCount ?? 0}
+                isLoading={workflowQuery.isLoading || isLoading}
                 onOpenActionModal={openActionModal}
-                order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice"]}
+                order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice", "invoices_not_sent"]}
               />
             ),
             pipeline_snapshot: (
@@ -636,13 +666,10 @@ export default function FinancialDashboard() {
                 onViewAll={() => setLocation("/jobs?filter=scheduled")}
               />
             ),
-            needs_attention: (
-              <NeedsAttentionCard
-                data={data}
-                isLoading={isLoading}
-                onViewInvoicesNotSent={() => openActionModal("invoices_not_sent")}
-              />
-            ),
+            // 2026-05-07: needs_attention renderer entry intentionally
+            // removed. The card's only row ("Invoices not sent") was
+            // absorbed into OperationalAlertsCard; see the
+            // invoicesNotSentCount prop threaded into operational_alerts above.
           }}
         />
       </div>
@@ -706,15 +733,20 @@ function EmptyState({ message }: { message: string }) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 2026-05-06 dashboard restructure — four cards.
+// Card definitions for the financial dashboard.
 //   PipelineSnapshotCard, CollectionsOverviewCard, ScheduledRevenueCard
-//   compose the second row (3-column grid). NeedsAttentionCard sits
-//   full-width below.
+//   compose the second row (3-column grid via the canonical widget grid).
 //
-//   All four consume `/api/dashboard/financial` (the existing canonical
-//   summary endpoint, extended with `pipelineSnapshot`, `scheduledRevenue`,
-//   and `needsAttention` fields in `server/storage/dashboard.ts`).
-//   No new HTTP endpoint, no client-side aggregation, no fake data.
+//   All consume `/api/dashboard/financial` (the canonical summary
+//   endpoint, extended with `pipelineSnapshot`, `scheduledRevenue`, and
+//   `needsAttention` fields in `server/storage/dashboard.ts`). No new
+//   HTTP endpoint, no client-side aggregation, no fake data.
+//
+//   2026-05-07: the standalone NeedsAttentionCard was removed and its
+//   sole row ("Invoices not sent") absorbed into OperationalAlertsCard.
+//   The `needsAttention.invoicesNotSentCount` field on the financial
+//   summary is still consumed — by Operational Alerts now — so the
+//   storage helper + endpoint stay unchanged.
 // ---------------------------------------------------------------------------
 
 // ── PipelineSnapshotCard ────────────────────────────────────────────────────
@@ -1132,117 +1164,19 @@ function ScheduledRevCell({
   );
 }
 
-// ── NeedsAttentionCard ──────────────────────────────────────────────────────
-//
-// 2026-05-06 RALPH narrow: this card now surfaces ONLY actionable
-// billing/admin items. The previous quote-follow-up and stale-lead rows
-// duplicated work that already lives on the Pipeline surface, and the
-// payments-pending row was informational rather than actionable. Both
-// were dropped. The remaining "Invoices not sent" row is the one the
-// owner can clear from this card via the shared
-// <DashboardActionModal mode="invoices_not_sent">.
-
-interface NeedsAttentionCardProps {
-  data?: FinancialSummary;
-  isLoading: boolean;
-  /** Opens the shared dashboard <DashboardActionModal> with mode=invoices_not_sent. */
-  onViewInvoicesNotSent: () => void;
-}
-
-function NeedsAttentionCard({
-  data,
-  isLoading,
-  onViewInvoicesNotSent,
-}: NeedsAttentionCardProps) {
-  const na = data?.needsAttention;
-  // Single billing/admin item. If a future actionable billing/admin
-  // bucket is added (e.g. "QBO sync errors awaiting reconcile"), it
-  // should land in this list AND get its own DashboardActionModal mode
-  // — never a router redirect.
-  const items = [
-    {
-      key: "invoices-not-sent",
-      label: "Invoices not sent",
-      count: na?.invoicesNotSentCount ?? 0,
-      onView: onViewInvoicesNotSent,
-    },
-  ] as const;
-
-  const hasAny = !isLoading && items.some((it) => it.count > 0);
-
-  return (
-    <DashCard>
-      <CardHeader
-        icon={AlertCircle}
-        color="text-amber-600"
-        title="Needs Attention"
-      />
-      <div data-testid="needs-attention">
-        {isLoading ? (
-          <div className="p-3 space-y-1.5">
-            <Skeleton className="h-6 w-full" />
-          </div>
-        ) : !hasAny ? (
-          <div
-            className="px-4 py-3 text-sm text-slate-600"
-            data-testid="needs-attention-empty"
-          >
-            No billing/admin items need attention.
-          </div>
-        ) : (
-          // 2026-05-06 RALPH polish: rows match the Pipeline / Operational
-          // Alerts compact pattern. Whole row is a <button> (native
-          // tabIndex / Enter / Space + a free disabled muted state when
-          // count === 0). Single-line layout: label left, count right.
-          // No inline "View" button, no chevron, no currency line.
-          <ul>
-            {items.map((it, idx) => {
-              const hasItems = it.count > 0;
-              const isLast = idx === items.length - 1;
-              return (
-                <li key={it.key}>
-                  <button
-                    type="button"
-                    onClick={it.onView}
-                    disabled={!hasItems}
-                    data-testid={`needs-attention-${it.key}`}
-                    className={cn(
-                      "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
-                      !isLast && "border-b border-[#e2e8f0]",
-                      hasItems
-                        ? "hover:bg-[#F0F5F0] focus-visible:bg-[#F0F5F0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-300"
-                        : "cursor-default",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "flex-1 text-xs font-medium truncate",
-                        hasItems ? "text-slate-700" : "text-slate-400",
-                      )}
-                    >
-                      {it.label}
-                    </span>
-                    <span
-                      className={cn(
-                        "text-sm font-semibold tabular-nums shrink-0",
-                        hasItems ? "text-[#111827]" : "text-slate-400",
-                      )}
-                    >
-                      {it.count}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </DashCard>
-  );
-}
+// 2026-05-07 — NeedsAttentionCard removed. Its sole row ("Invoices not
+// sent") was absorbed into the bottom of OperationalAlertsCard via the
+// new `invoices_not_sent` row + mode. The standalone card was effectively
+// a placeholder duplicating the operational-alert concept; consolidating
+// removes the empty-card / mismatched-card-row visual artifact and keeps
+// every triage signal in one place. Persisted user layouts that
+// referenced the retired `needs_attention` widget degrade safely — the
+// resolver iterates the registry, not the override rows. The migration
+// `2026_05_07_drop_needs_attention_widget.sql` sweeps the orphan rows
+// for hygiene.
 
 interface CapacityBlockDto {
-  kind: "booked" | "open";
+  kind: "booked" | "open" | "time_off";
   startISO: string;
   endISO: string;
   durationMinutes: number;
@@ -1253,6 +1187,13 @@ interface CapacityBlockDto {
   visitId?: string;
   jobId?: string;
   visitStatus?: string;
+  /** 2026-05-07 RALPH (technician time off): present on time_off
+   *  blocks only. Reason from the canonical
+   *  TECHNICIAN_TIME_OFF_REASONS union. */
+  reason?: string;
+  note?: string | null;
+  timeOffId?: string;
+  allDay?: boolean;
 }
 interface CapacityTechDto {
   technicianId: string;
@@ -1330,6 +1271,15 @@ function TodaysScheduleCard({
   // already produced `activeTechs` — both filters layer cleanly in a
   // single derivation step downstream.
   const [openOnly, setOpenOnly] = useState(false);
+  // 2026-05-07 RALPH (technician time off): modal state for the
+  // "Add time off" entry point in the team-filter Popover footer.
+  // The modal posts to /api/technician-time-off and invalidates the
+  // capacity query so the schedule card reflects the new entry on
+  // the next refetch (no manual refresh required).
+  const [timeOffModalOpen, setTimeOffModalOpen] = useState(false);
+  const [timeOffDefaultTechId, setTimeOffDefaultTechId] = useState<
+    string | undefined
+  >(undefined);
   // 2026-05-07 RALPH: display mode is CONTROLLED by the page (props).
   // Local aliases below keep the rest of this component readable.
   const scheduleDisplayMode = displayMode;
@@ -1339,6 +1289,13 @@ function TodaysScheduleCard({
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
+    // 2026-05-07 RALPH (regression fix): cap retries at 1 so a
+    // backend error (e.g., missing time_off table) surfaces in
+    // ~1-2 s instead of ~30 s through React Query's default
+    // exponential-backoff retry chain. Users see the inline error
+    // state + Retry button immediately and can refetch once the
+    // backend recovers.
+    retry: 1,
   });
 
   const techs = capacityQuery.data?.technicians ?? [];
@@ -1417,7 +1374,7 @@ function TodaysScheduleCard({
   // slots pass through unchanged. Open blocks whose entire window is in
   // the past return `null` and are dropped from the column.
   const visibleTechs = useMemo(() => {
-    return activeTechs.map((t) => {
+    const mapped = activeTechs.map((t) => {
       const filtered = openOnly
         ? t.scheduleBlocks.filter((b) => b.kind === "open")
         : t.scheduleBlocks;
@@ -1429,7 +1386,89 @@ function TodaysScheduleCard({
       }
       return { ...t, scheduleBlocks: clamped };
     });
+    // 2026-05-07 RALPH: workload-driven ordering. The capacity
+    // payload returns techs in source/alphabetic order; for the
+    // dashboard's information flow we want the busiest tech leftmost
+    // (column mode) / topmost (stacked mode). Sort priority:
+    //   1. Booked-visit count desc — open slots do NOT count.
+    //   2. Total booked duration (minutes) desc.
+    //   3. Earliest booked start time asc — earlier = earlier
+    //      visible signal of the day.
+    //   4. Display name asc — stable tie-breaker.
+    // This is DISPLAY-ORDER ONLY: assignment data, capacity math
+    // (`bookedPercent`), per-tech capacity blocks, and slot
+    // availability are all unchanged — they read from `techs` /
+    // `activeTechs` upstream of this sort.
+    return mapped.slice().sort((a, b) => {
+      const aBooked = a.scheduleBlocks.filter((x) => x.kind === "booked");
+      const bBooked = b.scheduleBlocks.filter((x) => x.kind === "booked");
+      if (aBooked.length !== bBooked.length) {
+        return bBooked.length - aBooked.length;
+      }
+      const aDur = aBooked.reduce(
+        (s, x) => s + (x.durationMinutes ?? 0),
+        0,
+      );
+      const bDur = bBooked.reduce(
+        (s, x) => s + (x.durationMinutes ?? 0),
+        0,
+      );
+      if (aDur !== bDur) return bDur - aDur;
+      const aStart =
+        aBooked.length > 0
+          ? Math.min(...aBooked.map((x) => Date.parse(x.startISO)))
+          : Number.POSITIVE_INFINITY;
+      const bStart =
+        bBooked.length > 0
+          ? Math.min(...bBooked.map((x) => Date.parse(x.startISO)))
+          : Number.POSITIVE_INFINITY;
+      if (aStart !== bStart) return aStart - bStart;
+      return (a.name ?? "").localeCompare(b.name ?? "");
+    });
   }, [activeTechs, openOnly, nowMs]);
+
+  // 2026-05-07 RALPH (idle grouping): classify techs by whether
+  // their RAW capacity (pre-`openOnly` filter, post-team-scope
+  // filter) contains any booked blocks. Open slots do NOT count.
+  // The classification reads from `activeTechs` (the upstream
+  // scope-filtered slice) so it stays stable even when the user
+  // toggles the open-only filter — flipping the display filter
+  // shouldn't reclassify an actively booked tech as "available."
+  const techActiveSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of activeTechs) {
+      if (t.scheduleBlocks.some((b) => b.kind === "booked")) {
+        set.add(t.technicianId);
+      }
+    }
+    return set;
+  }, [activeTechs]);
+
+  // Partition the sorted-by-workload `visibleTechs` for column-mode
+  // rendering. Active techs keep their workload order (busiest
+  // leftmost); idle techs get re-sorted alphabetically because
+  // workload is uniformly zero among them.
+  const activeTechsForRender = useMemo(
+    () => visibleTechs.filter((t) => techActiveSet.has(t.technicianId)),
+    [visibleTechs, techActiveSet],
+  );
+  const idleTechsForRender = useMemo(
+    () =>
+      visibleTechs
+        .filter((t) => !techActiveSet.has(t.technicianId))
+        .slice()
+        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")),
+    [visibleTechs, techActiveSet],
+  );
+  const hasIdleGroup = idleTechsForRender.length > 0;
+  // Effective column count for the column-mode multi-tech grid:
+  // each active tech is one column, plus ONE column for the
+  // grouped "Available" pile if any idle tech exists. Drives the
+  // grid template + the 4-column-grid-vs-horizontal-scroll
+  // threshold so the dashboard doesn't paint empty/cramped
+  // columns when most techs are idle.
+  const effectiveColumnCount =
+    activeTechsForRender.length + (hasIdleGroup ? 1 : 0);
 
   const isSingleTechView = visibleTechs.length === 1;
 
@@ -1504,11 +1543,19 @@ function TodaysScheduleCard({
   // though `compact` is true, since stacked drops the cell to 1
   // unit wide) so the user can switch back.
   const isStackedMode = scheduleDisplayMode === "stacked";
-  // Toggle visibility: visible when stacked (so the user can leave
-  // the mode) OR in any non-compact column variant (multi-tech
-  // column has plenty of header room). Hidden only for the compact
-  // single-tech column case where stacked makes no visual sense.
-  const showDisplayModeToggle = isStackedMode || !compact;
+  // 2026-05-07 RALPH (regression fix): toggle visibility now gates
+  // on `isMultiTech` (the company has ≥ 2 schedulable techs), NOT
+  // on `!compact`. The previous rule hid the toggle whenever the
+  // page reduced widthUnits to 1, which (after idle-grouping +
+  // ACTIVE-driven width derivation) happens whenever zero techs are
+  // currently active — leaving the user stuck in stacked mode with
+  // no way to switch back. Stacked mode itself is also a "show the
+  // toggle" trigger so the user can always reach the column option
+  // even if they're solo-tech (defensive).
+  //
+  // The brief: "Display-mode toggle should be hidden only when truly
+  // invalid, not while loading or after a data issue."
+  const showDisplayModeToggle = isStackedMode || isMultiTech;
 
   // Extracted control JSX — shared between the stacked 2-row header
   // and the default single-row header so we don't duplicate it.
@@ -1593,6 +1640,22 @@ function TodaysScheduleCard({
               data-testid="schedule-manage-team"
             >
               Manage team →
+            </button>
+            {/* 2026-05-07 RALPH (technician time off): canonical
+                entry point for the Add Time Off modal. Sits next to
+                Manage Team because both are team-availability admin
+                actions. The modal preselects no specific tech here
+                — the user picks one inside the form. */}
+            <button
+              type="button"
+              onClick={() => {
+                setTimeOffDefaultTechId(undefined);
+                setTimeOffModalOpen(true);
+              }}
+              className="w-full text-left px-3 py-2 text-xs text-[#76B054] font-medium hover:bg-slate-50 hover:underline border-t border-[#e2e8f0]"
+              data-testid="schedule-add-time-off"
+            >
+              Add time off →
             </button>
           </div>
         </div>
@@ -1758,6 +1821,34 @@ function TodaysScheduleCard({
           <div className="p-4 space-y-2">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
           </div>
+        ) : capacityQuery.isError ? (
+          // 2026-05-07 RALPH (regression fix): explicit error state
+          // when the capacity endpoint fails (e.g., a downstream
+          // table is missing or the backend is restarting). Without
+          // this branch, React Query's retry-with-backoff burned
+          // ~30 s before the card settled on "No technicians in the
+          // selected scope" — indistinguishable from a legitimate
+          // empty-team scenario. The retry button calls refetch()
+          // directly so the user can recover immediately once the
+          // backend is healthy.
+          <div className="p-4" data-testid="schedule-error-state">
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-row text-red-700 flex items-center justify-between gap-3">
+              <span className="truncate">
+                Couldn't load today's schedule.
+                {capacityQuery.error instanceof Error
+                  ? ` ${capacityQuery.error.message}`
+                  : ""}
+              </span>
+              <button
+                type="button"
+                onClick={() => capacityQuery.refetch()}
+                className="shrink-0 inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100"
+                data-testid="schedule-error-retry"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
         ) : visibleTechs.length === 0 ? (
           <div className="p-4">
             <EmptyState message="No technicians in the selected scope." />
@@ -1848,7 +1939,14 @@ function TodaysScheduleCard({
             // mode keeps the existing rule (grid for ≤4 techs;
             // horizontal scroll for ≥5).
             const isStacked = scheduleDisplayMode === "stacked";
-            const useGrid = !isStacked && visibleTechs.length <= 4;
+            // 2026-05-07 RALPH (idle grouping): column mode now uses
+            // `effectiveColumnCount` (active tech columns + the
+            // grouped "Available" column when idle techs exist) so
+            // the grid threshold reflects the actual rendered column
+            // count, not the raw `visibleTechs.length`. Stacked mode
+            // continues to iterate `visibleTechs` directly — no
+            // grouping in stacked, every tech gets their own section.
+            const useGrid = !isStacked && effectiveColumnCount <= 4;
             const renderColumn = (tech: CapacityTechDto, isLastCol: boolean, widthClass: string) => {
               // 2026-04-26 polish v6: off-shift technicians can still have
               // assigned visits (e.g. accidental booking on a day-off). The
@@ -1893,9 +1991,20 @@ function TodaysScheduleCard({
                     tech.scheduleBlocks.map((block, bIdx, bArr) => {
                       const timeRange = formatTimeRange(block.startISO, block.endISO);
                       const isOpen = block.kind === "open";
+                      // 2026-05-07 RALPH: time_off blocks render with
+                      // a muted amber palette and a "Time off" label
+                      // (or the reason if present). Click is no-op
+                      // for now — editing is wired via the API but
+                      // the dashboard doesn't expose an inline edit
+                      // entry point yet (follow-up).
+                      const isTimeOff = block.kind === "time_off";
                       const isLastBlock = bIdx === bArr.length - 1;
                       const duration = formatDurationLabel(block.durationMinutes);
-                      const nameLabel = isOpen ? "Open Slot" : (block.title ?? "Visit");
+                      const nameLabel = isTimeOff
+                        ? `Time off${block.reason ? ` · ${block.reason}` : ""}`
+                        : isOpen
+                          ? "Open Slot"
+                          : (block.title ?? "Visit");
                       // 2026-04-30: same muted-state markers as the
                       // single-tech view — kept identical so both layouts
                       // strike past-open / completed rows the same way.
@@ -1904,13 +2013,24 @@ function TodaysScheduleCard({
                       const isMuted = isPastOpen || isCompleted;
                       return (
                         <button
-                          key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}`}
+                          key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? block.timeOffId ?? "open"}`}
                           type="button"
-                          onClick={() => handleBlockClick(tech, block)}
-                          className={`w-full text-left px-3 py-1.5 transition-colors hover:bg-[#F0F5F0] ${
+                          onClick={() =>
+                            isTimeOff ? undefined : handleBlockClick(tech, block)
+                          }
+                          disabled={isTimeOff}
+                          className={`w-full text-left px-3 py-1.5 transition-colors ${
+                            isTimeOff
+                              ? "bg-amber-50/40 cursor-default"
+                              : "hover:bg-[#F0F5F0]"
+                          } ${
                             !isLastBlock ? "border-b border-slate-100" : ""
                           } ${isPastOpen ? "opacity-60" : isCompleted ? "opacity-70" : ""}`}
-                          data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
+                          data-testid={
+                            isTimeOff
+                              ? `schedule-block-time-off-${block.timeOffId ?? `${tech.technicianId}-${block.startISO}`}`
+                              : `schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`
+                          }
                         >
                           {/* 2026-04-26 v2: rigid 3-column grid mirroring
                               the single-tech view, with a tighter time
@@ -1926,10 +2046,28 @@ function TodaysScheduleCard({
                               2026-04-30: muted state mirrors the
                               single-tech view above. */}
                           <div
-                            className={`grid items-baseline gap-1.5 text-xs ${isMuted ? "text-text-muted line-through" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
+                            className={`grid items-baseline gap-1.5 text-xs ${
+                              isMuted
+                                ? "text-text-muted line-through"
+                                : isTimeOff
+                                  ? "text-amber-800"
+                                  : isOpen
+                                    ? "text-emerald-700"
+                                    : "text-[#111827]"
+                            }`}
                             style={{ gridTemplateColumns: "96px minmax(0, 1fr) auto" }}
                           >
-                            <span className={`tabular-nums font-medium ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-700" : "text-slate-600"}`}>
+                            <span
+                              className={`tabular-nums font-medium ${
+                                isMuted
+                                  ? "text-text-muted"
+                                  : isTimeOff
+                                    ? "text-amber-700"
+                                    : isOpen
+                                      ? "text-emerald-700"
+                                      : "text-slate-600"
+                              }`}
+                            >
                               {timeRange}
                             </span>
                             <span className="flex items-baseline gap-1 min-w-0">
@@ -1971,6 +2109,12 @@ function TodaysScheduleCard({
             // and its rows below. Body wrapper's overflow-y-auto
             // (set on the parent) handles the internal scroll when
             // stacked content exceeds the fixed card height.
+            //
+            // 2026-05-07 RALPH (idle grouping): the column branches
+            // below render `activeTechsForRender` as dedicated
+            // columns and append ONE grouped "Available" column when
+            // `idleTechsForRender.length > 0`. Stacked mode is
+            // unchanged — every tech still gets their own section.
             if (isStacked) {
               return (
                 <div
@@ -1984,16 +2128,113 @@ function TodaysScheduleCard({
                 </div>
               );
             }
+            // Compact "Available" column rendered ONCE at the right
+            // edge of column-mode layouts when at least one idle
+            // tech exists. Each row shows the tech name + a green
+            // "Open" pill; clicking promotes to the schedule
+            // creation flow if the tech has any open block, falling
+            // back to a no-op when they have none (off-shift).
+            const renderGroupedAvailableColumn = (
+              isLastCol: boolean,
+              widthClass: string,
+            ) => (
+              <div
+                key="available-techs"
+                className={`${widthClass} ${
+                  !isLastCol
+                    ? "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"
+                    : ""
+                }`}
+                data-testid="schedule-available-column"
+              >
+                <div className="px-3 py-2 text-[13px] font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate flex items-center justify-between gap-2">
+                  <span className="truncate">Available</span>
+                  <span className="text-[10px] font-medium text-slate-500 tabular-nums shrink-0">
+                    {idleTechsForRender.length}
+                  </span>
+                </div>
+                <div className="py-0.5">
+                  {idleTechsForRender.map((tech, idx) => {
+                    const firstOpen = tech.scheduleBlocks.find(
+                      (b) => b.kind === "open",
+                    );
+                    // 2026-05-07 RALPH (technician time off): render
+                    // an "Off" pill (amber) when the tech has any
+                    // time-off block today. Takes precedence over
+                    // the "Open" pill since a tech on time-off
+                    // shouldn't read as available even if a tiny
+                    // sliver of open slot remains around the
+                    // blocked window.
+                    const hasTimeOff = tech.scheduleBlocks.some(
+                      (b) => b.kind === "time_off",
+                    );
+                    const isOffShift = tech.state === "off_today";
+                    const isLastRow = idx === idleTechsForRender.length - 1;
+                    const hasClickable = !!firstOpen && !hasTimeOff;
+                    return (
+                      <button
+                        key={tech.technicianId}
+                        type="button"
+                        onClick={() =>
+                          hasClickable &&
+                          firstOpen &&
+                          handleBlockClick(tech, firstOpen)
+                        }
+                        disabled={!hasClickable}
+                        data-testid={`schedule-available-row-${tech.technicianId}`}
+                        className={`w-full text-left px-3 py-1 transition-colors flex items-center gap-2 ${
+                          !isLastRow ? "border-b border-slate-100" : ""
+                        } ${
+                          hasClickable
+                            ? "hover:bg-[#F0F5F0]"
+                            : "cursor-default opacity-70"
+                        }`}
+                      >
+                        <span className="flex-1 text-xs font-medium text-slate-700 dark:text-gray-200 truncate">
+                          {tech.name}
+                          {isOffShift && !hasTimeOff && (
+                            <span className="ml-1 text-[10px] font-normal text-amber-700 align-middle">
+                              (off)
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                            hasTimeOff
+                              ? "bg-amber-100 text-amber-700"
+                              : hasClickable
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-500"
+                          }`}
+                          data-testid={`schedule-available-status-${tech.technicianId}`}
+                        >
+                          {hasTimeOff ? "Off" : hasClickable ? "Open" : "—"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+            const activeColumnsLastIdx = activeTechsForRender.length - 1;
             return useGrid ? (
               <div
                 className="flex flex-col xl:grid flex-1"
-                style={{ gridTemplateColumns: `repeat(${visibleTechs.length}, minmax(0, 1fr))` }}
+                style={{
+                  gridTemplateColumns: `repeat(${effectiveColumnCount}, minmax(0, 1fr))`,
+                }}
                 data-testid="schedule-multi-column-view"
                 data-display-mode="column"
               >
-                {visibleTechs.map((tech, i) =>
-                  renderColumn(tech, i === visibleTechs.length - 1, "w-full xl:min-w-0"),
+                {activeTechsForRender.map((tech, i) =>
+                  renderColumn(
+                    tech,
+                    !hasIdleGroup && i === activeColumnsLastIdx,
+                    "w-full xl:min-w-0",
+                  ),
                 )}
+                {hasIdleGroup &&
+                  renderGroupedAvailableColumn(true, "w-full xl:min-w-0")}
               </div>
             ) : (
               <div
@@ -2002,9 +2243,15 @@ function TodaysScheduleCard({
                 data-display-mode="column"
               >
                 <div className="flex h-full" style={{ minWidth: "min-content" }}>
-                  {visibleTechs.map((tech, i) =>
-                    renderColumn(tech, i === visibleTechs.length - 1, "flex-none w-[220px]"),
+                  {activeTechsForRender.map((tech, i) =>
+                    renderColumn(
+                      tech,
+                      !hasIdleGroup && i === activeColumnsLastIdx,
+                      "flex-none w-[220px]",
+                    ),
                   )}
+                  {hasIdleGroup &&
+                    renderGroupedAvailableColumn(true, "flex-none w-[220px]")}
                 </div>
               </div>
             );
@@ -2045,6 +2292,16 @@ function TodaysScheduleCard({
           </ul>
         </div>
       )}
+      {/* 2026-05-07 RALPH (technician time off): mounted at the
+          schedule card level so the team-filter Popover footer's
+          "Add time off →" link can launch it. Mutation invalidates
+          the capacity query → schedule card refreshes automatically. */}
+      <TechnicianTimeOffModal
+        open={timeOffModalOpen}
+        onOpenChange={setTimeOffModalOpen}
+        technicians={techs.map((t) => ({ id: t.technicianId, name: t.name }))}
+        defaultTechnicianId={timeOffDefaultTechId}
+      />
     </DashCard>
   );
 }

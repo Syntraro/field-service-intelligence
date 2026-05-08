@@ -137,7 +137,7 @@ function ModePicker({
     {
       id: "scratch",
       title: "From Scratch",
-      description: "Create a brand-new maintenance plan.",
+      description: "Create a brand-new service plan.",
       cta: "Start Fresh",
       icon: FilePlus,
       onClick: onPickFromScratch,
@@ -155,7 +155,7 @@ function ModePicker({
     {
       id: "duplicate",
       title: "Duplicate Existing Plan",
-      description: "Copy an existing maintenance plan and edit it.",
+      description: "Copy an existing service plan and edit it.",
       cta: "Duplicate Plan",
       icon: Copy,
       onClick: onPickDuplicate,
@@ -346,7 +346,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
       <div className="flex flex-col items-center text-center py-10 gap-2">
         <FileText className="h-10 w-10 text-muted-foreground/40" />
         <div>
-          <div className="font-semibold text-sm">No maintenance plans yet</div>
+          <div className="font-semibold text-sm">No service plans yet</div>
           <div className="text-xs text-muted-foreground mt-0.5">
             Once you create your first plan, you can duplicate it from here.
           </div>
@@ -468,7 +468,7 @@ export default function CreateMaintenancePlanDialog({
               </Button>
             )}
             <DialogTitle>
-              {view === "mode" && "Create Maintenance Plan"}
+              {view === "mode" && "Create Service Plan"}
               {view === "template" && "Choose a Template"}
               {view === "plan" && "Duplicate a Plan"}
             </DialogTitle>

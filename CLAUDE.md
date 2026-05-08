@@ -335,6 +335,74 @@ Use these **inside migrated modal forms** that consume `<ModalBody>`. Do not use
 
 Custom layouts are still allowed when the body has its own padding/scrolling concerns (e.g., `ContactFormDialog`'s 2-section flex layout, `EditTagsModal`'s tag-chip + search structure). In those cases the body owns its own structure, but individual fields inside should still use `<FormField>` / `<FormLabel>` / `<FormHelperText>` / `<FormErrorText>` where practical.
 
+### Phase H1: Typography Primitives (2026-05-07)
+
+The typography token system in `tailwind.config.ts` defines real Tailwind utility classes (`text-row`, `text-row-emphasis`, `text-helper`, `text-caption`, `text-label`, `text-section-title`, etc.). The Phase H1 audit (see CHANGELOG > "Communications Hub Typography Drift") found that feature components kept drifting from the canonical roles because:
+1. The canonical class strings were re-derived per file (`PRIMARY_VALUE_CLASS`, `LINK_CLASS`).
+2. The pre-existing constant library lived under `list-surface.tsx > listPrimaryClass`, named for list pages — detail panels never reached for it.
+3. Source-pin tests asserted *presence* of the canonical token, not architectural composition — a file could import the right token AND fork it locally.
+
+The canonical layer lives at `client/src/components/ui/typography.tsx` and is the SINGLE source of truth for entity-name / entity-meta / section-label / link-text classes. It exports:
+
+- **Class constants** for callers that need the raw string (e.g. composing with `cn()` on a wrapper not made with our component primitives):
+  - `ENTITY_NAME_CLASS` — `text-row-emphasis truncate`
+  - `ENTITY_NAME_LINK_CLASS` — `text-row-emphasis truncate text-brand hover:underline`
+  - `ENTITY_META_CLASS` — `text-helper text-muted-foreground truncate`
+  - `SECTION_LABEL_CLASS` — `text-label text-muted-foreground`
+  - `ENTITY_LINK_CLASS` — `text-brand hover:underline`
+- **Component primitives** — the preferred surface:
+  - `<EntityName href? children>` — primary identifier. Renders as a wouter `<Link>` (brand-green, hover underline) when `href` is set, `<span>` with `text-foreground` otherwise.
+  - `<EntityMeta>` — recessed secondary metadata line.
+  - `<SectionLabel>` — uppercase tracked section header (Client / Location / Open Jobs).
+  - `<EntityLink href>` — inline brand-green link without entity-name sizing.
+  - `<EntityRow icon name meta trailing href>` — stacked composition primitive (name on top, optional meta below, optional leading icon and trailing slot).
+
+**Required for new feature components.**
+
+Feature components in `client/src/components/communications/`, `client/src/components/activity-feed/`, `client/src/components/detail-rail/`, and any future hub/page module **MUST**:
+
+- **Use the primitives** when rendering an entity name, secondary metadata line, section label, or inline link. Don't compose the class strings yourself.
+- **Import the constants from `@/components/ui/typography`** when you need a raw class for `cn()` composition. Don't redeclare them locally.
+- **Pick `text-helper` (13px) as the dense-secondary token** for panels and side rails. `text-caption` (14px) is reserved for tabular metadata (timestamps in tables, list-page footer rows). The two coexist as canonical tokens but they have different roles.
+- **Use `text-muted-foreground` for muted color.** `text-text-muted` survives only inside `list-surface.tsx > listSecondaryClass` for visual back-compat with existing list pages — it is NOT a target for new code.
+
+**Forbidden in feature components** (enforced by `tests/typography-canonical.test.ts`):
+
+- Local `*_CLASS` constants whose value contains a `text-*` class — these belong in `typography.tsx`.
+- The legacy size ramp (`text-xs / -sm / -base / -lg / -xl / -2xl`). Use canonical role tokens instead.
+- Heavier weights layered on top of role tokens (`font-bold`, `font-semibold`). Role tokens like `text-row-emphasis` already bake in the right weight (500).
+- Arbitrary `text-[Npx]` values.
+
+**Allowlist policy.** The guard test `tests/typography-canonical.test.ts > LEGACY_ALLOWLIST` lists files that fail the strict guard today. Each entry has a paired `TODO(H2)` comment naming the migration target. Adding a new file to the allowlist is a deliberate choice — the entry itself documents the debt. The default expectation for new files in the scanned directories is that they pass the strict guard, not that they get allowlisted.
+
+**Standard usage:**
+
+```tsx
+import {
+  EntityName,
+  EntityMeta,
+  EntityRow,
+  SectionLabel,
+} from "@/components/ui/typography";
+
+<SectionLabel>Open Jobs</SectionLabel>
+<EntityRow
+  icon={<Briefcase className="h-3.5 w-3.5 text-muted-foreground" />}
+  name="Job #1023"
+  meta="Walk-in cooler PM"
+  href={`/jobs/${jobId}`}
+/>
+
+<EntityName href={`/clients/${customerCompanyId}`}>{client.name}</EntityName>
+<EntityMeta>{[address, phone, email].filter(Boolean).join(" · ")}</EntityMeta>
+```
+
+**What stays as-is.**
+
+- `<Label>` / `<FormLabel>` / `<FormHelperText>` / `<FormErrorText>` — form field primitives stay canonical at the form layer (Phase 2 above). Feature components inside a form still use those, NOT the new `<EntityName>` family.
+- The list-page constants (`listPrimaryClass`, `listHeaderRowClass`) still ship from `list-surface.tsx` for back-compat with the existing list pages. Phase H1 makes those derive from the new typography primitives where the values match (`listPrimaryClass = ENTITY_NAME_CLASS`); Phase H2 migrates list-page consumers to the primitive components.
+- `<MetaRow>` (`components/ui/meta-row.tsx`) — kept for now; will migrate in H2.
+
 ## Customizable Dashboard Widgets (2026-05-07 framework)
 
 The dashboard pages (currently `FinancialDashboard`) are driven by a per-user widget framework with **one canonical registry** at `shared/dashboardWidgetRegistry.ts`. Visibility + ordering are persisted to `user_dashboard_widgets` and edited via the right-side customize drawer.
@@ -342,8 +410,9 @@ The dashboard pages (currently `FinancialDashboard`) are driven by a per-user wi
 **Architecture rules:**
 - The registry is the SINGLE source of truth for which widgets exist, their default order, default visibility, required permission, and column-span. No hardcoded widget order anywhere else.
 - Widget `key` values are PERSISTED user data — see the file-level "STABILITY WARNING" in the registry. Renaming a key requires a SQL migration or a compatibility alias.
-- Drag-to-reorder lives ONLY inside `DashboardCustomizeDrawer.tsx`. The live grid (`DashboardWidgetGrid.tsx`) is presentation-only.
+- Drag-to-reorder lives on the LIVE GRID — `DashboardWidgetGrid.tsx` mounts `DndContext` + `SortableContext` (`rectSortingStrategy`), wraps each visible widget cell with `useSortable`, and renders a small drag handle in the cell's top-right corner. The customize drawer (`DashboardCustomizeDrawer.tsx`) is a pure show/hide toggle list — NO drag wiring lives there. The drag handle button is the only DnD activator (`attributes` + `listeners` are spread on the button, NOT on the cell wrapper) so clicks anywhere else on the card behave normally and never start a drag. (2026-05-07 RALPH — relocated from drawer to live grid per user request.)
 - Persistence happens once on drag-end and once per toggle — not on drag-over. Optimistic update + rollback on error.
+- The grid receives `onReorder` as a prop and the page (`FinancialDashboard.tsx`) wires it to `useDashboardLayout.setOrder`. The grid only sees visible widget keys; the hook's `setOrder` preserves hidden widgets' relative order via its append-any-omitted loop, so dragging visible cards never re-enables hidden ones.
 - Hidden widgets MUST NOT mount or fetch. Page-level queries gate on `enabled: visibleSet.has(widgetKey)` so toggling a widget off in the drawer also stops its data load.
 - Orphan persisted rows (a `widget_key` that no longer exists in the registry) are silently ignored by the GET resolver — it iterates the registry, not the override rows. `PUT` rejects unknown keys at HTTP 400 so a stale client cannot persist orphans forward.
 - Permissions are enforced in TWO places: the GET resolver filters out widgets the user lacks, and the PUT handler rejects unauthorized widget keys at HTTP 403.

@@ -161,6 +161,20 @@ describe("OperationalAlertsCard — row → mode mapping is the canonical 4-mode
     expect(alertsCardSrc).not.toMatch(/mode:\s*"action_required"/);
   });
 
+  it("invoices_not_sent row passes mode=invoices_not_sent (absorbed from Needs Attention 2026-05-07)", () => {
+    // The retired Needs Attention card's single row was absorbed here.
+    // Same shared modal mode — only the host card moved.
+    expect(alertsCardSrc).toMatch(
+      /invoices_not_sent:\s*\{[\s\S]+?mode:\s*"invoices_not_sent"/,
+    );
+    // The page wires openActionModal into OperationalAlertsCard, which
+    // dispatches row.mode (= "invoices_not_sent") through to the modal.
+    // After consolidation the literal call no longer appears on the page.
+    expect(dashSrc).toMatch(
+      /<OperationalAlertsCard\b[\s\S]+?onOpenActionModal=\{openActionModal\}/,
+    );
+  });
+
   it("each row routes to the shared modal via onOpenActionModal(row.mode)", () => {
     // The single click handler that delegates to the consumer's
     // openActionModal — this is the wiring that makes "every row uses the

@@ -24,13 +24,16 @@
 // Module taxonomy — drives the far-right vertical rail
 // ────────────────────────────────────────────────────────────────────
 
+// 2026-05-07 Phase 4 polish — Templates removed from the canonical
+// rail. The remaining six modules form the operational set; future
+// "Templates" surfaces (saved canned replies) will land elsewhere
+// when there's a real product surface for them.
 export const COMMUNICATION_MODULES = [
   "inbox",
   "calls",
   "call_history",
   "contacts",
   "team_chat",
-  "templates",
   "settings",
 ] as const;
 
@@ -137,7 +140,7 @@ export interface CommunicationMessage {
   direction: CommunicationDirection;
   channel: CommunicationChannel;
   body: string;
-  /** Provider-side message id (Twilio/Telnyx) — null for internal notes. */
+  /** Provider-side message id (vendor-issued) — null for internal notes. */
   providerMessageId?: string | null;
   /** Sender user id when outbound from a tenant user. */
   senderUserId?: string | null;
@@ -199,4 +202,112 @@ export interface CommunicationTimelineEntry {
   /** Optional secondary detail (e.g. "from Sarah", "10:24 AM"). */
   detail?: string;
   createdAt: string;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Contact resolution (Phase 2)
+//
+// Shapes returned by `/api/communications/resolve-contact` and by the
+// server-side `resolveContactByPhone` service. Lives here so the client
+// hook + server service share one canonical contract.
+// ────────────────────────────────────────────────────────────────────
+
+export type ContactMatchType =
+  | "team_user"
+  | "contact_person"
+  | "customer_company"
+  | "client_location";
+
+export type ContactResolutionConfidence =
+  | "exact_single"
+  | "multiple_matches"
+  | "unknown";
+
+export interface ContactMatch {
+  matchType: ContactMatchType;
+  /** Stable id within the source table. */
+  sourceId: string;
+  displayName: string;
+  phone: string | null;
+  email: string | null;
+  /** Tenant user id when matchType === "team_user". */
+  userId?: string;
+  /** Customer company link when applicable. */
+  customerCompanyId?: string;
+  customerCompanyName?: string;
+  /** Service-location link when applicable. */
+  locationId?: string;
+  locationName?: string;
+  /** Optional address snapshot for the right panel. */
+  addressLine?: string;
+}
+
+export interface ContactResolutionResult {
+  /** Canonical key the request was normalized to. Empty when not matchable. */
+  normalizedKey: string;
+  confidence: ContactResolutionConfidence;
+  matches: ContactMatch[];
+  /**
+   * Best single pick when `confidence === "exact_single"`. Null otherwise —
+   * UI MUST NOT auto-pick on `multiple_matches`. The spec is explicit
+   * about showing a conflict / selection state instead.
+   */
+  primary: ContactMatch | null;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Contact detail (Phase 4E)
+//
+// Rich projection for the right Details panel when a contact is selected
+// in the Contacts / Team Chat module. Sections are independently optional
+// — the UI suppresses any section whose payload is undefined / empty so
+// blank cards never render.
+// ────────────────────────────────────────────────────────────────────
+
+export type ContactDetailKind = "contact_person" | "team_user";
+
+export interface ContactDetailClientSection {
+  customerCompanyId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  /** Joined "street, city, prov" line. Undefined when no address fields are set. */
+  addressLine?: string;
+}
+
+export interface ContactDetailLocationSection {
+  locationId: string;
+  /** "Toronto Warehouse" / location name. Undefined when only an address exists. */
+  name?: string;
+  addressLine?: string;
+  phone: string | null;
+}
+
+export interface ContactDetailPersonSection {
+  displayName: string;
+  phone: string | null;
+  email: string | null;
+}
+
+export interface ContactDetailJobRef {
+  id: string;
+  jobNumber: number;
+  summary: string;
+  status: string;
+}
+
+export interface ContactDetail {
+  kind: ContactDetailKind;
+  /** id within the source table (contact_persons.id or users.id). */
+  sourceId: string;
+  /** Person section is always present — it's the entity the user picked. */
+  primaryContact: ContactDetailPersonSection;
+  /** Customer company context (contact_person only). */
+  client?: ContactDetailClientSection;
+  /** A linked service location (contact_person only, when an assignment exists). */
+  location?: ContactDetailLocationSection;
+  /** Open jobs at the contact's customer company. Capped server-side. */
+  openJobs?: ContactDetailJobRef[];
+  /** Role label for team_user rows (e.g. "Owner", "Technician"). */
+  teamRole?: string;
 }

@@ -46,6 +46,7 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -111,6 +112,8 @@ interface EditFormState {
   pmBillingModel: string;
   pmBillingLabel: string;
   pmContractAmount: string;
+  // Service Plans (2026-05-07): explicit "Automatically generate work" toggle
+  autoGenerateJobs: boolean;
 }
 
 function templateToFormState(tpl: RecurringJobTemplate): EditFormState {
@@ -133,6 +136,7 @@ function templateToFormState(tpl: RecurringJobTemplate): EditFormState {
     pmBillingModel: (tpl as any).pmBillingModel ?? "",
     pmBillingLabel: (tpl as any).pmBillingLabel ?? "",
     pmContractAmount: (tpl as any).pmContractAmount ?? "",
+    autoGenerateJobs: (tpl as { autoGenerateJobs?: boolean | null }).autoGenerateJobs ?? false,
   };
 }
 
@@ -375,6 +379,28 @@ function ScheduleCard({
             onDaysAfterChange={(serviceWindowDaysAfter) => onChange({ serviceWindowDaysAfter })}
             testIdPrefix="pm-detail"
           />
+          {/* Service Plans (2026-05-07): per-plan auto-generate toggle. Same
+              copy + behavior contract as the create wizard — see PMWizardPage
+              and the auto-promote logic in server/domain/recurrence.ts. */}
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <Label
+                htmlFor="pm-detail-auto-generate-jobs"
+                className="text-sm font-medium cursor-pointer"
+              >
+                Automatically generate work
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                Automatically creates an unscheduled job when service becomes due. The job lands on the Work Due queue — a dispatcher still assigns the technician and schedules it.
+              </p>
+            </div>
+            <Switch
+              id="pm-detail-auto-generate-jobs"
+              checked={form.autoGenerateJobs}
+              onCheckedChange={(v) => onChange({ autoGenerateJobs: Boolean(v) })}
+              data-testid="pm-detail-auto-generate-jobs"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label className="text-xs">Start date</Label>
@@ -412,6 +438,10 @@ function ScheduleCard({
         <DetailRow
           label="Service window"
           value={`${template.serviceWindowDaysBefore ?? 7} days before — ${template.serviceWindowDaysAfter ?? 14} days after`}
+        />
+        <DetailRow
+          label="Auto-generate work"
+          value={(template as { autoGenerateJobs?: boolean | null }).autoGenerateJobs ? "On — creates unscheduled jobs" : "Off — manual generation"}
         />
       </div>
     </SectionCard>
@@ -712,6 +742,7 @@ export default function PMDetailPage() {
         pmBillingModel: form.pmBillingModel || null,
         pmBillingLabel: form.pmBillingLabel.trim() || null,
         pmContractAmount: form.pmContractAmount || null,
+        autoGenerateJobs: form.autoGenerateJobs,
       };
       return apiRequest(`/api/recurring-templates/${template.id}`, {
         method: "PATCH",
@@ -853,12 +884,14 @@ export default function PMDetailPage() {
       ["in_window", "due_soon", "overdue"].includes(i.complianceStatus),
   ).length;
 
-  // Header title format per the 2026-04-26 IA brief: "Maintenance Plan
-  // — {customer name}", falling back to the plan title when no customer
-  // is linked. The plan title moves to the subtitle so it stays visible
-  // when the title shows the customer instead.
+  // Header title format: "Service Plan — {customer name}", falling back
+  // to the plan title when no customer is linked. The plan title moves
+  // to the subtitle so it stays visible when the title shows the
+  // customer instead. (2026-05-07 module rename: Maintenance → Service
+  // Plans; the route, jobType="maintenance" enum, and recurrence
+  // mechanics are unchanged.)
   const hasCustomer = customerName && customerName !== "—";
-  const headerTitle = hasCustomer ? `Maintenance Plan — ${customerName}` : template.title;
+  const headerTitle = hasCustomer ? `Service Plan — ${customerName}` : template.title;
   const subtitleParts: string[] = [];
   if (hasCustomer) subtitleParts.push(template.title);
   if (locationName && locationName !== "—") subtitleParts.push(locationName);

@@ -31,6 +31,7 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -157,6 +158,11 @@ interface WizardState {
   generationDayOfMonth: number;
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
+  // Service Plans (2026-05-07): when true the system creates an UNSCHEDULED
+  // job (no visit, no tech, no calendar reservation) on the configured
+  // generation date. When false the plan only creates pending instances
+  // and a dispatcher manually generates jobs from the Work Due queue.
+  autoGenerateJobs: boolean;
   // Step 3 — Pricing & Contract
   billingOption: BillingOption;
   contractAmount: string;
@@ -176,7 +182,7 @@ function defaultStartDate(): string {
 /** 2026-04-26 UX: Plan Name defaults to a clean static value the user can
  *  edit. We no longer auto-insert customer/location/frequency/IDs into the
  *  title — that was noisy and surprised users on first edit. */
-const DEFAULT_PLAN_NAME = "Maintenance Plan";
+const DEFAULT_PLAN_NAME = "Service Plan";
 
 function initialState(): WizardState {
   const startDate = defaultStartDate();
@@ -194,6 +200,7 @@ function initialState(): WizardState {
     generationDayOfMonth: 1,
     serviceWindowDaysBefore: 7,
     serviceWindowDaysAfter: 14,
+    autoGenerateJobs: false,
     billingOption: "after_visit",
     contractAmount: "",
     startDate,
@@ -463,7 +470,7 @@ function StepBasics({
       <div>
         <h2 className="text-modal-title">Let's start with the basics</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Who is this maintenance plan for?
+          Who is this service plan for?
         </p>
       </div>
 
@@ -837,11 +844,38 @@ function StepSchedule({
         </div>
       </div>
 
+      {/* Service Plans (2026-05-07): explicit auto-generate-work toggle.
+          When ON, the system creates an UNSCHEDULED job (no visit, no
+          tech assignment, no calendar reservation) on the configured
+          generation date. When OFF, the plan only surfaces pending work
+          on the Service Plans → Work Due queue and a dispatcher
+          generates the job manually. Scheduling/dispatch are NEVER
+          automated by this toggle. */}
+      <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <Label
+            htmlFor="pm-wizard-auto-generate-jobs"
+            className="text-sm font-medium cursor-pointer"
+          >
+            Automatically generate work
+          </Label>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+            Automatically creates an unscheduled job when service becomes due. The job lands on the Work Due queue — a dispatcher still assigns the technician and schedules it.
+          </p>
+        </div>
+        <Switch
+          id="pm-wizard-auto-generate-jobs"
+          checked={state.autoGenerateJobs}
+          onCheckedChange={(v) => onChange({ autoGenerateJobs: Boolean(v) })}
+          data-testid="pm-wizard-auto-generate-jobs"
+        />
+      </div>
+
       <div className="space-y-2 pt-1">
         <div>
           <h3 className="text-sm font-semibold">Completion Window</h3>
           <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-            This is the date range where the maintenance visit should be completed.
+            This is the date range where the service visit should be completed.
             Example: 7 days before and 14 days after means the job can be scheduled
             anytime in that window. For an exact service date, set both numbers to 0.
           </p>
@@ -1094,7 +1128,7 @@ function StepReview({ state }: { state: WizardState }) {
   return (
     <div className="space-y-3">
       <div>
-        <h2 className="text-modal-title">Review your maintenance plan</h2>
+        <h2 className="text-modal-title">Review your service plan</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
           Please review the details below. You can go back to make changes.
         </p>
@@ -1220,9 +1254,9 @@ function FinalActionBar({
     <Card data-testid="pm-wizard-final-action-card">
       <CardContent className="px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
-          <div className="font-semibold text-sm">Ready to create this maintenance plan?</div>
+          <div className="font-semibold text-sm">Ready to create this service plan?</div>
           <div className="text-xs text-muted-foreground mt-0.5">
-            Review the details above. When you create the plan, upcoming maintenance will appear on the Maintenance page when due.
+            Review the details above. When you create the plan, upcoming service work will appear on the Service Plans page when due.
           </div>
         </div>
         <Button
@@ -1374,6 +1408,7 @@ export default function PMWizardPage() {
       generationDayOfMonth: tpl.generationDayOfMonth ?? 1,
       serviceWindowDaysBefore: tpl.serviceWindowDaysBefore ?? 7,
       serviceWindowDaysAfter: tpl.serviceWindowDaysAfter ?? 14,
+      autoGenerateJobs: (tpl as { autoGenerateJobs?: boolean | null }).autoGenerateJobs ?? false,
       billingOption: billingOptionFromTemplate(tpl),
       contractAmount: (tpl as { pmContractAmount?: string | null }).pmContractAmount ?? "",
       startDate: newStartDate,
@@ -1525,6 +1560,10 @@ export default function PMWizardPage() {
           contractAmountApplies(state.billingOption) && state.contractAmount.trim() !== ""
             ? state.contractAmount.trim()
             : null,
+        // Service Plans (2026-05-07): forward the explicit auto-generate-work
+        // flag. Server defaults to false when omitted; we always send the
+        // wizard's current value to keep the wire shape predictable.
+        autoGenerateJobs: state.autoGenerateJobs,
         isActive: true,
       };
       return apiRequest<RecurringJobTemplate>("/api/recurring-templates", {
@@ -1536,8 +1575,8 @@ export default function PMWizardPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
       toast({
-        title: "Maintenance plan created",
-        description: `"${state.title}" is now active. Upcoming maintenance will appear on the Maintenance page when due.`,
+        title: "Service plan created",
+        description: `"${state.title}" is now active. Upcoming service work will appear on the Service Plans page when due.`,
       });
       // Show the explanation modal unless the user opted out previously.
       const hidden = (() => {
@@ -1552,7 +1591,7 @@ export default function PMWizardPage() {
     },
     onError: (err: Error) => {
       toast({
-        title: "Error creating maintenance plan",
+        title: "Error creating service plan",
         description: err.message,
         variant: "destructive",
       });
@@ -1598,7 +1637,7 @@ export default function PMWizardPage() {
         >
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-xl font-bold">Create Maintenance Plan</h1>
+        <h1 className="text-xl font-bold">Create Service Plan</h1>
       </div>
 
       {/* Stepper */}
@@ -1711,11 +1750,11 @@ export default function PMWizardPage() {
           data-testid="pm-wizard-explanation-modal"
         >
           <DialogHeader>
-            <DialogTitle>Maintenance plan created</DialogTitle>
+            <DialogTitle>Service plan created</DialogTitle>
             <DialogDescription>
-              This plan will track upcoming maintenance based on the schedule
-              you selected. When maintenance is due, it will appear on the
-              Maintenance page so you can create the work order.
+              This plan will track upcoming service work based on the schedule
+              you selected. When service is due, it will appear on the
+              Service Plans page so you can create the work order.
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">

@@ -566,26 +566,27 @@ describe("Reuse contract — no new modal component, sibling cards untouched", (
     expect(modalSrc).not.toMatch(/<StaleOpportunitiesModal\b/);
   });
 
-  it("Needs Attention card is still narrowed to invoices-not-sent only", () => {
-    const naBlock = (() => {
-      const start = dashSrc.indexOf("function NeedsAttentionCard(");
-      expect(start).toBeGreaterThan(-1);
-      const rest = dashSrc.slice(start + "function NeedsAttentionCard(".length);
-      const nextFn = rest.search(/\nfunction\s+\w+\s*\(/);
-      return dashSrc.slice(start, start + (nextFn > 0 ? nextFn : rest.length));
-    })();
-    expect(naBlock).toMatch(/key:\s*"invoices-not-sent"/);
-    // None of the dropped Needs Attention rows came back.
-    expect(naBlock).not.toMatch(/key:\s*"quotes-stale"/);
-    expect(naBlock).not.toMatch(/key:\s*"leads-stale"/);
+  it("Needs Attention card has been retired and the row absorbed into Operational Alerts (2026-05-07)", () => {
+    // The standalone NeedsAttentionCard was removed. Its single
+    // "Invoices not sent" row moved to the bottom of OperationalAlertsCard.
+    // The page no longer declares NeedsAttentionCard / its props /
+    // its mount. The label literal moved with it.
+    expect(dashSrc).not.toMatch(/function NeedsAttentionCard\(/);
+    expect(dashSrc).not.toMatch(/<NeedsAttentionCard\b/);
+    // The row config now lives in OperationalAlertsCard.
+    expect(alertsSrc).toMatch(
+      /invoices_not_sent:\s*\{[\s\S]+?label:\s*"Invoices not sent"[\s\S]+?mode:\s*"invoices_not_sent"/,
+    );
   });
 
-  it("Operational Alerts row → mode mapping is unchanged", () => {
-    // Pin the four Operational Alerts row mode bindings — refactor must
-    // not have leaked into this card.
+  it("Operational Alerts row → mode mapping covers the four legacy modes + invoices_not_sent", () => {
+    // Pin the row mode bindings — refactor must not have leaked
+    // into this card. The 2026-05-07 consolidation added
+    // invoices_not_sent at the bottom of the canonical row order.
     expect(alertsSrc).toMatch(/ready_to_invoice:\s*\{[\s\S]+?mode:\s*"ready_to_invoice"/);
     expect(alertsSrc).toMatch(/past_due:\s*\{[\s\S]+?mode:\s*"past_due"/);
     expect(alertsSrc).toMatch(/unscheduled:\s*\{[\s\S]+?mode:\s*"unscheduled"/);
     expect(alertsSrc).toMatch(/requires_attention:\s*\{[\s\S]+?mode:\s*"requires_attention"/);
+    expect(alertsSrc).toMatch(/invoices_not_sent:\s*\{[\s\S]+?mode:\s*"invoices_not_sent"/);
   });
 });

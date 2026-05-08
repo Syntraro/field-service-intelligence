@@ -18,6 +18,7 @@ import { Phone } from "lucide-react";
 import type { CommunicationThread } from "@shared/communicationsTypes";
 import { getInitials } from "@/lib/getInitials";
 import { cn } from "@/lib/utils";
+import { EntityMeta, EntityName } from "@/components/ui/typography";
 
 interface ConversationRowProps {
   thread: CommunicationThread;
@@ -68,25 +69,19 @@ export function ConversationRow({ thread, selected, onSelect }: ConversationRowP
       </Avatar>
       <div className="min-w-0 flex-1 leading-snug">
         <div className="flex items-center justify-between gap-2">
-          <div
-            className={cn(
-              "min-w-0 truncate text-row-emphasis",
-              isUnread ? "text-foreground" : "text-foreground/90",
-            )}
+          <EntityName
+            className={cn("min-w-0", !isUnread && "text-foreground/90")}
             data-testid="conversation-row-name"
           >
             {thread.contact.displayName}
-          </div>
+          </EntityName>
           <div className="shrink-0 text-helper text-muted-foreground">
             {formatRowTime(thread.lastMessageAt)}
           </div>
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">
-          <div
-            className={cn(
-              "min-w-0 truncate text-helper",
-              isUnread ? "text-foreground" : "text-muted-foreground",
-            )}
+          <EntityMeta
+            className={cn("min-w-0", isUnread && "text-foreground")}
           >
             {isMissedCall ? (
               <span className="inline-flex items-center gap-1">
@@ -95,7 +90,7 @@ export function ConversationRow({ thread, selected, onSelect }: ConversationRowP
             ) : (
               thread.lastMessagePreview
             )}
-          </div>
+          </EntityMeta>
           {isUnread && (
             <span
               className="shrink-0 inline-flex items-center justify-center rounded-full bg-brand text-white h-4 min-w-4 px-1 text-helper"

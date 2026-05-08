@@ -506,8 +506,9 @@ async function generateForTemplate(
   template: RecurringJobTemplate,
   windowStart: Date,
   windowEnd: Date
-): Promise<{ instancesCreated: number; jobsCreated: number }> {
+): Promise<{ instancesCreated: number; jobsCreated: number; newInstanceIds: string[] }> {
   let instancesCreated = 0;
+  const newInstanceIds: string[] = [];
 
   // Compute occurrence dates
   const occurrenceDates = computeOccurrenceDates(template, windowStart, windowEnd);
@@ -531,7 +532,9 @@ async function generateForTemplate(
       continue; // Already exists — skip (idempotent)
     }
 
-    // Create new instance in "pending" status — no job auto-creation
+    // Create new instance in "pending" status — no job auto-creation here.
+    // Service Plans auto-generate is layered on by the caller via
+    // generateFromInstances() if template.autoGenerateJobs is true.
     try {
       const [newInstance] = await db
         .insert(recurringJobInstances)
@@ -546,14 +549,16 @@ async function generateForTemplate(
 
       if (newInstance) {
         instancesCreated++;
+        newInstanceIds.push(newInstance.id);
       }
     } catch {
       // Unique constraint race — another process created it, safe to skip
     }
   }
 
-  // PM Pivot Phase 1: jobsCreated is always 0 from background generation
-  return { instancesCreated, jobsCreated: 0 };
+  // jobsCreated is 0 here — auto-promotion happens in the caller when the
+  // template's autoGenerateJobs flag is set.
+  return { instancesCreated, jobsCreated: 0, newInstanceIds };
 }
 
 /**
@@ -605,7 +610,7 @@ export async function generateInstances(
       // PM fix: use 1st of current month for PM templates (same as generateForSingleTemplate)
       const windowStart = pmWindowStart(today, template);
 
-      const { instancesCreated, jobsCreated } = await generateForTemplate(
+      const { instancesCreated, jobsCreated, newInstanceIds } = await generateForTemplate(
         template,
         windowStart,
         windowEnd
@@ -614,6 +619,19 @@ export async function generateInstances(
       result.templatesProcessed++;
       result.instancesCreated += instancesCreated;
       result.jobsCreated += jobsCreated;
+
+      // Service Plans (2026-05-07): when the template opts into auto-generate,
+      // promote the just-created pending instances into UNSCHEDULED jobs via
+      // the same path the manual UI uses. That path enforces:
+      //   status='open', scheduledStart=null, no primary technician, no visit,
+      //   no calendar reservation. (See generateFromInstances below.)
+      if (template.autoGenerateJobs && newInstanceIds.length > 0) {
+        const promote = await generateFromInstances(companyId, newInstanceIds);
+        result.jobsCreated += promote.jobsCreated;
+        if (promote.errors.length > 0) {
+          result.errors.push(...promote.errors);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       result.errors.push(`Template ${template.id}: ${message}`);
@@ -683,7 +701,7 @@ export async function generateForSingleTemplate(
     // occurrences earlier in the month are not excluded (bug: occDate < today was dropped)
     const windowStart = pmWindowStart(today, template);
 
-    const { instancesCreated, jobsCreated } = await generateForTemplate(
+    const { instancesCreated, jobsCreated, newInstanceIds } = await generateForTemplate(
       template,
       windowStart,
       windowEnd
@@ -696,6 +714,16 @@ export async function generateForSingleTemplate(
     result.templatesProcessed = 1;
     result.instancesCreated = instancesCreated;
     result.jobsCreated = jobsCreated;
+
+    // Service Plans (2026-05-07): same auto-promote contract as generateInstances —
+    // creates UNSCHEDULED jobs (no visit, no tech, no calendar) for opt-in templates.
+    if (template.autoGenerateJobs && newInstanceIds.length > 0) {
+      const promote = await generateFromInstances(companyId, newInstanceIds);
+      result.jobsCreated += promote.jobsCreated;
+      if (promote.errors.length > 0) {
+        result.errors.push(...promote.errors);
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     result.errors.push(message);

@@ -1,17 +1,23 @@
 /**
- * Recurring Jobs → Maintenance — sidebar/menu destination rename
- * (2026-05-06).
+ * Maintenance → Service Plans — sidebar/menu destination rename
+ * (2026-05-07).
  *
- * The destination at `/pm` is now labeled "Maintenance" everywhere
+ * The destination at `/pm` is now labeled "Service Plans" everywhere
  * the user reads it as a navigation target. The data model, the
- * route, the API surface, and the in-page recurrence-behavior copy
- * (Make Recurring, Recurring schedule, "Recurring Job Created"
- * toasts, etc.) intentionally remain — those describe behavior, not
- * the destination name.
+ * route, the API surface, the jobType="maintenance" enum, and the
+ * in-page recurrence-behavior copy (Make Recurring, Recurring schedule,
+ * "Recurring Job Created" toasts, etc.) intentionally remain — those
+ * describe behavior, not the destination name.
+ *
+ * History
+ * -------
+ * - 2026-05-06 first rename: "Recurring Jobs" → "Maintenance".
+ * - 2026-05-07 second rename: "Maintenance" → "Service Plans" (this file).
  *
  * This file is a source-pin regression: if a future refactor
- * accidentally replaces "recurring" globally OR reverts the
- * destination labels, these assertions fail.
+ * accidentally replaces "recurring" globally, reverts the destination
+ * labels, OR drifts back to "Maintenance" as a destination, these
+ * assertions fail.
  */
 
 import { describe, it, expect } from "vitest";
@@ -38,53 +44,68 @@ const quickAddSrc = readFileSync(
 // ── Sidebar destination label ─────────────────────────────────────────
 
 describe("AppSidebar — /pm destination label", () => {
-  it("nav row at href=/pm displays 'Maintenance' as its title", () => {
+  it("nav row at href=/pm displays 'Service Plans' as its title", () => {
     // Pin the entry shape: title literal AND href together so a
     // future menu reorder can't accidentally pass.
     expect(sidebarSrc).toMatch(
-      /title:\s*"Maintenance"[\s\S]+?href:\s*"\/pm"/,
+      /title:\s*"Service Plans"[\s\S]+?href:\s*"\/pm"/,
     );
   });
 
-  it("hover tooltip on the /pm row reads 'Maintenance' (not 'Recurring Jobs')", () => {
+  it("hover tooltip on the /pm row reads 'Service Plans' (not 'Maintenance' or 'Recurring Jobs')", () => {
     expect(sidebarSrc).toMatch(
-      /href:\s*"\/pm"[\s\S]+?hoverText:\s*"Maintenance"/,
+      /href:\s*"\/pm"[\s\S]+?hoverText:\s*"Service Plans"/,
     );
-    // The legacy hover label is gone.
+    // The legacy hover labels are gone.
     expect(sidebarSrc).not.toMatch(
       /hoverText:\s*"Preventive Maintenance & Recurring Jobs"/,
     );
+    expect(sidebarSrc).not.toMatch(
+      /hoverText:\s*"Maintenance"/,
+    );
   });
 
-  it("does NOT carry a sidebar nav title literal of 'Recurring Jobs'", () => {
-    // Code comments may still mention "Recurring Jobs" (the data
-    // model) — but no `title: "Recurring Jobs"` literal exists as a
-    // menu entry. Pin the assignment shape.
+  it("does NOT carry a sidebar nav title literal of 'Recurring Jobs' or 'Maintenance'", () => {
+    // Code comments may still mention either prior label (the data
+    // model is still recurring jobs and the jobType enum is still
+    // "maintenance") — but no `title: "..."` literal exists as a
+    // menu entry for either prior label. Pin the assignment shape.
     expect(sidebarSrc).not.toMatch(/title:\s*"Recurring Jobs"/);
+    expect(sidebarSrc).not.toMatch(/title:\s*"Maintenance"\s*,/);
   });
 
   it("the nav route + testid are intentionally unchanged (rename is UI-only)", () => {
-    // The brief explicitly says "Do not change routes like /recurring-jobs
+    // The brief explicitly says "Do not change routes like /pm
     // … internal variable names". `/pm` was the prior route and
-    // `nav-pm` was the prior testid; both stay.
+    // `nav-pm` was the prior testid; both stay across the rename.
     expect(sidebarSrc).toMatch(/href:\s*"\/pm"/);
     expect(sidebarSrc).toMatch(/testId:\s*"nav-pm"/);
+  });
+
+  it("the quick-create header dropdown reads 'New Service Plan'", () => {
+    // The old "New Maintenance Plan" / "New Recurring Job" labels
+    // are both gone from the user-facing dropdown trigger.
+    expect(sidebarSrc).toMatch(/New Service Plan/);
+    expect(sidebarSrc).not.toMatch(/New Maintenance Plan/);
   });
 });
 
 // ── Page heading at the destination ───────────────────────────────────
 
 describe("RecurringJobsPage — page heading reflects new destination name", () => {
-  it("the standalone H1 reads 'Maintenance' (matches the sidebar)", () => {
+  it("the standalone H1 reads 'Service Plans' (matches the sidebar)", () => {
     // The H1 IS the destination's name. The card-title below
     // ("Recurring Jobs") names the listed templates and is allowed
     // to keep recurrence terminology because the items themselves
     // are recurring-job records.
     expect(recurringPageSrc).toMatch(
-      /<h1[^>]*>\s*Maintenance\s*<\/h1>/,
+      /<h1[^>]*>\s*Service Plans\s*<\/h1>/,
     );
     expect(recurringPageSrc).not.toMatch(
       /<h1[^>]*>\s*Recurring Jobs\s*<\/h1>/,
+    );
+    expect(recurringPageSrc).not.toMatch(
+      /<h1[^>]*>\s*Maintenance\s*<\/h1>/,
     );
   });
 
@@ -106,31 +127,34 @@ describe("RecurringJobsPage — page heading reflects new destination name", () 
 // ── Pointer copy (toasts + dialogs that direct the user there) ───────
 
 describe("PMWizardPage — copy that directs the user to the destination", () => {
-  it("review step points at 'the Maintenance page' (not 'Recurring Jobs')", () => {
+  it("review step points at 'the Service Plans page' (not 'Maintenance' / 'Recurring Jobs')", () => {
     expect(pmWizardSrc).toMatch(
-      /upcoming maintenance will appear on the Maintenance page when due/,
+      /upcoming service work will appear on the Service Plans page when due/,
     );
   });
 
-  it("activation toast points at 'the Maintenance page'", () => {
+  it("activation toast points at 'the Service Plans page'", () => {
     expect(pmWizardSrc).toMatch(
-      /Upcoming maintenance will appear on the Maintenance page when due/,
+      /Upcoming service work will appear on the Service Plans page when due/,
     );
   });
 
-  it("post-create explanation dialog points at 'the Maintenance page'", () => {
+  it("post-create explanation dialog points at 'the Service Plans page'", () => {
     expect(pmWizardSrc).toMatch(
-      /it will appear on the\s+Maintenance page so you can create the work order/,
+      /it will appear on the\s+Service Plans page so you can create the work order/,
     );
   });
 
-  it("no remaining user-facing pointer says 'in Recurring Jobs' (destination form)", () => {
-    // Pin the prepositional form — "in Recurring Jobs" / "to Recurring
-    // Jobs" / "on Recurring Jobs" are the destination references.
-    // Internal phrases like `Recurring Jobs tab` inside a docblock
-    // comment are not user-facing and are allowed.
+  it("no remaining user-facing pointer says 'in Recurring Jobs' OR 'on the Maintenance page' (destination form)", () => {
+    // Pin the prepositional form for both prior labels — destination
+    // references must use "Service Plans" now. Internal phrases like
+    // `Recurring Jobs tab` inside a docblock comment are not
+    // user-facing and are allowed.
     expect(pmWizardSrc).not.toMatch(
       /\b(?:in|on|to|open|go to)\s+Recurring Jobs\b/i,
+    );
+    expect(pmWizardSrc).not.toMatch(
+      /on the Maintenance page/,
     );
   });
 });
@@ -151,7 +175,7 @@ describe("Recurrence-behavior copy is preserved (NOT renamed)", () => {
   it("QuickAddJobDialog success toast still reads 'Recurring Job Created'", () => {
     // Behavior copy: notifies that a recurring-job record was
     // created. The user did create a Recurring Job (the data model);
-    // calling that "Maintenance Created" would be wrong because the
+    // calling that "Service Plan Created" would be wrong because the
     // record is a recurring-job template.
     expect(quickAddSrc).toMatch(
       /title:\s*"Recurring Job Created"/,

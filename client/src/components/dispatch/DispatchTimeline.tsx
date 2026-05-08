@@ -22,6 +22,20 @@ type Props = {
   technicians: Technician[];
   visitsByTech: Map<string, DispatchVisit[]>;
   tasksByTech?: Map<string, DispatchTask[]>;
+  /** 2026-05-07 RALPH (technician time off): per-tech time-off
+   *  intervals overlapping the visible day. Threaded through to
+   *  each lane for the unavailable-shading layer. */
+  timeOffByTech?: Map<string, Array<{
+    id: string;
+    startsAt: string;
+    endsAt: string;
+    reason: string;
+    allDay: boolean;
+  }>>;
+  /** ISO of the day the timeline is rendering (start-of-day in
+   *  the local timezone). Used by the lane to clamp time-off
+   *  windows to the visible hour range. */
+  dayDateISO?: string;
   savingIds: Set<string>;
   selectedVisitId?: string | null;
   selectedTaskId?: string | null;
@@ -66,7 +80,8 @@ function NowLine({ hours: tlHours = TIMELINE_HOURS }: { hours?: number[] }) {
 const HEADER_H = 32; // hour header row height
 
 export default function DispatchTimeline({
-  technicians, visitsByTech, tasksByTech, savingIds,
+  technicians, visitsByTech, tasksByTech, timeOffByTech, dayDateISO,
+  savingIds,
   selectedVisitId, selectedTaskId, onSelectVisit, onSelectTask,
   onUnschedule, onResize, onResizeTask, timelineScrollRef,
   activeDropTechId, dragPreviewNode, dragHasOverlap,
@@ -168,6 +183,8 @@ export default function DispatchTimeline({
                           tech={t}
                           visits={visitsByTech.get(t.id) ?? EMPTY_VISITS}
                           tasks={tasksByTech?.get(t.id) ?? EMPTY_TASKS}
+                          timeOff={timeOffByTech?.get(t.id)}
+                          dayDateISO={dayDateISO}
                           isLast={i === working.length - 1 && offShift.length === 0}
                           savingIds={savingIds}
                           selectedVisitId={selectedVisitId}
@@ -199,6 +216,8 @@ export default function DispatchTimeline({
                               tech={t}
                               visits={visitsByTech.get(t.id) ?? EMPTY_VISITS}
                               tasks={tasksByTech?.get(t.id) ?? EMPTY_TASKS}
+                              timeOff={timeOffByTech?.get(t.id)}
+                              dayDateISO={dayDateISO}
                               isLast={i === offShift.length - 1}
                               savingIds={savingIds}
                               selectedVisitId={selectedVisitId}

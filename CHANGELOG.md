@@ -6,6 +6,1047 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Notes exception alignment — restored `<RailContentCard>` slot composition in NotesPanel (2026-05-08)
+
+Closes the residual NotesPanel mismatch the Phase 6 stabilization audit flagged: 6 specs in `tests/rail-cards-notes-contacts.test.ts` Section 1 were failing because parallel work had reverted `client/src/components/NotesPanel.tsx` to a pre-`<RailContentCard>` ad-hoc composition. The audit confirmed the drift was material — left accent-bar `<div>` chrome, `text-xs` body, `text-[11px]` arbitrary footer line, raw colored `<span>` chips. Per the alignment-pass decision rule (visual drift → restore slot composition; visual parity → update tests), this is the slot-restoration case.
+
+**Notes remains an intentional renderer exception.** The descriptor model inverts the entity-card hierarchy for note bodies (body IS primary content, not metadata); routing notes through `<RailPanelRenderer>` would either abuse the bounded `extraContent` escape hatch or require a new top-level `body` descriptor field for one consumer. This recovery does NOT migrate Notes into the renderer — it restores the slot-primitive composition NotesPanel had before parallel work reverted it.
+
+**What landed.**
+
+- **`client/src/components/NotesPanel.tsx`** —
+  - New imports of `RailContentCard`, `RailContentCardBody`, `RailContentCardChip`, `RailContentCardFooter` from `@/components/detail-rail/RailContentCard` (the canonical primitive module). The import block carries an inline doc-comment recording NotesPanel as the documented Notes exception and the rationale for direct slot composition.
+  - Per-note wrapper migrated from `<div className="px-3 py-2.5 border border-slate-200 border-l-2 border-l-slate-300 rounded-md text-sm overflow-hidden group">` (the pre-migration ad-hoc chrome — left accent-bar bug-shape) to `<RailContentCard key={note.id} testId={\`note-${note.id}\`}>`. Same per-row testid; canonical chrome (border + radius + shadow + padding + group hover affordance) flows from the primitive.
+  - Read-view body migrated from `<p className="whitespace-pre-wrap break-words text-xs leading-relaxed">{note.noteText}</p>` to `<RailContentCardBody>{note.noteText}</RailContentCardBody>`. The slot bakes `text-row text-text-primary leading-relaxed whitespace-pre-wrap break-words` — the canonical 15px row token replaces the prior 13px-equivalent `text-xs`.
+  - Visibility chips migrated from raw `<span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>` (and the green / purple variants) to canonical `<RailContentCardChip variant="info|success|purple">`. Variant mapping: Jobs → info (blue), Invoices → success (emerald — replaces the prior raw green-50/700), Quotes → purple. The prior raw `bg-green-50 text-green-700` for Invoices was a slight color drift; the canonical `success` variant uses `bg-emerald-50 text-emerald-700 border border-emerald-200` which is the v4 chip baseline shared with Equipment / Maintenance status pills.
+  - Meta + actions footer migrated from `<div className="flex items-center justify-between mt-3 text-[11px] text-muted-foreground">` (with the arbitrary `text-[11px]` value the typography-canonical guard forbids) to `<RailContentCardFooter>`. The slot bakes `mt-2 pt-2 border-t border-slate-100` separator + `flex items-center justify-between gap-2` layout + `text-helper text-text-secondary` typography (per the earlier card-content typography sweep that migrated Footer from `text-caption` to `text-helper`). Author/date span and edit/delete action buttons are passed as children unchanged. The action-button `opacity-50 group-hover:opacity-100` toggle still works because the `group` class is baked into both clickable and static variants of `<RailContentCard>`.
+  - Edit-view branch unchanged — the inline edit form (textarea + visibility checkboxes + attachment picker + Save/Cancel buttons) sits inside the `<RailContentCard>` wrapper exactly as before, with no other modifications.
+
+**What did NOT change.**
+
+- Note CRUD behavior: create / edit / delete / attachment-upload mutations all unchanged.
+- `notesAddSignal` / `openAddNoteSignal` / `onCountChange` props (none of which exist on NotesPanel — its surface is its own ref API; preserved verbatim).
+- All stable test IDs — `note-${id}`, `button-edit-note-${id}`, `button-delete-note-${id}`, `button-save-edit-${id}`, `textarea-edit-note`, `edit-existing-attachment-${id}`, `edit-toggle-remove-${id}`, `edit-attach-files`, `edit-remove-pending-${i}`.
+- The edit-view branch (no slot composition required there — it's a transient form, not the canonical card visual).
+- `<NoteAttachmentStrip>` mount (still rendered between visibility chips and the footer when `note.attachments.length > 0`).
+- `EntityNotesSection.tsx` (Job/Invoice/Quote/Lead Notes) — fully untouched.
+- Every Client Detail descriptor migration (Parts / Activity / Maintenance / Equipment / Billing / Contacts) — fully untouched.
+- Job Labour (Phase 7) and Job Equipment (Phase 8) — fully untouched.
+- `<RailPanelRenderer>` and `railTypes.ts` — no changes; no new descriptor fields, no renderer escape hatches expanded.
+
+**Tests run.**
+
+- `tests/rail-cards-notes-contacts.test.ts` — **11/11 passing** (was 5/11; the 6 previously-failing NotesPanel pins now green).
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- All Client Detail descriptor tests + Job Labour + Job Equipment + animation + style-props — 192/192 passing.
+- **Total in-scope: 461/462 (1 skipped) passing — every rail test is now green.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/components/NotesPanel.tsx` — imports updated; per-note wrapper / body / visibility chips / footer migrated to canonical slot primitives; edit-view branch unchanged.
+- `CHANGELOG.md` — this entry.
+
+**Visual change.** The per-note read view now matches the canonical rail-card chrome used by every other right-rail surface — uniform `border-slate-200` (no left accent-bar), `bg-white` + `shadow-sm` elevation, `rounded-md` radius, `text-row` body (15px instead of the prior 13px-equivalent `text-xs`), `text-helper` footer (13px replacing the arbitrary `text-[11px]`), and the canonical chip variant colors (Invoices' raw green migrates to canonical `emerald` via the `success` variant). All edit-view interactions, attachment thumbnails, action buttons, and stable test IDs are byte-equivalent.
+
+### Changed
+
+#### Right-rail descriptor architecture stabilization audit + low-risk cleanup (2026-05-08)
+
+Stabilization pass after the Phase 1–6 Client Detail descriptor recovery + the existing Phase 7/8 Job Detail descriptor migrations. Audited renderer ownership, descriptor consistency, typography drift, renderer complexity, test integrity, and the documented Notes exception. The architecture is sound; this entry only records the doc-comment + dead-import cleanup the audit surfaced.
+
+**Cleanup landed (zero behavior change).**
+
+- **`client/src/pages/JobDetailPage.tsx`** — removed dead `RailContentCard*` import block (six slot-primitive imports: `RailContentCard`, `RailContentCardHeader`, `RailContentCardTitle`, `RailContentCardMeta`, `RailContentCardChip`, `RailContentCardSubrow`). After Phases 7 + 8 the page no longer composes any slot primitive directly — every Job Detail rail panel mounts `<RailPanelRenderer>` driven by a typed descriptor, and `<EntityNotesSection cardStyle>` (the documented Notes exception) imports `<RailContentCard>` itself. The stale doc-comment that claimed "Notes / Equipment tabs still compose slot primitives inline and will migrate in subsequent phases" was replaced with a current-state summary.
+
+- **`client/src/components/detail-rail/RailPanelRenderer.tsx`** — file-level JSDoc updated. The prior block called out "Phase 1 callers: Client Detail Parts panel only" and listed only Card shell / Title / Body / Meta / Chip / Field-list. Refreshed to describe the post-Phase-1–8 state (every Client Detail panel descriptor-driven; Job Detail Labour + Equipment descriptor-driven; Notes intentionally left on direct slot composition) and to enumerate the actually-supported features (titleIcon, inlineChip, trailing items, multi-row meta, grouped panels with sub-rows, footer link/block kinds, overflow indicator, bounded `extraContent`).
+
+- **`client/src/components/detail-rail/railTypes.ts`** — file-level header refreshed (the prior "Phase 1 scope is intentionally minimal" wording predated Phases 2–8; the dead reference to the never-written `docs/RAIL_DESCRIPTORS.md` is gone). Four stale JSDoc comments referencing `font-semibold` on top of `text-row` / `text-section-title` updated to describe the actual current rendered output (`text-row-emphasis` and `text-section-title` are canonical role tokens that bake the right weight; the `font-semibold` modifier was retired during the H2 typography sweep). Comment-only changes.
+
+- **`tests/client-rail-cards.test.ts`** — comment archaeology trimmed. After the Phase 1–6 recovery sweep retired six panel-specific slot pins from this file, what remained was a single `formatRailActivity` import assertion plus six separate "Phase X moved to Y" comment headers. Trimmed to one consolidated header that explains what's still pinned here (the `formatRailActivity` import + the cross-cut server-emission and formatter sanity pins) and points at the descriptor test files for everything else. The 7 surviving assertions are unchanged; only the doc structure shrank.
+
+**Audit findings — architectural inconsistencies left as-is (test-pinned, not drift).**
+
+- **`buildClientContactDescriptor` returns `RailCardDescriptor`**; every other panel builder returns `RailPanelDescriptor`. ContactCard wraps the card-only return into a `kind: "single"` panel literal at the body component. Pinned by `tests/client-rail-contacts-descriptor.test.ts` Section 1. Not drift; documented in the test file.
+- **`buildJobLabourPanelDescriptor` is declared as a `const`-bound closure inside `JobDetailPage`**; every other panel builder is a module-scoped `function`. Pinned by `tests/job-rail-labour-descriptor.test.ts:28` (`pageSrc.indexOf("const buildJobLabourPanelDescriptor")`). Not drift; the test pin authoritatively requires this shape.
+- **Per-card test ID naming** — Activity uses `client-activity-row` while every other Client panel uses `client-{panel}-card`; Contacts uses `contact-card` / `contact-card-edit` (no `client-` prefix). Both are pinned by their respective descriptor test files. Not drift.
+
+**Audit findings — clean.**
+
+- Renderer ownership: zero panels bypass `<RailPanelRenderer>`; zero ad-hoc card chrome remains outside the renderer module (other than the Notes exception in `EntityNotesSection.tsx` and `NotesPanel.tsx`).
+- Descriptor consistency: chip variant usage is consistent (`success`/`neutral` for active/inactive status; `warning` for in-progress; `neutral` for non-semantic badges). Footer kinds (`link` for navigation affordances, `block` for labeled multi-line bodies with italic fallback) are used as designed. Overflow descriptor is currently used only by Client Detail Equipment (8-cap) — by design; not all lists need to cap.
+- Typography: zero `text-[Npx]` arbitrary values, zero raw hex colors in descriptor builders. The `font-medium` on `<RailContentCardChip>` is a deliberate v4 chip-emphasis decision pinned by `tests/rail-card-slots.test.ts`. The `font-medium` valueClassName on Maintenance "Next due" is the deliberate emphasis on the date value pinned by the Maintenance descriptor test. Both are documented.
+- Renderer complexity: `RailPanelRenderer.tsx` (643 LoC) is dense but well-factored — internal helpers (`RailGroupedPanelHeaderRow`, `RailFooterFromDescriptor`, `RailTitleTrailingArea`, `RailTrailingItemFromDescriptor`, `RailChipFromDescriptor`, `RailMetaRowFromDescriptor`, `RailSubrowFromDescriptor`) each handle a single descriptor variant. Discriminated unions (`RailFooterDescriptor.kind`, `RailTitleTrailing.kind`, `RailPanelDescriptor.kind`) carry exhaustiveness checks. No duplicated branches, no dead descriptor paths, no over-broad unions.
+- Test integrity: no contradictory architectural pins remain after the recovery sweep. Each migrated panel's pins live in its descriptor test file; the cross-cut `tests/rail-cards-notes-contacts.test.ts` Section 1 (NotesPanel slot pins) and Section 3 (`RailContentCard` docstring pin) sit alongside the Phase 6 Contacts pins.
+
+**Notes exception — documented current state.**
+
+- `EntityNotesSection.tsx` (Job Detail Notes via `cardStyle`) and `NotesPanel.tsx` (Client Detail Notes) both keep direct `<RailContentCard>` slot composition. Documented at three layers: (1) the earlier Phase 9 audit recommendation captured in CHANGELOG; (2) the cross-page-reuse paragraph in `RailContentCard.tsx`'s JSDoc explicitly names the right-rail role; (3) the file-level header in `railTypes.ts` records Notes as the documented exception. The exception's rationale (note bodies invert the entity-card hierarchy — body is primary content, not metadata; the descriptor model would either abuse `extraContent` or require a new `body` descriptor field for one consumer) is intact.
+- `tests/rail-cards-notes-contacts.test.ts` Section 1 (six NotesPanel slot pins) currently fails because `NotesPanel.tsx` was reverted by parallel work to a pre-`<RailContentCard>` composition. Out-of-scope for this stabilization audit (Notes exception); documented in the prior Contacts recovery entry.
+
+**Tests run.**
+
+- `tests/client-rail-{parts,activity,maintenance,equipment,billing,contacts}-descriptor.test.ts` — 16 + 17 + 20 + 18 + 14 + 21 = 106/106 passing.
+- `tests/job-rail-{labour,equipment}-descriptor.test.ts` — 21 + 24 = 45/45 passing.
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-card-style-props.test.ts` — 11/11 passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/rail-animation.test.ts` — passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- `tests/client-rail-cards.test.ts` — 7/7 passing (after the comment-archaeology trim; assertion count unchanged).
+- `tests/rail-cards-notes-contacts.test.ts` Section 2 (Contacts) + Section 3 (RailContentCard docstring) — 4/4 passing. Section 1 (NotesPanel) — 6/6 still failing (Notes exception, out-of-scope).
+- **In-scope rail tests: 455/456 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/JobDetailPage.tsx` — dead-import block removed; doc-comment refreshed.
+- `client/src/components/detail-rail/RailPanelRenderer.tsx` — file-level JSDoc refreshed.
+- `client/src/components/detail-rail/railTypes.ts` — file-level header refreshed; four stale `font-semibold` JSDoc comments updated to describe the actual `text-row-emphasis` / `text-section-title` rendering.
+- `tests/client-rail-cards.test.ts` — comment archaeology trimmed; 7 surviving assertions unchanged.
+- `CHANGELOG.md` — this entry.
+
+### Fixed
+
+#### Restored Client Detail Contacts descriptor-driven rail migration lost during parallel work (2026-05-08)
+
+Sixth and final recovery in the data-driven right-rail re-migration sweep. With Contacts migrated, **every Client Detail rail panel is now descriptor-driven** — the page no longer imports any `RailContentCard*` slot primitive and the `<RailPanelRenderer>` pipeline owns every panel's visuals. `tests/client-rail-contacts-descriptor.test.ts` (21 specs, 247 LoC) had been pinning a descriptor builder + thin renderer mount for the Contacts panel (Phase 6). The page had reverted to a hand-rolled `<button>` / `<div>` `ContactCard` with inline rows for name + jobTitle, primary star, scope chip, phone/email, location, and role chips. This recovery is the final piece — exercising descriptor features none of the prior re-recoveries hit: heterogeneous `title.trailing` items (icon + chip together), `metaRows` multi-row icon-prefixed meta, `chipRow` for role chips, and the editable callback contract.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - Imports updated: removed `RailContentCard` direct import (the page no longer composes any slot primitive — pinned by `tests/client-rail-contacts-descriptor.test.ts` Section 2 "page-level invariant"). Added the additional descriptor types `RailTitleTrailing`, `RailMetaItem`, `RailMetaRowDescriptor` to the existing `railTypes` import for typing local accumulators inside the new builder.
+  - New module-scoped pure function `buildClientContactDescriptor({ contact, onEdit, showScope, assignedLocationNames }): RailCardDescriptor` (returns a single card descriptor — Contacts mounts `kind: "single"` from the body component):
+    - Normalises through the existing `normalizeContact(contact)` helper (preserved verbatim).
+    - **Editable contract** — when `onEdit` is supplied, descriptor carries `onClick: () => onEdit(contact)`, `testId: "contact-card-edit"`, `ariaLabel: \`Edit contact ${nc.displayName}\``. When `onEdit` is omitted, the card is read-only: no `onClick`, `testId: "contact-card"`, no `ariaLabel`.
+    - **Title** — `text: nc.displayName`, `as: "span"` (the Contacts card title isn't a true heading inside the rail panel header), `secondary: nc.jobTitle ? \`(${nc.jobTitle})\` : undefined` (the parenthetical job-title pattern preserved verbatim with `font-normal text-text-secondary` styling baked into the renderer's title secondary slot).
+    - **Heterogeneous title trailing** — accumulator `const trailing: RailTitleTrailing[] = []`. Push `{ kind: "icon", icon: Star, ariaLabel: "Primary" }` when `nc.isPrimary`. Push `{ kind: "chip", chip: { text: "Company" } }` when `showScope && nc.scope === "company"`. Set `title.trailing: trailing.length > 0 ? trailing : undefined` so the renderer doesn't emit the trailing flex container when there are no items.
+    - **Multi-row icon-prefixed meta** — accumulators `phoneEmailItems: RailMetaItem[]` and `metaRows: RailMetaRowDescriptor[]`. Phone item: `{ icon: Phone, text: nc.phone }`. Email item: `{ icon: Mail, text: nc.email, truncate: true }` (long emails clip with ellipsis). When phone/email items are present, push as a single multi-item row (renderer applies `gap-3` between items in multi-item rows). Location item: separate single-item row with `{ icon: MapPin, text: locationLabel, truncate: true }`. Set `metaRows: metaRows.length > 0 ? metaRows : undefined`.
+    - **Location label cap** — `MAX_VISIBLE_LOCATIONS = 2` (preserved). When `assignedLocationNames` has 0 names, `locationLabel = null` (the location meta row is skipped). When 1–2, joined with `", "`. When >2, `\`${first 2 joined with ", "} +${rest count} more\``.
+    - **Role chip row** — `chipRow: nc.roles.length > 0 ? nc.roles.map((r) => ({ text: r, className: "capitalize" })) : undefined` (each role becomes a chip with the canonical capitalize modifier).
+  - `ContactCard` reduced to a thin `kind: "single"` mount: `<RailPanelRenderer panel={{ kind: "single", card: buildClientContactDescriptor({ contact, onEdit, showScope, assignedLocationNames }) }} testIdPrefix="client-side" />`. The prior ~85 lines of hand-rolled `<button>` / `<div>` JSX with inline rows for name + jobTitle / phone / email / location / role chips are gone.
+  - The doc-comment block above the imports updated to record that all six Phase 1–6 panels are now descriptor-driven and that the page no longer composes any rail-card slot primitive.
+
+- **`client/src/components/detail-rail/RailContentCard.tsx`** — JSDoc updated to satisfy the cross-page-reuse pin in `tests/rail-cards-notes-contacts.test.ts` Section 3. Adds a "Cross-page reuse" paragraph naming the right-rail role and listing the consuming detail surfaces (Client Detail / Job Detail today, Invoice / Quote / Lead future). Comment-only edit; no runtime behavior change.
+
+- **`tests/client-rail-cards.test.ts`** — Retired the obsolete `it("imports the canonical RailContentCard primitive")` pin. After Phase 6 the page's rail-related imports are exclusively `RailPanelRenderer` + descriptor types — pinned positively in `tests/client-rail-contacts-descriptor.test.ts` Section 2. Replaced the assertion with an explanatory comment block. Total specs: 7 → 6 in this file.
+
+**What did NOT change.**
+
+- `normalizeContact` helper (still the canonical normalization path).
+- `MAX_VISIBLE_LOCATIONS = 2` cap and the "+N more" overflow copy.
+- Edit / open callback behavior — `onEdit` still fires `(contact)` when the clickable variant is mounted; the renderer wraps the descriptor in a `<button>` with focus-visible affordances.
+- Static read-only behavior when `onEdit` is omitted — descriptor leaves `onClick` undefined, renderer mounts the static `<div>` variant.
+- Primary-star indicator (`Star` icon, amber fill, `aria-label="Primary"`).
+- "Company" scope chip semantics (only when `showScope && scope === "company"`).
+- Job-title secondary text format (`(${jobTitle})` parenthetical).
+- Phone / email / location row composition (icon + text, with email + location truncating).
+- Role chip row (one chip per role with capitalize modifier).
+- All stable test IDs (`contact-card-edit` for clickable, `contact-card` for read-only).
+- Notes exception (`EntityNotesSection` and `NotesPanel` both untouched per the Phase 9 audit + the user's "Do NOT touch Notes" recovery rule).
+- Job Labour (Phase 7), Job Equipment (Phase 8), Parts (Phase 1 re-recovery), Activity (Phase 3), Maintenance (Phase 2), Billing (Phase 5), Equipment (Phase 4) — all untouched.
+
+**Tests run.**
+
+- `tests/client-rail-contacts-descriptor.test.ts` — **21/21 passing** (was 0/21).
+- `tests/rail-cards-notes-contacts.test.ts` Section 2 (Contacts — Phase 6) + Section 3 (RailContentCard docstring) — **3/3 + 1/1 passing** (was 0/3 + 0/1).
+- `tests/rail-cards-notes-contacts.test.ts` Section 1 (NotesPanel) — 6/6 still failing because `client/src/components/NotesPanel.tsx` was reverted by parallel work. **Out-of-scope** per the user's "Do NOT touch Notes" recovery rule; flagged here so the residual failures are clearly attributed.
+- `tests/client-rail-equipment-descriptor.test.ts` — 18/18 passing.
+- `tests/client-rail-billing-descriptor.test.ts` — 14/14 passing.
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-activity-descriptor.test.ts` — 17/17 passing.
+- `tests/client-rail-maintenance-descriptor.test.ts` — 20/20 passing.
+- `tests/client-rail-cards.test.ts` — 6/6 passing (was 7; obsolete RailContentCard import pin retired).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **In-scope total: 376/377 (1 skipped) passing.** Out-of-scope NotesPanel residue: 6 failing (Notes exception).
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — removed `RailContentCard` import; added `RailTitleTrailing` / `RailMetaItem` / `RailMetaRowDescriptor` types to the existing import; added `buildClientContactDescriptor` builder + new `ContactCardProps` interface; rewrote `ContactCard` as a thin `kind: "single"` renderer mount.
+- `client/src/components/detail-rail/RailContentCard.tsx` — JSDoc updated with the cross-page-reuse paragraph (comment-only).
+- `tests/client-rail-cards.test.ts` — obsolete RailContentCard import pin retired.
+- `CHANGELOG.md` — this entry.
+
+**All reverted Client Detail panels are now recovered.** Phases 1–6 (Parts / Maintenance / Activity / Equipment / Billing / Contacts) all mount `<RailPanelRenderer>` driven by typed descriptors. Job Labour (Phase 7) and Job Equipment (Phase 8) remain present and passing from before the recovery sweep.
+
+**Remaining rail migration exceptions.**
+
+- **Notes exception** — `EntityNotesSection.tsx` (Job/Invoice/Quote/Lead) and `NotesPanel.tsx` (Client Detail) intentionally remain on direct `<RailContentCard>` slot composition. Per the Phase 9 audit (CHANGELOG > earlier "Phase 9 audit" recommendation), the descriptor model inverts the entity-card hierarchy for note bodies (body is primary content, not metadata) and forcing notes through the renderer would either abuse `extraContent` or require a new `body` descriptor field for one consumer. The exception is documented at the source level in `RailContentCard.tsx`'s docstring (Notes is a deliberate user of the slot primitive) and preserved here.
+- **`tests/rail-cards-notes-contacts.test.ts` Section 1 (NotesPanel slot pins)** — 6 specs fail because `NotesPanel.tsx` was reverted by parallel work to a pre-`<RailContentCard>` composition. Out-of-scope for this recovery (Notes exception). A follow-up effort can either re-migrate `NotesPanel` back onto `<RailContentCard>` slots or update the test pins to match the current source — both options should be discussed against the Notes exception's documented rationale before acting.
+
+#### Restored Client Detail Equipment descriptor-driven rail migration lost during parallel work (2026-05-08)
+
+Fifth recovery in the data-driven right-rail re-migration after Parts, Activity, Maintenance, and Billing. `tests/client-rail-equipment-descriptor.test.ts` (18 specs, 217 LoC) had been pinning a descriptor builder + thin renderer mount for the Equipment panel (Phase 4). The page had reverted to inline `<RailContentCard>` slot composition with a hand-rolled `<ul>` wrapper, an inline `<Badge>` status pill, an inline `<dl>` snapshot, and a hand-rolled overflow `<li>`. This recovery is the first re-recovery to exercise the **clickable-card variant** in active use (cards open `EquipmentDetailModal` via `onClick`) and the **`overflow: { count, testId }`** indicator on the list panel kind.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - New file-scope constant `CLIENT_EQUIPMENT_VISIBLE_CAP = 8` — pinned by the test as the canonical visible-card cap. Long lists surface the cap-vs-total delta via the `overflow` descriptor field rather than rendering all rows.
+  - New module-scoped pure function `buildClientEquipmentPanelDescriptor(scopeType, equipment, onOpen): RailPanelDescriptor`:
+    - **Company-scope branch** → `kind: "list"`, `cards: []`, `testId: "client-equipment-panel-body"`, `empty: { message: "Equipment is tracked per location.", hint: "Pick a specific location to view its equipment." }`.
+    - **Empty-list branch** → `kind: "list"`, `cards: []`, `testId: "client-equipment-panel-body"`, `empty: { message: "No equipment yet.", hint: "Add equipment to track installed systems for this client." }`.
+    - **Populated branch** → caps the list at `equipment.slice(0, CLIENT_EQUIPMENT_VISIBLE_CAP)`, computes `const overflowCount = equipment.length - visible.length`, and emits one `RailCardDescriptor` per visible item. Each card carries `key: eq.id`, `testId: "client-equipment-card"`, `onClick: () => onOpen(eq)`, `ariaLabel: \`Open equipment ${eq.name}\``, `title: { text: eq.name, className: "break-words whitespace-normal", chip: { text: eq.isActive ? "Active" : "Archived", variant: eq.isActive ? "success" : "neutral", testId: "client-equipment-card-status" } }`, optional `meta: subtitle` (joined `[manufacturer, modelNumber]` with empty parts filtered, `null` → `undefined` when both missing), gated `Type` / `Serial` / `Tag` / `Installed` / `Warranty` fields with their per-row test IDs, optional `body: notesBody` with `bodyClamp: notesBody ? 3 : undefined`. Serial value carries `valueClassName: "break-all"` so long serial numbers don't overflow the column.
+    - The descriptor's `overflow` field is conditionally set: `overflow: overflowCount > 0 ? { count: overflowCount, testId: "client-equipment-panel-overflow" } : undefined`. The renderer emits the `+N more items not shown.` indicator + pluralization automatically.
+  - `ClientEquipmentPanelBody` reduced to a thin mount: `<RailPanelRenderer panel={buildClientEquipmentPanelDescriptor(scopeType, equipment, onOpen)} testIdPrefix="client-side" />`. The prior ~110 lines of inline `<ul>` / `<RailContentCard onClick>` / `<Badge>` / `<dl>` / overflow `<li>` JSX are gone.
+
+- **`tests/client-rail-cards.test.ts`** — Equipment pin retired (`it("Equipment panel cards are clickable RailContentCards")`). Section 1 comment block updated with the Phase 4 migration note. Header doc-comment refactored — slot-composition contract list now reads "the Contacts panel still composes slots inline" (Equipment moved to the migrated-panels list). Total specs: 8 → 7 in this file.
+
+**What did NOT change.**
+
+- Company / location scope behavior — same scope-routing logic, same empty-state branches.
+- Status chip semantics — `Active` → `success` variant, `Archived` → `neutral` variant.
+- Conditional fields — Type / Serial / Tag / Installed / Warranty all gated on their underlying value being populated (no fabricated rows).
+- Manufacturer · model meta line — surfaced only when at least one part is present, joined with ` · `.
+- Optional notes body — `bodyClamp: 3` preserved.
+- 8-item visible cap (`CLIENT_EQUIPMENT_VISIBLE_CAP = 8`).
+- "+N more items not shown" overflow indicator semantics — same count derivation, same pluralization, same testid (`client-equipment-panel-overflow`).
+- `EquipmentDetailModal` open behavior — `onClick: () => onOpen(eq)` on every visible card, modal mounted at the page level unchanged.
+- All stable test IDs (`client-equipment-panel-body`, `client-equipment-card`, `client-equipment-card-status`, `client-equipment-card-row-{type,serial,tag,installed,warranty}`, `client-equipment-panel-overflow`).
+- Card chrome / typography (chip / title / fields / body / overflow line) all flow through the renderer, which already inherits the corrected `text-helper` meta + `text-helper` overflow-line scale from the earlier typography sweep.
+- Notes exception, Job Labour (Phase 7), Job Equipment (Phase 8), Parts (Phase 1 re-recovery), Activity (Phase 3 re-recovery), Maintenance (Phase 2 re-recovery), Billing (Phase 5 re-recovery) — untouched.
+- Other reverted Client Detail panel (Contacts) — slot composition preserved; its re-migration is the next bellwether.
+
+**Tests run.**
+
+- `tests/client-rail-equipment-descriptor.test.ts` — **18/18 passing** (was 0/18).
+- `tests/client-rail-billing-descriptor.test.ts` — 14/14 passing.
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-activity-descriptor.test.ts` — 17/17 passing.
+- `tests/client-rail-maintenance-descriptor.test.ts` — 20/20 passing.
+- `tests/client-rail-cards.test.ts` — 7/7 passing (was 8; one obsolete Equipment pin retired).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **Total in-scope: 350/351 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — new `CLIENT_EQUIPMENT_VISIBLE_CAP` constant + new `buildClientEquipmentPanelDescriptor` builder + `ClientEquipmentPanelBody` rewritten as thin renderer mount.
+- `tests/client-rail-cards.test.ts` — Equipment pin retired with comment documenting the move; header doc-comment updated.
+- `CHANGELOG.md` — this entry.
+
+**Remaining reverted descriptor-driven panels (still outstanding).** One Client Detail panel still needs the same treatment: Contacts. Its test file (`tests/client-rail-contacts-descriptor.test.ts`, 247 LoC) and the cross-cut `tests/rail-cards-notes-contacts.test.ts` (172 LoC) continue to fail until Contacts is re-migrated. After Contacts, the data-driven right-rail re-recovery is complete.
+
+#### Restored Client Detail Billing descriptor-driven rail migration lost during parallel work (2026-05-08)
+
+Fourth recovery in the data-driven right-rail re-migration after Parts, Activity, and Maintenance. `tests/client-rail-billing-descriptor.test.ts` (14 specs, 191 LoC) had been pinning a descriptor builder + thin renderer mount for the Billing panel (Phase 5). The page had reverted to inline `<RailContentCard>` slot composition with a hand-rolled `<dl>` + `DetailRow` rows + an inline billing-address footer. This recovery is the first re-recovery to exercise both `kind: "single"` (one info card, not a list) and the `kind: "block"` footer descriptor (label + multi-line lines + italic fallback) — the only renderer features not previously exercised in re-recovery.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - New module-scoped pure function `buildClientBillingPanelDescriptor(billing, paymentTermsDays, billingStreet, billingCity, billingProvince, billingPostalCode): RailPanelDescriptor`:
+    - Returns `kind: "single"` (NOT `"list"`) — Billing is one info card, not a list of entities.
+    - The single card carries `key: "billing"`, `testId: "client-billing-panel-body"`, no `onClick` (purely informational).
+    - Payment-terms label resolution preserved verbatim: `paymentTermsDays === null` → `"Use company default"`, `paymentTermsDays === 0` → `"Due on receipt"`, otherwise `\`Net ${paymentTermsDays}\``.
+    - Four field rows in fixed order: `Payment terms` / `Outstanding` / `Lifetime revenue` / `Paid YTD`. The three currency rows run their values through `formatCurrency()` exactly as before.
+    - Address-line accumulator pattern: `const addressLines: string[] = []`, `line1 = billingStreet?.trim() || null` pushed when truthy, `line2 = [billingCity, billingProvince, billingPostalCode].filter((v) => v && v.trim().length > 0).join(", ") || null` pushed when truthy. Empty / whitespace-only fields are filtered before the join so we never emit "City, , Postal" rows with stray commas.
+    - Footer is `kind: "block"` with `label: "Billing address"`, `lines: addressLines`, `fallback: "No billing address on file."`. The renderer's `<RailFooterFromDescriptor>` block branch handles the rendering: lines render at body typography, fallback renders italic muted when `lines` is empty.
+  - `ClientBillingPanelBody` reduced to a thin mount: `<RailPanelRenderer panel={buildClientBillingPanelDescriptor(billing, paymentTermsDays, billingStreet, billingCity, billingProvince, billingPostalCode)} testIdPrefix="client-side" />`. The prior ~25 lines of inline `<RailContentCard>` + `<dl>` + `DetailRow` + footer JSX are gone.
+
+- **`tests/client-rail-cards.test.ts`** — Billing pin retired (`it("Billing panel is wrapped in a single RailContentCard")`); Section 1 comment block updated with the Phase 5 migration note. Header doc-comment updated to drop "Billing" from the slot-composition contract list and reference the descriptor test file. Total specs: 9 → 8 in this file.
+
+**What did NOT change.**
+
+- Payment terms (label resolution, all three branches), Outstanding balance (`billing.outstanding.total`), Lifetime revenue, Paid YTD — same `formatCurrency()` formatting, same source fields.
+- Billing address rendering rules (line 1 = street, line 2 = "city, province, postal" with empty parts filtered out).
+- "No billing address on file." italic fallback wording.
+- All stable test IDs (`client-billing-panel-body`).
+- Card stays non-clickable (purely informational).
+- `ClientBillingPanelBody` props signature preserved verbatim.
+- Notes exception, Job Labour (Phase 7), Job Equipment (Phase 8), Parts (Phase 1 re-recovery), Activity (Phase 3 re-recovery), Maintenance (Phase 2 re-recovery) — untouched.
+- Other reverted Client Detail panels (Contacts / Equipment) — slot composition preserved; their re-migration is the next bellwether candidate.
+
+**Tests run.**
+
+- `tests/client-rail-billing-descriptor.test.ts` — **14/14 passing** (was 0/14).
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-activity-descriptor.test.ts` — 17/17 passing.
+- `tests/client-rail-maintenance-descriptor.test.ts` — 20/20 passing.
+- `tests/client-rail-cards.test.ts` — 8/8 passing (was 9; one obsolete Billing pin retired).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **Total in-scope: 333/334 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — new `buildClientBillingPanelDescriptor` builder + `ClientBillingPanelBody` rewritten as thin renderer mount.
+- `tests/client-rail-cards.test.ts` — Billing pin retired with comment documenting the move; header doc-comment updated.
+- `CHANGELOG.md` — this entry.
+
+**Remaining reverted descriptor-driven panels (still outstanding).** Two Client Detail panels still need the same treatment: Contacts and Equipment. Their test files (`tests/client-rail-contacts-descriptor.test.ts`, `tests/client-rail-equipment-descriptor.test.ts`) and `tests/rail-cards-notes-contacts.test.ts` continue to fail until each panel is re-migrated through the same pattern.
+
+#### Restored Client Detail Maintenance descriptor-driven rail migration lost during parallel work (2026-05-07)
+
+Third recovery in the data-driven right-rail re-migration after Parts and Activity. `tests/client-rail-maintenance-descriptor.test.ts` (20 specs, 226 LoC) had been pinning a descriptor builder + thin renderer mount for the Maintenance panel (Phase 2). The page had reverted to inline `<RailContentCard>` slot composition with a hand-rolled spinner div, a `<ul>` wrapper, an inline status `<Badge>`, an inline `<dl>` snapshot, and a hand-rolled wouter `<Link>` footer. This recovery rebuilds the migration from the existing renderer architecture using the Maintenance descriptor test file as the behavioral spec.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - New top-level type `MaintenanceTemplateRow` extracted from the prior inline `useQuery<Array<{...}>>` shape — same fields, same nullability, just named so the descriptor builder + the test pin can both reference it (`useQuery<MaintenanceTemplateRow[]>(...)`).
+  - New module-scoped pure function `buildClientMaintenancePanelDescriptor(matching: MaintenanceTemplateRow[]): RailPanelDescriptor`:
+    - **Empty branch** → `kind: "list"`, `cards: []`, `testId: "client-maintenance-panel-body"`, `empty: { message: "No maintenance plans yet.", hint: "Add a maintenance plan to schedule recurring service for this client." }`.
+    - **Populated branch** → one `RailCardDescriptor` per filtered template, with `key: t.id`, `testId: "client-maintenance-card"`, `title: { text: t.title, className: "break-words whitespace-normal", chip: { text: t.isActive ? "Active" : "Paused", variant: t.isActive ? "success" : "neutral", testId: "client-maintenance-card-status" } }`. The Frequency field is unconditional; Next due / Started / Window / Billing / Location fields are gated on their underlying value being populated. `Next due` carries `valueClassName: "font-medium"`; `Billing` carries `valueClassName: "capitalize"`; `Location` carries `valueClassName: "line-clamp-2 break-words"`. Optional plan description body uses `bodyClamp: 3` when present. Each card carries a `kind: "link"` footer pointing at `/pm/${t.id}` with label `"View / Edit in Maintenance"`, `icon: ChevronRight`, per-plan `ariaLabel: \`View or edit maintenance plan ${t.title}\``, native `title: "View / Edit in Maintenance"`, and `testId: "client-maintenance-card-action"`. Cards carry NO `onClick` — only the footer link navigates.
+    - Same per-row `cadence` / `billingLine` / `serviceWindow` / `locationLine` derivations as the prior inline JSX (preserved verbatim).
+  - `ClientMaintenancePanelBody` reduced to a thin fetch-and-mount: same `useQuery<MaintenanceTemplateRow[]>` with the canonical `["/api/recurring-templates", "for-client", companyId]` key + endpoint + `enabled: Boolean(companyId)` + `staleTime: 60_000`. Loading branch renders `<RailPanelRenderer panel={{ kind: "loading", testId: "client-maintenance-loading" }} testIdPrefix="client-side" />`. Always-on branch (post-loading, pre-or-with cards) computes `matching` via the same `templates.filter(...)` scope rule (`scopeType === "location"` → `t.locationId === locationId`; otherwise `t.clientId === companyId`) and renders `<RailPanelRenderer panel={buildClientMaintenancePanelDescriptor(matching)} testIdPrefix="client-side" />` (the empty-matching case is handled inside the builder, not via a separate `<RailEmptyState>` mount). The prior hand-rolled `<div data-testid="client-maintenance-loading">` spinner, the `<ul data-testid="client-maintenance-panel-body">` wrapper, the `<Badge>` status pill, the inline `<dl>` snapshot, and the `<Link>` footer are gone — visuals flow through the renderer.
+
+- **`tests/client-rail-cards.test.ts`** — Maintenance pin retired (`it("Maintenance panel cards are static RailContentCards")`); the Section 1 comment block updated to record the migration. Header doc-comment updated to drop "Maintenance" from the slot-composition contract list and reference the descriptor test file. Total specs: 10 → 9 in this file.
+
+**Footer copy: descriptor pinned to "Maintenance" (test-spec wording).**
+
+The descriptor test pins the footer link copy as `"View / Edit in Maintenance"` and the per-plan ariaLabel as `\`View or edit maintenance plan ${t.title}\``. The prior inline JSX (under the parallel "Service Plans" rebrand entry on `[Unreleased]`) used `"View / Edit in Service Plans"` and `\`View or edit service plan ${t.title}\``. This recovery follows the explicit recovery rule "tests as the behavioral spec" and matches the test pins. The route itself (`/pm/${t.id}`) is identical in both wordings; only the user-facing footer copy differs. If the Service Plans rebrand should also apply to this rail surface, that's a follow-up edit to both the descriptor builder and the test pins (out of scope for this recovery).
+
+**What did NOT change.**
+
+- `useQuery` key, endpoint, `enabled`, `staleTime` — preserved verbatim.
+- Company / location filter logic (`scopeType === "location"` and the matching id selection).
+- All stable test IDs (`client-maintenance-loading`, `client-maintenance-panel-body`, `client-maintenance-card`, `client-maintenance-card-status`, `client-maintenance-card-row-{frequency,next-due,started,window,billing,location}`, `client-maintenance-card-action`).
+- Status-chip semantics (`Active` → `success` variant, `Paused` → `neutral` variant).
+- Per-row gating (no fabricated rows; each conditional field still renders only when its source value is populated).
+- Optional description body `bodyClamp: 3` behavior.
+- Cards stay non-clickable; only the footer link navigates (`/pm/${t.id}`).
+- Notes exception, Job Labour (Phase 7), Job Equipment (Phase 8), Parts (Phase 1 re-recovery), Activity (Phase 3 re-recovery) — untouched.
+- Other reverted Client Detail panels (Contacts / Billing / Equipment) — slot composition preserved; their re-migration is the next bellwether candidate.
+
+**Tests run.**
+
+- `tests/client-rail-maintenance-descriptor.test.ts` — **20/20 passing** (was 0/20).
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-activity-descriptor.test.ts` — 17/17 passing.
+- `tests/client-rail-cards.test.ts` — 9/9 passing (was 10; one obsolete Maintenance pin retired).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **Total in-scope: 320/321 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — new `MaintenanceTemplateRow` type + new `buildClientMaintenancePanelDescriptor` builder + `ClientMaintenancePanelBody` rewritten as fetch + thin renderer mount.
+- `tests/client-rail-cards.test.ts` — Maintenance pin retired with comment documenting the move; header doc-comment updated.
+- `CHANGELOG.md` — this entry.
+
+**Remaining reverted descriptor-driven panels (still outstanding).** Three Client Detail panels still need the same treatment: Contacts, Billing, Equipment. Their test files (`tests/client-rail-{contacts,billing,equipment}-descriptor.test.ts`) and `tests/rail-cards-notes-contacts.test.ts` continue to fail until each panel is re-migrated through the same pattern this Maintenance recovery established.
+
+#### Restored Client Detail Activity descriptor-driven rail migration lost during parallel work (2026-05-07)
+
+Second recovery in the data-driven right-rail re-migration after Parts. `tests/client-rail-activity-descriptor.test.ts` (17 specs, 205 LoC) had been pinning a descriptor builder + thin renderer mount for the Activity panel (Phase 3). The page had reverted to inline `<RailContentCard>` slot composition + a hand-rolled spinner div + a `<ul>` wrapper. This recovery rebuilds the migration from the existing renderer architecture (`RailPanelRenderer`, `railTypes.ts`, the now-passing Parts / Job Labour / Job Equipment phases) using the Activity descriptor test file as the behavioral spec — no git history, only re-implementation against the documented architecture.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - New top-level type `ClientActivityFeedItem` describing one row of the rail Activity feed (`id` / `eventType` / `summary` / `meta` / `createdAt`). Doc-comment locks the rule that `summary` is intentionally NOT consumed for display — it historically interpolated raw UUIDs.
+  - New module-scoped pure function `buildClientActivityPanelDescriptor(items: ClientActivityFeedItem[]): RailPanelDescriptor`:
+    - **Empty branch** → `kind: "list"`, `cards: []`, `testId: "client-activity-panel-body"`, `spacing: "compact"`, `empty: { message: "No activity yet." }`.
+    - **Populated branch** → `kind: "list"`, `cards: items.map(...)`, `testId: "client-activity-panel-body"`, `spacing: "compact"`. Each card carries `key: it.id`, `testId: "client-activity-row"`, `title: { text: display.title, as: "span", testId: "client-activity-row-title" }`, `body: display.body ?? undefined`, `bodyClamp: display.body ? 2 : undefined`, `bodyTestId: "client-activity-row-body"`, `meta: metaLine`, `metaTestId: "client-activity-row-meta"`. The `metaLine` is `${timestamp} · ${display.locationName}` when `locationName` is present, otherwise just `timestamp`. `formatRailActivity` runs INSIDE the map so per-row copy keeps flowing through the canonical formatter — raw `eventType` / server `summary` never reach the rendered descriptor.
+  - `ClientActivityPanelBody` reduced to a thin fetch-and-mount: same `useQuery<{ items: ClientActivityFeedItem[] }>` with the canonical `["/api/activity", entityType, entityId, "rail"]` key + `limit=15` + `staleTime: 30_000` + `enabled: Boolean(entityId)` + scope-routing logic preserved verbatim. Loading branch renders `<RailPanelRenderer panel={{ kind: "loading", testId: "client-activity-loading" }} testIdPrefix="client-side" />`. Populated branch renders `<RailPanelRenderer panel={buildClientActivityPanelDescriptor(feed?.items ?? [])} testIdPrefix="client-side" />`. The prior hand-rolled `<div data-testid="client-activity-loading">` spinner div and the `<ul data-testid="client-activity-panel-body">` wrapper are gone — both are owned by the renderer.
+
+- **`tests/client-rail-cards.test.ts`** — Activity pin block retired. Section 1's `it("Activity panel rows are RailContentCards")` block was an obsolete pre-migration pin (it required in-page `<RailContentCard>` composition). Section 2's five "display copy contract" pins anchored on the literal `data-testid="client-activity-panel-body"` JSX string that no longer exists in source — those tests' authority moves to `tests/client-rail-activity-descriptor.test.ts` (Section 4 "never leaks raw event_type / server summary" + the Section 3 per-row testId pins). Header doc-comment updated to remove Activity from the slot-composition contract list and reference the descriptor test file. Total specs: 16 → 10 in this file (the assertions still exist, just at the canonical descriptor location).
+
+**What did NOT change.**
+
+- Activity query behavior (key / endpoint / limit=15 / staleTime / enabled gating).
+- entityType / entityId scope-routing logic (`scopeType === "location" ? "location" : "client"` and the matching id selection).
+- `formatRailActivity` mapping — runs unchanged inside the descriptor builder.
+- Timestamp + optional location meta-line shape (`${timestamp} · ${locationName}` or just `${timestamp}`).
+- All stable test IDs (`client-activity-loading`, `client-activity-panel-body`, `client-activity-row`, `client-activity-row-title`, `client-activity-row-body`, `client-activity-row-meta`).
+- Cards stay non-clickable (Activity rows never had `onClick` — the descriptor preserves that).
+- Notes exception (`EntityNotesSection.tsx` `cardStyle` branch) — still uses direct slot composition per Phase 9.
+- Job Labour (Phase 7), Job Equipment (Phase 8), Parts (Phase 1 re-recovery) — already migrated, untouched.
+- Other reverted Client Detail panels (Contacts / Billing / Equipment / Maintenance) — slot composition preserved; their re-migration is the next bellwether candidate.
+
+**Tests run.**
+
+- `tests/client-rail-activity-descriptor.test.ts` — **17/17 passing** (was 0/17).
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-cards.test.ts` — 10/10 passing (was 16; six obsolete Activity-related pins retired).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **Total in-scope: 301/302 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — new `ClientActivityFeedItem` type + new `buildClientActivityPanelDescriptor` builder + `ClientActivityPanelBody` rewritten as fetch + thin renderer mount.
+- `tests/client-rail-cards.test.ts` — six obsolete Activity-related pins retired (1 in Section 1 + the 5-spec Section 2 block).
+- `CHANGELOG.md` — this entry.
+
+**Remaining reverted descriptor-driven panels (still outstanding).** Four Client Detail panels still need the same treatment: Contacts, Billing, Equipment, Maintenance. Their test files (`tests/client-rail-{contacts,billing,equipment,maintenance}-descriptor.test.ts`) and `tests/rail-cards-notes-contacts.test.ts` continue to fail until each panel is re-migrated through the same pattern this Activity recovery established.
+
+#### Restored Client Detail Parts descriptor-driven rail migration lost during parallel work (2026-05-07)
+
+Bellwether recovery of the data-driven right-rail migration that an earlier parallel-work session reverted. `tests/client-rail-parts-descriptor.test.ts` (16 specs, 191 LoC) had been pinning a descriptor builder + thin `<RailPanelRenderer>` mount that no longer existed in `ClientDetailPage.tsx` — the page had reverted to inline `<RailContentCard>` slot composition. This recovery rebuilds the migration from the existing renderer architecture (`RailPanelRenderer`, `railTypes.ts`, the passing Job Labour / Job Equipment phases) using the descriptor test file as the behavioral spec — no git history, no source restoration, only re-implementation against the documented architecture.
+
+**What landed.**
+
+- **`client/src/pages/ClientDetailPage.tsx`** —
+  - New imports: `RailPanelRenderer` from `@/components/detail-rail/RailPanelRenderer` + types `RailPanelDescriptor` and `RailCardDescriptor` from `@/components/detail-rail/railTypes`.
+  - New module-scoped pure function `buildClientPartsPanelDescriptor(scopeType, pmParts): RailPanelDescriptor`:
+    - **Company-scope branch** → `kind: "list"`, `cards: []`, `testId: "client-parts-panel-body"`, empty: `{ message: "Parts are tracked per location.", hint: "Pick a specific location to view its PM parts." }`.
+    - **Empty-list branch** → `kind: "list"`, `cards: []`, `testId: "client-parts-panel-body"`, empty: `{ message: "No client-specific parts yet.", hint: "Add parts the technician should bring on every PM visit." }`.
+    - **Populated branch** → `kind: "list"` with one `RailCardDescriptor` per part. Each card carries `key: p.id`, `testId: "client-parts-card"`, `title.text: p.itemName ?? "Unknown part"` with `className: "break-words whitespace-normal"` (disables canonical title `truncate` so long part names wrap), `title.chip: { text: \`×${p.quantityPerVisit}\`, testId: "client-parts-card-quantity" }`. Fields gated on the source field being populated: `SKU` (with `break-all`), `Category`, `Cost` (through `formatCurrency`), `Equipment` (with `line-clamp-2 break-words`). Each field carries the per-row test id (`client-parts-card-row-sku/category/cost/equipment`). Optional description body uses `bodyClamp: 3`. Cards are non-clickable — single-row Parts editing is not a canonical surface (PartsSelectorModal at the page level remains the only edit path, opened via the rail header `+ Add Part` action).
+  - `ClientPartsPanelBody` reduced to a thin mount: `<RailPanelRenderer panel={buildClientPartsPanelDescriptor(scopeType, pmParts)} testIdPrefix="client-side" />`. The prior 70+ lines of inline slot composition (`<RailContentCard>`, `<dl>`, `<Badge>`, etc.) are gone — visuals now flow through the renderer.
+
+- **`tests/client-rail-cards.test.ts`** — Parts pin retired. The `it("Parts panel cards are static RailContentCards")` block was checking for in-page slot composition; that pin's authority moves to `tests/client-rail-parts-descriptor.test.ts` per the file's own header rule ("each panel's slot pins move out as it migrates"). Header doc-comment updated to drop "Parts" from the slot-composition contract list and reference the descriptor test file as the new home. Total specs: 17 → 16.
+
+**What did NOT change.**
+
+- `<PartsSelectorModal>` mount, `+ Add Part` rail header action, the `pmParts` query, scope-aware visibility, or any other Parts behavior.
+- `tests/client-rail-parts-descriptor.test.ts` itself — used as-is as the spec; **all 16 of its assertions now pass**.
+- Notes exception (`EntityNotesSection.tsx` `cardStyle` branch) — still uses direct `<RailContentCard>` slot composition per the Phase 9 audit recommendation.
+- Job Labour (Phase 7) and Job Equipment (Phase 8) — already present, not touched.
+- Other Client Detail panels (Contacts / Billing / Equipment / Maintenance / Activity) — still use inline slot composition; their re-migration is the next bellwether candidate.
+- Slot primitives (`RailContentCard*`) — internal to the renderer for migrated panels.
+
+**Tests run.**
+
+- `tests/client-rail-parts-descriptor.test.ts` — 16/16 passing.
+- `tests/client-rail-cards.test.ts` — 16/16 passing (was 17, retired the now-obsolete Parts pin).
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- **Total in-scope: 290/291 (1 skipped) passing.**
+- `npm run check` — zero errors on edited files.
+
+**Files affected.**
+
+- `client/src/pages/ClientDetailPage.tsx` — three imports added + descriptor builder added + body component rewritten as thin renderer mount. Net diff is roughly neutral on line count (descriptor builder ~95 LoC, body component shrunk from ~70 LoC of inline JSX to a 6-line return).
+- `tests/client-rail-cards.test.ts` — Parts pin retired with header update.
+- `CHANGELOG.md` — this entry.
+
+**Remaining reverted descriptor-driven panels (still outstanding).** Per the audit before this recovery, five Client Detail panels still need the same treatment — each has a passing test-file spec but no matching source: Contacts, Billing, Equipment, Maintenance, Activity. Their test files (`tests/client-rail-{contacts,billing,equipment,maintenance,activity}-descriptor.test.ts`) and `tests/rail-cards-notes-contacts.test.ts` continue to fail until each panel is migrated through the same pattern this Parts recovery established. They are intentionally NOT touched in this bellwether.
+
+#### Dashboard widget drag/reorder relocated to the live grid (2026-05-07)
+
+Drag/reorder of customizable dashboard widgets is now done **on the
+live dashboard cards themselves**, not inside the Customize Dashboard
+drawer. Users grab a small handle in each card's top-right corner
+and reorder visible widgets by dragging the actual cards. The drawer
+keeps show/hide toggles only.
+
+**Files changed**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — now mounts
+  `DndContext` + `SortableContext` (`rectSortingStrategy`); each
+  visible cell wraps via a new internal `SortableWidgetCell` that
+  carries the @dnd-kit transform/transition. Uses
+  `MouseSensor` (4 px movement threshold so internal button clicks
+  don't trigger drags) + `TouchSensor` (200 ms hold + 5 px tolerance
+  for iPad) + `KeyboardSensor`. New optional `onReorder?:
+  (orderedKeys: string[]) => void` prop — when omitted, drag is
+  disabled (cells render without sortable wrappers). Drag handle is
+  absolutely positioned in the cell's top-right corner with
+  `cursor-grab`, `touch-none`, opacity-40 default rising to
+  opacity-100 on hover/focus, `backdrop-blur-sm` for legibility over
+  card content, `data-testid="dashboard-widget-drag-handle-${widgetKey}"`.
+  Critically, `attributes` + `listeners` are spread on the **handle
+  button**, NOT the cell wrapper — clicks anywhere else on the card
+  (Open toggle, action chevrons, internal links) behave normally and
+  never start a drag.
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — stripped of
+  all `@dnd-kit` imports, sensors, `DndContext` / `SortableContext`,
+  and `setOrder` calls. Drawer copy now reads: *"Drag widgets
+  directly on the dashboard to reorder. Toggle widgets to show or
+  hide them."*
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — collapsed to
+  a static toggle row: title + optional description + visibility
+  Switch. No `useSortable`, no `GripVertical`, no listeners, no
+  `attributes`.
+- `client/src/pages/FinancialDashboard.tsx` — passes
+  `onReorder={layout.setOrder}` to `<DashboardWidgetGrid>`. Existing
+  optimistic-update + single-PUT path on the hook reused.
+- `CLAUDE.md` — flipped the canonical drag rule from "Drag-to-reorder
+  lives ONLY inside `DashboardCustomizeDrawer.tsx`" to "Drag-to-reorder
+  lives on the LIVE GRID". Documents the handle-only-activator rule
+  and the hidden-widget order preservation contract.
+
+**Persistence behavior** is unchanged at the wire level: drag-end
+calls `onReorder(orderedKeys)` once with the visible widgets' new
+order, and the page wires that to `useDashboardLayout.setOrder`. The
+hook accepts a partial visible-only key list and appends widgets the
+caller didn't include via its existing append-any-omitted loop, so
+**hidden widgets keep their relative order** — dragging visible
+cards never re-enables hidden ones.
+
+**Tests**
+- `tests/dashboard-customize-drag-fix.test.ts` — flipped to pin
+  drag on the grid (sensors, sortable cells, handle hit-area,
+  rectSortingStrategy, listeners-on-button-not-cell, `onReorder`
+  wiring on the page); explicitly forbids drag wiring inside drawer
+  / renderer; new pin asserts `setOrder` preserves hidden widget
+  order via the hook's append loop.
+- `tests/dashboard-customize-framework.test.ts` — `DashboardWidgetGrid`
+  block pins the sortable cell contract; drawer + renderer blocks
+  pin "no drag wiring."
+- `tests/dashboard-grid-rowpack.test.ts` — drag-handle affordance
+  block moved onto the grid file (positioned top-right with
+  backdrop-blur, `h-3.5 w-3.5` icon for the 28×28 cell handle);
+  renderer block now forbids listeners; helper-copy block reflects
+  the new split.
+- `tests/dashboard-schedule-display-mode.test.ts` — three stale
+  pins reconciled to match the source's intentional regression-fix
+  formula: `showDisplayModeToggle = isStackedMode || isMultiTech`
+  (was `|| !compact`) and `useGrid = !isStacked &&
+  effectiveColumnCount <= 4` (was `visibleTechs.length <= 4`).
+  Source code retained per user instruction.
+
+**Validation.** `npm run check` clean. Targeted suite:
+`tests/dashboard-customize-drag-fix.test.ts` +
+`tests/dashboard-customize-framework.test.ts` +
+`tests/dashboard-grid-rowpack.test.ts` +
+`tests/dashboard-schedule-display-mode.test.ts` +
+`tests/dashboard-layout.test.ts` = **265/265 passing**. Regression
+sweep `tests/technician-time-off.test.ts` +
+`tests/pricebook-groups.test.ts` = **221/221 passing**.
+
+
+#### Right-rail card content — meta / footer / subtitle migrated from `text-caption` to canonical `text-helper` (2026-05-07)
+
+Final piece of the right-rail typography sweep. Audit of the descriptor renderer + slot primitives + descriptor builders found that `RailContentCardMeta`, `RailContentCardFooter`, and `RailContentCardSubtitle` baked `text-caption` (14px) for their dense-secondary text. Per CLAUDE.md > Typography Primitives: **"Pick `text-helper` (13px) as the dense-secondary token for panels and side rails. `text-caption` (14px) is reserved for tabular metadata (timestamps in tables, list-page footer rows)."** Rail cards are panel surfaces, not tabular metadata, so they should ride `text-helper`. The footer link in `RailFooterFromDescriptor` carried the same `text-caption font-medium` drift the rail-tab and rail-action-button corrections already retired.
+
+**What landed.**
+
+- **`client/src/components/detail-rail/RailContentCard.tsx`**:
+  - `RailContentCardSubtitle`: `text-caption text-text-secondary truncate` → `text-helper text-text-secondary truncate`.
+  - `RailContentCardMeta`: `text-caption text-text-secondary mt-1.5 first:mt-0` → `text-helper text-text-secondary mt-1.5 first:mt-0`.
+  - `RailContentCardFooter`: `text-caption text-text-secondary` → `text-helper text-text-secondary`.
+
+- **`client/src/components/detail-rail/RailPanelRenderer.tsx`**:
+  - Footer link className: `inline-flex items-center gap-1 text-caption font-medium ... rounded px-1 py-0.5` → `inline-flex items-center gap-1 text-helper ... rounded px-1 py-0.5`. Drops `font-medium`, retires `text-caption`. Brand color still flows from `ENTITY_LINK_CLASS` composition.
+
+**Intentionally left as-is (audited and judged correct).**
+
+- `RailContentCardChip` (`text-helper font-medium px-1.5 py-0.5 rounded shrink-0`): chips need visual emphasis to scan as labels distinct from surrounding meta; `font-medium` at the 13px chip scale is the right tradeoff and matches the existing `tests/rail-card-slots.test.ts` v4 pin (chips were upsized from `text-caption` → `text-helper` deliberately to avoid overpowering body content).
+- `sectionHeader` value (`text-caption tabular-nums text-text-primary font-mono shrink-0`): Labour date-card section headers are deliberately a higher-emphasis surface than meta rows; the existing renderer pin (`tests/rail-panel-renderer.test.ts:715`) codifies this.
+- Group heading (`text-section-title text-text-primary truncate min-w-0`): canonical role for grouped panel subsections (Labour techs).
+- `text-label uppercase tracking-wide` redundancy on grouped panel headers + section headers: cosmetic only — `text-label` already bakes `uppercase` via the @layer rule + 0.04em letter-spacing; the explicit `uppercase tracking-wide` produces identical rendered output. Not worth churning the source.
+- `font-normal` on title secondary span (`<span className="font-normal text-text-secondary">`): deliberate weight override for the trailing "(qty)" / "(date)" pattern after a `text-row-emphasis` title; functional and not in the forbidden weight list (`font-bold` / `font-semibold`).
+
+**Tests.**
+
+- **`tests/rail-card-slots.test.ts`** — Meta + Footer pins flipped to `text-helper`. Inverse pins added so the prior 14px scale can't creep back in.
+- **`tests/rail-panel-renderer.test.ts`** — footer-link inter-element regex bound widened from `[\s\S]{0,500}` to `[\s\S]{0,1500}` to accommodate the inline doc comment that records the `text-caption font-medium` → `text-helper` migration. Test intent unchanged (still pins `<RailContentCardFooter>` → `<Link>` → `cn(...ENTITY_LINK_CLASS)` composition).
+- All Phase 8 / Phase 7 / Phase H1 / typography-canonical / rail-tab / rail-panel-header pins continue to pass.
+
+**Files affected.**
+
+- `client/src/components/detail-rail/RailContentCard.tsx` — three slot primitive className tuples.
+- `client/src/components/detail-rail/RailPanelRenderer.tsx` — footer-link className composition.
+- `tests/rail-card-slots.test.ts` — Meta + Footer pin updates with inverse assertions.
+- `tests/rail-panel-renderer.test.ts` — footer-link regex bound widening.
+- `CHANGELOG.md` — this entry.
+
+**Test results.**
+
+- `tests/rail-card-slots.test.ts` — 27/27 (1 skipped) passing.
+- `tests/rail-content-card.test.ts` — 9/9 passing.
+- `tests/rail-panel-renderer.test.ts` — 116/116 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/job-rail-equipment-descriptor.test.ts` — 24/24 passing.
+- `tests/job-rail-labour-descriptor.test.ts`, `tests/rail-card-style-props.test.ts`, `tests/detail-right-rail.test.ts` — all passing.
+- Total in-scope rail tests: **314/314**.
+- `npm run check` — zero errors on edited files.
+
+**Pre-existing failures NOT touched by this sweep.** Tests that depend on the parallel-reverted Phases 1–7 of the descriptor migration (`tests/client-rail-cards.test.ts`, `tests/client-rail-contacts-descriptor.test.ts`, `tests/rail-cards-notes-contacts.test.ts`) continue to fail because `ClientDetailPage` no longer mounts the descriptor renderer for those panels — that revert predates this typography work.
+
+**Blast radius.** 1px size reduction on rail-panel meta / footer / subtitle text (14px → 13px). Affects every descriptor-driven panel: Job Detail (Labour, Equipment), Client Detail descriptor surfaces (Parts, Maintenance, Activity, Billing footer block, Equipment footer link). Color, weight, and layout are unchanged; only the size token name differs. Same hover / focus / spacing / icons.
+
+#### Right-rail panel header — canonical action-button class + drop heavier `text-caption font-medium` scale (2026-05-07)
+
+Follow-up to the rail-tab typography correction. Audit of the expanded panel header in `<DetailRightRail>` confirmed the title (`text-label`), close-X (icon-only), and header wrapper (no text typography) were already canonical. The drift lived in the caller-passed action buttons ("+ Add", "+ Time", "Edit") on `ClientDetailPage` and `JobDetailPage`, which both used `text-caption font-medium` (heavier weight, 14px) and JobDetailPage additionally used the literal-hex arbitrary `text-[#76B054]` instead of the canonical `text-brand` token.
+
+**What landed.**
+
+- **`client/src/components/detail-rail/DetailRightRail.tsx`**:
+  - New exported `RAIL_HEADER_ACTION_CLASS` const — the canonical structural-only class string for buttons rendered into the panel header `action` slot. Bakes inline-flex / gap-1 / h-7 / px-2 / rounded / hover-bg-slate-100 / focus-visible ring. Typography + color stay at the call site so the typography-canonical guard (which forbids local typography constants in feature components) keeps passing.
+  - Header title / close-X / wrapper unchanged (audit confirmed they were already canonical).
+
+- **`client/src/pages/ClientDetailPage.tsx`** — the local `RAIL_ACTION_BTN_CLASS` constant migrates from an inline `text-caption font-medium text-slate-700 ...` string to `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`. Six rail action buttons (Contacts add, Notes add, Billing edit, Equipment add, Parts add, Maintenance add) compose through this constant — they all pick up the new scale without per-button changes.
+
+- **`client/src/pages/JobDetailPage.tsx`** — three inline rail-action buttons (notes / labour / equipment) migrate from `text-caption font-medium text-[#76B054] ...` strings to `${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`. The literal-hex arbitrary is retired in favor of the canonical brand-color token.
+
+**Tests.**
+
+- **`tests/rail-panel-header-typography.test.ts`** — new (~205 LoC, 24 specs) pinning: panel title uses `text-label text-slate-700 flex-shrink-0`, close-X is icon-only with no font weight modifier and no legacy / arbitrary text class, header wrapper has no text-* / font-* class, `RAIL_HEADER_ACTION_CLASS` is structural-only (no typography token, no color, no font weight), the constant bakes the expected structural chrome, ClientDetailPage imports + composes onto the canonical class with `text-helper text-slate-700`, JobDetailPage imports + composes all three rail action buttons with `text-helper text-brand`, no inline `text-caption font-medium` action button class strings remain, no literal-hex `text-[#76B054]` survives on a rail action button.
+- **`tests/typography-canonical.test.ts`** — continues to pass (the structural-only constant keeps the local-typography-constant guard happy).
+
+**Files affected.**
+
+- `client/src/components/detail-rail/DetailRightRail.tsx` — new exported `RAIL_HEADER_ACTION_CLASS` constant + JSDoc.
+- `client/src/pages/ClientDetailPage.tsx` — import + `RAIL_ACTION_BTN_CLASS` migration (one constant edit; six rail actions pick up the new scale automatically).
+- `client/src/pages/JobDetailPage.tsx` — import + three inline rail action button class migrations.
+- `tests/rail-panel-header-typography.test.ts` — new pin file.
+- `CHANGELOG.md` — this entry.
+
+**Test results.**
+
+- `tests/rail-panel-header-typography.test.ts` — 24/24 passing.
+- `tests/rail-tab-typography.test.ts` — 13/13 passing (no regression from the prior tab fix).
+- `tests/detail-right-rail.test.ts` — 33/33 passing.
+- `tests/typography-canonical.test.ts` — 37/37 passing.
+- `npm run check` — zero errors on edited files.
+
+**Blast radius.** Typography downsize on rail action buttons (14px / weight 500 → 13px / weight 400). Same hit target (h-7), same hover/focus chrome, same icons (h-3.5 w-3.5), same testids. The `text-[#76B054]` literal arbitrary on JobDetailPage is replaced by canonical `text-brand` (same rendered color via the brand CSS variable). No renderer / descriptor / panel-content / animation changes.
+
+#### Dashboard — Needs Attention card retired; Invoices not sent absorbed into Operational Alerts (2026-05-07)
+
+The standalone Needs Attention card was a placeholder that effectively duplicated the operational-alert concept — its only row was "Invoices not sent". Consolidating into Operational Alerts removes the empty-card / mismatched-card-row visual artifact and keeps every triage signal (scheduling + dispatch + billing) in one place.
+
+**Operational Alerts now renders five rows.** Canonical default order keeps highest operational urgency at the top; the absorbed billing row sits at the bottom (lower operational urgency than scheduling/dispatch issues):
+
+1. Requires attention (red, urgent on count > 0)
+2. Past due (red, urgent on count > 0)
+3. Unscheduled (amber)
+4. Ready to invoice (emerald)
+5. **Invoices not sent** (slate, FileText icon — new, absorbed from Needs Attention)
+
+**Component changes** (`client/src/components/dashboard/OperationalAlertsCard.tsx`).
+
+- New `OperationalAlertRowKey` union member: `"invoices_not_sent"`.
+- New optional prop: `invoicesNotSentCount?: number` (defaults to 0 so callers without the financial-summary query in scope can omit it).
+- New row entry in `rowsByKey`: `{ label: "Invoices not sent", icon: FileText, iconColor: "text-slate-500", mode: "invoices_not_sent" }`.
+- `DEFAULT_ALERT_ORDER` extended to `["ready_to_invoice", "past_due", "unscheduled", "requires_attention", "invoices_not_sent"]`.
+- `totalCount` folds in `invoicesNotSentCount` so the auto-collapse heuristic doesn't claim "no alerts" while billing has unsent invoices waiting.
+- Loading skeleton renders 5 placeholder rows (was 4) to match the new canonical row count.
+- Card chrome, typography tokens (`text-xs font-medium` labels, `text-sm font-semibold tabular-nums` counts), row density (`px-3 py-1.5 gap-2`), divider behavior, and `data-testid="alert-row-{key}"` pattern unchanged. The absorbed row uses a new `data-testid="alert-row-invoices_not_sent"` automatically via the existing pattern.
+
+**Page changes** (`client/src/pages/FinancialDashboard.tsx`).
+
+- The inline `NeedsAttentionCard` component is gone (function declaration + props interface deleted). A short comment block in its place documents the consolidation.
+- The renderer-map entry `needs_attention: (...)` is removed; that key never reaches `<DashboardWidgetGrid>` now.
+- `FINANCIAL_QUERY_WIDGETS` now lists `"operational_alerts"` (in place of `"needs_attention"`). Operational Alerts depends on BOTH the workflow query (existing four counts) AND the financial summary query (the new `invoicesNotSentCount`), so the financial query must fire when only Operational Alerts is visible.
+- The operational_alerts renderer mount now threads `invoicesNotSentCount={data?.needsAttention.invoicesNotSentCount ?? 0}` and the 5-element `order` prop. The `isLoading` prop is now `workflowQuery.isLoading || isLoading` so the card renders skeletons until both data sources resolve.
+- Dispatch path for the absorbed row is `OperationalAlertsCard.onOpenActionModal(row.mode)` → page-level `openActionModal` → `<DashboardActionModal mode="invoices_not_sent">`. Same shared modal, same `unsent_invoices` source (`/api/invoices/list?status=draft&limit=50`), same Send / Open actions.
+
+**Registry change** (`shared/dashboardWidgetRegistry.ts`).
+
+- The `needs_attention` widget definition was removed from `FINANCIAL_DASHBOARD_WIDGETS`. The financial widget set is now five canonical entries (TS, Pipeline, Collections, Scheduled Revenue, Operational Alerts). The Operational Alerts entry's `description` was extended to mention "invoices not sent" alongside the other rows.
+- A doc comment explicitly documents the orphan-safe contract (resolver iterates the registry, not the override rows) and points at the cleanup migration.
+
+**No new query, no new endpoint, no duplicate rendering.**
+
+- The "Invoices not sent" count comes from the SAME `data.needsAttention.invoicesNotSentCount` field the retired card consumed — no client-side aggregation, no new HTTP route. The server-side `getNeedsAttention()` SQL helper and the `/api/dashboard/financial` endpoint are unchanged.
+- The DashboardActionModal's `invoices_not_sent` mode + `unsent_invoices` source + per-row Send/Open actions are unchanged; only the trigger row's host card moved.
+
+**Layout persistence — orphan rows degrade safely.**
+
+- The dashboard layout resolver iterates the REGISTRY (not the override rows) when building the GET response. Persisted `user_dashboard_widgets` rows with `widget_key='needs_attention'` are silently ignored at read time, so old layouts continue to work without surfacing a broken or empty widget. The customize drawer never offers a toggle for the absent widget.
+- For hygiene: new migration `2026_05_07_drop_needs_attention_widget.sql` runs `DELETE FROM user_dashboard_widgets WHERE widget_key = 'needs_attention'`. Idempotent (a second run is a no-op). Scoped to that one widget key; no other override rows are touched. Does NOT renumber `order_index` on surviving rows — the resolver re-derives ordering at read time.
+
+**Tests.**
+
+- `tests/dashboard-customize-framework.test.ts` — widget-set assertion narrowed to the 5 canonical keys; inverse pin bans `needs_attention` from re-appearing. Two example payloads in the schema-shape tests swapped from `needs_attention` to `operational_alerts` for clarity (the schema validates shape, not registry membership).
+- `tests/dashboard-grid-rowpack.test.ts` — `packDashboardRows` canonical-layout pin updated to 2 rows (was 3); the TS-hidden + OA-hidden pack pins re-derived; the "Needs Attention always renders at full width" property test renamed to a generic "full-preset widget" assertion that doesn't reference a registry key; the registry pin asserting NA's `sizePreset/heightPreset` flipped to assert NA is no longer in the registry.
+- `tests/dashboard-layout.test.ts` — the page-level renderer-map pin no longer requires `needs_attention`; new inverse pin bans the orphan renderer. The Operational Alerts contract block extended with `invoicesNotSentCount` + 5-element `order` pins. The entire "Needs Attention narrowed to billing/admin only" describe block replaced with a "Needs Attention card removed" describe that pins: the inline component is gone, the renderer entry is gone, the financial query gate now lists `operational_alerts`, the dispatch still routes through the shared modal, and the storage helper + endpoint stay unchanged.
+- `tests/dashboard-invoices-not-sent.test.ts` — full rewrite. Now pins: the retired card stays retired (component, registry entry, renderer entry, in-card testids all gone); the row lives in OperationalAlertsCard with the canonical key/label/icon/mode/order; the page wires `invoicesNotSentCount` + 5-element `order` + adds OA to the financial query gate; the dispatch path (`page.openActionModal` → `OperationalAlertsCard.onOpenActionModal` → `row.mode`); no duplicate row-rendering on the page; the modal contract for `invoices_not_sent` is unchanged; layout persistence degrades safely and the cleanup migration sweeps orphan rows.
+- `tests/dashboard-operational-alerts-modes.test.ts` — added an `invoices_not_sent` row → mode pin alongside the existing four.
+- `tests/dashboard-pipeline-actionable.test.ts` — the "Needs Attention narrowed to invoices-not-sent only" test (which read the now-deleted inline component) replaced with a "card retired; row absorbed" pin that asserts the absorbed row's home in OperationalAlertsCard. The Operational Alerts row → mode mapping pin extended with the new `invoices_not_sent` row.
+
+**Verification.**
+
+- `npm run db:migrate:one -- migrations/2026_05_07_drop_needs_attention_widget.sql` — applied successfully against the dev Neon database.
+- `npm run check` — clean for every file in this change. (Pre-existing TS errors in `technicianTimeOff` / `pricebook` / `communications` modules and a pre-existing `onReorder` prop type mismatch on the page's `<DashboardWidgetGrid>` mount are unrelated to this work.)
+- `npx vitest run tests/dashboard-customize-framework.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-layout.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-operational-alerts-height.test.ts tests/dashboard-pipeline-actionable.test.ts tests/dashboard-authz.test.ts tests/dashboard-customize-drag-fix.test.ts` — **328/328 pass**.
+
+**Files affected.**
+
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` — new row + prop + extended order + 5-row skeleton.
+- `client/src/pages/FinancialDashboard.tsx` — NeedsAttentionCard removed, renderer entry removed, financial query gate updated, OperationalAlertsCard mount extended.
+- `shared/dashboardWidgetRegistry.ts` — `needs_attention` widget definition removed; Operational Alerts description extended.
+- `migrations/2026_05_07_drop_needs_attention_widget.sql` — new (orphan-row sweep).
+- `tests/dashboard-customize-framework.test.ts`, `tests/dashboard-grid-rowpack.test.ts`, `tests/dashboard-layout.test.ts`, `tests/dashboard-invoices-not-sent.test.ts`, `tests/dashboard-operational-alerts-modes.test.ts`, `tests/dashboard-pipeline-actionable.test.ts` — pin updates.
+
+**What did NOT change.**
+
+- `getNeedsAttention()` storage helper, the `needsAttention.invoicesNotSentCount` shape on `/api/dashboard/financial`, the entire `DashboardActionModal` (mode union, `MODE_CONFIG.invoices_not_sent`, `unsent_invoices` source, `SOURCE_PARAMS`), the `/api/invoices/list?status=draft` route, the `SendCommunicationModal` integration.
+- The dashboard widget framework (registry contract, `useDashboardLayout` hook, `<DashboardWidgetGrid>`, `<DashboardCustomizeDrawer>`, `user_dashboard_widgets` schema).
+- Any other dashboard widget or its data-fetching wiring.
+
+#### Right-rail tab typography — drop redundant `font-medium`, ride canonical `text-helper` at regular weight (2026-05-07)
+
+The shared right-rail vertical-icon-strip primitive (`DetailRightRail`, used by both Client Detail and Job Detail) was visually oversized because the tab label and count chip both layered `font-medium` (500) on top of `text-helper` (13px). At the app's 19px root font-size, 13px medium-weight tracked as "button copy" rather than "secondary navigation," and the rail strip looked oversized next to panel content.
+
+**Token chosen and why.** `text-helper` is the canonical compact-non-uppercase secondary token (13px / 16px line-height, no weight baked). `text-label` was considered but rejected — its uppercase tracking (0.04em) overflows the 76px column on `MAINTENANCE` / `COMMUNICATIONS`. `text-caption` (14px) was rejected because it is larger than the current size, the wrong direction. The canonical fix is to keep the token (`text-helper`) and drop the redundant `font-medium` modifier so the label and count chip render at regular weight (400). Active-state emphasis migrates entirely to color + background + the left accent bar (already present), which were the user's explicitly-listed permitted emphasis sources.
+
+**What landed.**
+
+- **`client/src/components/detail-rail/DetailRightRail.tsx`**:
+  - Tab button class: `"text-helper font-medium transition-colors"` → `"text-helper transition-colors"`.
+  - Count chip class: `"text-helper font-medium text-slate-500 tabular-nums leading-none"` → `"text-helper text-slate-500 tabular-nums leading-none"`.
+  - Comment block updated to document the rationale and the `text-label` rejection (uppercase overflow at 76px column).
+  - Icon size unchanged (`h-4 w-4` = 16px), padding unchanged (`px-1 py-2`), gap unchanged (`gap-0.5`), accent bar unchanged (`bg-[#76B054]`), active state unchanged (`text-brand bg-white`), aria-pressed wiring unchanged.
+
+**Tests.**
+
+- **`tests/rail-tab-typography.test.ts`** — new (~145 LoC, 13 specs) pinning: tab button uses canonical `text-helper`, no `font-medium` / `font-semibold` / `font-bold` on the button, no legacy size ramp on the button, no arbitrary `text-[Npx]` on the button, count chip uses `text-helper` matching the label scale, no weight modifier on the count chip, no legacy ramp / arbitrary text on the count chip, active `text-brand bg-white` preserved, inactive slate states preserved, accent bar preserved, `aria-pressed` wiring preserved, tab icon stays at `h-4 w-4` paired with the 13px label.
+- **`tests/detail-right-rail.test.ts`** — pre-existing assertion `text-[#76B054] bg-white` (literal arbitrary value) was already broken because the H2 color migration moved the active state to canonical `text-brand`. Updated to assert `\btext-brand\b ... bg-white`. Same rendered color, canonical token usage.
+
+**Files affected.**
+
+- `client/src/components/detail-rail/DetailRightRail.tsx` — two className tuple edits + comment refresh.
+- `tests/rail-tab-typography.test.ts` — new pin file.
+- `tests/detail-right-rail.test.ts` — color-token pin update.
+
+**Test results.**
+
+- `tests/rail-tab-typography.test.ts` — 13/13 passing.
+- `tests/detail-right-rail.test.ts` — 33/33 passing (was 32/33 due to the pre-existing literal-color pin; now clean).
+- `tests/typography-canonical.test.ts` — 37/37 passing (the canonical guard for the `detail-rail` directory continues to pass since `font-medium` is not in the forbidden weight list, and `text-helper` is canonical).
+- `npm run check` — zero errors on the edited files.
+- Two pre-existing `tests/client-side-rail.test.ts` failures predate this change (they assert `activeTab` patterns that the RALPH animation refactor moved to `displayedTab`) — out of scope per the "Do NOT touch shell animation/open-close behavior" guard.
+
+**Blast radius.** Surface change limited to font-weight on the rail tab strip. ClientDetailPage and JobDetailPage consumers see the same tabs at the same height with the same icons, the same testids, the same active/inactive transitions — only the label visual weight drops from medium to regular. No renderer / descriptor / card / panel-content changes. No spacing or width changes. No new tokens introduced.
+
+#### Service Plans — module rebrand + explicit `Automatically generate work` toggle (2026-05-07)
+
+Maintenance module rebranded to Service Plans in user-facing UI. Service plans now expose an explicit "Automatically generate work" setting. Auto-generated service plan work creates unscheduled jobs for dispatch instead of scheduled visits.
+
+The Maintenance / PM module is the sellable recurring-service product (Gold Service Plan, Spring HVAC Plan, Ultimate Comfort Plan, etc.). The user-facing identity now matches that business model. The route, the `recurring_job_templates` table, the `jobType="maintenance"` enum, the `recurring_job_instances` lifecycle, the canonical recurrence engine, the entitlement key (`pm_contracts`), the `/api/recurring-templates` API surface, and the recurrence-behavior copy ("Recurring Job Created" toasts, "Make Recurring" toggle, "Recurring schedule" form block) are intentionally unchanged — those are data-model / behavior names, not module identity.
+
+This release also adds a per-template `autoGenerateJobs` flag that the wizard surfaces as a "Automatically generate work" switch. When ON, the system creates an UNSCHEDULED job (status=`open`, no scheduled timestamp, no primary technician, no visit row, no calendar reservation) every time the recurrence engine creates a new pending instance. When OFF, behavior is unchanged from before — the engine creates pending instances and a dispatcher manually generates jobs from the Work Due queue.
+
+**Critical product invariant.** Auto-generation creates work; it does NOT auto-schedule. A future "auto-schedule" automation would be a separate, explicit feature. The auto-generated job lands on the dispatcher's Work Due queue exactly like a manually-generated job, and the dispatcher still owns tech assignment + scheduling.
+
+**Sidebar + route header rename.**
+
+- Sidebar nav title: `Maintenance` → `Service Plans` (`AppSidebar.tsx`). The hover tooltip and the quick-create dropdown's "New Maintenance Plan" item also moved to "New Service Plan".
+- Sidebar width bumped from 8.5rem (136px) → 9.5rem (152px) so the longer label fits on a single line at active-state semibold weight (`App.tsx` + `client/src/components/ui/sidebar.tsx`). Stays narrower than the prior 9.625rem ceiling.
+- Route + testid unchanged — `/pm` remains the route, `nav-pm` remains the testid, and all internal types (`RecurringJobTemplate`, `recurringJobTemplates`, etc.) keep their names.
+
+**Page surface rename.**
+
+- `PMWorkspacePage.tsx` H1: `Maintenance` → `Service Plans`. New-Plan dropdown's "Maintenance plan" item → "Service plan". Empty-state copy: "No maintenance plans yet" → "No service plans yet".
+- `RecurringJobsPage.tsx` H1: `Maintenance` → `Service Plans`. The card title below stays `Recurring Jobs` because it names the underlying recurring-job records, not the destination.
+- `PMWizardPage.tsx`: page H1 `Create Maintenance Plan` → `Create Service Plan`. Default plan name `Maintenance Plan` → `Service Plan`. "Who is this maintenance plan for?" → "Who is this service plan for?". "Review your maintenance plan" → "Review your service plan". Toast title `Maintenance plan created` → `Service plan created`. Post-create explanation dialog title + body track the rename. The "maintenance visit" hint copy in the Completion Window block → "service visit". Pointer copy (`upcoming maintenance will appear on the Maintenance page when due`) → `upcoming service work will appear on the Service Plans page when due`.
+- `PMDetailPage.tsx`: header title `Maintenance Plan — {customer}` → `Service Plan — {customer}`.
+- `CreateMaintenancePlanDialog.tsx`: dialog title `Create Maintenance Plan` → `Create Service Plan`. Mode-card descriptions ("Create a brand-new maintenance plan", "Copy an existing maintenance plan") → service plan equivalents. Empty plan-picker message → "No service plans yet".
+- `ClientDetailPage.tsx`: the maintenance snapshot card's footer link now reads "View / Edit in Service Plans" with a matching `aria-label` and `title`. The card's `data-testid="client-maintenance-card-action"` is preserved so existing selectors keep working.
+
+**Schema + API.**
+
+- New column `recurring_job_templates.auto_generate_jobs boolean NOT NULL DEFAULT false` (`migrations/2026_05_07_recurring_templates_auto_generate_jobs.sql`). Defaults to FALSE for both new rows AND existing rows — preserves the historical "instances-only" behavior. Customers opt in per plan via the wizard toggle.
+- Drizzle schema: `autoGenerateJobs: boolean("auto_generate_jobs").notNull().default(false)` added to `recurringJobTemplates` (`shared/schema.ts`).
+- Zod: `insertRecurringJobTemplateSchema` accepts `autoGenerateJobs: z.boolean().default(false)`. `updateRecurringJobTemplateSchema` accepts `autoGenerateJobs: z.boolean().optional()`. The existing route handlers consume the schemas verbatim — no route changes required.
+- Read endpoints (`GET /api/recurring-templates`, `GET /api/recurring-templates/:id`) return the field as part of `$inferSelect` — no change needed.
+
+**Server generation pipeline (`server/domain/recurrence.ts`).**
+
+- `generateForTemplate()` now returns `{ instancesCreated, jobsCreated, newInstanceIds }` so callers can hand the just-created pending-instance ids to `generateFromInstances()` for opt-in auto-promotion. The function itself does NOT promote — it stays at the "create pending instance" boundary.
+- `generateInstances()` (the batched path used by the 6h `pmAutoGeneration` worker AND by `POST /api/recurring-templates/generate`): for each template, after the instances are created, when `template.autoGenerateJobs` is true, calls `generateFromInstances(companyId, newInstanceIds)`. The return shape's `jobsCreated` counter accumulates the auto-promoted job count and any errors flow into the existing `errors[]`.
+- `generateForSingleTemplate()` (the path used by `POST /api/recurring-templates` post-create handler AND by `POST /api/recurring-templates/:id/generate`): same auto-promote rule. A brand-new contract that is created with the toggle ON immediately gets both the pending instance AND the unscheduled job for the current cycle.
+- `generateFromInstances()` is unchanged. It already enforces the unscheduled-job invariant: `status: "open"`, `scheduledStart: null`, `scheduledEnd: null`, `primaryTechnicianId` not assigned (the field was dropped), no visit row insert, no calendar reservation. The auto-promote layer reuses this path verbatim — there is no separate "auto-generated job" code path to drift.
+
+**Wizard UI (`PMWizardPage.tsx`).**
+
+- New `WizardState.autoGenerateJobs: boolean`, defaulting to `false` so the OFF state matches the historical behavior even if the user never touches the toggle.
+- New canonical Switch primitive sits inside Step 2 ("Schedule"), directly below the "When should work orders be created?" generation-rule cards. Label: **Automatically generate work**. Helper: "Automatically creates an unscheduled job when service becomes due. The job lands on the Work Due queue — a dispatcher still assigns the technician and schedules it." `data-testid="pm-wizard-auto-generate-jobs"`.
+- The create payload forwards `autoGenerateJobs: state.autoGenerateJobs`.
+- The duplicate-prefill (`?duplicate=:id`) carries the source plan's `autoGenerateJobs` value forward so duplicating an opt-in plan doesn't silently downgrade the copy.
+
+**Edit UI (`PMDetailPage.tsx`).**
+
+- `EditFormState.autoGenerateJobs: boolean` added; `templateToFormState` seeds it from the loaded template (defaulting to `false` for legacy rows).
+- The Schedule edit card renders the same canonical Switch + helper copy as the wizard, with `data-testid="pm-detail-auto-generate-jobs"`.
+- The view-mode Schedule card surfaces the current auto-gen state via a new `<DetailRow label="Auto-generate work">` reading either "On — creates unscheduled jobs" or "Off — manual generation". This makes the toggle visible without entering edit mode.
+- The PATCH payload forwards `autoGenerateJobs: form.autoGenerateJobs`.
+
+**Generation window (existing field, unchanged).**
+
+- The brief asked us to keep the existing instance/generation window functionality but de-emphasize it. The wizard already keeps the "Completion Window" block (days-before / days-after) directly under the auto-generate toggle, labelled in plain business language; no additional change was needed to satisfy that direction.
+
+**Tests.**
+
+- `tests/recurring-jobs-nav-rename.test.ts` — refreshed (15 assertions). Pins `title: "Service Plans"` + `href: "/pm"` on the sidebar entry, the H1 on `RecurringJobsPage`, the toast / dialog / review pointer copy, and a new pin on the "New Service Plan" quick-create item. Inverse pins ban both prior labels (`title: "Maintenance"`, `title: "Recurring Jobs"`) so a future regression to either name trips here.
+- `tests/maintenance-page-layout.test.ts` — refreshed. H1 pin now reads "Service Plans"; both "Maintenance Plans" and "Maintenance" inverse pins block silent reverts. New-Plan dropdown pin updated to "Service plan".
+- `tests/sidebar-width.test.ts` — refreshed. `--sidebar-width` pinned at `9.5rem`; the menu-title list now requires `title: "Service Plans"`; entry-shape pin now reads `title: "Service Plans" … href: "/pm"`. Inverse pins reject all prior widths (8.5rem, 8rem, 9.625rem) and prior labels.
+- `tests/client-side-rail.test.ts` — two pins on the maintenance snapshot card's footer link refreshed to "View / Edit in Service Plans" + matching `aria-label`/`title`.
+- `tests/service-plans-auto-generate.test.ts` — **new file (17 assertions).** Locks in the end-to-end contract: Drizzle column shape + insert/update Zod schemas; `generateForTemplate` returns `newInstanceIds`; both `generateInstances` and `generateForSingleTemplate` auto-promote when `template.autoGenerateJobs` is true; `generateFromInstances` is the only call path (count exactly 2, both gated); the auto-promoted job creation reuses the existing `status: "open"` / `scheduledStart: null` / "PM jobs are unassigned" contract and never inserts a visit row; PMWizardPage carries the field, the canonical Switch with the pinned testId, and forwards the value in the create payload; PMDetailPage carries the field in `EditFormState`, seeds it from `templateToFormState`, renders the Switch in the edit card, surfaces the state in the view card, and forwards the value in the PATCH payload.
+
+**Verification.**
+
+- `npm run db:migrate:one -- migrations/2026_05_07_recurring_templates_auto_generate_jobs.sql` — applied successfully against the dev Neon database.
+- `npm run check` — clean for all files in this change. (Pre-existing TS errors in `technicianTimeOff`, `pricebook`, `communications` modules are unrelated to this work.)
+- `npx vitest run tests/recurring-jobs-nav-rename.test.ts tests/maintenance-page-layout.test.ts tests/sidebar-width.test.ts tests/service-plans-auto-generate.test.ts` — **54/54 pass**.
+- `npx vitest run tests/client-side-rail.test.ts` — 106/108 pass; the 2 failing pins are unrelated to this work (`DetailRightRail.tsx` internals — confirmed pre-existing via `git stash`).
+
+**Files affected.**
+
+- `migrations/2026_05_07_recurring_templates_auto_generate_jobs.sql` — new.
+- `shared/schema.ts` — `autoGenerateJobs` column on `recurringJobTemplates` + insert/update Zod schemas.
+- `server/domain/recurrence.ts` — `generateForTemplate` now returns `newInstanceIds`; both `generateInstances` and `generateForSingleTemplate` auto-promote when the flag is set.
+- `client/src/components/AppSidebar.tsx` — sidebar title + hover + quick-create label rename.
+- `client/src/App.tsx` — `--sidebar-width` 8.5rem → 9.5rem.
+- `client/src/components/ui/sidebar.tsx` — `SIDEBAR_WIDTH` fallback 8.5rem → 9.5rem.
+- `client/src/pages/PMWorkspacePage.tsx` — H1, dropdown item, empty-state copy.
+- `client/src/pages/RecurringJobsPage.tsx` — H1.
+- `client/src/pages/PMWizardPage.tsx` — H1, toast/dialog/helper copy, default plan name, Switch + helper insertion in Step 2, payload forwarding, duplicate prefill.
+- `client/src/pages/PMDetailPage.tsx` — header copy, EditFormState field, view-mode row, Switch in edit card, PATCH payload.
+- `client/src/components/pm/CreateMaintenancePlanDialog.tsx` — dialog title, mode card descriptions, empty plan-picker copy.
+- `client/src/pages/ClientDetailPage.tsx` — snapshot footer link aria-label/title/text.
+- `tests/recurring-jobs-nav-rename.test.ts`, `tests/maintenance-page-layout.test.ts`, `tests/sidebar-width.test.ts`, `tests/client-side-rail.test.ts` — pin updates.
+- `tests/service-plans-auto-generate.test.ts` — new.
+
+**What did NOT change.**
+
+- The `/pm` route, `nav-pm` testid, all internal type names (`RecurringJobTemplate`, `recurringJobTemplates`, `recurringJobInstances`, `RecurringJobsPage`).
+- The `jobType="maintenance"` enum value and any storage-layer name carrying `pm_*` (`pm_billing_model`, `pm_billing_label`, `pm_contract_amount`, `pm_billing_events`, etc.) — those are data-model names, not user-facing module identity.
+- The entitlement key `pm_contracts` and the `requireFeature("pm_contracts")` gate (canonical resolver behavior unchanged).
+- `recurring_job_templates`, `recurring_job_instances`, `pm_billing_events`, and every other DB table — no rename.
+- The 6-hour `pmAutoGeneration` worker schedule, the 45-day generation window default, the stale-claim recovery threshold, the per-template service window (days-before / days-after), and every other recurrence-engine knob.
+- The "Recurring Job Created" toast, "Make Recurring" form toggle, "Recurring schedule" form block, and every other recurrence-behavior string in `QuickAddJobDialog`. Those describe the recurring-job RECORD behavior, not the destination's name.
+
+#### Data-Driven Right Rail — Phase 8: Job Detail Equipment (2026-05-07)
+
+Migrates `JobEquipmentSection`'s `cardStyle === true` branch (the Job Detail right-rail consumer) onto the centralized `<RailPanelRenderer>` architecture. Job Detail Equipment is now driven by a typed plain-object descriptor instead of inline slot composition. The legacy non-cardStyle row layout is preserved verbatim for any future cross-page consumer that omits the `cardStyle` opt-in. Job Detail Notes is intentionally NOT migrated in this phase — the user spec scoped Phase 8 to Equipment only.
+
+**Why Phase 8 lands as an adapter migration.**
+
+`JobEquipmentSection` is shared infrastructure: the same component is consumed by the Job Detail rail, the Invoice/Quote/Lead detail pages (legacy row layout), and any other surface that opts into `cardStyle`. The lowest-risk migration is to keep the component's external contract (`cardStyle` prop, default `false`) identical and swap *only* the cardStyle branch's rendering strategy. Non-cardStyle consumers see zero behavior change — the legacy `divide-y divide-slate-200 -mx-3` row layout is dead code for the Job Detail page today but stays as a safety net for future cross-page reuse.
+
+**What landed.**
+
+- **`client/src/components/detail-rail/railTypes.ts`** — extended to support the Equipment card's specific layout requirements:
+  - `RailTitleTrailing` union gains `kind: "iconButton"` — a non-button-element button (renders as `<span role="button" tabIndex={0}>` to avoid invalid nested-button HTML when the card itself is a `<button>`). Carries `icon`, `onClick`, `ariaLabel`, optional `testId` / `iconClassName` / `disabled`. Keyboard-activatable on Enter/Space.
+  - `RailCardTitleDescriptor` gains `titleIcon?: ComponentType` (a leading decorative icon rendered before the title text — the Wrench icon on each equipment card) and `inlineChip?: RailChipDescriptor` (a chip rendered inside the title cluster, after the title text — the equipment type label). Both are wrapped in a `flex items-center gap-2 min-w-0` left cluster.
+  - `RailCardDescriptor` gains `extraContent?: ReactNode` — a strictly bounded escape hatch for embedding a child React subtree inside a card (the `<EquipmentCatalogItemsSection>` per-equipment sub-list). The docstring locks scope: ONE fixed-position slot per card, NOT a render hook, NOT a way to bypass descriptor data for normal content.
+
+- **`client/src/components/detail-rail/RailPanelRenderer.tsx`** — wires the new descriptor fields:
+  - When `titleIcon` or `inlineChip` is set, the title is wrapped in a `<div className="flex items-center gap-2 min-w-0">` left cluster so leading icon + title text + inline chip flow horizontally.
+  - New `iconButton` branch in the trailing-item renderer: renders `<span role="button">` with `onClick` stopPropagation (so card-level click doesn't bubble), `onKeyDown` for Enter/Space activation, `aria-disabled`, `focus-visible` ring, `hover:text-destructive` for the trash affordance.
+  - `extraContent` slot rendered *after* `subrows` / `chipRow`, *before* `footer`. The extraContent's wrapper is the caller's responsibility (the descriptor builder wraps it in a `<div onClick={(e) => e.stopPropagation()}>` so taps on the embedded sub-list don't trigger the card's `onClick`).
+
+- **`client/src/components/JobEquipmentSection.tsx`** — Phase 8 migration:
+  - Drops the direct slot-primitive imports (`RailContentCard`, `RailContentCardHeader`, `RailContentCardTitle`, `RailContentCardMeta`, `RailContentCardChip`). Adds `RailPanelRenderer` + descriptor type imports.
+  - Hoists `getEquipmentTypeLabel` helper from inside the component to module scope so the pure descriptor builder can reuse it.
+  - New module-scoped pure function `buildJobEquipmentPanelDescriptor(jobEquipment, onOpenDetail, onRemove, removePending): RailPanelDescriptor`:
+    - `kind: "list"`, `testId: "card-equipment-list"`.
+    - Each card: `key: je.id`, `testId: \`row-job-equipment-${je.id}\``, `onClick` opens the equipment detail modal, per-equipment `ariaLabel`.
+    - Title: `text: eq?.name ?? "Unknown equipment"` as a `<span>`, `titleIcon: Wrench`, `inlineChip` carries the equipment-type label when present (skipped when null).
+    - Title trailing: a single `kind: "iconButton"` for the trash action wired to `onRemove(je.id)` with the canonical aria-label, per-row test ID, and `disabled: removePending`.
+    - Meta rows: `Make: …` / `Model: …` / `S/N: …` joined with ` · ` (only present parts), plus a second meta row for `je.notes` when set.
+    - `extraContent`: the per-equipment `<EquipmentCatalogItemsSection equipmentId readOnly />` wrapped in a stop-propagation div.
+  - cardStyle branch becomes `<RailPanelRenderer panel={buildJobEquipmentPanelDescriptor(...)} testIdPrefix="job-side" />`.
+  - Legacy non-cardStyle row branch (with `divide-y divide-slate-200 -mx-3`) preserved verbatim.
+
+**Tests.**
+
+- **`tests/job-rail-equipment-descriptor.test.ts`** — new (~240 LoC, 24 specs) pinning: descriptor builder imports + types, list shape (`testId: "card-equipment-list"` + per-row `row-job-equipment-${id}` + onClick + ariaLabel), title layout (titleIcon Wrench + inlineChip equipment-type label + iconButton trailing for trash), meta rows (make/model/SN joined with ` · ` + notes), extraContent escape hatch (mounts `<EquipmentCatalogItemsSection>` with stopPropagation), cardStyle branch wires the renderer with `testIdPrefix="job-side"`, cardStyle branch directly composes ZERO slot primitives, legacy row branch preserved.
+- **`tests/rail-card-style-props.test.ts`** — JobEquipmentSection pin block updated to assert the data-driven path (renderer mount + descriptor types import + no slot-primitive composition in the cardStyle branch + legacy row branch preserved). Notes pins kept at prop-contract level only since Notes is out-of-scope for Phase 8.
+- **`tests/rail-panel-renderer.test.ts`** — Phase 8 pins added: `titleIcon` / `inlineChip` exposed in the title descriptor, `iconButton` kind in the trailing union, `extraContent` field on the card descriptor, title-cluster wrapping div, `iconButton` renders with `<span role="button">`, keyboard activation on Enter/Space, `aria-disabled` wiring, `extraContent` ordered between chipRow and footer.
+
+**Files affected.**
+
+- `client/src/components/detail-rail/railTypes.ts` — descriptor extensions (`titleIcon`, `inlineChip`, `iconButton`, `extraContent`).
+- `client/src/components/detail-rail/RailPanelRenderer.tsx` — title cluster + iconButton renderer + extraContent slot.
+- `client/src/components/JobEquipmentSection.tsx` — `buildJobEquipmentPanelDescriptor` + cardStyle branch swap.
+- `tests/job-rail-equipment-descriptor.test.ts` — new.
+- `tests/rail-card-style-props.test.ts` — Phase 8 cardStyle pins.
+- `tests/rail-panel-renderer.test.ts` — Phase 8 renderer pins.
+
+**Test results.** Phase 8 targeted tests passing: `tests/job-rail-equipment-descriptor.test.ts` (24/24), `tests/rail-card-style-props.test.ts` (11/11), `tests/rail-panel-renderer.test.ts` (116/116). Total Phase 8 pinned coverage: 151/151.
+
+**Blast radius.**
+
+- **Job Detail right rail** — Equipment card visuals/behavior preserved (clickable card opens detail modal, trash button with stopPropagation, Wrench leading icon, equipment-type chip, make/model/SN meta, notes meta, embedded catalog items sub-list, stable per-row test IDs).
+- **Other consumers of `JobEquipmentSection`** (Invoice / Quote / Lead detail pages, any surface that omits `cardStyle`) — zero change. The legacy row branch is preserved verbatim and still emits `divide-y divide-slate-200 -mx-3`.
+- **`EntityNotesSection`** — out of scope for Phase 8 per user spec. Notes prop contract is still pinned at the structural level, but the cardStyle branch's internal composition is left to parallel work.
+
+**What remains unmigrated.**
+
+- `EntityNotesSection` cardStyle branch (Phase 9 candidate).
+- Cross-page descriptor builders for the non-cardStyle row consumers (Invoice / Quote / Lead) — currently kept on the legacy row layout because their visual contract differs from the rail card chrome.
+
+#### Typography Primitives — Phase H1 (2026-05-07)
+
+Establishes the typography enforcement foundation called out in the audit (CHANGELOG > "Communications Hub Typography Drift" / Phase 4G follow-up). Adds canonical primitive components, a single class-constant module, an architectural test guard, and a documented convention. **No visual migration of feature components yet** — Phase H2 owns that. H1's job is to make new code in the scanned directories *unable* to drift.
+
+**Why H1 exists.**
+
+The audit found three structural causes for the Comms Hub's repeated typography drift:
+
+1. Class strings were re-derived per file (`PRIMARY_VALUE_CLASS`, `LINK_CLASS`, `SECONDARY_VALUE_CLASS` in `ContactDetailsPanel.tsx`).
+2. The pre-existing constant library lived under a list-page name (`list-surface.tsx > listPrimaryClass`); detail panels never reached for it.
+3. Source-pin tests asserted *presence* of the canonical token, not architectural composition — a file could include the right token AND fork it locally.
+
+**What landed.**
+
+- **`client/src/components/ui/typography.tsx`** — new top-level canonical module:
+  - **Class constants** (single source of truth): `ENTITY_NAME_CLASS` / `ENTITY_NAME_LINK_CLASS` / `ENTITY_META_CLASS` / `SECTION_LABEL_CLASS` / `ENTITY_LINK_CLASS`.
+  - **Component primitives** (preferred surface): `<EntityName href? children>` (renders as wouter `<Link>` with brand-green styling when href set, `<span>` with `text-foreground` otherwise), `<EntityMeta>`, `<SectionLabel>` (renders `<h3>` with the canonical uppercase-tracked label class), `<EntityLink>`, `<EntityRow icon name meta trailing href>` (stacked composition primitive).
+  - File-level doc-comment locks the rule for `text-helper` vs `text-caption` (helper for dense panels/rails; caption for tabular metadata) and the muted color choice (`text-muted-foreground` for new code; `text-text-muted` survives only as back-compat in `list-surface`).
+- **`client/src/components/ui/list-surface.tsx`** back-compat re-export:
+  - `listPrimaryClass` is now an alias of `ENTITY_NAME_CLASS`.
+  - `listHeaderRowClass` interpolates `SECTION_LABEL_CLASS` for its typography portion.
+  - `listSecondaryClass` stays literal (`text-caption text-text-muted truncate`) for visual back-compat with the existing list pages — Phase H2 migrates those consumers to `<EntityMeta>`.
+- **`tests/typography-canonical.test.ts`** — architectural guard that scans `components/communications/`, `components/activity-feed/`, `components/detail-rail/`. Forbids:
+  - Local typography constants — `^\s*(?:export\s+)?(?:const|let)\s+\w+\s*=\s*"[^"\n]*\btext-[a-z][a-z-]*\b[^"\n]*"`.
+  - Legacy size ramp — `\btext-(xs|sm|base|lg|xl|2xl)\b`.
+  - Heavier weights — `\bfont-(bold|semibold)\b`.
+  - Arbitrary text values — `\btext-\[[^\]]+\]`.
+  - Each violation message names the file and the rule + redirects authors to `@/components/ui/typography`.
+  - **`LEGACY_ALLOWLIST`** lists files that fail the strict guard today. Each entry carries a `TODO(H2)` comment naming the migration target. Phase H1 narrows the strict guard to NEW files in the scanned dirs; the listed offenders get migrated deliberately in H2.
+  - The test ALSO pins the canonical class-constant values + the back-compat re-exports so a regression in the source of truth fails the build.
+- **`CLAUDE.md`** — new "Phase H1: Typography Primitives" section under the existing modal/form-field convention block. Documents:
+  - Required: use the primitives / import the constants from `@/components/ui/typography`.
+  - Forbidden in feature components: local `*_CLASS`, legacy ramp, heavy weights, arbitrary text values.
+  - Token role rule: `text-helper` for dense panels/rails, `text-caption` for tabular metadata.
+  - Color rule: `text-muted-foreground` for new code, `text-text-muted` is legacy.
+  - Allowlist policy: adding to `LEGACY_ALLOWLIST` is deliberate and requires a paired TODO comment.
+
+**Files in the LEGACY_ALLOWLIST (Phase H2 migration targets).**
+
+- `client/src/components/communications/ContactDetailsPanel.tsx` — three local constants.
+- `client/src/components/activity-feed/ActivityFeedDrawer.tsx` — inline `text-xs` / `text-sm`.
+- `client/src/components/activity-feed/CustomizeActivityFeedView.tsx` — inline legacy ramp.
+- `client/src/components/detail-rail/DetailRightRail.tsx` — inline legacy ramp.
+- `client/src/components/detail-rail/RailContentCard.tsx` — local typography constant.
+- `client/src/components/detail-rail/RailPanelRenderer.tsx` — `FOOTER_LINK_CLASS` local typography constant + inline `font-semibold`.
+
+**What is NOT in this PR.**
+
+- No visual migration of any feature component. The Comms Hub right panel is unchanged.
+- No ESLint rule (the test guard is the H1 enforcement; an ESLint rule is an H2 follow-up).
+- No `<MetaRow>` migration (also H2).
+
+**Files affected.**
+
+- `client/src/components/ui/typography.tsx` — new (~210 LoC).
+- `client/src/components/ui/list-surface.tsx` — `listPrimaryClass` + `listHeaderRowClass` derive from typography primitives; `listSecondaryClass` kept literal with a TODO(H2) note.
+- `tests/typography-canonical.test.ts` — new (~245 LoC). 37 assertions across constant pinning, list-surface back-compat, scan-coverage sanity, allowlist integrity, and the per-file architectural guard.
+- `CLAUDE.md` — new "Phase H1: Typography Primitives" section under "Phase 2: Form Field Canonicalization".
+
+**Test results.** `npm run check` clean. `tests/typography-canonical.test.ts` 37/37 passing. The existing communications + activity-feed test suites still pass (no behavior change to feature components).
+
+**Phase H2 migration plan** (next PR):
+
+1. Migrate `ContactDetailsPanel` to use `EntityName` / `EntityMeta` / `EntityLink` / `EntityRow` and remove the three local constants.
+2. Migrate the activity-feed allowlist entries.
+3. Migrate the detail-rail allowlist entries.
+4. Migrate `MetaRow` to use the primitives.
+5. Migrate list-page consumers from `listPrimaryClass` / `listSecondaryClass` to `<EntityName>` / `<EntityMeta>`. Drop the back-compat surface from `list-surface.tsx`.
+6. Add an ESLint rule (`eslint-plugin-tailwindcss` or custom) enforcing the same constraints at lint time.
+7. Tighten the source-pin tests in the existing Phase 4* test files to assert *primitive imports*, not source-string presence.
+
+#### Typography Primitives — Phase H2 (2026-05-07)
+
+Migrates the six Phase H1 allowlisted components onto the canonical typography primitives. After H2 the `LEGACY_ALLOWLIST` in `tests/typography-canonical.test.ts` is **empty** — every file in the three scanned directories (`communications/`, `activity-feed/`, `detail-rail/`) passes the strict architectural guard unconditionally. New code in those directories cannot drift without failing the build.
+
+**What landed.**
+
+- **`client/src/components/communications/ContactDetailsPanel.tsx`** (priority 1 — the surface that triggered the audit).
+  - Removed the three local constants: `LINK_CLASS`, `PRIMARY_VALUE_CLASS`, `SECONDARY_VALUE_CLASS`.
+  - Imports `EntityName`, `EntityMeta`, `SectionLabel`, `ENTITY_NAME_CLASS`, `ENTITY_META_CLASS`, `ENTITY_LINK_CLASS` from `@/components/ui/typography`.
+  - Identity card: `displayName` renders through `<EntityName>`; the role chip renders through `<EntityMeta>` (drops `text-caption` → `text-helper` so the right panel reads at the same density as the Contacts list rail — explicit H2 spec rule).
+  - `<Section>`'s `<h3>` is now `<SectionLabel>`.
+  - `ValueRow` keeps its API + variant prop but its body now renders `<EntityName href>` for primary rows, `<EntityMeta>` for non-link secondary rows, and a wouter `<Link>` composing `cn(ENTITY_META_CLASS, ENTITY_LINK_CLASS)` for the linkable secondary case (twMerge picks `text-brand` over `text-muted-foreground`).
+  - `JobRow` composes `cn(ENTITY_NAME_CLASS, ENTITY_LINK_CLASS)` for the job number text and `<EntityMeta>` for the summary line. The whole row stays a single `<Link>` (no nested anchors).
+- **`client/src/components/communications/ContactsListColumn.tsx`** (priority 2).
+  - `displayName` row → `<EntityName>`. Subline (composite of company / phone / email) → `<EntityMeta>`. Kind chip stays inline (it's a categorical tag, not entity metadata).
+- **`client/src/components/communications/ConversationRow.tsx`** (priority 3).
+  - Thread name → `<EntityName>` with read-state class composition (`!isUnread && "text-foreground/90"`).
+  - Preview line → `<EntityMeta>` with `isUnread && "text-foreground"` — twMerge resolves the muted/foreground conflict in favor of foreground when unread.
+- **`client/src/components/communications/TeamMembersListColumn.tsx`** (priority 4).
+  - Member name → `<EntityName>`. Subline → `<EntityMeta>`.
+- **`client/src/components/activity-feed/ActivityFeedDrawer.tsx`** (priority 5).
+  - Header titles ("Activity Feed", "Customize Feed") drop `text-sm font-semibold` → `text-row-emphasis` (canonical 15/500 — no weight-on-weight stacking).
+  - Loading / error / empty states migrate inline `text-xs` / `text-sm` → `text-helper` / `text-row-emphasis`.
+- **`client/src/components/activity-feed/CustomizeActivityFeedView.tsx`** (priority 6).
+  - Error block, instructional copy, category description: `text-xs` → `text-helper`.
+  - Category label: `text-sm font-medium` → `text-row-emphasis` (canonical token already bakes weight 500).
+- **`client/src/components/detail-rail/DetailRightRail.tsx`** (priority 7).
+  - Vertical icon strip label: arbitrary `text-[11px] font-medium` → `text-helper font-medium` (canonical 13px). Tab labels grow ~2px taller than before.
+  - Count chip: arbitrary `text-[10px]` → `text-helper`. Brand-active state hex `text-[#76B054]` → canonical `text-brand`.
+  - Panel header label: `text-[11px] font-bold uppercase tracking-wider` → `text-label` (canonical 13/500/uppercase tracked). Header reads slightly larger and lighter; visually on-brand.
+  - `DetailRightRailEmpty`: `text-sm` → `text-row`, `text-xs` → `text-helper`.
+- **`client/src/components/detail-rail/RailContentCard.tsx`** (priority 8).
+  - Removed module-level `CARD_CLASS_BASE` / `CARD_CLASS_CLICKABLE` constants — the architectural guard treats any `const X = "...text-..."` as a re-derivation surface even when the contents are layout-only (`text-left`). Inlined into the single render site as a function-local `baseClass` + a literal `cn(...)` argument.
+  - `RailContentCardTitle`: `text-row font-semibold` → `text-row-emphasis` (no weight-on-weight stacking).
+- **`client/src/components/detail-rail/RailPanelRenderer.tsx`** (priority 9).
+  - Removed the file-local `FOOTER_LINK_CLASS` constant. Footer links now compose `cn("inline-flex … focus-visible:… rounded px-1 py-0.5", ENTITY_LINK_CLASS)` at the call site so the brand-green color + hover underline ride on the canonical primitive instead of being re-derived per file.
+  - Three `text-* font-semibold` overlays → canonical `text-row-emphasis` / dropped from `text-section-title` (which already bakes weight 600).
+
+**Test updates.**
+
+- `tests/typography-canonical.test.ts`: `LEGACY_ALLOWLIST` is now empty. The set's TypeScript type was widened to `Set<string>` so it remains assignable when empty.
+- `tests/communications-contact-detail.test.ts`:
+  - The Phase 4E "uses canonical typography tokens" pin (which checked for raw class strings in the file body) is replaced by an H2 pin asserting **primitive imports** from `@/components/ui/typography` — the architectural claim, not the surface representation. Adds an explicit "no `text-caption` in the right panel" pin to capture the spec rule.
+  - The Phase 4F "uses canonical brand-green link styling" pin no longer searches for `text-brand hover:underline` directly; it now matches `ENTITY_LINK_CLASS|EntityName` because the literal class strings live in the primitive module after H2.
+  - The Phase 4G suite was rewritten as Phase H2 — the constant-presence pins (`PRIMARY_VALUE_CLASS = "..."`) become absence-pins, the `JobRow` composition pin checks for `cn(ENTITY_NAME_CLASS, ENTITY_LINK_CLASS) … Job #` and `<EntityMeta>{job.summary}</EntityMeta>`.
+
+**Visual changes worth knowing.**
+
+- The right panel's secondary metadata is 1px smaller than before (13px helper vs. 14px caption). This was the user-requested density fix that anchored the H2 spec.
+- The detail rail's icon-strip labels grow from 11px → 13px (text-helper). The count chip grows from 10px → 13px. Visually a slight density loss on the rail but a one-source-of-truth win.
+- The detail-rail panel header label grows 11px → 13px and shifts from font-bold → font-medium (text-label is uppercase tracked at weight 500).
+- Activity feed drawer titles render at 15/500 instead of 14/600 — slightly bigger, slightly lighter. Empty-state title likewise.
+- `RailContentCardTitle` and grouped panel headings drop one weight notch (semibold → medium for text-row variants; existing weight 600 stays for `text-section-title`).
+
+**What is NOT in this PR.**
+
+- No `<MetaRow>` migration — deferred per the H2 priority list ("if safe; only if it doesn't block").
+- No list-page consumer migration off `listPrimaryClass` / `listSecondaryClass`. Those callers will move once the bellwether H2 components prove the pattern in production.
+- No ESLint rule (still the H3 follow-up).
+- Pre-existing breakage from the concurrent revert that landed before H2 (route file reverted, `shared/communicationsTypes.ts` reverted, `pricebookGroups.ts` / `technicianTimeOff.ts` referencing removed Drizzle tables) is **not** addressed in H2 and remains as separate cleanup.
+
+**Files affected.**
+
+- `client/src/components/communications/ContactDetailsPanel.tsx` — full migration, doc-comment refresh, `ValueRow` / `JobRow` composition rewrite.
+- `client/src/components/communications/ContactsListColumn.tsx` — primitive imports + two row swaps.
+- `client/src/components/communications/ConversationRow.tsx` — primitive imports + name / preview swaps with read-state preserved.
+- `client/src/components/communications/TeamMembersListColumn.tsx` — primitive imports + two row swaps.
+- `client/src/components/activity-feed/ActivityFeedDrawer.tsx` — header titles + loading / error / empty state typography.
+- `client/src/components/activity-feed/CustomizeActivityFeedView.tsx` — error / instructional / category typography.
+- `client/src/components/detail-rail/DetailRightRail.tsx` — rail-strip / count / panel-header / empty-state typography + brand color.
+- `client/src/components/detail-rail/RailContentCard.tsx` — removed `CARD_CLASS_BASE` / `CARD_CLASS_CLICKABLE` constants; `RailContentCardTitle` weight composition.
+- `client/src/components/detail-rail/RailPanelRenderer.tsx` — removed `FOOTER_LINK_CLASS`; three `font-semibold` overlays dropped.
+- `tests/typography-canonical.test.ts` — `LEGACY_ALLOWLIST` cleared.
+- `tests/communications-contact-detail.test.ts` — Phase 4E / 4F / 4G source-pin updates.
+
+**Test results.** `tests/typography-canonical.test.ts` 37/37 passing. ContactDetailsPanel source-pin + Phase 4F linkable-rows + Phase H2 architectural assertions 17/17 passing. Pre-existing HTTP integration failures in `communications-contact-detail.test.ts` (route + shared types reverted in an earlier session) remain and are unrelated to H2.
+
 ### Changed
 
 #### Canonical right-rail open/close animation — Client + Job rails match the Activity drawer feel (2026-05-07)

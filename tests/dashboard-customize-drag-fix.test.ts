@@ -1,22 +1,26 @@
 /**
- * Dashboard customize drag-fix — source-pin contract tests
- * (2026-05-07 RALPH).
+ * Dashboard drag-and-drop — source-pin contract tests.
  *
- * After the framework landed the user reported that drag did not
- * work — the original `PointerSensor` is unreliable on iPad/iOS
- * Safari, the drag handle was a 17 × 17 px hit-target invisible to
- * touch users, and hidden widgets were still mounting their queries.
+ * 2026-05-07 RALPH (drag relocation): drag/reorder was originally
+ * placed inside the Customize Dashboard drawer — wrong interaction
+ * surface. Drag now lives on the dashboard grid itself; the drawer
+ * is a pure toggle list.
  *
- * This file pins the post-fix contract so a future refactor can't
- * silently regress it:
- *   1. Sensors include a TouchSensor (iPad reliability).
- *   2. Drag handle is at least h-8 w-8 (32 × 32 px touch target).
- *   3. Drawer copy mentions the drag handle so users know HOW to drag.
- *   4. Persist happens once on drag-end (no per-tick PUT spam).
- *   5. Hidden widgets do NOT mount their data queries — page-level
- *      queries gate on visibility.
- *   6. Orphan persisted rows are silently ignored — the GET resolver
- *      iterates the registry, not override rows.
+ * This file pins the new contract:
+ *   1. The grid mounts the @dnd-kit context with mouse + touch +
+ *      keyboard sensors (iPad reliability + a11y).
+ *   2. Each grid cell becomes a `useSortable` item with a small
+ *      drag-handle button positioned in the cell corner. The handle
+ *      is touch-friendly (touch-none, cursor-grab).
+ *   3. The Customize drawer carries NO drag wiring (no DndContext,
+ *      no SortableContext, no useSortable, no GripVertical).
+ *   4. The page wires `layout.setOrder` into the grid via
+ *      `onReorder` — single PUT per drag-end via the existing hook.
+ *   5. Hidden widgets do NOT mount their data queries (preserved
+ *      from the prior contract — page-level queries gate on
+ *      visibility).
+ *   6. Orphan persisted rows are silently ignored (server contract,
+ *      preserved).
  *   7. Registry doc-block carries a stability warning that widget
  *      keys are persisted user data + must not be renamed casually.
  *
@@ -36,6 +40,7 @@ const path = (p: string) => resolve(ROOT, p);
 const REGISTRY_PATH = path("shared/dashboardWidgetRegistry.ts");
 const DRAWER_PATH = path("client/src/dashboard/DashboardCustomizeDrawer.tsx");
 const RENDERER_PATH = path("client/src/dashboard/DashboardWidgetRenderer.tsx");
+const GRID_PATH = path("client/src/dashboard/DashboardWidgetGrid.tsx");
 const HOOK_PATH = path("client/src/dashboard/useDashboardLayout.ts");
 const ROUTE_PATH = path("server/routes/dashboardLayout.ts");
 const DASH_PAGE_PATH = path("client/src/pages/FinancialDashboard.tsx");
@@ -52,57 +57,64 @@ function stripComments(src: string): string {
     .replace(/\/\/[^\n]*/g, "");
 }
 
-// ─── 1. Sensors include TouchSensor (iPad reliability) ─────────────
+// ─── 1. Grid mounts the DnD context with mouse + touch + keyboard ──
 
-describe("Drag fix — sensors", () => {
-  const code = read(DRAWER_PATH);
+describe("Drag — grid sensors (iPad + desktop + keyboard)", () => {
+  const code = read(GRID_PATH);
   const codeNoComments = stripComments(code);
 
-  it("DashboardCustomizeDrawer imports MouseSensor", () => {
+  it("DashboardWidgetGrid imports MouseSensor", () => {
     expect(codeNoComments).toMatch(/MouseSensor/);
   });
 
-  it("DashboardCustomizeDrawer imports TouchSensor (iOS Safari fix)", () => {
+  it("DashboardWidgetGrid imports TouchSensor (iOS Safari fix)", () => {
     expect(codeNoComments).toMatch(/TouchSensor/);
   });
 
-  it("DashboardCustomizeDrawer keeps KeyboardSensor for accessibility", () => {
+  it("DashboardWidgetGrid imports KeyboardSensor for accessibility", () => {
     expect(codeNoComments).toMatch(/KeyboardSensor/);
   });
 
   it("the touch sensor is wired with a hold + tolerance activation constraint", () => {
-    // We don't pin exact numbers, just that activationConstraint exists
-    // alongside the TouchSensor so a future refactor can't drop it.
-    expect(codeNoComments).toMatch(/useSensor\(\s*TouchSensor[\s\S]*?activationConstraint/);
+    expect(codeNoComments).toMatch(
+      /useSensor\(\s*TouchSensor[\s\S]*?activationConstraint/,
+    );
   });
 
-  it("the mouse sensor uses a distance threshold so toggle clicks don't start drags", () => {
-    expect(codeNoComments).toMatch(/useSensor\(\s*MouseSensor[\s\S]*?distance/);
+  it("the mouse sensor uses a distance threshold so handle clicks don't start drags", () => {
+    expect(codeNoComments).toMatch(
+      /useSensor\(\s*MouseSensor[\s\S]*?distance/,
+    );
   });
 
   it("does NOT fall back to the brittle PointerSensor on its own", () => {
-    // PointerSensor on iOS Safari is the documented blocker. Allow it
-    // only if it's NOT the only sensor (i.e. paired with a Touch path),
-    // but the canonical fix replaces it entirely.
     const usesPointerOnly =
       /useSensor\(\s*PointerSensor/.test(codeNoComments) &&
       !/useSensor\(\s*TouchSensor/.test(codeNoComments);
     expect(usesPointerOnly).toBe(false);
   });
-});
 
-// ─── 2. Drag handle hit-area is iPad-friendly ──────────────────────
-
-describe("Drag fix — handle hit area", () => {
-  const code = read(RENDERER_PATH);
-  const codeNoComments = stripComments(code);
-
-  it("renders an explicit drag-handle button with a stable test id", () => {
-    expect(codeNoComments).toMatch(/data-testid=\{?`?dashboard-customize-handle/);
+  it("mounts DndContext + SortableContext around the grid", () => {
+    expect(codeNoComments).toMatch(/<DndContext\b/);
+    expect(codeNoComments).toMatch(/<SortableContext\b/);
   });
 
-  it("the drag handle uses at least a 32×32 px hit area (h-8 w-8)", () => {
-    expect(codeNoComments).toMatch(/h-8\s+w-8/);
+  it("uses rectSortingStrategy (2D grid), not the vertical-list strategy", () => {
+    expect(codeNoComments).toMatch(/rectSortingStrategy/);
+    expect(codeNoComments).not.toMatch(/verticalListSortingStrategy/);
+  });
+});
+
+// ─── 2. Drag handle hit-area is touch-friendly ─────────────────────
+
+describe("Drag — handle hit area on grid cells", () => {
+  const code = read(GRID_PATH);
+  const codeNoComments = stripComments(code);
+
+  it("renders a per-cell drag-handle button with a stable test id", () => {
+    expect(codeNoComments).toMatch(
+      /data-testid=\{?`?dashboard-widget-drag-handle/,
+    );
   });
 
   it("the drag handle disables touch-action so iPad scroll doesn't hijack the drag", () => {
@@ -117,54 +129,105 @@ describe("Drag fix — handle hit area", () => {
   it("the drag handle has an aria-label so screen readers announce it", () => {
     expect(codeNoComments).toMatch(/aria-label=\{?`?Reorder /);
   });
-});
 
-// ─── 3. Helper copy in the drawer mentions the handle ──────────────
-
-describe("Drag fix — discoverability copy", () => {
-  // 2026-05-07 follow-up: copy was tightened to the brief's exact
-  // wording — "Drag widgets to reorder. Toggle widgets to show or
-  // hide them." The visible drag-handle button is now the affordance,
-  // so the copy doesn't need to spell out "the handle."
-  it("DashboardCustomizeDrawer header tells users they can drag widgets to reorder", () => {
-    const code = read(DRAWER_PATH);
-    expect(code).toMatch(/[Dd]rag widgets to reorder/);
+  it("the cell wrapper is `relative` so the handle can be positioned absolutely", () => {
+    expect(codeNoComments).toMatch(/cn\([\s\S]*?cellClass[\s\S]*?"relative"/);
   });
 
-  it("the drawer header explains toggle behaviour too", () => {
-    const code = read(DRAWER_PATH);
-    expect(code).toMatch(/[Tt]oggle/);
-    expect(code).toMatch(/show or hide them/);
+  it("the handle is positioned absolute in the cell corner", () => {
+    expect(codeNoComments).toMatch(/absolute[\s\S]*?top-1\.5[\s\S]*?right-1\.5/);
+  });
+
+  it("the handle, NOT the cell wrapper, carries the @dnd-kit listeners (clicks on widget body never start a drag)", () => {
+    // attributes/listeners are spread onto the <button>, not the cell <div>.
+    expect(codeNoComments).toMatch(
+      /<button[\s\S]+?\.\.\.attributes[\s\S]+?\.\.\.listeners/,
+    );
+  });
+});
+
+// ─── 3. The Customize drawer is no longer the drag surface ─────────
+
+describe("Drag — drawer is a pure toggle list (no DnD)", () => {
+  const drawer = read(DRAWER_PATH);
+  const drawerNoComments = stripComments(drawer);
+  const renderer = read(RENDERER_PATH);
+  const rendererNoComments = stripComments(renderer);
+
+  it("drawer does NOT import @dnd-kit anymore", () => {
+    expect(drawerNoComments).not.toMatch(/from\s+["']@dnd-kit\/core["']/);
+    expect(drawerNoComments).not.toMatch(/from\s+["']@dnd-kit\/sortable["']/);
+  });
+
+  it("drawer does NOT mount DndContext / SortableContext", () => {
+    expect(drawerNoComments).not.toMatch(/<DndContext\b/);
+    expect(drawerNoComments).not.toMatch(/<SortableContext\b/);
+  });
+
+  it("drawer does NOT call layout.setOrder (drag is no longer here)", () => {
+    expect(drawerNoComments).not.toMatch(/layout\.setOrder\(/);
+  });
+
+  it("drawer copy directs users to drag widgets ON the dashboard", () => {
+    expect(drawer).toMatch(
+      /[Dd]rag widgets directly on the dashboard to reorder/,
+    );
+  });
+
+  it("drawer copy still explains toggle behaviour", () => {
+    expect(drawer).toMatch(/[Tt]oggle/);
+    expect(drawer).toMatch(/show or hide them/);
+  });
+
+  it("renderer does NOT call useSortable (it's a static toggle row)", () => {
+    expect(rendererNoComments).not.toMatch(/useSortable\(/);
+  });
+
+  it("renderer does NOT render a GripVertical drag handle", () => {
+    expect(rendererNoComments).not.toMatch(/GripVertical/);
+    expect(rendererNoComments).not.toMatch(/dashboard-customize-handle/);
   });
 });
 
 // ─── 4. Persist on drag-end only (no per-tick PUTs) ────────────────
 
-describe("Drag fix — persist only on drag end", () => {
-  const code = read(DRAWER_PATH);
+describe("Drag — grid persists once on drag end", () => {
+  const code = read(GRID_PATH);
   const codeNoComments = stripComments(code);
 
-  it("the drawer wires onDragEnd, NOT onDragOver / onDragMove", () => {
+  it("the grid wires onDragEnd, NOT onDragOver / onDragMove", () => {
     expect(codeNoComments).toMatch(/onDragEnd=\{handleDragEnd\}/);
-    // No persist hook on drag-over / drag-move that would PUT every tick
-    expect(codeNoComments).not.toMatch(/onDragOver=\{[^}]*setOrder/);
-    expect(codeNoComments).not.toMatch(/onDragMove=\{[^}]*setOrder/);
+    expect(codeNoComments).not.toMatch(/onDragOver=\{[^}]*onReorder/);
+    expect(codeNoComments).not.toMatch(/onDragMove=\{[^}]*onReorder/);
   });
 
-  it("handleDragEnd uses arrayMove + setOrder once", () => {
+  it("handleDragEnd uses arrayMove + onReorder once", () => {
     expect(codeNoComments).toMatch(/arrayMove\(/);
-    expect(codeNoComments).toMatch(/layout\.setOrder\(/);
+    expect(codeNoComments).toMatch(/onReorder\(/);
   });
 });
 
-// ─── 5. Hidden widgets do NOT mount / fetch ────────────────────────
+// ─── 5. Page wires layout.setOrder into the grid via onReorder ─────
 
-describe("Drag fix — hidden widgets do not fetch", () => {
+describe("Drag — page wires layout.setOrder via onReorder", () => {
+  const code = read(DASH_PAGE_PATH);
+  const codeNoComments = stripComments(code);
+
+  it("the page passes onReorder={layout.setOrder} to <DashboardWidgetGrid>", () => {
+    expect(codeNoComments).toMatch(/onReorder=\{layout\.setOrder\}/);
+  });
+});
+
+// ─── 6. Hidden widgets do NOT mount / fetch ────────────────────────
+
+describe("Drag — hidden widgets do not fetch (preserved)", () => {
   const code = read(DASH_PAGE_PATH);
   const codeNoComments = stripComments(code);
 
   it("the page reads the resolved layout via useDashboardLayout", () => {
-    expect(codeNoComments).toMatch(/useDashboardLayout\(\s*["']financial["']\s*\)/);
+    expect(codeNoComments).toMatch(
+      /useDashboardLayout\(\s*["']financial["']\s*\)/,
+    );
   });
 
   it("the page derives a visibleSet from layout.visibleWidgets", () => {
@@ -173,8 +236,6 @@ describe("Drag fix — hidden widgets do not fetch", () => {
   });
 
   it("expensive queries are gated on widget visibility (enabled: …Enabled)", () => {
-    // We don't pin the exact variable name; we pin the contract:
-    // at least one useQuery call has an `enabled:` flag wired up.
     expect(codeNoComments).toMatch(/enabled:\s*\w*[Ee]nabled/);
   });
 
@@ -189,17 +250,31 @@ describe("Drag fix — hidden widgets do not fetch", () => {
   });
 });
 
-// ─── 6. Orphan persisted rows are silently ignored ─────────────────
+// ─── 7. Hidden widget order preservation across reorder ────────────
 
-describe("Drag fix — orphan widget keys", () => {
+describe("Drag — hidden widget order preservation (hook contract)", () => {
+  const code = read(HOOK_PATH);
+  const codeNoComments = stripComments(code);
+
+  it("setOrder appends widgets the caller did NOT include in the orderedKeys", () => {
+    // The hook accepts a partial visible-only key list and appends
+    // the unmentioned widgets behind in their existing order. This
+    // is what lets the page pass `layout.setOrder` straight into
+    // the grid's onReorder callback (which only sees visible keys)
+    // without enabling hidden widgets.
+    expect(codeNoComments).toMatch(
+      /for\s*\(\s*const\s+w\s+of\s+widgets\s*\)\s*\{[\s\S]+?if\s*\(\s*!orderedKeys\.includes\(\s*w\.widgetKey\s*\)\s*\)/,
+    );
+  });
+});
+
+// ─── 8. Orphan persisted rows are silently ignored ─────────────────
+
+describe("Drag — orphan widget keys", () => {
   const code = read(ROUTE_PATH);
   const codeNoComments = stripComments(code);
 
   it("GET resolver iterates the registry-derived `allowed` list, not override rows", () => {
-    // The handler builds `allowed` (registry order, permission-filtered)
-    // and then maps over it, looking up overrides by key. Orphaned
-    // override rows (widget_key absent from the registry) never enter
-    // the response.
     expect(codeNoComments).toMatch(/allowed\s*\.map\(/);
     expect(codeNoComments).toMatch(/overrides\.get\(\s*w\.key\s*\)/);
   });
@@ -215,9 +290,9 @@ describe("Drag fix — orphan widget keys", () => {
   });
 });
 
-// ─── 7. Registry stability warning is documented ───────────────────
+// ─── 9. Registry stability warning is documented ───────────────────
 
-describe("Drag fix — registry stability warning", () => {
+describe("Drag — registry stability warning", () => {
   const code = read(REGISTRY_PATH);
 
   it("the registry doc-block warns that widget keys are persisted user data", () => {
@@ -235,16 +310,14 @@ describe("Drag fix — registry stability warning", () => {
   });
 
   it("the registry inlines the per-field stability warning on `key`", () => {
-    // The interface comment for `key` should call out that it's
-    // persisted verbatim — separate from the file-level doc-block.
     expect(code).toMatch(/key: string;/);
     expect(code).toMatch(/DO NOT RENAME|do not rename/i);
   });
 });
 
-// ─── 8. CLAUDE.md "How to add a widget" section ────────────────────
+// ─── 10. CLAUDE.md "How to add a widget" section ───────────────────
 
-describe("Drag fix — CLAUDE.md documentation", () => {
+describe("Drag — CLAUDE.md documentation", () => {
   it("CLAUDE.md exists at the project root", () => {
     expect(existsSync(CLAUDE_MD_PATH)).toBe(true);
   });
@@ -257,7 +330,6 @@ describe("Drag fix — CLAUDE.md documentation", () => {
   it("the CLAUDE.md section gives a step-by-step add-a-widget recipe", () => {
     const code = read(CLAUDE_MD_PATH);
     expect(code).toMatch(/How to add a widget/);
-    // The recipe mentions the registry, the renderer map, and gating.
     expect(code).toMatch(/dashboardWidgetRegistry/);
     expect(code).toMatch(/renderer/i);
     expect(code).toMatch(/enabled:\s*visibleSet/);
@@ -269,14 +341,13 @@ describe("Drag fix — CLAUDE.md documentation", () => {
   });
 });
 
-// ─── 9. Hook contract — single PUT per setOrder call ───────────────
+// ─── 11. Hook contract — single PUT per setOrder call ──────────────
 
-describe("Drag fix — hook persists once per setOrder", () => {
+describe("Drag — hook persists once per setOrder", () => {
   const code = read(HOOK_PATH);
   const codeNoComments = stripComments(code);
 
   it("setOrder calls replaceMutation.mutate exactly once", () => {
-    // Capture the body of setOrder and count `.mutate(` invocations.
     const match = codeNoComments.match(
       /const setOrder = useCallback\([\s\S]*?\[widgets, replaceMutation\][\s\S]*?\);/,
     );

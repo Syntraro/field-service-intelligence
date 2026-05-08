@@ -259,8 +259,13 @@ describe("DetailRightRail — active-state styling", () => {
     expect(railSrc).toMatch(/isActive[\s\S]{0,400}?bg-\[#76B054\]/);
   });
 
-  it("active tab text color is the canonical green (#76B054)", () => {
-    expect(railSrc).toMatch(/text-\[#76B054\][\s\S]{0,200}?bg-white/);
+  it("active tab text color is the canonical brand green (text-brand → #76B054 via CSS var)", () => {
+    // 2026-05-07: the active state was migrated from the literal arbitrary
+    // value `text-[#76B054]` to the canonical `text-brand` token. Same
+    // rendered color (the brand CSS variable resolves to #76B054); the
+    // utility name is now token-driven so a future brand re-tint flows
+    // automatically.
+    expect(railSrc).toMatch(/\btext-brand\b[\s\S]{0,200}?bg-white/);
   });
 
   it("focus ring is the canonical green at 40% opacity", () => {

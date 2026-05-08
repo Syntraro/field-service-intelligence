@@ -201,19 +201,29 @@ function kindToTrack(col: EntityListColumn<unknown>): string {
  *
  * Token map (project semantic tokens, established in Typography Phase D
  * — see `client/src/components/ui/list-surface.tsx` header comment):
- *   text-row           → 13/18 — body
- *   text-row-emphasis  → 13/18 + weight 500 — primary identifier
- *   text-caption       → 12/16 — secondary line / muted metadata
- *   text-label         → 11/14 + weight 500 + 0.04em tracking + uppercase
- *                        (cascades from `listHeaderRowClass` on the
- *                        header row; cell wrappers don't restate it)
+ *   text-row           → body baseline
+ *   text-caption       → 14px — also the operational-density primary-name
+ *                        size after the 2026-05-07 recalibration (paired
+ *                        with `font-medium` for weight 500)
+ *   text-label         → label/header (cascades from `listHeaderRowClass`
+ *                        on the header row; cell wrappers don't restate it)
+ *
+ * 2026-05-07 operational-density recalibration:
+ *   The primary cell previously baked `text-row-emphasis` (15px / 500).
+ *   It now composes `text-caption font-medium` (14px / 500) so it
+ *   inherits the same density as the canonical `ENTITY_NAME_CLASS`
+ *   primitive in `client/src/components/ui/typography.tsx` — the
+ *   reference baseline is the row labels in the dashboard's
+ *   `OperationalAlertsCard`. Every list page mounted via this primitive
+ *   (Clients / Jobs / Invoices / Quotes / Leads / Locations / Suppliers)
+ *   inherits the tighter density automatically with no per-screen patch.
  *
  * Hard rules baked in here (callers cannot override the size, only the
  * color/weight via inner spans):
- *   - primary: `text-row-emphasis text-slate-800` — bigger weight than
- *     body, slightly darker. Sub-lines must explicitly set
- *     `font-normal text-caption text-slate-500` (or similar) to
- *     break the medium-weight cascade.
+ *   - primary: `text-caption font-medium text-slate-800` — operational
+ *     primary-name density. Sub-lines must explicitly set
+ *     `font-normal text-helper text-slate-500` (or similar) to break
+ *     the medium-weight cascade.
  *   - text / date / money: `text-row text-slate-700` — body color.
  *   - status / badge: `text-row` only — no color (caller controls
  *     because Badge / StatusPill ship their own typography).
@@ -227,7 +237,9 @@ function kindCellClasses(kind: EntityListColumnKind): string {
       // `min-w-0` is critical: without it, a flex/grid child with content
       // (text) wider than the column won't shrink, defeating the
       // truncate. With it, the text yields and `truncate` kicks in.
-      return "px-4 py-2.5 min-w-0 text-row-emphasis text-slate-800";
+      // Typography matches the canonical `ENTITY_NAME_CLASS` primitive
+      // (text-caption font-medium = 14px / 500) — see file-level docs.
+      return "px-4 py-2.5 min-w-0 text-caption font-medium text-slate-800";
     case "text":
       return "px-4 py-2.5 min-w-0 text-row text-slate-700";
     case "status":

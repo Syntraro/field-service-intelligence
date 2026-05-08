@@ -16,6 +16,13 @@ import { useTechnicianLiveStates, type TechnicianLiveState } from "@/hooks/useTe
 
 type Props = {
   technicians: Technician[];
+  /** 2026-05-07 RALPH (technician time off): set of tech IDs with
+   *  any time-off entry overlapping the visible day. The sidebar
+   *  paints a small amber "Off" pill next to each matching tech
+   *  name so dispatchers see at a glance who's unavailable today
+   *  without scanning the lane shading. Optional — when empty / not
+   *  supplied, the sidebar paints exactly as it did pre-feature. */
+  techsOnTimeOff?: Set<string>;
 };
 
 /**
@@ -53,7 +60,10 @@ function OffShiftDivider() {
   );
 }
 
-export default function DispatchTechnicianSidebar({ technicians }: Props) {
+export default function DispatchTechnicianSidebar({
+  technicians,
+  techsOnTimeOff,
+}: Props) {
   // Split into working and off-shift groups
   const working = technicians.filter(t => t.isWorking !== false);
   const offShift = technicians.filter(t => t.isWorking === false);
@@ -104,16 +114,31 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
             </div>
             <div className="min-w-0 flex-1">
               <p className={`truncate text-xs font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-slate-900"}`}>{t.name}</p>
-              {!isUnassigned && liveState && (
-                <span
-                  className={`mt-0.5 inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
-                  data-testid={`tech-live-state-${t.id}`}
-                  data-state={liveState.activityStatus === "idle" ? liveState.attendanceStatus : liveState.activityStatus}
-                  title={liveState.label}
-                >
-                  {liveState.label}
-                </span>
-              )}
+              <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                {!isUnassigned && liveState && (
+                  <span
+                    className={`inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
+                    data-testid={`tech-live-state-${t.id}`}
+                    data-state={liveState.activityStatus === "idle" ? liveState.attendanceStatus : liveState.activityStatus}
+                    title={liveState.label}
+                  >
+                    {liveState.label}
+                  </span>
+                )}
+                {/* 2026-05-07 RALPH (technician time off): amber Off
+                    pill whenever any time-off entry overlaps the
+                    visible day. Sits next to the live-state chip so
+                    both signals read on the same row. */}
+                {!isUnassigned && techsOnTimeOff?.has(t.id) && (
+                  <span
+                    className="inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none bg-amber-100 text-amber-700 border-amber-300"
+                    data-testid={`tech-time-off-pill-${t.id}`}
+                    title="Off today"
+                  >
+                    Off
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         );

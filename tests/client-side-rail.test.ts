@@ -599,14 +599,17 @@ describe("Client Detail Maintenance panel — real recurring templates", () => {
     expect(pageSrc).toMatch(
       /<Link\s+href=\{`\/pm\/\$\{t\.id\}`\}[\s\S]{0,800}?data-testid="client-maintenance-card-action"/,
     );
-    expect(pageSrc).toMatch(/View \/ Edit in Maintenance/);
+    // 2026-05-07 module rename: "Maintenance" → "Service Plans" everywhere
+    // the user reads it as a destination. The visible link copy moves with it.
+    expect(pageSrc).toMatch(/View \/ Edit in Service Plans/);
   });
 
   it("the action link carries an accessible label + title", () => {
+    // 2026-05-07: aria-label + title strings track the Service Plans rename.
     expect(pageSrc).toMatch(
-      /aria-label=\{`View or edit maintenance plan \$\{t\.title\}`\}/,
+      /aria-label=\{`View or edit service plan \$\{t\.title\}`\}/,
     );
-    expect(pageSrc).toMatch(/title="View \/ Edit in Maintenance"/);
+    expect(pageSrc).toMatch(/title="View \/ Edit in Service Plans"/);
   });
 
   it("the panel body uses semantic <ul>/<li> markup so the cards read as a list", () => {

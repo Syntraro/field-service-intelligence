@@ -997,7 +997,7 @@ function PlansTab({
               <Wrench className="h-7 w-7 text-emerald-600" />
             </div>
             <div className="space-y-1">
-              <p className="text-body font-semibold text-slate-900">No maintenance plans yet</p>
+              <p className="text-body font-semibold text-slate-900">No service plans yet</p>
               <p className="text-row text-slate-500 max-w-sm">Create your first plan to start scheduling recurring service visits and generating work orders.</p>
             </div>
             <Button onClick={onCreatePlan}>
@@ -1445,7 +1445,7 @@ export default function PMWorkspacePage() {
           <div className="flex items-end justify-between gap-3 flex-wrap border-b border-slate-200 pb-3">
             <div className="flex items-baseline gap-6 flex-wrap">
               <h1 className="text-page-title font-semibold text-slate-900 leading-none" data-testid="pm-page-title">
-                Maintenance
+                Service Plans
               </h1>
               <TabsList
                 className="h-auto p-0 bg-transparent shadow-none border-0 gap-4 rounded-none -mb-3"
@@ -1487,7 +1487,7 @@ export default function PMWorkspacePage() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem onClick={() => setCreatePmDialogOpen(true)}>
-                    <Wrench className="mr-2 h-4 w-4" />Maintenance plan
+                    <Wrench className="mr-2 h-4 w-4" />Service plan
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setShowRecurringJobDialog(true)}>
                     <Repeat className="mr-2 h-4 w-4" />Recurring job

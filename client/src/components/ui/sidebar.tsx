@@ -27,13 +27,15 @@ import {
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-// 2026-05-06: 8.5rem (136px) — third-pass sidebar width trim, settled
-// at 8.5rem after a 8rem attempt truncated "Maintenance" under
-// active-state semibold weight. App.tsx passes the same value via
-// the SidebarProvider `style` prop as the authoritative override;
+// 2026-05-07: 9.5rem (152px) — bumped from 8.5rem after the
+// "Maintenance" → "Service Plans" rename added 2 chars to the
+// longest tenant menu label. 9.5rem keeps "Service Plans" on a
+// single line at active-state semibold weight while staying narrower
+// than the prior 9.625rem ceiling. App.tsx passes the same value
+// via the SidebarProvider `style` prop as the authoritative override;
 // this constant is the fallback for any caller that mounts
 // SidebarProvider without a style override.
-const SIDEBAR_WIDTH = "8.5rem"
+const SIDEBAR_WIDTH = "9.5rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"

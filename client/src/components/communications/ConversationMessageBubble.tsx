@@ -44,7 +44,7 @@ export function ConversationMessageBubble({ message }: ConversationMessageBubble
       <div className={cn("max-w-[85%] rounded-2xl px-3 py-2 text-row leading-snug", bubbleClass)}>
         {message.body}
       </div>
-      <div className="text-helper text-muted-foreground px-1">
+      <div className="text-caption text-muted-foreground px-1">
         {message.senderDisplayName ? `${message.senderDisplayName} · ` : ""}
         {formatBubbleTime(message.createdAt)}
         {isInternal ? " · Internal note" : ""}

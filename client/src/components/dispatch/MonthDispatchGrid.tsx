@@ -29,6 +29,7 @@ import type { DispatchVisit, DispatchLeadVisit } from "./dispatchPreviewTypes";
 import type { DispatchDropData } from "./dispatchDndTypes";
 import { VisitCardContent } from "./VisitCardContent";
 import { UNASSIGNED_COLOR } from "@shared/colors";
+import { TimeOffOverlay } from "./TimeOffOverlay";
 
 /** Max cards visible per day cell before expand */
 const MAX_MONTH_CELL_ITEMS = 3;
@@ -43,6 +44,26 @@ type Props = {
   selectedVisitId: string | null;
   onSelectVisit: (visit: DispatchVisit) => void;
   onOpenLead: (leadId: string) => void;
+  /** 2026-05-07 RALPH (technician time off): per-day count of techs
+   *  with any time-off entry that day. Drives the small `N off`
+   *  summary chip when ≥ 2 techs are off. */
+  techsOnTimeOffByDay?: Map<string, Set<string>>;
+  /** 2026-05-07 RALPH (technician time off): per-day list of
+   *  rich entries. When exactly 1 tech is off on a given day, the
+   *  cell renders the canonical `<TimeOffOverlay variant="chip">`
+   *  with the full "Time off · Reason · Returning …" label. */
+  timeOffEntriesByDay?: Map<
+    string,
+    Array<{
+      id: string;
+      technicianUserId: string;
+      technicianName: string;
+      reason: string;
+      startsAt: string;
+      endsAt: string;
+      allDay: boolean;
+    }>
+  >;
 };
 
 /**
@@ -118,6 +139,8 @@ function MonthDayCell({
   onOpenLead,
   isExpanded,
   onToggleExpand,
+  techsOffCount,
+  timeOffEntries,
 }: {
   date: Date;
   items: CellItem[];
@@ -128,6 +151,23 @@ function MonthDayCell({
   onOpenLead: (leadId: string) => void;
   isExpanded: boolean;
   onToggleExpand: () => void;
+  /** 2026-05-07 RALPH (technician time off): count of techs with
+   *  any time-off entry on this day. Renders a small amber chip
+   *  inline with the day number when ≥ 2 techs are off. */
+  techsOffCount?: number;
+  /** 2026-05-07 RALPH (technician time off): rich entries — when
+   *  exactly 1 tech is off, the cell renders a canonical
+   *  `<TimeOffOverlay variant="chip">` with the full label
+   *  (Time off · Reason · Returning …). */
+  timeOffEntries?: Array<{
+    id: string;
+    technicianUserId: string;
+    technicianName: string;
+    reason: string;
+    startsAt: string;
+    endsAt: string;
+    allDay: boolean;
+  }>;
 }) {
   const dayKey = format(date, "yyyy-MM-dd");
   const dropData: DispatchDropData = { dayKey };
@@ -148,7 +188,7 @@ function MonthDayCell({
       } ${isOver ? "bg-emerald-50/50 ring-1 ring-inset ring-emerald-300" : ""}`}
     >
       {/* Day number */}
-      <div className="flex items-center justify-between mb-0.5 px-0.5">
+      <div className="flex items-center justify-between mb-0.5 px-0.5 gap-1">
         <span className={`text-xs font-medium leading-tight ${
           today
             ? "flex h-5 w-5 items-center justify-center rounded-full bg-primary text-white text-[11px] font-semibold"
@@ -156,6 +196,30 @@ function MonthDayCell({
         }`}>
           {format(date, "d")}
         </span>
+        {/* 2026-05-07 RALPH (technician time off): per-day off chip.
+            1 tech off → canonical overlay chip with name + reason
+            (the user knows WHO is off without drilling in). 2+
+            techs → compact summary "N off" so the cell stays
+            within its compact 3-card budget. */}
+        {(techsOffCount ?? 0) === 1 && timeOffEntries?.[0] && (
+          <TimeOffOverlay
+            variant="chip"
+            reason={timeOffEntries[0].reason}
+            endsAtISO={timeOffEntries[0].endsAt}
+            allDay={timeOffEntries[0].allDay}
+            technicianName={timeOffEntries[0].technicianName}
+            testId={`month-day-off-chip-${dayKey}`}
+          />
+        )}
+        {(techsOffCount ?? 0) > 1 && (
+          <span
+            className="inline-block rounded-full border border-amber-300 bg-amber-100 px-1 py-0 text-[9px] font-semibold text-amber-700 leading-tight"
+            data-testid={`month-day-off-chip-${dayKey}`}
+            title={`${techsOffCount} technicians off`}
+          >
+            {techsOffCount} off
+          </span>
+        )}
       </div>
 
       {/* Cards — branch render on item.kind so lead pills NEVER flow
@@ -227,6 +291,8 @@ export default function MonthDispatchGrid({
   selectedVisitId,
   onSelectVisit,
   onOpenLead,
+  techsOnTimeOffByDay,
+  timeOffEntriesByDay,
 }: Props) {
   // Local expand state — tracks which day cells are expanded (by dayKey)
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
@@ -284,6 +350,8 @@ export default function MonthDispatchGrid({
               onOpenLead={onOpenLead}
               isExpanded={expandedDays.has(dayKey)}
               onToggleExpand={() => toggleExpand(dayKey)}
+              techsOffCount={techsOnTimeOffByDay?.get(dayKey)?.size ?? 0}
+              timeOffEntries={timeOffEntriesByDay?.get(dayKey)}
             />
           );
         })}

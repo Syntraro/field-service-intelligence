@@ -103,15 +103,21 @@ describe("Today's Schedule — display-mode state + toggle button", () => {
     expect(code).toMatch(/data-display-mode=\{scheduleDisplayMode\}/);
   });
 
-  it("the toggle is hidden in compact (1-tech) column mode but visible in stacked mode", () => {
-    // The visibility rule is now expressed as a single derived flag:
-    // showDisplayModeToggle = isStackedMode || !compact. Stacked
-    // mode forces compact = true (cell drops to 1 unit wide) but
-    // the user still needs the toggle to switch back. The default
-    // single-tech column case still hides the toggle.
+  it("the toggle visibility is gated on isStackedMode || isMultiTech (regression-fix formula)", () => {
+    // 2026-05-07 RALPH (regression fix): the visibility formula is
+    // now `showDisplayModeToggle = isStackedMode || isMultiTech`.
+    // The previous formula was `isStackedMode || !compact`, which
+    // hid the toggle whenever the grid reduced widthUnits to 1 —
+    // that happens whenever zero techs are currently active (after
+    // idle-grouping + ACTIVE-driven width derivation), leaving the
+    // user stuck in stacked mode with no way back to column mode.
+    // The new formula keeps the toggle visible whenever the company
+    // has ≥ 2 schedulable techs OR the user is already in stacked
+    // mode (so they can always switch back). Solo-tech users in
+    // column mode still get the toggle hidden — the original intent.
     const codeNoComments = stripComments(code);
     expect(codeNoComments).toMatch(
-      /showDisplayModeToggle\s*=\s*isStackedMode\s*\|\|\s*!compact/,
+      /showDisplayModeToggle\s*=\s*isStackedMode\s*\|\|\s*isMultiTech/,
     );
     expect(codeNoComments).toMatch(
       /displayModeToggleControl\s*=\s*showDisplayModeToggle\s*\?/,
@@ -138,10 +144,14 @@ describe("Today's Schedule — stacked branch", () => {
     expect(codeNoComments).toMatch(stackedRegex);
   });
 
-  it("column branch is gated on !isStacked + visibleTechs.length <= 4", () => {
-    // useGrid is only true when NOT stacked AND techs ≤ 4.
+  it("column branch is gated on !isStacked + effectiveColumnCount <= 4", () => {
+    // 2026-05-07 RALPH (idle-grouping update): useGrid is now gated
+    // on `effectiveColumnCount` (active-tech count + 1 if any idle
+    // techs exist) rather than the raw `visibleTechs.length`. The
+    // threshold of 4 columns is unchanged — only the column-count
+    // source changed when idle grouping landed.
     expect(codeNoComments).toMatch(
-      /const useGrid\s*=\s*!isStacked\s*&&\s*visibleTechs\.length\s*<=\s*4/,
+      /const useGrid\s*=\s*!isStacked\s*&&\s*effectiveColumnCount\s*<=\s*4/,
     );
   });
 
@@ -262,11 +272,12 @@ describe("Today's Schedule — stacked-mode header layout", () => {
     );
   });
 
-  it("display-mode toggle is visible in stacked mode even when compact is true", () => {
-    // showDisplayModeToggle = isStackedMode || !compact — must
-    // include the stacked path so the user can switch back.
+  it("display-mode toggle is visible in stacked mode (so the user can switch back)", () => {
+    // 2026-05-07 RALPH: formula is `isStackedMode || isMultiTech`.
+    // The stacked branch is one of the two truthy disjuncts, so
+    // stacked mode always shows the toggle regardless of compact.
     expect(codeNoComments).toMatch(
-      /showDisplayModeToggle\s*=\s*isStackedMode\s*\|\|\s*!compact/,
+      /showDisplayModeToggle\s*=\s*isStackedMode\s*\|\|\s*isMultiTech/,
     );
   });
 
@@ -312,10 +323,13 @@ describe("Today's Schedule — width contract for 1/2/3/4/5+ techs", () => {
   const codeNoComments = stripComments(code);
 
   it("4 techs still fits within the existing useGrid threshold (<= 4)", () => {
-    // Pin the threshold so a future refactor can't silently reduce
-    // 4-tech support by setting useGrid = length <= 3.
+    // 2026-05-07 RALPH (idle-grouping update): the upper bound
+    // moved from `visibleTechs.length` to `effectiveColumnCount`
+    // when idle grouping landed. The threshold of 4 is preserved —
+    // a future refactor must not silently reduce 4-column support
+    // to 3.
     expect(codeNoComments).toMatch(
-      /visibleTechs\.length\s*<=\s*4/,
+      /effectiveColumnCount\s*<=\s*4/,
     );
   });
 

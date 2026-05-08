@@ -934,6 +934,89 @@ export const insertItemSchema = createInsertSchema(items).omit({
 export type InsertItem = z.infer<typeof insertItemSchema>;
 export type Item = typeof items.$inferSelect;
 
+// 2026-05-07 RALPH — Pricebook Groups: saved bundles of pricebook items
+// (e.g. "Service Call" = Labor + Truck Charge + Parking) that expand
+// into N line items when added to a job/quote/invoice.
+//
+// usageCount is incremented by the canonical pricebookUsageService when
+// a group is added; the picker right-rail orders by usageCount DESC,
+// name ASC. We chose a simple counter over a per-target usage table
+// per the brief's "If full usage tracking is too large: implement a
+// simple usage_count column" carve-out — recency weighting / per-
+// target analytics can plug into the service later without changing
+// the table shape.
+export const pricebookGroups = pgTable("pricebook_groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  // Display tag; future-proofing only. Picker rail does not consume yet.
+  color: text("color"),
+  icon: text("icon"),
+  isActive: boolean("is_active").notNull().default(true),
+  // Incremented atomically on bulk-add (POST /api/pricebook-groups/:id/usage).
+  usageCount: integer("usage_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Unique active group name per tenant. Soft-archived groups
+  // (is_active = false) are excluded so a tenant can re-use a name
+  // after archiving.
+  nameUq: uniqueIndex("pricebook_groups_company_name_active_uq")
+    .on(table.companyId, table.name)
+    .where(sql`is_active = true`),
+  // Picker rail read predicate.
+  lookupIdx: index("idx_pricebook_groups_lookup")
+    .on(table.companyId, table.isActive, table.usageCount),
+}));
+
+// Junction table: child line items belonging to a group. Cascade-delete
+// from the parent group so removing a group cleans up its children.
+// Item FK uses ON DELETE CASCADE so a tenant deleting a pricebook item
+// auto-removes it from any groups (avoiding broken expansions).
+export const pricebookGroupItems = pgTable("pricebook_group_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  groupId: varchar("group_id").notNull().references(() => pricebookGroups.id, { onDelete: "cascade" }),
+  itemId: varchar("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
+  // Stored as numeric for parity with line_items.quantity; UI sends
+  // strings. Default "1" matches the picker's default qty.
+  quantity: numeric("quantity", { precision: 12, scale: 2 }).notNull().default("1"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Each (group, item) pair is unique — a child item appears at most
+  // once per group. Re-adding the same item bumps quantity instead.
+  uniqGroupItem: uniqueIndex("pricebook_group_items_group_item_uq")
+    .on(table.groupId, table.itemId),
+  groupLookupIdx: index("idx_pricebook_group_items_group")
+    .on(table.companyId, table.groupId, table.sortOrder),
+}));
+
+export const insertPricebookGroupSchema = createInsertSchema(pricebookGroups).omit({
+  id: true,
+  companyId: true,
+  userId: true,
+  usageCount: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertPricebookGroupItemSchema = createInsertSchema(pricebookGroupItems).omit({
+  id: true,
+  companyId: true,
+  groupId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type PricebookGroup = typeof pricebookGroups.$inferSelect;
+export type PricebookGroupItem = typeof pricebookGroupItems.$inferSelect;
+export type InsertPricebookGroup = z.infer<typeof insertPricebookGroupSchema>;
+export type InsertPricebookGroupItem = z.infer<typeof insertPricebookGroupItemSchema>;
+
 export const clientParts = pgTable("client_parts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -6141,6 +6224,11 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   pmBillingModel: text("pm_billing_model"), // per_visit | monthly_fixed | annual_prepaid | do_not_bill
   pmBillingLabel: text("pm_billing_label"), // Human-readable billing label (e.g. "Quarterly RTU PM")
   pmContractAmount: numeric("pm_contract_amount", { precision: 12, scale: 2 }), // Contract/service amount
+  // Service Plans (2026-05-07): when true, the background generator and
+  // post-create handler auto-promote newly-created pending instances into
+  // UNSCHEDULED jobs (status=open, no visit, no tech, no calendar reservation).
+  // Defaults to false to preserve historical "instances-only" behavior.
+  autoGenerateJobs: boolean("auto_generate_jobs").notNull().default(false),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -6177,6 +6265,8 @@ export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobT
   pmBillingModel: z.enum(pmBillingModelEnum).nullable().optional(),
   pmBillingLabel: z.string().nullable().optional(),
   pmContractAmount: z.string().nullable().optional(), // numeric stored as string
+  // Service Plans (2026-05-07): explicit auto-generate-work toggle
+  autoGenerateJobs: z.boolean().default(false),
 });
 
 export const updateRecurringJobTemplateSchema = z.object({
@@ -6210,6 +6300,8 @@ export const updateRecurringJobTemplateSchema = z.object({
   pmBillingModel: z.enum(pmBillingModelEnum).nullable().optional(),
   pmBillingLabel: z.string().nullable().optional(),
   pmContractAmount: z.string().nullable().optional(),
+  // Service Plans (2026-05-07): explicit auto-generate-work toggle
+  autoGenerateJobs: z.boolean().optional(),
 });
 
 export type InsertRecurringJobTemplate = z.infer<typeof insertRecurringJobTemplateSchema>;
@@ -7322,3 +7414,310 @@ export const activityFeedPreferences = pgTable(
 
 export type ActivityFeedPreference = typeof activityFeedPreferences.$inferSelect;
 export type InsertActivityFeedPreference = typeof activityFeedPreferences.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Communications Hub — Phase 3 durable thread/message/call tables
+// ────────────────────────────────────────────────────────────────────
+//
+// Provider-neutral conversation storage. Vendor-issued ids
+// (`provider_message_id`, `provider_call_id`) are stored as opaque text
+// so a future Twilio/Telnyx adapter can rejoin a webhook event to the
+// canonical row without leaking adapter shape into the schema.
+//
+// See `migrations/2026_05_07_communication_threads.sql` for the full
+// schema rationale + constraint set. Field names + check-constraint
+// values match `shared/communicationsTypes.ts` exactly so the read
+// service can map a SQL row → `CommunicationThread` without a
+// translation layer.
+
+export const communicationThreadTypes = [
+  "client_sms",
+  "team_chat",
+  "unknown",
+] as const;
+export type CommunicationThreadTypeLiteral = (typeof communicationThreadTypes)[number];
+
+export const communicationThreadScopes = [
+  "tech_visible",
+  "office",
+  "tenant_global",
+] as const;
+export type CommunicationThreadScopeLiteral = (typeof communicationThreadScopes)[number];
+
+export const communicationMessageDirections = [
+  "inbound",
+  "outbound",
+  "internal",
+] as const;
+export type CommunicationMessageDirectionLiteral =
+  (typeof communicationMessageDirections)[number];
+
+export const communicationMessageChannels = [
+  "sms",
+  "internal_note",
+  "team_chat",
+  "voicemail",
+  "system",
+] as const;
+export type CommunicationMessageChannelLiteral =
+  (typeof communicationMessageChannels)[number];
+
+export const communicationCallStatuses = [
+  "completed",
+  "missed",
+  "voicemail",
+  "in_progress",
+  "failed",
+] as const;
+export type CommunicationCallStatusLiteral = (typeof communicationCallStatuses)[number];
+
+export const communicationThreads = pgTable(
+  "communication_threads",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    threadType: text("thread_type").notNull(),
+    scope: text("scope").notNull().default("office"),
+    contactId: varchar("contact_id").references(() => contactPersons.id, {
+      onDelete: "set null",
+    }),
+    customerCompanyId: varchar("customer_company_id").references(
+      () => customerCompanies.id,
+      { onDelete: "set null" },
+    ),
+    locationId: varchar("location_id").references(() => clientLocations.id, {
+      onDelete: "set null",
+    }),
+    jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    teamUserId: varchar("team_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    phoneNumber: text("phone_number"),
+    normalizedPhone: text("normalized_phone"),
+    displayName: text("display_name"),
+    lastMessagePreview: text("last_message_preview"),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    unreadCount: integer("unread_count").notNull().default(0),
+    assignedUserIds: text("assigned_user_ids")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    participantUserIds: text("participant_user_ids")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+  },
+  (table) => ({
+    tenantLastMsgIdx: index("idx_comm_threads_tenant_last_msg").on(
+      table.companyId,
+      table.lastMessageAt,
+    ),
+    tenantPhoneIdx: index("idx_comm_threads_tenant_phone").on(
+      table.companyId,
+      table.normalizedPhone,
+    ),
+  }),
+);
+
+export type CommunicationThreadRow = typeof communicationThreads.$inferSelect;
+export type InsertCommunicationThread = typeof communicationThreads.$inferInsert;
+
+export const communicationMessages = pgTable(
+  "communication_messages",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    threadId: varchar("thread_id")
+      .notNull()
+      .references(() => communicationThreads.id, { onDelete: "cascade" }),
+    direction: text("direction").notNull(),
+    channel: text("channel").notNull(),
+    body: text("body").notNull(),
+    providerMessageId: text("provider_message_id"),
+    senderUserId: varchar("sender_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    senderDisplayName: text("sender_display_name"),
+    fromNumber: text("from_number"),
+    toNumber: text("to_number"),
+    status: text("status"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+  },
+  (table) => ({
+    threadCreatedIdx: index("idx_comm_messages_thread_created").on(
+      table.threadId,
+      table.createdAt,
+    ),
+    tenantCreatedIdx: index("idx_comm_messages_tenant_created").on(
+      table.companyId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type CommunicationMessageRow = typeof communicationMessages.$inferSelect;
+export type InsertCommunicationMessage = typeof communicationMessages.$inferInsert;
+
+export const communicationCalls = pgTable(
+  "communication_calls",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    threadId: varchar("thread_id").references(() => communicationThreads.id, {
+      onDelete: "set null",
+    }),
+    direction: text("direction").notNull(),
+    fromNumber: text("from_number"),
+    toNumber: text("to_number"),
+    status: text("status").notNull(),
+    durationSeconds: integer("duration_seconds"),
+    recordingUrl: text("recording_url"),
+    transcription: text("transcription"),
+    providerCallId: text("provider_call_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+  },
+  (table) => ({
+    tenantCreatedIdx: index("idx_comm_calls_tenant_created").on(
+      table.companyId,
+      table.createdAt,
+    ),
+    threadCreatedIdx: index("idx_comm_calls_thread_created").on(
+      table.threadId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type CommunicationCallRow = typeof communicationCalls.$inferSelect;
+export type InsertCommunicationCall = typeof communicationCalls.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Technician Time Off (2026-05-07 RALPH)
+// ────────────────────────────────────────────────────────────────────
+// First-class technician time-off scheduling. Each row blocks a single
+// technician's availability for one date/time interval. The capacity
+// service (`server/storage/capacity.ts`) reads overlapping rows and
+// clips open slots around them; full-day coverage promotes the tech
+// to `state: "off_today"` on the dashboard's Today widget.
+//
+// See migrations/2026_05_07_technician_time_off.sql for the canonical
+// schema documentation + DB-level CHECK constraints.
+export const TECHNICIAN_TIME_OFF_REASONS = [
+  "vacation",
+  "sick",
+  "personal",
+  "training",
+  "unavailable",
+  "other",
+] as const;
+export type TechnicianTimeOffReason =
+  (typeof TECHNICIAN_TIME_OFF_REASONS)[number];
+
+export const technicianTimeOff = pgTable(
+  "technician_time_off",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    technicianUserId: varchar("technician_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    allDay: boolean("all_day").notNull().default(false),
+    note: text("note"),
+    createdByUserId: varchar("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (table) => ({
+    tenantTechRangeIdx: index("idx_technician_time_off_tenant_tech_range").on(
+      table.companyId,
+      table.technicianUserId,
+      table.startsAt,
+      table.endsAt,
+    ),
+  }),
+);
+
+export type TechnicianTimeOffRow = typeof technicianTimeOff.$inferSelect;
+export type InsertTechnicianTimeOff = typeof technicianTimeOff.$inferInsert;
+
+/** Zod schema for POST `/api/technician-time-off` body. */
+export const insertTechnicianTimeOffSchema = z
+  .object({
+    technicianUserId: z.string().uuid(),
+    reason: z.enum(TECHNICIAN_TIME_OFF_REASONS),
+    startsAt: z.string().datetime({ offset: true }),
+    endsAt: z.string().datetime({ offset: true }),
+    allDay: z.boolean().default(false),
+    note: z.string().max(500).optional().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (Date.parse(value.endsAt) <= Date.parse(value.startsAt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "endsAt must be strictly after startsAt",
+        path: ["endsAt"],
+      });
+    }
+  });
+
+/** Zod schema for PATCH `/api/technician-time-off/:id` body. */
+export const updateTechnicianTimeOffSchema = z
+  .object({
+    reason: z.enum(TECHNICIAN_TIME_OFF_REASONS).optional(),
+    startsAt: z.string().datetime({ offset: true }).optional(),
+    endsAt: z.string().datetime({ offset: true }).optional(),
+    allDay: z.boolean().optional(),
+    note: z.string().max(500).optional().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    // If both endpoints supplied, end must be after start. (Single-
+    // sided updates are validated against the persisted opposite end
+    // by the route handler.)
+    if (
+      value.startsAt &&
+      value.endsAt &&
+      Date.parse(value.endsAt) <= Date.parse(value.startsAt)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "endsAt must be strictly after startsAt",
+        path: ["endsAt"],
+      });
+    }
+  });
+
+export type TechnicianTimeOffInsertInput = z.infer<
+  typeof insertTechnicianTimeOffSchema
+>;
+export type TechnicianTimeOffUpdateInput = z.infer<
+  typeof updateTechnicianTimeOffSchema
+>;

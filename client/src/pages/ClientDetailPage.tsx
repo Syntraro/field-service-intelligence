@@ -63,6 +63,7 @@ import { cn } from "@/lib/utils";
 import {
   DetailRightRail,
   DetailRightRailEmpty,
+  RAIL_HEADER_ACTION_CLASS,
   RAIL_WIDTH_TRANSITION,
   type DetailRailTab,
 } from "@/components/detail-rail/DetailRightRail";
@@ -71,7 +72,21 @@ import {
 // that maps event_type + meta to user-facing copy. Replaces the ad
 // hoc card chrome each rail panel had been duplicating, and stops
 // the Activity panel from rendering raw UUIDs / "Note.Created".
-import { RailContentCard } from "@/components/detail-rail/RailContentCard";
+// 2026-05-07/08 Phases 1–6 of the data-driven right-rail re-recovery
+// completed the migration: every Client Detail rail panel — Parts
+// (Phase 1), Maintenance (Phase 2), Activity (Phase 3), Equipment
+// (Phase 4), Billing (Phase 5), Contacts (Phase 6) — now mounts
+// `<RailPanelRenderer>` driven by a typed descriptor. The page no
+// longer composes any rail-card slot primitive directly; the
+// `RailContentCard` import is intentionally absent.
+import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
+import type {
+  RailPanelDescriptor,
+  RailCardDescriptor,
+  RailTitleTrailing,
+  RailMetaItem,
+  RailMetaRowDescriptor,
+} from "@/components/detail-rail/railTypes";
 import { formatRailActivity } from "@/components/activity-feed/formatRailActivity";
 // 2026-04-26: Routed through the canonical CreateNewDialog (Job tab). The
 // `preselectedLocationId` contract maps one-for-one onto CreateNewDialog's
@@ -1136,8 +1151,13 @@ export default function ClientDetailPage() {
   // a private const inside the legacy `RailHeaderAction` component)
   // so the action JSX in `clientRailTabs` below can reuse it without
   // re-introducing a parallel component.
-  const RAIL_ACTION_BTN_CLASS =
-    "inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40";
+  // 2026-05-07: defers structural classes to the canonical
+  // RAIL_HEADER_ACTION_CLASS exported from DetailRightRail. Appends the
+  // canonical `text-helper` (13px regular weight — matches the corrected
+  // rail-tab scale) and the muted slate-700 color this page uses for
+  // neutral edit / add affordances. Replaces the prior
+  // `text-caption font-medium` (heavier weight + larger 14px size).
+  const RAIL_ACTION_BTN_CLASS = `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`;
 
   // 2026-05-07 canonical rail extraction: build the seven canonical
   // rail tabs in a single place. Each tab carries its `id` (matches the
@@ -2624,6 +2644,67 @@ interface ClientBillingPanelBodyProps {
   billingPostalCode: string | null;
 }
 
+// 2026-05-07 Phase 5 (re-recovery): Billing panel migrated onto the
+// data-driven `<RailPanelRenderer>` pipeline. Billing is the first
+// `kind: "single"` consumer (one info card, not a list) and the first
+// user of the new `kind: "block"` footer descriptor (label + multi-line
+// lines + italic fallback). Card is non-clickable — Billing is purely
+// informational.
+function buildClientBillingPanelDescriptor(
+  billing: RailBillingShape,
+  paymentTermsDays: number | null,
+  billingStreet: string | null,
+  billingCity: string | null,
+  billingProvince: string | null,
+  billingPostalCode: string | null,
+): RailPanelDescriptor {
+  const termsLabel =
+    paymentTermsDays === null
+      ? "Use company default"
+      : paymentTermsDays === 0
+        ? "Due on receipt"
+        : `Net ${paymentTermsDays}`;
+
+  // Address-line accumulator — line1 from `billingStreet`, line2 from
+  // joined city/province/postal. Empty / whitespace-only fields are
+  // filtered before the join so we never emit "City, , Postal" rows
+  // with stray commas.
+  const addressLines: string[] = [];
+  const line1 = billingStreet?.trim() || null;
+  if (line1) addressLines.push(line1);
+  const line2 =
+    [billingCity, billingProvince, billingPostalCode]
+      .filter((v) => v && v.trim().length > 0)
+      .join(", ") || null;
+  if (line2) addressLines.push(line2);
+
+  return {
+    kind: "single",
+    card: {
+      key: "billing",
+      testId: "client-billing-panel-body",
+      fields: [
+        { label: "Payment terms", value: termsLabel },
+        {
+          label: "Outstanding",
+          value: formatCurrency(billing.outstanding.total),
+        },
+        {
+          label: "Lifetime revenue",
+          value: formatCurrency(billing.lifetimeRevenue),
+        },
+        { label: "Paid YTD", value: formatCurrency(billing.paidYtd) },
+      ],
+      footer: {
+        kind: "block",
+        label: "Billing address",
+        lines: addressLines,
+        fallback: "No billing address on file.",
+      },
+    },
+  };
+}
+
 function ClientBillingPanelBody({
   billing,
   paymentTermsDays,
@@ -2632,45 +2713,18 @@ function ClientBillingPanelBody({
   billingProvince,
   billingPostalCode,
 }: ClientBillingPanelBodyProps) {
-  const termsLabel =
-    paymentTermsDays === null
-      ? "Use company default"
-      : paymentTermsDays === 0
-        ? "Due on receipt"
-        : `Net ${paymentTermsDays}`;
-  const billingLine1 = billingStreet?.trim() || null;
-  const billingLine2 = [billingCity, billingProvince, billingPostalCode]
-    .filter((v) => v && v.trim().length > 0)
-    .join(", ") || null;
-  // 2026-05-07 RALPH — Billing is a single info block (not a list of
-  // entities), so we render exactly one canonical RailContentCard
-  // wrapping both the metric rows and the billing address. Same chrome
-  // as the Equipment / Parts / Maintenance / Activity rows.
   return (
-    <RailContentCard
-      testId="client-billing-panel-body"
-      className="space-y-4 text-sm"
-    >
-      <dl className="space-y-1.5 text-xs">
-        <DetailRow label="Payment terms" value={termsLabel} />
-        <DetailRow label="Outstanding" value={formatCurrency(billing.outstanding.total)} />
-        <DetailRow label="Lifetime revenue" value={formatCurrency(billing.lifetimeRevenue)} />
-        <DetailRow label="Paid YTD" value={formatCurrency(billing.paidYtd)} />
-      </dl>
-      <div className="pt-3 border-t border-slate-100 space-y-1">
-        <span className="text-label text-text-secondary">
-          Billing address
-        </span>
-        {billingLine1 || billingLine2 ? (
-          <div className="text-row text-text-primary">
-            {billingLine1 && <div>{billingLine1}</div>}
-            {billingLine2 && <div>{billingLine2}</div>}
-          </div>
-        ) : (
-          <p className="text-caption text-text-secondary italic">No billing address on file.</p>
-        )}
-      </div>
-    </RailContentCard>
+    <RailPanelRenderer
+      panel={buildClientBillingPanelDescriptor(
+        billing,
+        paymentTermsDays,
+        billingStreet,
+        billingCity,
+        billingProvince,
+        billingPostalCode,
+      )}
+      testIdPrefix="client-side"
+    />
   );
 }
 
@@ -2682,133 +2736,149 @@ interface ClientEquipmentPanelBodyProps {
   onOpen: (eq: LocationEquipment) => void;
 }
 
+// 2026-05-07 Phase 4 (re-recovery): visible-card cap. The Equipment
+// rail caps at 8 cards to keep the panel reasonable on long lists; the
+// `+N more items not shown.` indicator below the cards is rendered by
+// `<RailPanelRenderer>` via the `overflow: { count, testId }` field on
+// the list descriptor.
+const CLIENT_EQUIPMENT_VISIBLE_CAP = 8;
+
+// 2026-05-07 Phase 4 (re-recovery): Equipment panel migrated onto the
+// data-driven `<RailPanelRenderer>` pipeline. Equipment is the first
+// re-recovery to exercise the clickable-card descriptor variant in
+// active use (cards open `EquipmentDetailModal` via `onClick`) and the
+// `overflow: { count }` indicator the renderer adds to long lists.
+// Card chrome / typography / overflow chrome / empty-state visuals all
+// live inside the renderer.
+function buildClientEquipmentPanelDescriptor(
+  scopeType: ScopeType,
+  equipment: LocationEquipment[],
+  onOpen: (eq: LocationEquipment) => void,
+): RailPanelDescriptor {
+  // Company-scope branch: equipment is per-location.
+  if (scopeType === "company") {
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-equipment-panel-body",
+      empty: {
+        message: "Equipment is tracked per location.",
+        hint: "Pick a specific location to view its equipment.",
+      },
+    };
+  }
+
+  // Location-scope, no equipment yet.
+  if (equipment.length === 0) {
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-equipment-panel-body",
+      empty: {
+        message: "No equipment yet.",
+        hint: "Add equipment to track installed systems for this client.",
+      },
+    };
+  }
+
+  // Populated branch — cap visible cards at 8, surface overflow count.
+  const visible = equipment.slice(0, CLIENT_EQUIPMENT_VISIBLE_CAP);
+  const overflowCount = equipment.length - visible.length;
+
+  const cards: RailCardDescriptor[] = visible.map((eq) => {
+    const subtitleParts = [eq.manufacturer, eq.modelNumber].filter(
+      (s): s is string => !!s && s.trim().length > 0,
+    );
+    const subtitle =
+      subtitleParts.length > 0 ? subtitleParts.join(" · ") : null;
+    const notesBody =
+      eq.notes && eq.notes.trim().length > 0 ? eq.notes : undefined;
+
+    const fields: NonNullable<RailCardDescriptor["fields"]> = [];
+    if (eq.equipmentType) {
+      fields.push({
+        label: "Type",
+        value: eq.equipmentType,
+        testId: "client-equipment-card-row-type",
+      });
+    }
+    if (eq.serialNumber) {
+      fields.push({
+        label: "Serial",
+        value: eq.serialNumber,
+        valueClassName: "break-all",
+        testId: "client-equipment-card-row-serial",
+      });
+    }
+    if (eq.tagNumber) {
+      fields.push({
+        label: "Tag",
+        value: eq.tagNumber,
+        testId: "client-equipment-card-row-tag",
+      });
+    }
+    if (eq.installDate) {
+      fields.push({
+        label: "Installed",
+        value: eq.installDate,
+        testId: "client-equipment-card-row-installed",
+      });
+    }
+    if (eq.warrantyExpiry) {
+      fields.push({
+        label: "Warranty",
+        value: eq.warrantyExpiry,
+        testId: "client-equipment-card-row-warranty",
+      });
+    }
+
+    return {
+      key: eq.id,
+      testId: "client-equipment-card",
+      onClick: () => onOpen(eq),
+      ariaLabel: `Open equipment ${eq.name}`,
+      title: {
+        text: eq.name,
+        // Disable the canonical title `truncate` so long equipment
+        // names wrap instead of clipping.
+        className: "break-words whitespace-normal",
+        chip: {
+          text: eq.isActive ? "Active" : "Archived",
+          variant: eq.isActive ? "success" : "neutral",
+          testId: "client-equipment-card-status",
+        },
+      },
+      meta: subtitle ?? undefined,
+      fields: fields.length > 0 ? fields : undefined,
+      body: notesBody,
+      bodyClamp: notesBody ? 3 : undefined,
+    };
+  });
+
+  return {
+    kind: "list",
+    cards,
+    testId: "client-equipment-panel-body",
+    overflow:
+      overflowCount > 0
+        ? {
+            count: overflowCount,
+            testId: "client-equipment-panel-overflow",
+          }
+        : undefined,
+  };
+}
+
 function ClientEquipmentPanelBody({
   scopeType,
   equipment,
   onOpen,
 }: ClientEquipmentPanelBodyProps) {
-  if (scopeType === "company") {
-    return (
-      <RailEmptyState
-        message="Equipment is tracked per location."
-        hint="Pick a specific location to view its equipment."
-      />
-    );
-  }
-  if (equipment.length === 0) {
-    return (
-      <RailEmptyState
-        message="No equipment yet."
-        hint="Add equipment to track installed systems for this client."
-      />
-    );
-  }
-  // 2026-05-07: full equipment list, expanded snapshot per card.
-  // Capped at 8 to keep the panel reasonable; overflow indicator
-  // matches the Maintenance card pattern.
-  const visible = equipment.slice(0, 8);
-  const overflow = equipment.length - visible.length;
   return (
-    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-equipment-panel-body">
-      {visible.map((eq) => {
-        const subtitleParts = [eq.manufacturer, eq.modelNumber].filter(
-          (s): s is string => !!s && s.trim().length > 0,
-        );
-        const subtitle = subtitleParts.length > 0 ? subtitleParts.join(" · ") : null;
-        // The schema's `isActive` flag (notNull, default true) is the
-        // only "status" the equipment table carries today — surfaced
-        // here as Active / Archived. Service/install/warranty
-        // statuses don't exist on this row.
-        const statusLabel = eq.isActive ? "Active" : "Archived";
-        const statusBadgeClass = eq.isActive
-          ? "text-caption px-2 py-0.5 bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0"
-          : "text-caption px-2 py-0.5 bg-slate-100 text-slate-600 border-slate-200 shrink-0";
-        return (
-          <li key={eq.id}>
-            <RailContentCard
-              onClick={() => onOpen(eq)}
-              ariaLabel={`Open equipment ${eq.name}`}
-              testId="client-equipment-card"
-              className="space-y-3"
-            >
-              {/* Top row: name (+ optional manufacturer/model subtitle)
-                  on the left, status pill on the right. */}
-              <div className="flex items-start justify-between gap-3 min-w-0">
-                <div className="min-w-0">
-                  <h4 className="text-section-title font-semibold text-text-primary break-words">
-                    {eq.name}
-                  </h4>
-                  {subtitle && (
-                    <p className="text-helper text-text-secondary mt-0.5 break-words">
-                      {subtitle}
-                    </p>
-                  )}
-                </div>
-                <Badge
-                  variant="outline"
-                  className={statusBadgeClass}
-                  data-testid="client-equipment-card-status"
-                >
-                  {statusLabel}
-                </Badge>
-              </div>
-
-              {/* Stacked label-above-value snapshot. Each row only
-                  renders when its source field is populated — never
-                  invented. */}
-              <dl className="space-y-2.5">
-                {eq.equipmentType && (
-                  <div data-testid="client-equipment-card-row-type">
-                    <dt className="text-label text-text-secondary">Type</dt>
-                    <dd className="text-row text-text-primary">{eq.equipmentType}</dd>
-                  </div>
-                )}
-                {eq.serialNumber && (
-                  <div data-testid="client-equipment-card-row-serial">
-                    <dt className="text-label text-text-secondary">Serial</dt>
-                    <dd className="text-row text-text-primary break-all">{eq.serialNumber}</dd>
-                  </div>
-                )}
-                {eq.tagNumber && (
-                  <div data-testid="client-equipment-card-row-tag">
-                    <dt className="text-label text-text-secondary">Tag</dt>
-                    <dd className="text-row text-text-primary">{eq.tagNumber}</dd>
-                  </div>
-                )}
-                {eq.installDate && (
-                  <div data-testid="client-equipment-card-row-installed">
-                    <dt className="text-label text-text-secondary">Installed</dt>
-                    <dd className="text-row text-text-primary">{eq.installDate}</dd>
-                  </div>
-                )}
-                {eq.warrantyExpiry && (
-                  <div data-testid="client-equipment-card-row-warranty">
-                    <dt className="text-label text-text-secondary">Warranty</dt>
-                    <dd className="text-row text-text-primary">{eq.warrantyExpiry}</dd>
-                  </div>
-                )}
-              </dl>
-
-              {/* Optional notes — canonical helper token, capped at
-                  3 lines so the card stays compact. */}
-              {eq.notes && eq.notes.trim().length > 0 && (
-                <p className="text-helper text-text-secondary line-clamp-3">
-                  {eq.notes}
-                </p>
-              )}
-            </RailContentCard>
-          </li>
-        );
-      })}
-      {overflow > 0 && (
-        <li
-          className="text-helper text-text-secondary px-1 py-1"
-          data-testid="client-equipment-panel-overflow"
-        >
-          + {overflow} more {overflow === 1 ? "item" : "items"} not shown.
-        </li>
-      )}
-    </ul>
+    <RailPanelRenderer
+      panel={buildClientEquipmentPanelDescriptor(scopeType, equipment, onOpen)}
+      testIdPrefix="client-side"
+    />
   );
 }
 
@@ -2817,98 +2887,120 @@ interface ClientPartsPanelBodyProps {
   pmParts: PMPartWithItem[];
 }
 
-function ClientPartsPanelBody({ scopeType, pmParts }: ClientPartsPanelBodyProps) {
-  // 2026-05-07: client-specific parts surface real PM-parts data
-  // (`location_pm_part_templates` joined with `items`). The data
-  // model is genuinely per-location — the legacy `client_parts`
-  // table at shared/schema.ts:937 is unused in current flows.
-  // Single-row part editing is NOT a canonical surface today;
-  // PartsSelectorModal (the bulk add/manage modal mounted at the
-  // page level) is the only canonical edit path. Cards are
-  // therefore non-clickable; the header `+ Add Part` button opens
-  // the canonical modal which surfaces ALL existing parts and lets
-  // the user add/remove rows in one place.
+// 2026-05-07: Phase 1 data-driven right-rail (re-recovery). Parts panel
+// is the bellwether — the body component is a thin mount on
+// `<RailPanelRenderer>` driven by `buildClientPartsPanelDescriptor`.
+// Card chrome / typography / chip sizing / empty-state visuals all live
+// inside the renderer; the page only describes WHICH data shows and
+// HOW it groups. Cards are non-clickable because single-row part
+// editing is not a canonical surface today — `<PartsSelectorModal>`
+// (mounted at the page level, opened by the rail header `+ Add Part`
+// action) is the only edit path and operates on the full list.
+function buildClientPartsPanelDescriptor(
+  scopeType: ScopeType,
+  pmParts: PMPartWithItem[],
+): RailPanelDescriptor {
+  // Company-scope branch: parts are per-location, so the company-wide
+  // rail surface shows only the explanatory empty state.
   if (scopeType === "company") {
-    return (
-      <RailEmptyState
-        message="Parts are tracked per location."
-        hint="Pick a specific location to view its PM parts."
-      />
-    );
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-parts-panel-body",
+      empty: {
+        message: "Parts are tracked per location.",
+        hint: "Pick a specific location to view its PM parts.",
+      },
+    };
   }
+
+  // Location-scope branch with no parts yet.
   if (pmParts.length === 0) {
-    return (
-      <RailEmptyState
-        message="No client-specific parts yet."
-        hint="Add parts the technician should bring on every PM visit."
-      />
-    );
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-parts-panel-body",
+      empty: {
+        message: "No client-specific parts yet.",
+        hint: "Add parts the technician should bring on every PM visit.",
+      },
+    };
   }
+
+  // Populated list. Each part becomes a non-clickable card with title +
+  // quantity chip + gated SKU/Category/Cost/Equipment fields + optional
+  // description body.
+  const cards: RailCardDescriptor[] = pmParts.map((p) => {
+    const fields: RailCardDescriptor["fields"] = [];
+    if (p.itemSku) {
+      fields.push({
+        label: "SKU",
+        value: p.itemSku,
+        valueClassName: "break-all",
+        testId: "client-parts-card-row-sku",
+      });
+    }
+    if (p.itemCategory) {
+      fields.push({
+        label: "Category",
+        value: p.itemCategory,
+        testId: "client-parts-card-row-category",
+      });
+    }
+    if (p.itemCost) {
+      fields.push({
+        label: "Cost",
+        value: formatCurrency(p.itemCost),
+        testId: "client-parts-card-row-cost",
+      });
+    }
+    if (p.equipmentLabel) {
+      fields.push({
+        label: "Equipment",
+        value: p.equipmentLabel,
+        valueClassName: "line-clamp-2 break-words",
+        testId: "client-parts-card-row-equipment",
+      });
+    }
+
+    const description =
+      p.descriptionOverride && p.descriptionOverride.trim().length > 0
+        ? p.descriptionOverride
+        : undefined;
+
+    return {
+      key: p.id,
+      testId: "client-parts-card",
+      title: {
+        text: p.itemName ?? "Unknown part",
+        // Disable the canonical title `truncate` so long part names wrap
+        // instead of clipping — matches the prior `break-words` rendering.
+        className: "break-words whitespace-normal",
+        chip: {
+          text: `×${p.quantityPerVisit}`,
+          variant: "neutral",
+          testId: "client-parts-card-quantity",
+        },
+      },
+      fields: fields.length > 0 ? fields : undefined,
+      body: description,
+      bodyClamp: description ? 3 : undefined,
+    };
+  });
+
+  return {
+    kind: "list",
+    cards,
+    testId: "client-parts-panel-body",
+  };
+}
+
+function ClientPartsPanelBody({ scopeType, pmParts }: ClientPartsPanelBodyProps) {
   return (
-    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-parts-panel-body">
-      {pmParts.map((p) => (
-        <li key={p.id}>
-        <RailContentCard
-          testId="client-parts-card"
-          className="space-y-3"
-        >
-          {/* Top row: part name + quantity badge. */}
-          <div className="flex items-start justify-between gap-3 min-w-0">
-            <h4 className="text-section-title font-semibold text-text-primary break-words min-w-0">
-              {p.itemName ?? "Unknown part"}
-            </h4>
-            <Badge
-              variant="outline"
-              className="text-caption px-2 py-0.5 bg-slate-50 text-slate-700 border-slate-200 shrink-0"
-              data-testid="client-parts-card-quantity"
-            >
-              ×{p.quantityPerVisit}
-            </Badge>
-          </div>
-
-          {/* Stacked label-above-value snapshot. Each row renders
-              only when its source field is populated. */}
-          <dl className="space-y-2.5">
-            {p.itemSku && (
-              <div data-testid="client-parts-card-row-sku">
-                <dt className="text-label text-text-secondary">SKU</dt>
-                <dd className="text-row text-text-primary break-all">{p.itemSku}</dd>
-              </div>
-            )}
-            {p.itemCategory && (
-              <div data-testid="client-parts-card-row-category">
-                <dt className="text-label text-text-secondary">Category</dt>
-                <dd className="text-row text-text-primary">{p.itemCategory}</dd>
-              </div>
-            )}
-            {p.itemCost && (
-              <div data-testid="client-parts-card-row-cost">
-                <dt className="text-label text-text-secondary">Cost</dt>
-                <dd className="text-row text-text-primary">
-                  {formatCurrency(p.itemCost)}
-                </dd>
-              </div>
-            )}
-            {p.equipmentLabel && (
-              <div data-testid="client-parts-card-row-equipment">
-                <dt className="text-label text-text-secondary">Equipment</dt>
-                <dd className="text-row text-text-primary line-clamp-2 break-words">
-                  {p.equipmentLabel}
-                </dd>
-              </div>
-            )}
-          </dl>
-
-          {/* Optional override description — canonical helper token. */}
-          {p.descriptionOverride && p.descriptionOverride.trim().length > 0 && (
-            <p className="text-helper text-text-secondary line-clamp-3">
-              {p.descriptionOverride}
-            </p>
-          )}
-        </RailContentCard>
-        </li>
-      ))}
-    </ul>
+    <RailPanelRenderer
+      panel={buildClientPartsPanelDescriptor(scopeType, pmParts)}
+      testIdPrefix="client-side"
+    />
   );
 }
 
@@ -2918,45 +3010,173 @@ interface ClientMaintenancePanelBodyProps {
   scopeType: ScopeType;
 }
 
+// 2026-05-07 Phase 2 (re-recovery): one row from the recurring-templates
+// feed. Type covers every field the GET `/api/recurring-templates` route
+// ships (full row + joined client/location names + computed
+// `nextOccurrence`). Optional unused fields stay typed so a future
+// refactor that wants to surface them doesn't have to re-derive the shape.
+interface MaintenanceTemplateRow {
+  id: string;
+  title: string;
+  description: string | null;
+  clientId: string | null;
+  locationId: string | null;
+  isActive: boolean;
+  jobType: string;
+  recurrenceKind: string;
+  interval: number;
+  startDate: string | null;
+  endDate: string | null;
+  serviceWindowDaysBefore: number | null;
+  serviceWindowDaysAfter: number | null;
+  pmBillingModel: string | null;
+  pmBillingLabel: string | null;
+  pmContractAmount: string | null;
+  clientName: string | null;
+  locationName: string | null;
+  locationAddress: string | null;
+  nextOccurrence: string | null;
+}
+
+// 2026-05-07 Phase 2 (re-recovery): Maintenance panel migrated onto the
+// data-driven `<RailPanelRenderer>` pipeline. The descriptor carries the
+// per-card snapshot (title + status chip + gated dl fields + optional
+// description body + footer link to the canonical detail page); the
+// renderer owns chrome / typography / footer-link composition. Cards
+// are non-clickable — only the footer link navigates.
+//
+// Title bar reads "View / Edit in Maintenance" per the descriptor test
+// spec (`tests/client-rail-maintenance-descriptor.test.ts`). The route
+// itself (`/pm/:id`) is unchanged; only the user-facing copy here is
+// pinned to the test-spec wording rather than the parallel "Service
+// Plans" rebrand copy that lived in the prior inline JSX.
+function buildClientMaintenancePanelDescriptor(
+  matching: MaintenanceTemplateRow[],
+): RailPanelDescriptor {
+  if (matching.length === 0) {
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-maintenance-panel-body",
+      empty: {
+        message: "No maintenance plans yet.",
+        hint: "Add a maintenance plan to schedule recurring service for this client.",
+      },
+    };
+  }
+
+  const cards: RailCardDescriptor[] = matching.map((t) => {
+    const cadence =
+      t.recurrenceKind === "weekly"
+        ? `Every ${t.interval > 1 ? `${t.interval} weeks` : "week"}`
+        : t.recurrenceKind === "monthly"
+          ? `Every ${t.interval > 1 ? `${t.interval} months` : "month"}`
+          : t.recurrenceKind;
+    const billingLine =
+      t.pmBillingLabel ||
+      (t.pmBillingModel ? t.pmBillingModel.replaceAll("_", " ") : null);
+    const serviceWindow =
+      t.serviceWindowDaysBefore !== null && t.serviceWindowDaysAfter !== null
+        ? `${t.serviceWindowDaysBefore} days before — ${t.serviceWindowDaysAfter} days after`
+        : null;
+    const locationLine =
+      [t.locationName, t.locationAddress]
+        .filter((s): s is string => !!s && s.trim().length > 0)
+        .join(" · ") || null;
+    const description =
+      t.description && t.description.trim().length > 0 ? t.description : null;
+
+    const fields: NonNullable<RailCardDescriptor["fields"]> = [
+      {
+        label: "Frequency",
+        value: cadence,
+        testId: "client-maintenance-card-row-frequency",
+      },
+    ];
+    if (t.nextOccurrence) {
+      fields.push({
+        label: "Next due",
+        value: t.nextOccurrence,
+        valueClassName: "font-medium",
+        testId: "client-maintenance-card-row-next-due",
+      });
+    }
+    if (t.startDate) {
+      fields.push({
+        label: "Started",
+        value: t.startDate,
+        testId: "client-maintenance-card-row-started",
+      });
+    }
+    if (serviceWindow) {
+      fields.push({
+        label: "Window",
+        value: serviceWindow,
+        testId: "client-maintenance-card-row-window",
+      });
+    }
+    if (billingLine) {
+      fields.push({
+        label: "Billing",
+        value: billingLine,
+        valueClassName: "capitalize",
+        testId: "client-maintenance-card-row-billing",
+      });
+    }
+    if (locationLine) {
+      fields.push({
+        label: "Location",
+        value: locationLine,
+        valueClassName: "line-clamp-2 break-words",
+        testId: "client-maintenance-card-row-location",
+      });
+    }
+
+    return {
+      key: t.id,
+      testId: "client-maintenance-card",
+      title: {
+        text: t.title,
+        // Disable the canonical title `truncate` so long plan names wrap.
+        className: "break-words whitespace-normal",
+        chip: {
+          text: t.isActive ? "Active" : "Paused",
+          variant: t.isActive ? "success" : "neutral",
+          testId: "client-maintenance-card-status",
+        },
+      },
+      fields,
+      body: description ?? undefined,
+      bodyClamp: description ? 3 : undefined,
+      footer: {
+        kind: "link",
+        href: `/pm/${t.id}`,
+        label: "View / Edit in Maintenance",
+        icon: ChevronRight,
+        ariaLabel: `View or edit maintenance plan ${t.title}`,
+        title: "View / Edit in Maintenance",
+        testId: "client-maintenance-card-action",
+      },
+    };
+  });
+
+  return {
+    kind: "list",
+    cards,
+    testId: "client-maintenance-panel-body",
+  };
+}
+
 function ClientMaintenancePanelBody({
   companyId,
   locationId,
   scopeType,
 }: ClientMaintenancePanelBodyProps) {
-  // 2026-05-07: filter the tenant-wide recurring-templates feed
-  // client-side by clientId / locationId. The `?clientId=` query
-  // param doesn't exist server-side today; client-side filtering is
-  // cheap because templates are at-most ~hundreds per tenant.
-  // Type covers every field the GET `/api/recurring-templates` route
-  // ships (full row + joined client/location names + computed
-  // `nextOccurrence`). Optional unused fields stay typed so a future
-  // refactor that wants to surface them doesn't have to re-derive
-  // the shape.
-  const { data: templates = [], isLoading } = useQuery<
-    Array<{
-      id: string;
-      title: string;
-      description: string | null;
-      clientId: string | null;
-      locationId: string | null;
-      isActive: boolean;
-      jobType: string;
-      recurrenceKind: string;
-      interval: number;
-      startDate: string | null;
-      endDate: string | null;
-      serviceWindowDaysBefore: number | null;
-      serviceWindowDaysAfter: number | null;
-      pmBillingModel: string | null;
-      pmBillingLabel: string | null;
-      pmContractAmount: string | null;
-      // Joined fields (server adds these on top of the table row).
-      clientName: string | null;
-      locationName: string | null;
-      locationAddress: string | null;
-      nextOccurrence: string | null;
-    }>
-  >({
+  // Filter the tenant-wide recurring-templates feed client-side by
+  // clientId / locationId. The `?clientId=` query param doesn't exist
+  // server-side today; client-side filtering is cheap because templates
+  // are at-most ~hundreds per tenant.
+  const { data: templates = [], isLoading } = useQuery<MaintenanceTemplateRow[]>({
     queryKey: ["/api/recurring-templates", "for-client", companyId],
     queryFn: () => apiRequest("/api/recurring-templates"),
     enabled: Boolean(companyId),
@@ -2965,9 +3185,10 @@ function ClientMaintenancePanelBody({
 
   if (isLoading) {
     return (
-      <div className="py-6 flex justify-center" data-testid="client-maintenance-loading">
-        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
-      </div>
+      <RailPanelRenderer
+        panel={{ kind: "loading", testId: "client-maintenance-loading" }}
+        testIdPrefix="client-side"
+      />
     );
   }
 
@@ -2978,157 +3199,11 @@ function ClientMaintenancePanelBody({
     return t.clientId === companyId;
   });
 
-  if (matching.length === 0) {
-    return (
-      <RailEmptyState
-        message="No maintenance plans yet."
-        hint="Add a maintenance plan to schedule recurring service for this client."
-      />
-    );
-  }
-
-  // 2026-05-07: non-navigating snapshot cards. The whole-card link
-  // was reverted — users were leaving Client Detail just to inspect
-  // a plan, with no easy return path. Cards now show an
-  // information-rich read-only summary; an explicit
-  // "View / Edit in Maintenance" link inside each card navigates to
-  // the canonical detail/edit page at `/pm/:id` (App.tsx:292 →
-  // `PMDetailPage`, the unified view+edit surface). All snapshot
-  // fields render only when present — never invented.
-  //
-  // 2026-05-07 (v2 typography pass): every text size on the card is
-  // a canonical role token from `tailwind.config.ts:68-79`:
-  //   - text-section-title → card title (18px/24px/600)
-  //   - text-caption       → status badge body (14px/20px)
-  //   - text-label         → metadata labels (13px/16px/500 tracked)
-  //   - text-row           → metadata values (15px/22px) — DARKER + larger
-  //   - text-helper        → optional description body (13px/16px)
-  //   - text-caption       → action-link copy (14px/20px)
-  // Snapshot is a stacked label-above-value layout (per spec — narrow
-  // panel column, label/value column would squeeze long values).
   return (
-    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-maintenance-panel-body">
-      {matching.map((t) => {
-        const cadence =
-          t.recurrenceKind === "weekly"
-            ? `Every ${t.interval > 1 ? `${t.interval} weeks` : "week"}`
-            : t.recurrenceKind === "monthly"
-              ? `Every ${t.interval > 1 ? `${t.interval} months` : "month"}`
-              : t.recurrenceKind;
-        const billingLine =
-          t.pmBillingLabel ||
-          (t.pmBillingModel
-            ? t.pmBillingModel.replaceAll("_", " ")
-            : null);
-        const serviceWindow =
-          t.serviceWindowDaysBefore !== null && t.serviceWindowDaysAfter !== null
-            ? `${t.serviceWindowDaysBefore} days before — ${t.serviceWindowDaysAfter} days after`
-            : null;
-        const locationLine = [t.locationName, t.locationAddress]
-          .filter((s): s is string => !!s && s.trim().length > 0)
-          .join(" · ") || null;
-        return (
-          <li key={t.id}>
-          <RailContentCard
-            testId="client-maintenance-card"
-            className="space-y-3"
-          >
-            {/* Top: name + status badge — important info first. */}
-            <div className="flex items-start justify-between gap-3 min-w-0">
-              <h4 className="text-section-title font-semibold text-text-primary min-w-0 break-words">
-                {t.title}
-              </h4>
-              <Badge
-                variant="outline"
-                className={
-                  t.isActive
-                    ? "text-caption px-2 py-0.5 bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0"
-                    : "text-caption px-2 py-0.5 bg-slate-100 text-slate-600 border-slate-200 shrink-0"
-                }
-                data-testid="client-maintenance-card-status"
-              >
-                {t.isActive ? "Active" : "Paused"}
-              </Badge>
-            </div>
-
-            {/* Stacked label-above-value snapshot. Narrow panel width
-                makes a tight 2-column grid squeeze long values
-                (especially Location); stacking keeps every value
-                fully readable. Each row renders only when its source
-                field is populated — no fabricated values. */}
-            <dl className="space-y-2.5">
-              <div data-testid="client-maintenance-card-row-frequency">
-                <dt className="text-label text-text-secondary">Frequency</dt>
-                <dd className="text-row text-text-primary">{cadence}</dd>
-              </div>
-              {t.nextOccurrence && (
-                <div data-testid="client-maintenance-card-row-next-due">
-                  <dt className="text-label text-text-secondary">Next due</dt>
-                  <dd
-                    className="text-row text-text-primary font-medium"
-                    data-testid="client-maintenance-card-next-due"
-                  >
-                    {t.nextOccurrence}
-                  </dd>
-                </div>
-              )}
-              {t.startDate && (
-                <div data-testid="client-maintenance-card-row-started">
-                  <dt className="text-label text-text-secondary">Started</dt>
-                  <dd className="text-row text-text-primary">{t.startDate}</dd>
-                </div>
-              )}
-              {serviceWindow && (
-                <div data-testid="client-maintenance-card-row-window">
-                  <dt className="text-label text-text-secondary">Window</dt>
-                  <dd className="text-row text-text-primary">{serviceWindow}</dd>
-                </div>
-              )}
-              {billingLine && (
-                <div data-testid="client-maintenance-card-row-billing">
-                  <dt className="text-label text-text-secondary">Billing</dt>
-                  <dd className="text-row text-text-primary capitalize">{billingLine}</dd>
-                </div>
-              )}
-              {locationLine && (
-                <div data-testid="client-maintenance-card-row-location">
-                  <dt className="text-label text-text-secondary">Location</dt>
-                  <dd className="text-row text-text-primary line-clamp-2 break-words">
-                    {locationLine}
-                  </dd>
-                </div>
-              )}
-            </dl>
-
-            {/* Optional plan description — canonical helper token,
-                muted color, capped at 3 lines so the card stays
-                compact while still being readable. */}
-            {t.description && t.description.trim().length > 0 && (
-              <p className="text-helper text-text-secondary line-clamp-3">
-                {t.description}
-              </p>
-            )}
-
-            {/* Bottom-right action — the only navigation affordance
-                on the card. Canonical caption-size copy + canonical
-                green focus ring. */}
-            <div className="pt-1 flex justify-end">
-              <Link
-                href={`/pm/${t.id}`}
-                aria-label={`View or edit maintenance plan ${t.title}`}
-                title="View / Edit in Maintenance"
-                className="inline-flex items-center gap-1 text-caption font-medium text-[#76B054] hover:text-[#5e9043] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 rounded px-1 py-0.5"
-                data-testid="client-maintenance-card-action"
-              >
-                View / Edit in Maintenance
-                <ChevronRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
-          </RailContentCard>
-          </li>
-        );
-      })}
-    </ul>
+    <RailPanelRenderer
+      panel={buildClientMaintenancePanelDescriptor(matching)}
+      testIdPrefix="client-side"
+    />
   );
 }
 
@@ -3136,6 +3211,77 @@ interface ClientActivityPanelBodyProps {
   scopeType: ScopeType;
   customerCompanyId: string | null;
   locationId: string | null;
+}
+
+// 2026-05-07 Phase 3 (re-recovery): one row in the rail Activity feed.
+// `summary` is intentionally NOT consumed for display — server emitters
+// historically interpolated raw UUIDs into it. Per-row copy is rebuilt
+// from `eventType` + `meta` via `formatRailActivity` inside the
+// descriptor builder below.
+interface ClientActivityFeedItem {
+  id: string;
+  eventType: string;
+  summary: string | null;
+  meta: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+// 2026-05-07 Phase 3 (re-recovery): Activity panel migrated onto the
+// data-driven `<RailPanelRenderer>` pipeline. The descriptor carries
+// per-row formatted copy (no raw event_type, no server summary, no
+// UUIDs); card chrome / typography / compact spacing live in the
+// renderer. Cards are non-clickable.
+function buildClientActivityPanelDescriptor(
+  items: ClientActivityFeedItem[],
+): RailPanelDescriptor {
+  if (items.length === 0) {
+    return {
+      kind: "list",
+      cards: [],
+      testId: "client-activity-panel-body",
+      spacing: "compact",
+      empty: { message: "No activity yet." },
+    };
+  }
+
+  const cards: RailCardDescriptor[] = items.map((it) => {
+    // user-facing copy is rebuilt from event_type + meta. Never render
+    // the raw event_type ("Note.Created") or the server summary (which
+    // used to interpolate raw locationId UUIDs).
+    const display = formatRailActivity({
+      eventType: it.eventType,
+      summary: it.summary,
+      meta: it.meta,
+    });
+    const timestamp = format(
+      new Date(it.createdAt),
+      "MMM d, yyyy h:mm a",
+    );
+    const metaLine = display.locationName
+      ? `${timestamp} · ${display.locationName}`
+      : timestamp;
+    return {
+      key: it.id,
+      testId: "client-activity-row",
+      title: {
+        text: display.title,
+        as: "span",
+        testId: "client-activity-row-title",
+      },
+      body: display.body ?? undefined,
+      bodyClamp: display.body ? 2 : undefined,
+      bodyTestId: "client-activity-row-body",
+      meta: metaLine,
+      metaTestId: "client-activity-row-meta",
+    };
+  });
+
+  return {
+    kind: "list",
+    cards,
+    testId: "client-activity-panel-body",
+    spacing: "compact",
+  };
 }
 
 function ClientActivityPanelBody({
@@ -3151,16 +3297,7 @@ function ClientActivityPanelBody({
     scopeType === "location" ? locationId : customerCompanyId;
 
   const { data: feed, isLoading } = useQuery<{
-    items: Array<{
-      id: string;
-      eventType: string;
-      // `summary` is intentionally NOT consumed for display — server
-      // emitters historically interpolated raw UUIDs into it. Rail
-      // copy is rebuilt from `eventType` + `meta` via formatRailActivity.
-      summary: string | null;
-      meta: Record<string, unknown> | null;
-      createdAt: string;
-    }>;
+    items: ClientActivityFeedItem[];
   }>({
     queryKey: ["/api/activity", entityType, entityId, "rail"],
     queryFn: () =>
@@ -3171,70 +3308,18 @@ function ClientActivityPanelBody({
 
   if (isLoading) {
     return (
-      <div className="py-6 flex justify-center" data-testid="client-activity-loading">
-        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
-      </div>
+      <RailPanelRenderer
+        panel={{ kind: "loading", testId: "client-activity-loading" }}
+        testIdPrefix="client-side"
+      />
     );
   }
 
-  const items = feed?.items ?? [];
-  if (items.length === 0) {
-    return <RailEmptyState message="No activity yet." />;
-  }
-
   return (
-    <ul
-      className="space-y-2 list-none p-0 m-0"
-      data-testid="client-activity-panel-body"
-    >
-      {items.map((it) => {
-        // 2026-05-07 RALPH — user-facing copy is rebuilt from
-        // event_type + meta. Never render the raw event_type
-        // ("Note.Created") or the server summary (which used to
-        // interpolate raw locationId UUIDs).
-        const display = formatRailActivity({
-          eventType: it.eventType,
-          summary: it.summary,
-          meta: it.meta,
-        });
-        const timestamp = format(
-          new Date(it.createdAt),
-          "MMM d, yyyy h:mm a",
-        );
-        const metaLine = display.locationName
-          ? `${timestamp} · ${display.locationName}`
-          : timestamp;
-        return (
-          <li key={it.id}>
-            <RailContentCard
-              testId="client-activity-row"
-              className="space-y-1"
-            >
-              <div
-                className="text-row font-medium text-text-primary"
-                data-testid="client-activity-row-title"
-              >
-                {display.title}
-              </div>
-              {display.body && (
-                <div
-                  className="text-row text-text-primary line-clamp-2 break-words"
-                  data-testid="client-activity-row-body"
-                >
-                  {display.body}
-                </div>
-              )}
-              <div
-                className="text-caption text-text-secondary"
-                data-testid="client-activity-row-meta"
-              >
-                {metaLine}
-              </div>
-            </RailContentCard>
-          </li>
-        );
-      })}
-    </ul>
+    <RailPanelRenderer
+      panel={buildClientActivityPanelDescriptor(feed?.items ?? [])}
+      testIdPrefix="client-side"
+    />
   );
 }
 
@@ -3992,111 +4077,116 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Contact card — compact layout. Hierarchy: name (primary) →
- *  jobTitle (subtitle) → phone/email (secondary) → location labels /
- *  role badges (tertiary). Primary shown as a star icon.
- *  2026-05-03: the entire card is now the click target. The
- *  hover-revealed Pencil button was removed; users tap (or focus +
- *  Enter/Space) the card itself to open the canonical
- *  ContactFormDialog. Native `<button>` semantics provide both
- *  accessible keyboard activation and discoverability. When `onEdit`
- *  is omitted, the card renders as a plain `<div>` (no interactivity). */
-function ContactCard({
-  contact, onEdit, showScope = false, assignedLocationNames,
-}: {
+ *  jobTitle (secondary) → phone/email (meta row 1) → location label
+ *  (meta row 2) → role chips (chipRow). Primary shown as a star icon
+ *  in title.trailing; "Company" scope chip when applicable.
+ *
+ *  2026-05-03: the entire card is the click target. When `onEdit` is
+ *  supplied the renderer mounts the clickable variant of
+ *  `<RailContentCard>` (a real `<button>` with hover + focus-visible
+ *  affordances). When omitted, the card renders read-only.
+ *
+ *  2026-05-08 Phase 6 (re-recovery): migrated to the data-driven
+ *  `<RailPanelRenderer>` pipeline. `ContactCard` is now a thin mount
+ *  on a `kind: "single"` panel; the descriptor builder owns title +
+ *  trailing items + meta rows + chip row composition.
+ */
+
+interface ContactCardProps {
   contact: ClientContact;
   onEdit?: (c: ClientContact) => void;
   showScope?: boolean;
   /** Location names this person is assigned to (company cards only) */
   assignedLocationNames?: string[];
-}) {
+}
+
+function buildClientContactDescriptor({
+  contact,
+  onEdit,
+  showScope,
+  assignedLocationNames,
+}: {
+  contact: ClientContact;
+  onEdit?: (c: ClientContact) => void;
+  showScope?: boolean;
+  assignedLocationNames?: string[];
+}): RailCardDescriptor {
   const nc = normalizeContact(contact);
 
-  // Format location names for display: "Oakville, RBC Plaza" or "Oakville, RBC Plaza +1 more"
+  // Format location names for display: "Oakville, RBC Plaza" or
+  // "Oakville, RBC Plaza +1 more". Cap at 2 visible.
   const MAX_VISIBLE_LOCATIONS = 2;
-  const locationLabel = assignedLocationNames && assignedLocationNames.length > 0
-    ? assignedLocationNames.length <= MAX_VISIBLE_LOCATIONS
-      ? assignedLocationNames.join(", ")
-      : `${assignedLocationNames.slice(0, MAX_VISIBLE_LOCATIONS).join(", ")} +${assignedLocationNames.length - MAX_VISIBLE_LOCATIONS} more`
-    : null;
+  const locationLabel =
+    assignedLocationNames && assignedLocationNames.length > 0
+      ? assignedLocationNames.length <= MAX_VISIBLE_LOCATIONS
+        ? assignedLocationNames.join(", ")
+        : `${assignedLocationNames.slice(0, MAX_VISIBLE_LOCATIONS).join(", ")} +${assignedLocationNames.length - MAX_VISIBLE_LOCATIONS} more`
+      : null;
 
-  // Body is identical between the interactive and read-only render
-  // paths; we just swap the wrapper element. No nested interactive
-  // elements, so the wrapping <button> stays HTML-valid.
-  const body = (
-    <>
-      {/* Row 1: Name (+ "(jobTitle)") + primary star + scope badge.
-          2026-05-03: jobTitle moved inline next to the name in
-          parentheses to recover the vertical space the previous
-          subtitle row took. The combined text shares one truncate
-          line so very long names + long job titles still fit
-          gracefully. */}
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="font-semibold text-slate-900 truncate min-w-0">
-          {nc.displayName}
-          {nc.jobTitle && (
-            <span className="font-normal text-slate-500"> ({nc.jobTitle})</span>
-          )}
-        </span>
-        {nc.isPrimary && (
-          <Star
-            className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0"
-            aria-label="Primary"
-          />
-        )}
-        {showScope && nc.scope === "company" && (
-          <Badge variant="secondary" className="text-xs px-1 py-0 flex-shrink-0">Company</Badge>
-        )}
-      </div>
-      {/* Row 2: Phone / Email — compact inline. */}
-      {(nc.phone || nc.email) && (
-        <div className="flex items-center gap-3 text-muted-foreground mt-1">
-          {nc.phone && <span className="flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-slate-400" />{nc.phone}</span>}
-          {nc.email && <span className="flex items-center gap-1 truncate"><Mail className="h-2.5 w-2.5 text-slate-400" />{nc.email}</span>}
-        </div>
-      )}
-      {/* Row 3a: Assigned location labels (company cards) */}
-      {locationLabel && (
-        <div className="flex items-center gap-1 text-muted-foreground mt-1">
-          <MapPin className="h-2.5 w-2.5 text-slate-400 flex-shrink-0" />
-          <span className="truncate">{locationLabel}</span>
-        </div>
-      )}
-      {/* Row 3b: Role chips — only if roles exist. */}
-      {nc.roles.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1">
-          {nc.roles.map(r => (
-            <span
-              key={r}
-              className="text-xs px-1.5 py-0.5 rounded bg-slate-50 text-slate-600 capitalize"
-            >
-              {r}
-            </span>
-          ))}
-        </div>
-      )}
-    </>
-  );
-
-  const baseClasses = "text-xs px-2 py-1.5 border border-slate-200 rounded-md transition-colors";
-
-  if (!onEdit) {
-    return <div className={baseClasses}>{body}</div>;
+  // Title trailing — heterogeneous (icon + chip). Star comes first
+  // (primary indicator), Company chip second when applicable.
+  const trailing: RailTitleTrailing[] = [];
+  if (nc.isPrimary) {
+    trailing.push({ kind: "icon", icon: Star, ariaLabel: "Primary" });
+  }
+  if (showScope && nc.scope === "company") {
+    trailing.push({ kind: "chip", chip: { text: "Company" } });
   }
 
+  // Phone + Email render as a single meta row with two icon-prefixed
+  // items (renderer applies `gap-3` between items in multi-item rows).
+  const phoneEmailItems: RailMetaItem[] = [];
+  if (nc.phone) phoneEmailItems.push({ icon: Phone, text: nc.phone });
+  if (nc.email) phoneEmailItems.push({ icon: Mail, text: nc.email, truncate: true });
+
+  const metaRows: RailMetaRowDescriptor[] = [];
+  if (phoneEmailItems.length > 0) {
+    metaRows.push({ items: phoneEmailItems });
+  }
+  if (locationLabel) {
+    metaRows.push({
+      items: [{ icon: MapPin, text: locationLabel, truncate: true }],
+    });
+  }
+
+  return {
+    key: contact.id,
+    onClick: onEdit ? () => onEdit(contact) : undefined,
+    testId: onEdit ? "contact-card-edit" : "contact-card",
+    ariaLabel: onEdit ? `Edit contact ${nc.displayName}` : undefined,
+    title: {
+      text: nc.displayName,
+      as: "span",
+      secondary: nc.jobTitle ? `(${nc.jobTitle})` : undefined,
+      trailing: trailing.length > 0 ? trailing : undefined,
+    },
+    metaRows: metaRows.length > 0 ? metaRows : undefined,
+    chipRow:
+      nc.roles.length > 0
+        ? nc.roles.map((r) => ({ text: r, className: "capitalize" }))
+        : undefined,
+  };
+}
+
+function ContactCard({
+  contact,
+  onEdit,
+  showScope = false,
+  assignedLocationNames,
+}: ContactCardProps) {
   return (
-    <button
-      type="button"
-      onClick={() => onEdit(contact)}
-      title="Edit contact"
-      data-testid="contact-card-edit"
-      className={cn(
-        baseClasses,
-        "block w-full text-left cursor-pointer hover:bg-slate-50/60",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 focus-visible:border-[#76B054]/60",
-      )}
-    >
-      {body}
-    </button>
+    <RailPanelRenderer
+      panel={{
+        kind: "single",
+        card: buildClientContactDescriptor({
+          contact,
+          onEdit,
+          showScope,
+          assignedLocationNames,
+        }),
+      }}
+      testIdPrefix="client-side"
+    />
   );
 }
 

@@ -16,6 +16,10 @@
  *   - Past due           → mode="past_due"
  *   - Unscheduled        → mode="unscheduled"
  *   - Requires attention → mode="requires_attention"
+ *   - Invoices not sent  → mode="invoices_not_sent"  (2026-05-07 — absorbed
+ *     from the retired Needs Attention card; routed through the same
+ *     shared DashboardActionModal. Lower operational urgency, so it
+ *     renders at the bottom of the canonical row order.)
  *
  * Card chrome routes through the canonical `<CardShell>`. Rows with
  * zero count remain visible but de-emphasized so the card height
@@ -31,6 +35,7 @@ import {
   Briefcase,
   Calendar,
   ChevronDown,
+  FileText,
   Receipt,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -47,20 +52,29 @@ export type OperationalAlertRowKey =
   | "ready_to_invoice"
   | "past_due"
   | "unscheduled"
-  | "requires_attention";
+  | "requires_attention"
+  | "invoices_not_sent";
 
 interface OperationalAlertsCardProps {
   readyToInvoiceCount: number;
   pastDueCount: number;
   unscheduledCount: number;
   requiresAttentionCount: number;
+  /**
+   * 2026-05-07: count of draft invoices waiting to be sent. Absorbed
+   * from the retired Needs Attention card. Optional so callers that
+   * don't have the financial-summary query in scope can omit it (the
+   * row simply renders muted at 0).
+   */
+  invoicesNotSentCount?: number;
   isLoading?: boolean;
   /** Same handler the top KPI tile + Jobs card use — single modal instance. */
   onOpenActionModal: (mode: DashboardActionMode) => void;
   /**
    * Optional row order. When omitted, falls back to the historical
-   * ["ready_to_invoice", "past_due", "unscheduled", "requires_attention"].
-   * Unknown keys are ignored; missing keys are dropped.
+   * ["ready_to_invoice", "past_due", "unscheduled", "requires_attention",
+   * "invoices_not_sent"]. Unknown keys are ignored; missing keys are
+   * dropped.
    */
   order?: OperationalAlertRowKey[];
 }
@@ -80,6 +94,7 @@ const DEFAULT_ALERT_ORDER: OperationalAlertRowKey[] = [
   "past_due",
   "unscheduled",
   "requires_attention",
+  "invoices_not_sent",
 ];
 
 export function OperationalAlertsCard({
@@ -87,6 +102,7 @@ export function OperationalAlertsCard({
   pastDueCount,
   unscheduledCount,
   requiresAttentionCount,
+  invoicesNotSentCount = 0,
   isLoading,
   onOpenActionModal,
   order,
@@ -126,6 +142,19 @@ export function OperationalAlertsCard({
       mode: "requires_attention",
       urgent: requiresAttentionCount > 0,
     },
+    // 2026-05-07: absorbed from the retired Needs Attention card.
+    // Lower operational urgency than scheduling/dispatch issues, so it
+    // sits at the bottom of the canonical order. Slate icon (not red /
+    // amber) signals "billing inbox" rather than "field operations
+    // needs help right now".
+    invoices_not_sent: {
+      key: "invoices_not_sent",
+      label: "Invoices not sent",
+      count: invoicesNotSentCount,
+      icon: FileText,
+      iconColor: "text-slate-500",
+      mode: "invoices_not_sent",
+    },
   };
 
   const rows: AlertRow[] = (order ?? DEFAULT_ALERT_ORDER)
@@ -137,8 +166,10 @@ export function OperationalAlertsCard({
   // Once the user toggles the chevron, their preference sticks for the
   // session and the auto-rule no longer applies (no fight between user
   // intent and incoming SSE updates).
+  // 2026-05-07: invoicesNotSentCount folded into the total so the card
+  // doesn't claim "no alerts" while billing has unsent invoices waiting.
   const totalCount =
-    readyToInvoiceCount + pastDueCount + unscheduledCount + requiresAttentionCount;
+    readyToInvoiceCount + pastDueCount + unscheduledCount + requiresAttentionCount + invoicesNotSentCount;
   const hasAlerts = totalCount > 0;
   const userToggledRef = useRef(false);
   const [manualCollapsed, setManualCollapsed] = useState(false);
@@ -221,7 +252,10 @@ export function OperationalAlertsCard({
         >
           {isLoading ? (
             <div className="px-4 py-3 space-y-2">
-              {[0, 1, 2, 3].map((i) => (
+              {/* 2026-05-07: 5 skeleton rows match the canonical row count
+                  after Needs Attention's "Invoices not sent" row was
+                  absorbed into this card. */}
+              {[0, 1, 2, 3, 4].map((i) => (
                 <Skeleton key={i} className="h-6 w-full" />
               ))}
             </div>

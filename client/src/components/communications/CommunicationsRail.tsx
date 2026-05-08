@@ -22,7 +22,6 @@ import {
   History,
   Users,
   MessagesSquare,
-  FileText,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -43,13 +42,15 @@ interface RailItem {
   icon: LucideIcon;
 }
 
+// 2026-05-07 Phase 4 — six canonical operational modules. Order matches
+// the spec; the canned-replies surface was retired pending a real
+// product home for it.
 const RAIL_ITEMS: readonly RailItem[] = [
   { module: "inbox", label: "Inbox", icon: Inbox },
   { module: "calls", label: "Calls", icon: Phone },
   { module: "call_history", label: "Call History", icon: History },
   { module: "contacts", label: "Contacts", icon: Users },
   { module: "team_chat", label: "Team Chat", icon: MessagesSquare },
-  { module: "templates", label: "Templates", icon: FileText },
   { module: "settings", label: "Settings", icon: Settings },
 ];
 

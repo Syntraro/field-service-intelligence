@@ -245,6 +245,24 @@ export default function DispatchPreview() {
     count?: number;
   } | null>(null);
 
+  // ── 2026-05-07 RALPH (technician time off): assignment-onto-off-tech
+  // confirmation dialog. Mirrors `offShiftConfirm` so the existing
+  // pattern stays canonical. The trigger fires from two paths:
+  //   1. Pre-flight client check inside handleDragEnd / handleResize:
+  //      iterates `timeOffByTech` against the target tech + range.
+  //      If overlap, defers the mutation and shows this dialog.
+  //   2. Server-side 409 with code: "TIME_OFF_CONFLICT" (for the
+  //      stale-client case where the local time-off cache missed
+  //      a freshly created entry). The mutation hook surfaces the
+  //      dialog post-hoc by reading the response payload.
+  // Override path: the action retries the mutation with
+  // `overrideTimeOffConflict: true` which the server respects.
+  const [timeOffConfirm, setTimeOffConfirm] = useState<{
+    action: () => void;
+    techName: string;
+    reason?: string;
+  } | null>(null);
+
   // ── 2026-03-30: Multi-day visit confirmation dialog ──
   // Warns before a drop/resize would cause a visit to cross midnight into the next day.
   const [multiDayConfirm, setMultiDayConfirm] = useState<{
@@ -322,8 +340,168 @@ export default function DispatchPreview() {
   // job-centric DispatchVisit shape because they have no jobNumber,
   // no lifecycle, no drag/resize. Click-through goes to /leads/:id.
   const leadVisits = activeData.leadVisits ?? [];
+  // 2026-05-07 RALPH (technician time off): time-off entries
+  // overlapping the visible range. The day adapter narrows to today;
+  // week / month adapters return the full visible range. The lane
+  // shading + sidebar pill + drag-confirm warning all read this.
+  const timeOffEntries = (activeData as any).timeOff ?? [];
   const isLoading = activeData.isLoading;
   const error = activeData.error;
+
+  // Per-tech map of time-off entries for fast lane lookup.
+  const timeOffByTech = useMemo(() => {
+    const m = new Map<string, Array<{
+      id: string;
+      startsAt: string;
+      endsAt: string;
+      reason: string;
+      allDay: boolean;
+    }>>();
+    for (const t of timeOffEntries) {
+      const arr = m.get(t.technicianUserId) ?? [];
+      arr.push({
+        id: t.id,
+        startsAt: t.startsAt,
+        endsAt: t.endsAt,
+        reason: t.reason,
+        allDay: t.allDay,
+      });
+      m.set(t.technicianUserId, arr);
+    }
+    return m;
+  }, [timeOffEntries]);
+
+  // Set of tech IDs with any time-off in the visible range — used
+  // by the sidebar to paint an "Off" pill next to the tech name.
+  const techsOnTimeOff = useMemo(
+    () => new Set<string>(timeOffEntries.map((t: any) => t.technicianUserId)),
+    [timeOffEntries],
+  );
+
+  // Per-day Set<techId> for week + month chip rendering. Each
+  // `dayKey` (YYYY-MM-DD) maps to the set of unique techs that
+  // have any time-off entry overlapping that calendar day. The
+  // chip shows `set.size`. Computed once per timeOffEntries
+  // change so it doesn't recompute on every drag tick.
+  const techsOnTimeOffByDay = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const t of timeOffEntries as any[]) {
+      const start = new Date(t.startsAt);
+      const end = new Date(t.endsAt);
+      // Iterate each calendar day the entry covers (clamped to a
+      // sane upper bound so a malformed multi-year row can't loop
+      // forever — capacity already clips reads to the visible
+      // range).
+      const cursor = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate(),
+      );
+      let safety = 0;
+      while (cursor < end && safety < 366) {
+        const y = cursor.getFullYear();
+        const mo = String(cursor.getMonth() + 1).padStart(2, "0");
+        const d = String(cursor.getDate()).padStart(2, "0");
+        const key = `${y}-${mo}-${d}`;
+        const set = m.get(key) ?? new Set<string>();
+        set.add(t.technicianUserId);
+        m.set(key, set);
+        cursor.setDate(cursor.getDate() + 1);
+        safety++;
+      }
+    }
+    return m;
+  }, [timeOffEntries]);
+
+  // 2026-05-07 RALPH (technician time off): per-day list of RICH
+  // entries for the canonical week + month chip rendering. Each
+  // entry carries the tech NAME (resolved from the technicians
+  // roster) so the chip can render "Time off · Vacation · …"
+  // alongside the tech's name without a downstream lookup. Day
+  // iteration uses the same 366-day safety bound as
+  // `techsOnTimeOffByDay`.
+  const timeOffEntriesByDay = useMemo(() => {
+    const techNameById = new Map<string, string>();
+    for (const t of technicians) techNameById.set(t.id, t.name);
+    const m = new Map<
+      string,
+      Array<{
+        id: string;
+        technicianUserId: string;
+        technicianName: string;
+        reason: string;
+        startsAt: string;
+        endsAt: string;
+        allDay: boolean;
+      }>
+    >();
+    for (const t of timeOffEntries as any[]) {
+      const start = new Date(t.startsAt);
+      const end = new Date(t.endsAt);
+      const cursor = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate(),
+      );
+      let safety = 0;
+      while (cursor < end && safety < 366) {
+        const y = cursor.getFullYear();
+        const mo = String(cursor.getMonth() + 1).padStart(2, "0");
+        const d = String(cursor.getDate()).padStart(2, "0");
+        const key = `${y}-${mo}-${d}`;
+        const arr = m.get(key) ?? [];
+        arr.push({
+          id: t.id,
+          technicianUserId: t.technicianUserId,
+          technicianName:
+            techNameById.get(t.technicianUserId) ?? "Technician",
+          reason: t.reason,
+          startsAt: t.startsAt,
+          endsAt: t.endsAt,
+          allDay: t.allDay,
+        });
+        m.set(key, arr);
+        cursor.setDate(cursor.getDate() + 1);
+        safety++;
+      }
+    }
+    return m;
+  }, [timeOffEntries, technicians]);
+
+  // 2026-05-07 RALPH (technician time off): preflight overlap
+  // check used by drag/drop handlers BEFORE issuing the
+  // reschedule mutation. Returns the conflicting time-off entries
+  // (empty array = no conflict, fire away). The resolved tech IDs
+  // are tested against `timeOffByTech` for any interval that
+  // overlaps the requested [startISO, endISO) window.
+  const checkTimeOffOverlap = useCallback(
+    (techIds: string[], startISO: string, endISO: string) => {
+      if (!techIds.length) return [] as Array<typeof timeOffEntries[number]>;
+      const startMs = Date.parse(startISO);
+      const endMs = Date.parse(endISO);
+      if (!isFinite(startMs) || !isFinite(endMs) || endMs <= startMs) {
+        return [] as Array<typeof timeOffEntries[number]>;
+      }
+      const matches: Array<typeof timeOffEntries[number]> = [];
+      for (const techId of techIds) {
+        const list = timeOffByTech.get(techId);
+        if (!list) continue;
+        for (const entry of list) {
+          const entryStart = Date.parse(entry.startsAt);
+          const entryEnd = Date.parse(entry.endsAt);
+          // Canonical overlap predicate: a.start < b.end && a.end > b.start.
+          if (entryStart < endMs && entryEnd > startMs) {
+            matches.push({
+              ...entry,
+              technicianUserId: techId,
+            } as any);
+          }
+        }
+      }
+      return matches;
+    },
+    [timeOffByTech],
+  );
 
   // ── Mutations ──
   // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
@@ -848,6 +1026,41 @@ export default function DispatchPreview() {
                 : techChanged && dropData.technicianId
                   ? [dropData.technicianId]
                   : undefined;
+            // 2026-05-07 RALPH (technician time off): preflight
+            // overlap check. If the resolved (tech, range) overlaps
+            // a known time-off entry, defer the mutation behind the
+            // confirmation dialog. Cancel → no-op. Confirm →
+            // re-issue the mutation with overrideTimeOffConflict=true
+            // so the server-side check (the safety net) accepts the
+            // assignment without bouncing 409.
+            const effectiveTechIds = isDropOnUnassigned
+              ? []
+              : crewChange ?? [dragData.technicianId].filter(Boolean);
+            const tofEntries = checkTimeOffOverlap(
+              effectiveTechIds as string[],
+              startAt,
+              endAt,
+            );
+            if (tofEntries.length > 0) {
+              const offTech = sortedTechnicians.find(
+                (t) => t.id === tofEntries[0].technicianUserId,
+              );
+              setTimeOffConfirm({
+                techName: offTech?.name ?? "Technician",
+                reason: tofEntries[0].reason,
+                action: () => {
+                  rescheduleVisit({
+                    visitId: vid,
+                    jobId: dragData.jobId,
+                    assignedTechnicianIds: crewChange,
+                    startAt,
+                    endAt,
+                    overrideTimeOffConflict: true,
+                  });
+                },
+              });
+              return;
+            }
             rescheduleVisit({
               visitId: vid,
               jobId: dragData.jobId,
@@ -1546,11 +1759,16 @@ export default function DispatchPreview() {
           ) : activeView === "day" ? (
             /* ── Day View ── */
             <>
-              <DispatchTechnicianSidebar technicians={visibleTechs} />
+              <DispatchTechnicianSidebar
+                technicians={visibleTechs}
+                techsOnTimeOff={techsOnTimeOff}
+              />
               <DispatchTimeline
                 technicians={visibleTechs}
                 visitsByTech={visitsByTech}
                 tasksByTech={tasksByTech}
+                timeOffByTech={timeOffByTech}
+                dayDateISO={selectedDate.toISOString()}
                 savingIds={savingIds}
                 selectedVisitId={selectedVisitId}
                 selectedTaskId={selectedTaskId}
@@ -1612,6 +1830,8 @@ export default function DispatchPreview() {
                 onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
                 onResize={handleWeekResize}
                 show24Hour={show24Hour}
+                techsOnTimeOffByDay={techsOnTimeOffByDay}
+                timeOffEntriesByDay={timeOffEntriesByDay}
               />
               {/* Right region: Unscheduled (always) + Map (additive) — Week view */}
               <DispatchUnscheduledPanel
@@ -1643,6 +1863,8 @@ export default function DispatchPreview() {
                 selectedVisitId={selectedVisitId}
                 onSelectVisit={handleSelectVisit}
                 onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
+                techsOnTimeOffByDay={techsOnTimeOffByDay}
+                timeOffEntriesByDay={timeOffEntriesByDay}
               />
               {/* Right region: Unscheduled (always) — Month view */}
               <DispatchUnscheduledPanel
@@ -1694,6 +1916,48 @@ export default function DispatchPreview() {
           </div>
         )}
       </DragOverlay>
+
+      {/* 2026-05-07 RALPH (technician time off): assignment-onto-off
+          confirmation. Mirrors the off-shift dialog right below it.
+          Cancel → no-op. Assign anyway → invokes the deferred
+          mutation, which forwards `overrideTimeOffConflict: true` to
+          the server so the time-off check is bypassed. */}
+      <AlertDialog
+        open={!!timeOffConfirm}
+        onOpenChange={(open) => {
+          if (!open) setTimeOffConfirm(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dispatch-time-off-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Assign visit on technician's time off?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{timeOffConfirm?.techName}</strong> is marked off
+              {timeOffConfirm?.reason ? ` (${timeOffConfirm.reason})` : ""}{" "}
+              during this time. Assign the visit anyway?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setTimeOffConfirm(null)}
+              data-testid="dispatch-time-off-confirm-cancel"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                timeOffConfirm?.action();
+                setTimeOffConfirm(null);
+              }}
+              data-testid="dispatch-time-off-confirm-accept"
+            >
+              Assign anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Off-shift assignment confirmation dialog */}
       <AlertDialog open={!!offShiftConfirm} onOpenChange={(open) => { if (!open) setOffShiftConfirm(null); }}>

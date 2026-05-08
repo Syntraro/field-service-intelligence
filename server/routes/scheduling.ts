@@ -11,6 +11,12 @@ import { validateSchema } from "../utils/validationHelpers";
 import { schedulingRepository, DEFAULT_CALENDAR_START_HOUR, DEFAULT_CALENDAR_END_HOUR, getDaySummary } from "../storage/scheduling";
 import { jobRepository } from "../storage/jobs"; // Needed for notification client name lookup
 import { jobVisitsRepository } from "../storage/jobVisits";
+// 2026-05-07 RALPH (technician time off): preflight check on the
+// reschedule path. Returns the overlapping rows when an assignment
+// + time range conflicts with a tech's time off. Wrapped in
+// try/catch downstream so a missing migration doesn't break
+// scheduling.
+import { technicianTimeOffRepository } from "../storage/technicianTimeOff";
 import { companyRepository } from "../storage/company";
 import { teamRepository } from "../storage/team";
 // 2026-01-30: Removed validateSchedule import - conflict checking removed for performance
@@ -265,6 +271,12 @@ const rescheduleVisitSchema = z.object({
   version: z.number().int(),
   // Visit Reschedule Architecture: explicit mode for conflict resolution
   mode: z.enum(['replace', 'complete_and_new']).optional(),
+  // 2026-05-07 RALPH (technician time off): when true, the server's
+  // time-off conflict check is bypassed. Default false. The client
+  // sets this AFTER the user confirms an "Assign anyway" dialog so
+  // managers can intentionally book over a tech's time off without
+  // being permanently blocked.
+  overrideTimeOffConflict: z.boolean().optional(),
 }).refine((data) => {
   if (data.allDay) return true;
   if (data.startAt && data.endAt) {
@@ -761,6 +773,97 @@ router.patch(
         : data.assignedTechnicianIds === null
           ? null
           : data.assignedTechnicianIds;
+
+    // 2026-05-07 RALPH (technician time off): preflight conflict
+    // check. We compute the EFFECTIVE crew + time range that the
+    // reschedule will produce, then ask the time-off repository
+    // whether any of those (tech, range) pairs overlap an existing
+    // time-off row. If there's a conflict AND the client did NOT
+    // pass `overrideTimeOffConflict: true`, return 409 with a
+    // discriminated `TIME_OFF_CONFLICT` code so the client can
+    // surface a confirm dialog and retry with override=true.
+    //
+    // Wrapped in try/catch so a missing `technician_time_off`
+    // table (migration not yet applied) cannot break scheduling —
+    // matches the same defensive pattern in capacity.ts.
+    if (data.overrideTimeOffConflict !== true) {
+      try {
+        const existingVisit = await jobVisitsRepository.getJobVisit(
+          companyId,
+          visitId,
+        );
+        if (existingVisit) {
+          // Effective crew: explicit input wins; otherwise inherit
+          // from the persisted visit row.
+          const effectiveCrew: string[] =
+            rescheduleCrewInput === undefined
+              ? Array.isArray(existingVisit.assignedTechnicianIds)
+                ? existingVisit.assignedTechnicianIds
+                : []
+              : rescheduleCrewInput === null
+                ? []
+                : rescheduleCrewInput;
+          // Effective time range: explicit computed values win;
+          // otherwise inherit from the persisted visit row.
+          const effectiveStart =
+            computedStartAt ??
+            (existingVisit.scheduledStart instanceof Date
+              ? existingVisit.scheduledStart
+              : existingVisit.scheduledStart
+                ? new Date(existingVisit.scheduledStart)
+                : null);
+          const effectiveEnd =
+            computedEndAt ??
+            (existingVisit.scheduledEnd instanceof Date
+              ? existingVisit.scheduledEnd
+              : existingVisit.scheduledEnd
+                ? new Date(existingVisit.scheduledEnd)
+                : null);
+          if (
+            effectiveCrew.length > 0 &&
+            effectiveStart instanceof Date &&
+            effectiveEnd instanceof Date &&
+            effectiveEnd > effectiveStart
+          ) {
+            const overlapping =
+              await technicianTimeOffRepository.listOverlapping(companyId, {
+                windowStart: effectiveStart,
+                windowEnd: effectiveEnd,
+              });
+            const conflicts = overlapping.filter((row) =>
+              effectiveCrew.includes(row.technicianUserId),
+            );
+            if (conflicts.length > 0) {
+              return res.status(409).json({
+                error:
+                  "Cannot assign visit to technician on time off without override.",
+                code: "TIME_OFF_CONFLICT",
+                conflicts: conflicts.map((c) => ({
+                  id: c.id,
+                  technicianUserId: c.technicianUserId,
+                  reason: c.reason,
+                  startsAt:
+                    c.startsAt instanceof Date
+                      ? c.startsAt.toISOString()
+                      : String(c.startsAt),
+                  endsAt:
+                    c.endsAt instanceof Date
+                      ? c.endsAt.toISOString()
+                      : String(c.endsAt),
+                  allDay: c.allDay,
+                })),
+              });
+            }
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reschedule] time-off preflight failed; proceeding without conflict check. ${msg}`,
+        );
+      }
+    }
 
     let result;
     try {

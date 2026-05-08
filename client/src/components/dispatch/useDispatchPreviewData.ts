@@ -16,13 +16,21 @@ import type {
   Technician,
 } from "./dispatchPreviewTypes";
 import { getDispatchDayKey } from "./dispatchPreviewUtils";
-import { useDispatchRangeData, widenStartForAllDay } from "./dispatchDataCore";
+import {
+  useDispatchRangeData,
+  widenStartForAllDay,
+  type DispatchTimeOffEntry,
+} from "./dispatchDataCore";
 
 export interface DispatchPreviewData {
   scheduledVisits: DispatchVisit[];
   unscheduledVisits: DispatchVisit[];
   scheduledTasks: DispatchTask[];
   leadVisits: DispatchLeadVisit[];
+  /** 2026-05-07 RALPH (technician time off): time-off entries
+   *  overlapping THIS day. Empty array when the endpoint fails or
+   *  no entries exist for any tech today. */
+  timeOff: DispatchTimeOffEntry[];
   technicians: Technician[];
   isLoading: boolean;
   error: Error | null;

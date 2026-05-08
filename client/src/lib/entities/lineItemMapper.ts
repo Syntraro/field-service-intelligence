@@ -131,10 +131,23 @@ export function catalogItemToDraft(
   item: CatalogItem,
   options: CatalogToDraftOptions = {},
 ): LineItemDraft {
+  // 2026-05-07: now that the line-fetch routes LEFT JOIN `items` and
+  // surface `productName` per line, the row renderer uses the catalog
+  // NAME for the primary label. The line's `description` column is the
+  // SECONDARY slot — populate it with the catalog's description text
+  // when present so the row renders "Window Cleaning / Full Service
+  // Cleaning" instead of suppressing-as-duplicate.
+  //   Fallback chain: explicit override → catalog description (if
+  //   non-empty AND not just the name spelled the same way) → catalog
+  //   name → sku → UNTITLED.
+  const catalogDesc = item.description?.trim() ?? "";
+  const productName = item.name?.trim() ?? "";
+  const isRealCatalogDesc =
+    catalogDesc.length > 0 &&
+    catalogDesc.toLowerCase() !== productName.toLowerCase();
   const description =
     options.description?.trim() ||
-    item.name?.trim() ||
-    item.description?.trim() ||
+    (isRealCatalogDesc ? catalogDesc : productName) ||
     item.sku?.trim() ||
     UNTITLED;
 
@@ -215,31 +228,31 @@ export function blankDraft(options: BlankDraftOptions = {}): LineItemDraft {
  * current quantity is preserved; `lineSubtotal` / `lineTotal` are
  * recomputed against the new rate.
  *
- * SCHEMA LIMITATION (2026-05-07).
+ * SCHEMA NOTE (2026-05-07 — updated).
  *
  *   The line tables (`invoice_lines`, `quote_lines`, `job_parts`)
- *   each carry exactly ONE display-text column: `description`. There
- *   is no separate `name` / `title` / `productName` column on any of
- *   the three. The line's `description` field IS the row's primary
- *   label (see `LineItemRow.tsx`'s display branch — it renders only
- *   `displayLine.description`).
+ *   each carry exactly one persisted display-text column:
+ *   `description`. The catalog item's NAME is no longer stored on
+ *   the line — it is computed-on-read by the server's `LEFT JOIN
+ *   items` on `productId` and surfaced as `productName`. The row
+ *   renderer (`LineItemRow.tsx`) uses `productName` for the PRIMARY
+ *   label and the line's `description` column for the SECONDARY
+ *   text, suppressing the secondary when it equals the primary
+ *   (case-insensitive).
  *
- *   Therefore: when a saved catalog item is selected, this helper
- *   stores the catalog ITEM NAME in `description` — that's the user-
- *   facing label that appears on the row. The catalog item's
- *   description text is intentionally NOT auto-populated into the
- *   line; it's Pricebook-only metadata visible in Settings →
- *   Pricebook. Surfacing it as a secondary row line would require
- *   API joins on the three line-fetch routes plus a `LineItemRow`
- *   layout extension; that is deferred as a follow-up. Until then,
- *   users can manually type a custom description override into the
- *   modal's "Description" field if they need a different line label.
+ *   So this helper now populates `description` (the secondary slot)
+ *   with the catalog's description text when present, falling back
+ *   to the catalog name otherwise. When the helper writes the
+ *   catalog name, primary equals secondary and the row collapses to
+ *   single-line display — the canonical no-secondary case.
  *
- *   Earlier helper revisions (2026-05-07 #1 + #2) tried to use the
- *   catalog description as the line label when present — that
- *   produced the "Window Cleaning shown as Full Service Cleaning"
- *   regression because the catalog description text won the slot
- *   meant for the item name. The contract here is now: NAME wins.
+ *   Two earlier revisions of this helper went the other direction
+ *   (write catalog name into description). That was correct BEFORE
+ *   the JOIN existed — the row used description as primary, so the
+ *   name had to be in there. With the JOIN now providing primary
+ *   directly, the helper's job is to populate the SECONDARY slot.
+ *   Writing name caused secondary == primary on every new line,
+ *   which suppressed the secondary uniformly across all surfaces.
  *
  * Used by `<LineItemEditModal>`'s product selector (both the regular
  * pick path AND the "Create '<name>'" mid-edit path — both flows
@@ -258,13 +271,20 @@ export function applyCatalogItemToDraft(
   prev: LineItemDraft,
   item: CatalogItem,
 ): Partial<LineItemDraft> {
-  // The line table's `description` column = the row's primary label.
-  // Always populate it with the catalog NAME on item-change. Per the
-  // SCHEMA LIMITATION docblock above, the catalog's `description`
-  // text is NOT folded into the line — that's Pricebook-only
-  // metadata.
+  // The line's `description` column = the SECONDARY slot in the
+  // canonical two-line display. Populate it with the catalog's
+  // description text when present (and not just a duplicate of the
+  // name); fall back to the name so the row still has SOMETHING in
+  // the secondary slot even for items without a catalog description
+  // (the row renderer will then suppress the secondary because
+  // primary == secondary). See SCHEMA NOTE in the doc block above.
+  const catalogDesc = (item.description ?? "").trim();
   const productName = (item.name ?? "").trim();
-  const description = productName || UNTITLED;
+  const isRealCatalogDesc =
+    catalogDesc.length > 0 &&
+    catalogDesc.toLowerCase() !== productName.toLowerCase();
+  const description =
+    (isRealCatalogDesc ? catalogDesc : productName) || UNTITLED;
 
   // Preserve user-entered quantity. Recompute the running subtotal so
   // the form's Amount tile reads the correct qty × new-rate value

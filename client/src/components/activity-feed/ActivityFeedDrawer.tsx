@@ -61,7 +61,7 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
       >
         {view === "feed" ? (
           <div className="flex items-center justify-between gap-2 px-4 h-12 border-b border-border shrink-0">
-            <h2 className="text-sm font-semibold text-foreground truncate">Activity Feed</h2>
+            <h2 className="text-row-emphasis text-foreground truncate">Activity Feed</h2>
             <div className="flex items-center gap-0.5">
               <Button
                 variant="ghost"
@@ -98,7 +98,7 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
               </Button>
-              <h2 className="text-sm font-semibold text-foreground truncate">
+              <h2 className="text-row-emphasis text-foreground truncate">
                 Customize Feed
               </h2>
             </div>
@@ -120,18 +120,18 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
             {isLoading && (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                <span className="text-xs">Loading…</span>
+                <span className="text-helper">Loading…</span>
               </div>
             )}
 
             {isError && (
-              <div className="flex flex-col items-center justify-center py-10 px-6 text-center text-xs text-muted-foreground">
+              <div className="flex flex-col items-center justify-center py-10 px-6 text-center text-helper text-muted-foreground">
                 <p className="text-destructive font-medium mb-2">Couldn't load activity</p>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => refetch()}
-                  className="h-7 text-xs"
+                  className="h-7 text-helper"
                   data-testid="activity-feed-retry"
                 >
                   Try again
@@ -144,8 +144,8 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
                 className="flex flex-col items-center justify-center py-12 px-6 text-center"
                 data-testid="activity-feed-empty"
               >
-                <p className="text-sm font-medium text-foreground">No matching activity yet.</p>
-                <p className="text-xs text-muted-foreground mt-1">
+                <p className="text-row-emphasis text-foreground">No matching activity yet.</p>
+                <p className="text-helper text-muted-foreground mt-1">
                   Visits, payments, and quote responses will land here.
                 </p>
               </div>

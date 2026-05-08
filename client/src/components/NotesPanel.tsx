@@ -18,6 +18,19 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import type { ClientNote } from "@shared/schema";
 import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
+// 2026-05-08: NotesPanel is the documented Notes exception — it composes
+// `<RailContentCard>` slot primitives directly rather than going through
+// the data-driven `<RailPanelRenderer>`. Note bodies invert the
+// entity-card hierarchy (body IS primary content, not metadata), so the
+// descriptor model would either abuse `extraContent` or require a new
+// `body` descriptor field for one consumer. The exception is documented
+// at `RailContentCard.tsx`'s docstring + the `railTypes.ts` header.
+import {
+  RailContentCard,
+  RailContentCardBody,
+  RailContentCardChip,
+  RailContentCardFooter,
+} from "@/components/detail-rail/RailContentCard";
 import {
   SUPPORTED_MIME_TYPES,
   useFileUpload,
@@ -450,7 +463,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
           </div>
         ) : (
           notes.map((note) => (
-            <div key={note.id} className="px-3 py-2.5 border border-slate-200 border-l-2 border-l-slate-300 rounded-md text-sm overflow-hidden group" data-testid={`note-${note.id}`}>
+            <RailContentCard key={note.id} testId={`note-${note.id}`}>
               {editingNoteId === note.id ? (
                 /* ── Inline Edit ─── */
                 <div className="space-y-3">
@@ -567,14 +580,17 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
               ) : (
                 /* ── Read View ──── */
                 <>
-                  <p className="whitespace-pre-wrap break-words text-xs leading-relaxed" style={{ overflowWrap: "anywhere" }}>{note.noteText}</p>
+                  <RailContentCardBody>{note.noteText}</RailContentCardBody>
 
-                  {/* Visibility badges */}
+                  {/* Visibility badges — canonical chip variants:
+                      Jobs → info (blue), Invoices → success (emerald),
+                      Quotes → purple. Variant colors live inside the
+                      `<RailContentCardChip>` primitive. */}
                   {(note.showOnJobs || note.showOnInvoices || note.showOnQuotes) && (
                     <div className="flex gap-1.5 mt-2.5">
-                      {note.showOnJobs && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
-                      {note.showOnInvoices && <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
-                      {note.showOnQuotes && <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
+                      {note.showOnJobs && <RailContentCardChip variant="info">Jobs</RailContentCardChip>}
+                      {note.showOnInvoices && <RailContentCardChip variant="success">Invoices</RailContentCardChip>}
+                      {note.showOnQuotes && <RailContentCardChip variant="purple">Quotes</RailContentCardChip>}
                     </div>
                   )}
 
@@ -585,11 +601,12 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                     </div>
                   )}
 
-                  {/* Compact metadata: "Author · Date, Time" + actions.
-                      Footer is smaller and more muted; the action buttons
-                      sit at idle opacity-50 and reach full opacity on card
-                      hover so they don't compete with the body at rest. */}
-                  <div className="flex items-center justify-between mt-3 text-[11px] text-muted-foreground">
+                  {/* Footer: "Author · Date, Time" on the left + edit/
+                      delete actions on the right. Action buttons idle at
+                      opacity-50 and reach full opacity on card hover (the
+                      RailContentCard primitive bakes a `group` class
+                      that drives the `group-hover:` toggle). */}
+                  <RailContentCardFooter>
                     <span className="truncate mr-2">
                       {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, h:mm a")}
                     </span>
@@ -601,10 +618,10 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
-                  </div>
+                  </RailContentCardFooter>
                 </>
               )}
-            </div>
+            </RailContentCard>
           ))
         )}
       </div>

@@ -1075,7 +1075,7 @@ function AppContent() {
   // automatically updates the main-content offset too — no second
   // place to keep in sync. Pin: tests/sidebar-width.test.ts.
   const style = {
-    "--sidebar-width": "8.5rem",
+    "--sidebar-width": "9.5rem",
     "--sidebar-width-icon": "3rem",
   };
 

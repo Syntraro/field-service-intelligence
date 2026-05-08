@@ -176,17 +176,18 @@ export function AppSidebar({
       testId: "nav-jobs"
     });
     menuItems.push({
-      // 2026-05-06 nav rename: this destination represents maintenance
-      // plans (PM contracts + recurring-job templates) — sidebar label
-      // simplified to "Maintenance". The route, testid, internal type
-      // names, and the recurrence-behavior copy elsewhere in the app
-      // are intentionally unchanged. Pin: tests/recurring-jobs-nav-rename.test.ts.
-      title: "Maintenance",
+      // 2026-05-07 Service Plans rename: this destination represents the
+      // sellable recurring-service / membership product (Gold Plan, Spring
+      // HVAC Plan, etc.). The route, testid, internal type names, the
+      // jobType="maintenance" enum, and recurrence-behavior copy elsewhere
+      // in the app are intentionally unchanged — only the user-facing
+      // module identity moved. Pin: tests/recurring-jobs-nav-rename.test.ts.
+      title: "Service Plans",
       icon: Wrench,
       href: "/pm",
       isActive: location === "/pm" || location.startsWith("/pm/"),
       testId: "nav-pm",
-      hoverText: "Maintenance"
+      hoverText: "Service Plans"
     });
 
     // --- Group 3 leader: Invoices → Payments → Price Book (billing) ---
@@ -366,7 +367,7 @@ export function AppSidebar({
                   onClick={onOpenCreatePm}
                 >
                   <Wrench className="h-4 w-4 mr-2" />
-                  New Maintenance Plan
+                  New Service Plan
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

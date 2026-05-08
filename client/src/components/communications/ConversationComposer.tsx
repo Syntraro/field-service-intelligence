@@ -7,8 +7,13 @@
  *   └──────────────────────────────────────────┘
  *   [📎 emoji 📋 internal-note]            42 / 1600  [Send]
  *
- * Phase 1: local state only — `onSend` is mocked at the page level.
- * Phase 2 will wire this to a `useSendMessage` mutation.
+ * Phase 4 contract
+ * ----------------
+ *   • Internal Note tab — fully working. Send emits via `onSend`; the
+ *     page wires the mutation through `useCreateInternalMessage`.
+ *   • SMS tab — disabled. The Send button is disabled while the SMS
+ *     tab is active and a helper line under the textarea explains why:
+ *     "SMS sending requires a phone provider connection."
  */
 
 import { useState } from "react";
@@ -33,11 +38,19 @@ export function ConversationComposer({
   onSend,
   disabled = false,
 }: ConversationComposerProps) {
-  const [channel, setChannel] = useState<ComposerChannel>("sms");
+  // Default to the working tab — Internal Note. SMS still appears in the
+  // tab list so users see the surface, but the Send action is disabled
+  // until provider integration lands.
+  const [channel, setChannel] = useState<ComposerChannel>("internal_note");
   const [body, setBody] = useState("");
 
   const trimmed = body.trim();
-  const canSend = !disabled && trimmed.length > 0 && body.length <= SMS_LIMIT;
+  // Phase 4: SMS sending is disabled until a phone provider is wired up.
+  // Block the Send action when the SMS tab is active. The Internal Note
+  // tab keeps the canonical blank-body + over-limit checks.
+  const smsDisabled = channel === "sms";
+  const canSend =
+    !disabled && !smsDisabled && trimmed.length > 0 && body.length <= SMS_LIMIT;
 
   const handleSend = () => {
     if (!canSend) return;
@@ -67,12 +80,21 @@ export function ConversationComposer({
       <Textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        placeholder="Type a message…"
+        placeholder={smsDisabled ? "SMS sending is disabled — switch to Internal Note." : "Type a message…"}
         rows={2}
         className="resize-none text-row min-h-[48px]"
         data-testid="conversation-composer-textarea"
         disabled={disabled}
       />
+
+      {smsDisabled && (
+        <p
+          className="mt-1.5 text-helper text-muted-foreground"
+          data-testid="conversation-composer-sms-disabled"
+        >
+          SMS sending requires a phone provider connection.
+        </p>
+      )}
 
       <div className="mt-2 flex items-center justify-between">
         <div className="flex items-center gap-0.5">

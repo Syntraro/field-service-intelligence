@@ -98,13 +98,25 @@ import {
 // uses; per-page tab content + active state wiring stay here.
 import {
   DetailRightRail,
+  RAIL_HEADER_ACTION_CLASS,
   RAIL_WIDTH_TRANSITION,
   type DetailRailTab,
 } from "@/components/detail-rail/DetailRightRail";
-// 2026-05-07: canonical rail-content card primitive used by Notes /
-// Equipment / Labour panels. Notes + Equipment opt into it via the
-// body components' `cardStyle` prop; Labour wraps each entry directly.
-import { RailContentCard } from "@/components/detail-rail/RailContentCard";
+// 2026-05-07/08 Phases 7 + 8: every Job Detail rail panel that this
+// page owns mounts `<RailPanelRenderer>` driven by a typed descriptor
+// (Labour via `buildJobLabourPanelDescriptor` below; Equipment via
+// `<JobEquipmentSection cardStyle>` whose body now mounts
+// `<RailPanelRenderer>` internally). Notes is intentionally NOT
+// migrated — `<EntityNotesSection cardStyle>` keeps direct
+// `<RailContentCard>` slot composition per the documented Notes
+// exception. The page therefore no longer imports any
+// `RailContentCard*` slot primitive directly.
+import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
+import type {
+  RailPanelDescriptor,
+  RailCardDescriptor,
+  RailSubrowDescriptor,
+} from "@/components/detail-rail/railTypes";
 // 2026-05-02 entity-number visual language: blue pill for current
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
@@ -396,6 +408,11 @@ interface JobPartDisplayLine {
   productId: string | null;
   productType?: string;
   sortOrder: number;
+  /** 2026-05-07: catalog item name surfaced via /api/jobs/:id/parts JOIN. */
+  productName?: string | null;
+  /** 2026-05-07 (#3): catalog description from the same JOIN. Powers
+   *  the row's secondary-slot fallback chain. */
+  productDescription?: string | null;
 }
 
 function LineItemsTable({
@@ -413,7 +430,11 @@ function LineItemsTable({
   const { toast } = useToast();
 
   const { data: rowsRaw = [], isLoading } = useQuery<
-    (JobPart & { itemType?: string | null; itemDescription?: string | null })[]
+    (JobPart & {
+      itemType?: string | null;
+      itemName?: string | null;
+      itemDescription?: string | null;
+    })[]
   >({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => {
@@ -446,6 +467,8 @@ function LineItemsTable({
         productId: r.productId ?? null,
         productType: r.itemType ?? undefined,
         sortOrder: r.sortOrder ?? idx,
+        productName: r.itemName ?? null,
+        productDescription: r.itemDescription ?? null,
       };
     });
   }, [rowsRaw]);
@@ -581,7 +604,10 @@ function LineItemsTable({
         line.productId
           ? {
               id: line.productId,
-              name: line.description || "(unnamed item)",
+              // 2026-05-07: prefer the joined catalog name from
+              // /api/jobs/:id/parts; fall back to description for
+              // legacy data where the line's description IS the name.
+              name: line.productName ?? line.description ?? "(unnamed item)",
               type: line.productType === "service" ? "service" : "product",
               unitPrice: line.unitPrice,
               cost: line.unitCost ?? null,
@@ -1513,6 +1539,90 @@ export default function JobDetailPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   })();
 
+  // 2026-05-07 Phase 7 — pure descriptor builder for Job Detail
+  // Labour. Visuals (group spacing, section-header chrome, sub-row
+  // hover, totals divider) live inside `<RailPanelRenderer>`. The
+  // page only feeds the grouped tech/date data + the click handler.
+  //
+  // Empty case (no entries) is intentionally NOT inside the
+  // descriptor — the existing page-level `<EmptyState>` (large
+  // empty state with `text-subhead` title + 320px hint) is preserved
+  // by short-circuiting in the rail-tab content renderer below.
+  const buildJobLabourPanelDescriptor = (
+    techGroups: LabourTechGroup[],
+    buckets: { totalMinutes: number; totalCost: number },
+    onEditEntry: (entry: TimeEntryDisplay) => void,
+  ): RailPanelDescriptor => {
+    const groups = techGroups.map((group) => ({
+      key: group.technicianId,
+      testId: `labour-tech-group-${group.technicianId}`,
+      heading: group.name,
+      cards: group.dates.map((dateBlock): RailCardDescriptor => {
+        const subrows: RailSubrowDescriptor[] = dateBlock.entries.map(
+          (entry) => {
+            const start = entry.startAt ? new Date(entry.startAt) : null;
+            const end = entry.endAt ? new Date(entry.endAt) : null;
+            const startLabel = start ? format(start, "h:mm a") : "—";
+            const endLabel = end ? format(end, "h:mm a") : null;
+            const timeRange = endLabel
+              ? `${startLabel}–${endLabel}`
+              : `${startLabel}…`;
+            const isRunning =
+              entry.durationMinutes == null || !entry.endAt;
+            const minutes = entry.durationMinutes ?? 0;
+            const cost = entryCostDollars(entry);
+            return {
+              key: entry.id,
+              testId: `labour-entry-${entry.id}`,
+              onClick: () => onEditEntry(entry),
+              ariaLabel: "Edit time entry",
+              title: {
+                text: entry.typeLabel,
+                chip: isRunning
+                  ? {
+                      text: "Running",
+                      variant: "warning",
+                      icon: Clock,
+                      iconClassName: "animate-pulse",
+                    }
+                  : undefined,
+                value: formatCurrency(cost),
+              },
+              meta: {
+                leftText: timeRange,
+                rightText: formatMinutes(minutes),
+                leftTruncate: true,
+              },
+            };
+          },
+        );
+        return {
+          key: dateBlock.dateSortKey,
+          testId: `labour-date-${group.technicianId}-${dateBlock.dateSortKey}`,
+          sectionHeader: {
+            label: dateBlock.dateLabel,
+            value: `${formatMinutes(dateBlock.totalMinutes)} · ${formatCurrency(dateBlock.totalCost)}`,
+            testId: `labour-date-heading-${group.technicianId}-${dateBlock.dateSortKey}`,
+          },
+          subrows,
+        };
+      }),
+    }));
+    return {
+      kind: "grouped",
+      testId: "labour-entries-list",
+      panelHeader: {
+        label: "Total",
+        values: [
+          formatMinutes(buckets.totalMinutes),
+          formatCurrency(buckets.totalCost),
+        ],
+        testId: "labour-summary-totals",
+      },
+      groups,
+    };
+  };
+
   const jobRailTabs: DetailRailTab[] = [
     {
       id: "notes",
@@ -1528,7 +1638,7 @@ export default function JobDetailPage() {
         <button
           type="button"
           onClick={() => setNotesAddSignal((n) => n + 1)}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
           data-testid="button-add-note-rail"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -1571,7 +1681,7 @@ export default function JobDetailPage() {
           onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
           disabled={!canAddTimeEntry}
           title={canAddTimeEntry ? undefined : addTimeDisabledHint}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 disabled:text-text-disabled disabled:hover:bg-transparent disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand disabled:text-text-disabled disabled:hover:bg-transparent disabled:cursor-not-allowed`}
           data-testid="button-add-labour"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -1580,166 +1690,35 @@ export default function JobDetailPage() {
       ),
       content: (
         <div data-testid="card-labour-summary">
-          {/* TOTAL summary at the top — total hours + total labour cost.
-              The rail panel header already shows "Labour" + count, so
-              this row surfaces the dollar/hour aggregates only. */}
-          {jobTimeEntries.length > 0 && (
-            <div
-              className="flex items-baseline justify-between gap-2 px-1 pb-3 mb-2 border-b border-border-default"
-              data-testid="labour-summary-totals"
-            >
-              <span className="text-label uppercase tracking-wide text-text-muted">
-                Total
-              </span>
-              <span className="flex items-baseline gap-2 font-mono">
-                <span className="text-row font-semibold tabular-nums text-text-primary">
-                  {formatMinutes(labourBuckets.totalMinutes)}
-                </span>
-                <span className="text-text-disabled">·</span>
-                <span className="text-row font-semibold tabular-nums text-text-primary">
-                  {formatCurrency(labourBuckets.totalCost)}
-                </span>
-              </span>
-            </div>
-          )}
-
-          {/* PER-(TECH, DATE) cards: each card carries the date as its
-              heading and itemizes every entry on that date. Date is no
-              longer repeated per entry row — the entry rows show only
-              type / time-range / duration / cost. Entries are still
-              individually rendered (no bucket-collapsing, no merged
-              time spans) and remain individually click-to-edit. */}
+          {/* 2026-05-07 Phase 7 — Labour migrated to the data-driven
+              renderer. Empty case (`jobTimeEntries.length === 0`)
+              keeps the page-level `<EmptyState>` (larger
+              text-subhead title + hint chrome) verbatim. Populated
+              case mounts `<RailPanelRenderer>` with a
+              `kind: "grouped"` descriptor — the renderer owns the
+              panel-header totals, per-tech group spacing, the
+              `text-section-title` heading, the per-(tech, date)
+              card sectionHeader + subrow chrome, the inter-entry
+              divider, and every typography token. */}
           {jobTimeEntries.length === 0 ? (
             <EmptyState
               title="No time logged yet."
               hint="Track time against this job to roll travel and on-site hours into the labour total."
             />
           ) : (
-            <div className="space-y-4" data-testid="labour-entries-list">
-              {labourTechGroups.map((group) => (
-                <div
-                  key={group.technicianId}
-                  className="space-y-2"
-                  data-testid={`labour-tech-group-${group.technicianId}`}
-                >
-                  {/* Technician name section heading.
-                      Uses canonical `text-section-title` token (18px / 600)
-                      so the technician name reads as a clear h2-level
-                      grouping, distinct from the date-card heading
-                      (text-label, 13px uppercase) below it. */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-section-title font-semibold text-text-primary truncate min-w-0">
-                      {group.name}
-                    </span>
-                  </div>
-
-                  {/* One card per calendar date this tech logged time on. */}
-                  <div className="space-y-2">
-                    {group.dates.map((dateBlock) => (
-                      <RailContentCard
-                        key={dateBlock.dateSortKey}
-                        testId={`labour-date-${group.technicianId}-${dateBlock.dateSortKey}`}
-                      >
-                        {/* Date heading inside the card.
-                            Date label sits left, per-(tech, date)
-                            totals sit right (duration · cost). The
-                            outer flex `items-baseline` aligns the
-                            uppercase date label with the mono
-                            tabular-nums totals on the same baseline. */}
-                        <div
-                          className="flex items-baseline justify-between gap-2 pb-2 border-b border-slate-100"
-                          data-testid={`labour-date-heading-${group.technicianId}-${dateBlock.dateSortKey}`}
-                        >
-                          <span className="text-label uppercase tracking-wide text-text-muted">
-                            {dateBlock.dateLabel}
-                          </span>
-                          <span
-                            className="text-caption font-medium tabular-nums text-text-primary font-mono shrink-0"
-                            data-testid={`labour-date-totals-${group.technicianId}-${dateBlock.dateSortKey}`}
-                          >
-                            {formatMinutes(dateBlock.totalMinutes)}
-                            <span className="text-text-disabled mx-1">·</span>
-                            {formatCurrency(dateBlock.totalCost)}
-                          </span>
-                        </div>
-
-                        {/* Entry rows. Each row is individually
-                            clickable to open the canonical TimeEntryModal
-                            in edit mode. Date is intentionally NOT
-                            repeated here — it's the card heading above. */}
-                        <div className="mt-1.5">
-                          {dateBlock.entries.map((entry, idx) => {
-                            const start = entry.startAt ? new Date(entry.startAt) : null;
-                            const end = entry.endAt ? new Date(entry.endAt) : null;
-                            const startLabel = start ? format(start, "h:mm a") : "—";
-                            const endLabel = end ? format(end, "h:mm a") : null;
-                            const timeRange = endLabel
-                              ? `${startLabel}–${endLabel}`
-                              : `${startLabel}…`;
-                            const isRunning = entry.durationMinutes == null || !entry.endAt;
-                            const minutes = entry.durationMinutes ?? 0;
-                            const cost = entryCostDollars(entry);
-                            return (
-                              <button
-                                key={entry.id}
-                                type="button"
-                                onClick={() =>
-                                  setTimeEntryModal({
-                                    open: true,
-                                    mode: "edit",
-                                    entry,
-                                  })
-                                }
-                                className={cn(
-                                  "w-full text-left rounded px-1 py-2 transition-colors",
-                                  "hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40",
-                                  idx > 0 && "mt-1 pt-3 border-t border-slate-100",
-                                )}
-                                data-testid={`labour-entry-${entry.id}`}
-                                aria-label="Edit time entry"
-                              >
-                                {/* Top row: type label + (optional Running) + cost.
-                                    Type uses canonical `text-row font-semibold`;
-                                    cost uses canonical `text-row font-semibold
-                                    tabular-nums`. */}
-                                <div className="flex items-baseline justify-between gap-2">
-                                  <span className="text-row font-semibold text-text-primary truncate min-w-0">
-                                    {entry.typeLabel}
-                                  </span>
-                                  {isRunning && (
-                                    <span className="inline-flex items-center gap-1 text-caption text-warning shrink-0">
-                                      <Clock className="h-3 w-3 animate-pulse" />
-                                      Running
-                                    </span>
-                                  )}
-                                  <span className="text-row font-semibold tabular-nums text-text-primary font-mono shrink-0">
-                                    {formatCurrency(cost)}
-                                  </span>
-                                </div>
-                                {/* Bottom row: time range + duration.
-                                    Both children use the canonical
-                                    `text-caption tabular-nums text-muted-foreground`
-                                    set explicitly (no parent inheritance) so the
-                                    typography contract is local + verifiable per
-                                    span. */}
-                                <div className="mt-0.5 flex items-baseline justify-between gap-2">
-                                  <span className="text-caption tabular-nums text-muted-foreground font-mono truncate min-w-0">
-                                    {timeRange}
-                                  </span>
-                                  <span className="text-caption tabular-nums text-muted-foreground font-mono shrink-0">
-                                    {formatMinutes(minutes)}
-                                  </span>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </RailContentCard>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <RailPanelRenderer
+              panel={buildJobLabourPanelDescriptor(
+                labourTechGroups,
+                labourBuckets,
+                (entry) =>
+                  setTimeEntryModal({
+                    open: true,
+                    mode: "edit",
+                    entry,
+                  }),
+              )}
+              testIdPrefix="job-side"
+            />
           )}
         </div>
       ),
@@ -1755,7 +1734,7 @@ export default function JobDetailPage() {
         <button
           type="button"
           onClick={() => setShowAddEquipmentDialog(true)}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
           data-testid="button-add-equipment-rail"
         >
           <Plus className="h-3.5 w-3.5" />

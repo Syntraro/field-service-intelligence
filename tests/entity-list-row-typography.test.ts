@@ -1,13 +1,15 @@
 /**
- * Entity list row typography normalization (2026-05-06 RALPH).
+ * Entity list row typography normalization (2026-05-06 RALPH;
+ * recalibrated 2026-05-07).
  *
  * Locks the contract that:
  *   • The shared `EntityListTable.kindCellClasses()` resolver maps every
- *     column kind to the canonical typography token (text-row /
- *     text-row-emphasis), not to a raw Tailwind size utility. The
- *     resolver is the single source of truth for row body typography
- *     across Jobs, Invoices, Leads, Quotes, and any future page that
- *     adopts the shared component.
+ *     column kind to the canonical typography token (text-row body, or
+ *     `text-caption font-medium` for primary names — the operational
+ *     density baseline introduced 2026-05-07), not to a raw Tailwind
+ *     size utility. The resolver is the single source of truth for row
+ *     body typography across Jobs, Invoices, Leads, Quotes, and any
+ *     future page that adopts the shared component.
  *   • Per-page render() functions on Jobs, Invoices, Leads, Quotes do
  *     NOT add ad-hoc font-size classes (`text-xs`/`text-sm`/`text-base`
  *     /`text-lg` or arbitrary `text-[...px]`) on the main row body —
@@ -121,8 +123,19 @@ function columnsArrayLiteral(rawSrc: string, varName: string): string {
 describe("EntityListTable.kindCellClasses — canonical typography baseline", () => {
   const fn = functionBody(tableSrc, "kindCellClasses");
 
-  it("primary cells apply text-row-emphasis (canonical row token, weight 500)", () => {
-    expect(fn).toMatch(/case\s+"primary":[\s\S]+?text-row-emphasis/);
+  it("primary cells apply text-caption font-medium (canonical operational density)", () => {
+    // 2026-05-07 recalibration: previously baked `text-row-emphasis`
+    // (15px / fw 500). Now composes `text-caption font-medium`
+    // (14px / fw 500) so the primary-cell density inherits the same
+    // token as `ENTITY_NAME_CLASS` in `client/src/components/ui/typography.tsx`.
+    // The reference baseline is the dashboard's `OperationalAlertsCard`
+    // row labels.
+    expect(fn).toMatch(/case\s+"primary":[\s\S]+?text-caption\s+font-medium/);
+    // Inverse pin: the prior text-row-emphasis baseline must not creep
+    // back into the primary-cell branch (group-header dividers below
+    // still use it — they're a separate visual element).
+    const primaryBranch = fn.match(/case\s+"primary":[\s\S]+?(?=case\s+")/)?.[0] ?? "";
+    expect(primaryBranch).not.toMatch(/text-row-emphasis/);
   });
 
   it("text cells apply the canonical text-row baseline", () => {
@@ -162,16 +175,20 @@ describe("EntityListTable.kindCellClasses — canonical typography baseline", ()
 
 describe("list-surface header typography — unchanged", () => {
   it("listHeaderRowClass keeps text-label (canonical column header token)", () => {
+    // Phase H1 (2026-05-07): listHeaderRowClass is now a template-string
+    // interpolation that embeds `SECTION_LABEL_CLASS` (which itself
+    // pins `text-label text-muted-foreground`) — see
+    // `client/src/components/ui/list-surface.tsx`. The literal
+    // `text-label` does not appear at the call site; the architectural
+    // claim is "the header class composes the canonical SECTION_LABEL_CLASS".
     expect(surfaceSrc).toMatch(
-      /export const listHeaderRowClass\s*=[\s\S]+?text-label/,
+      /export const listHeaderRowClass\s*=[\s\S]+?\$\{SECTION_LABEL_CLASS\}/,
     );
-    // Negative pin: scope to the className string itself so the doc
-    // commentary above the export (which mentions the legacy text-xs
-    // for context) doesn't false-trip. Pull the value out and check
-    // only that.
+    // Pull the template-string value out and verify it doesn't carry
+    // any legacy size-ramp classes.
     const codeOnly = stripComments(surfaceSrc);
     const decl = codeOnly.match(
-      /export const listHeaderRowClass\s*=\s*"([^"]+)"/,
+      /export const listHeaderRowClass\s*=\s*`([^`]+)`/,
     );
     expect(decl, "listHeaderRowClass declaration must exist").toBeTruthy();
     expect(decl![1]).not.toMatch(/\btext-(?:xs|sm|base|lg|xl|2xl)\b/);

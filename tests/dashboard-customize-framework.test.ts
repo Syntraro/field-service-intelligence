@@ -98,10 +98,13 @@ describe("Shared widget registry — shape + canonical widget set", () => {
     expect(isKnownDashboard("nonexistent")).toBe(false);
   });
 
-  it("the financial widget set contains all six canonical widgets in the brief's default order", () => {
-    // 2026-05-07 RALPH: order matches the brief's expected default
-    // layout — row 1 = TS + Pipeline, row 2 = Collections + Scheduled
-    // Revenue + Operational Alerts, row 3 = Needs Attention.
+  it("the financial widget set contains the canonical widgets in the brief's default order", () => {
+    // 2026-05-07: the standalone Needs Attention card was retired and
+    // its single row ("Invoices not sent") absorbed into Operational
+    // Alerts. The widget set is now five canonical entries — TS +
+    // Pipeline (row 1) and Collections + Scheduled Revenue +
+    // Operational Alerts (row 2). Persisted layouts referencing
+    // `needs_attention` degrade safely (resolver iterates the registry).
     const keys = FINANCIAL_DASHBOARD_WIDGETS.map((w) => w.key);
     expect(keys).toEqual([
       "todays_schedule",
@@ -109,8 +112,11 @@ describe("Shared widget registry — shape + canonical widget set", () => {
       "collections_overview",
       "scheduled_revenue",
       "operational_alerts",
-      "needs_attention",
     ]);
+    // Inverse pin: the retired key MUST NOT come back as a registry
+    // entry — re-introducing it would remount an empty card on every
+    // tenant's dashboard.
+    expect(keys).not.toContain("needs_attention");
   });
 
   it("every widget carries the registry contract fields", () => {
@@ -163,11 +169,15 @@ describe("Shared widget registry — purity contract (no React imports)", () => 
 
 describe("Layout PUT schema — accepts well-formed payloads", () => {
   it("accepts a typical replace payload", () => {
+    // The schema validates SHAPE only; the route handler is what
+    // rejects unknown widget keys at HTTP 400. Use two known canonical
+    // keys here so the example doubles as documentation of a valid
+    // payload shape.
     const ok = dashboardLayoutPutSchema.safeParse({
       dashboardKey: "financial",
       widgets: [
         { widgetKey: "todays_schedule", visible: true, orderIndex: 0 },
-        { widgetKey: "needs_attention", visible: false, orderIndex: 1 },
+        { widgetKey: "operational_alerts", visible: false, orderIndex: 1 },
       ],
     });
     expect(ok.success).toBe(true);
@@ -194,8 +204,8 @@ describe("Layout PUT schema — accepts well-formed payloads", () => {
     const r = dashboardLayoutPutSchema.safeParse({
       dashboardKey: "financial",
       widgets: [
-        { widgetKey: "needs_attention", visible: true, orderIndex: 0 },
-        { widgetKey: "needs_attention", visible: false, orderIndex: 1 },
+        { widgetKey: "operational_alerts", visible: true, orderIndex: 0 },
+        { widgetKey: "operational_alerts", visible: false, orderIndex: 1 },
       ],
     });
     expect(r.success).toBe(false);
@@ -392,15 +402,16 @@ describe("DashboardCustomizeDrawer — canonical sheet contract", () => {
     expect(src).toMatch(/from\s+["']@\/components\/ui\/sheet["']/);
     expect(src).toMatch(/<SheetContent[\s\S]+?side="right"/);
   });
-  it("uses @dnd-kit for sortable + keyboard sensors", () => {
-    expect(src).toMatch(/from\s+["']@dnd-kit\/core["']/);
-    expect(src).toMatch(/from\s+["']@dnd-kit\/sortable["']/);
-    expect(src).toMatch(/PointerSensor/);
-    expect(src).toMatch(/KeyboardSensor/);
+  // 2026-05-07 RALPH (drag relocation): drag/reorder moved to the
+  // dashboard grid. The drawer is now a static toggle list — no
+  // @dnd-kit imports, no drag handlers.
+  it("does NOT import @dnd-kit (drag is on the grid now)", () => {
+    const codeOnly = stripComments(src);
+    expect(codeOnly).not.toMatch(/from\s+["']@dnd-kit\/core["']/);
+    expect(codeOnly).not.toMatch(/from\s+["']@dnd-kit\/sortable["']/);
   });
-  it("calls layout.setOrder(arrayMove(...)) on drag end", () => {
-    expect(src).toMatch(/arrayMove\(layout\.widgets,\s*oldIndex,\s*newIndex\)/);
-    expect(src).toMatch(/layout\.setOrder\(/);
+  it("does NOT call layout.setOrder (drag handled by the grid)", () => {
+    expect(src).not.toMatch(/layout\.setOrder\(/);
   });
   it("renders the Reset to defaults + Done buttons with canonical testids", () => {
     expect(src).toMatch(/data-testid="dashboard-customize-reset"/);
@@ -408,31 +419,60 @@ describe("DashboardCustomizeDrawer — canonical sheet contract", () => {
   });
   it("uses tokenized typography only (no raw text-* font sizes on chrome)", () => {
     const codeOnly = stripComments(src);
-    // The drawer must reach for canonical tokens — no inline arbitrary sizes.
     expect(codeOnly).not.toMatch(/className="[^"]*\btext-\[\d+px\]/);
-    // The title uses text-section-title; description uses text-caption.
     expect(src).toMatch(/className="text-section-title text-text-primary"/);
     expect(src).toMatch(/className="text-caption text-text-muted"/);
   });
 });
 
-describe("DashboardWidgetRenderer — sortable row contract", () => {
+describe("DashboardWidgetRenderer — static toggle row contract", () => {
   const src = read(RENDERER_PATH);
-  it("uses @dnd-kit/sortable's useSortable + CSS.Transform.toString", () => {
-    expect(src).toMatch(/useSortable\(\s*\{\s*id:\s*widget\.widgetKey\s*\}/);
-    expect(src).toMatch(/CSS\.Transform\.toString\(transform\)/);
+  // 2026-05-07 RALPH (drag relocation): the row is a static toggle —
+  // no useSortable, no drag handle. Drag happens on the grid cell.
+  it("does NOT call useSortable (drag is on the grid)", () => {
+    expect(src).not.toMatch(/useSortable\(/);
   });
   it("uses the canonical Switch primitive", () => {
     expect(src).toMatch(/from\s+["']@\/components\/ui\/switch["']/);
     expect(src).toMatch(/<Switch\b/);
   });
-  it("drag handle is a focusable button with aria-label", () => {
-    // `<button` opening tag with `type="button"` and a templated
-    // `aria-label={`Reorder ${widget.title}`}`. Attributes can be
-    // multi-line; the `\s+` allows newlines between them.
+  it("renders the toggle with the canonical visibility test id", () => {
     expect(src).toMatch(
-      /<button[\s\S]+?type="button"[\s\S]+?aria-label=\{`Reorder \$\{widget\.title\}`\}/,
+      /data-testid=\{?`?dashboard-customize-toggle-\$\{widget\.widgetKey\}`?\}?/,
     );
+  });
+});
+
+describe("DashboardWidgetGrid — sortable cells contract", () => {
+  const src = read(GRID_PATH);
+  // 2026-05-07 RALPH: the grid IS the drag surface. Each cell is a
+  // sortable item; the page wires `onReorder={layout.setOrder}`.
+  it("imports @dnd-kit core + sortable", () => {
+    expect(src).toMatch(/from\s+["']@dnd-kit\/core["']/);
+    expect(src).toMatch(/from\s+["']@dnd-kit\/sortable["']/);
+  });
+  it("mounts DndContext + SortableContext around the grid", () => {
+    expect(src).toMatch(/<DndContext\b/);
+    expect(src).toMatch(/<SortableContext\b/);
+  });
+  it("uses rectSortingStrategy (2D grid)", () => {
+    expect(src).toMatch(/rectSortingStrategy/);
+  });
+  it("each cell calls useSortable keyed by widgetKey", () => {
+    expect(src).toMatch(
+      /useSortable\(\s*\{[\s\S]*?id:\s*widget\.widgetKey/,
+    );
+  });
+  it("renders a per-cell drag-handle button with the canonical test id", () => {
+    expect(src).toMatch(/dashboard-widget-drag-handle-/);
+  });
+  it("the drag handle has aria-label, touch-none, and cursor-grab", () => {
+    expect(src).toMatch(/aria-label=\{?`?Reorder /);
+    expect(src).toMatch(/touch-none/);
+    expect(src).toMatch(/cursor-grab/);
+  });
+  it("exposes onReorder as the drag-end callback prop", () => {
+    expect(src).toMatch(/onReorder\?:\s*\(orderedKeys:\s*string\[\]\)/);
   });
 });
 

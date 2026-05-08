@@ -16,10 +16,22 @@ import type { LocationEquipment, JobEquipment } from "@shared/schema";
 import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
 import { EquipmentDetailModal } from "./EquipmentDetailModal";
 import { AddEquipmentDialog } from "./AddEquipmentDialog";
-// 2026-05-07: canonical rail-content card primitive used by the
-// `cardStyle` opt-in below. Keeps Equipment cards visually consistent
-// with Notes / Labour cards in the JobDetailPage right rail.
-import { RailContentCard } from "./detail-rail/RailContentCard";
+// 2026-05-07 Phase 8: canonical data-driven rail panel renderer.
+// The `cardStyle` opt-in builds descriptors and mounts
+// `<RailPanelRenderer>` instead of composing slot primitives
+// inline. The renderer module owns every visual concern (chrome,
+// typography, spacing, hover, chip + iconButton trailing).
+//
+// The legacy non-cardStyle row branch keeps its current row layout
+// for any future consumer that omits `cardStyle` — JobEquipmentSection
+// has only one caller today (JobDetailPage rail) so the legacy
+// branch is dead code, but kept as a safety net for cross-page
+// reuse.
+import { RailPanelRenderer } from "./detail-rail/RailPanelRenderer";
+import type {
+  RailPanelDescriptor,
+  RailCardDescriptor,
+} from "./detail-rail/railTypes";
 
 interface JobEquipmentWithDetails extends JobEquipment {
   equipment: LocationEquipment;
@@ -89,6 +101,93 @@ const LEGACY_TYPE_LABELS: Record<string, string> = {
   makeup_air: "Makeup Air",
   other: "Other",
 };
+
+/** Module-scoped helper so both the in-component renderer and the
+ *  module-scoped descriptor builder below can use the same
+ *  legacy-type-label mapping without duplication. */
+function getEquipmentTypeLabel(type: string | null): string {
+  if (!type) return "-";
+  return LEGACY_TYPE_LABELS[type] || type;
+}
+
+/**
+ * Pure descriptor builder for the Job Detail Equipment rail panel
+ * (cardStyle path).
+ *
+ * 2026-05-07 Phase 8: visuals (chrome / typography / chip / iconButton
+ * trailing / spacing) live inside `<RailPanelRenderer>`. The page only
+ * feeds typed plain objects + the open / remove callbacks. Each
+ * card embeds `<EquipmentCatalogItemsSection>` via the
+ * `extraContent` slot — that component carries its own state /
+ * query / dialogs and so can't fold into descriptor data.
+ */
+function buildJobEquipmentPanelDescriptor(
+  jobEquipment: JobEquipmentWithDetails[],
+  onOpenDetail: (eq: LocationEquipment) => void,
+  onRemove: (jobEquipmentId: string) => void,
+  removePending: boolean,
+): RailPanelDescriptor {
+  const cards: RailCardDescriptor[] = jobEquipment.map((je) => {
+    const eq = je.equipment;
+    const metaParts: string[] = [];
+    if (eq?.manufacturer) metaParts.push(`Make: ${eq.manufacturer}`);
+    if (eq?.modelNumber) metaParts.push(`Model: ${eq.modelNumber}`);
+    if (eq?.serialNumber) metaParts.push(`S/N: ${eq.serialNumber}`);
+    const metaRows: NonNullable<RailCardDescriptor["metaRows"]>[number][] = [];
+    if (metaParts.length > 0) {
+      metaRows.push({ items: [{ text: metaParts.join(" · ") }] });
+    }
+    if (je.notes) {
+      metaRows.push({ items: [{ text: je.notes }] });
+    }
+    return {
+      key: je.id,
+      testId: `row-job-equipment-${je.id}`,
+      onClick: () => {
+        if (eq) onOpenDetail(eq);
+      },
+      ariaLabel: `Open equipment ${eq?.name ?? "details"}`,
+      title: {
+        text: eq?.name ?? "Unknown equipment",
+        as: "span",
+        titleIcon: Wrench,
+        inlineChip: eq?.equipmentType
+          ? { text: getEquipmentTypeLabel(eq.equipmentType) }
+          : undefined,
+        trailing: [
+          {
+            kind: "iconButton",
+            icon: Trash2,
+            onClick: () => onRemove(je.id),
+            ariaLabel: "Remove equipment",
+            testId: `button-remove-job-equipment-${je.id}`,
+            disabled: removePending,
+          },
+        ],
+      },
+      metaRows: metaRows.length > 0 ? metaRows : undefined,
+      // Catalog items section embeds via the bounded `extraContent`
+      // slot — it's a child React subtree with its own state /
+      // query / dialogs that can't be expressed as data.
+      extraContent: (
+        <div
+          className="mt-2 pl-[22px]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <EquipmentCatalogItemsSection
+            equipmentId={je.equipmentId}
+            readOnly
+          />
+        </div>
+      ),
+    };
+  });
+  return {
+    kind: "list",
+    cards,
+    testId: "card-equipment-list",
+  };
+}
 
 export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, hideHeader = false, cardStyle = false, externalAddOpen, onExternalAddOpenChange, onCountChange }: JobEquipmentSectionProps) {
   const { toast } = useToast();
@@ -193,10 +292,8 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   const linkedEquipmentIds = new Set(jobEquipment.map(je => je.equipmentId));
   const availableEquipment = locationEquipment.filter(e => !linkedEquipmentIds.has(e.id));
 
-  const getEquipmentTypeLabel = (type: string | null) => {
-    if (!type) return "-";
-    return LEGACY_TYPE_LABELS[type] || type;
-  };
+  // `getEquipmentTypeLabel` is module-scoped (above); both the
+  // component's legacy row branch and the descriptor builder use it.
 
   if (jobEquipmentLoading) {
     return (
@@ -273,94 +370,24 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                 <p className="text-caption mt-1">Use the + button to link or create equipment.</p>
               </div>
             ) : cardStyle ? (
-              // 2026-05-07: canonical rail card style — each equipment
-              // row renders inside `<RailContentCard>` with canonical
-              // typography tokens. Multi-line: name + type badge on
-              // top, make/model/SN meta line, optional notes, catalog
-              // items inline. Trash + click-to-edit affordances are
-              // unchanged.
-              <div className="space-y-2" data-testid="card-equipment-list">
-                {jobEquipment.map(je => {
-                  const eq = je.equipment;
-                  const metaParts: string[] = [];
-                  if (eq?.manufacturer) metaParts.push(`Make: ${eq.manufacturer}`);
-                  if (eq?.modelNumber) metaParts.push(`Model: ${eq.modelNumber}`);
-                  if (eq?.serialNumber) metaParts.push(`S/N: ${eq.serialNumber}`);
-                  return (
-                    <RailContentCard
-                      key={je.id}
-                      onClick={() => eq && setDetailEquipment(eq)}
-                      testId={`row-job-equipment-${je.id}`}
-                      ariaLabel={`Open equipment ${eq?.name ?? "details"}`}
-                    >
-                      {/* Primary row: name + type badge + remove */}
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Wrench className="h-3.5 w-3.5 text-text-secondary shrink-0" />
-                          <span className="text-row font-semibold text-text-primary truncate">
-                            {eq?.name ?? "Unknown equipment"}
-                          </span>
-                          {eq?.equipmentType && (
-                            <Badge
-                              variant="secondary"
-                              className="text-label px-1.5 py-0 shrink-0"
-                            >
-                              {getEquipmentTypeLabel(eq.equipmentType)}
-                            </Badge>
-                          )}
-                        </div>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            removeMutation.mutate(je.id);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              removeMutation.mutate(je.id);
-                            }
-                          }}
-                          aria-disabled={removeMutation.isPending}
-                          aria-label="Remove equipment"
-                          className="h-6 w-6 shrink-0 inline-flex items-center justify-center rounded text-text-secondary hover:text-destructive hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 cursor-pointer"
-                          data-testid={`button-remove-job-equipment-${je.id}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </span>
-                      </div>
-                      {/* Secondary meta: make / model / S/N + optional notes */}
-                      {(metaParts.length > 0 || je.notes) && (
-                        <div className="mt-1 pl-[22px] space-y-0.5">
-                          {metaParts.length > 0 && (
-                            <div className="text-caption text-text-muted">
-                              {metaParts.join(" · ")}
-                            </div>
-                          )}
-                          {je.notes && (
-                            <div className="text-caption text-text-secondary">
-                              {je.notes}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {/* Catalog items per equipment */}
-                      <div
-                        className="mt-2 pl-[22px]"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <EquipmentCatalogItemsSection
-                          equipmentId={je.equipmentId}
-                          readOnly
-                        />
-                      </div>
-                    </RailContentCard>
-                  );
-                })}
-              </div>
+              // 2026-05-07 Phase 8 — data-driven rail card path.
+              // `buildJobEquipmentPanelDescriptor` produces a typed
+              // list descriptor; `<RailPanelRenderer>` owns every
+              // visual concern (chrome / typography / spacing / chip
+              // sizing / hover-clickable affordance / iconButton
+              // trailing for the trash action). Catalog items embed
+              // via the `extraContent` slot — the only escape hatch
+              // for component-instance content that can't fold into
+              // descriptor data.
+              <RailPanelRenderer
+                panel={buildJobEquipmentPanelDescriptor(
+                  jobEquipment,
+                  setDetailEquipment,
+                  (id) => removeMutation.mutate(id),
+                  removeMutation.isPending,
+                )}
+                testIdPrefix="job-side"
+              />
             ) : (
               // Legacy compact row layout retained for any consumer
               // that doesn't opt into `cardStyle`.
