@@ -34,6 +34,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Minus, Plus, Search } from "lucide-react";
 
 import { apiRequest } from "@/lib/queryClient";
+// 2026-05-08 Phase 4 — capability-gated stock overlay on picker rows.
+import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -136,6 +138,52 @@ function usePricebookItems(searchText: string) {
   });
 }
 
+/**
+ * Phase 4 (2026-05-08) — capability-gated stock overlay for picker
+ * rows. Returns `null` when the tenant doesn't have the inventory_core
+ * feature (no API call fires); otherwise returns a Map keyed by item
+ * id carrying the per-item aggregate stock the picker card needs to
+ * render the In Stock / Out of Stock chip.
+ *
+ * Reuses the canonical /api/inventory/items endpoint from Phase 1 +
+ * its cache key shape so the picker overlay stays consistent with
+ * the InventoryPage Items tab — a refresh on either surface
+ * benefits the other.
+ */
+function useStockOverlay(opts: {
+  enabled: boolean;
+}): Map<string, PricebookItemStockOverlay> | null {
+  const inventoryEnabled = useFeatureEnabled("inventory_core") === true;
+  const query = useQuery<{ items: any[] }>({
+    queryKey: ["/api/inventory/items"],
+    queryFn: async () => {
+      const res = await fetch("/api/inventory/items", { credentials: "include" });
+      if (!res.ok) throw new Error(`Failed to load inventory overlay (${res.status})`);
+      return res.json();
+    },
+    enabled: opts.enabled && inventoryEnabled,
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    if (!inventoryEnabled || !query.data) return null;
+    const m = new Map<string, PricebookItemStockOverlay>();
+    for (const it of query.data.items ?? []) {
+      m.set(it.id, {
+        trackInventory: Boolean(it.trackInventory),
+        totalAvailable: String(it.stock?.totalAvailable ?? "0"),
+        totalOnHand: String(it.stock?.totalOnHand ?? "0"),
+        // Phase 5: surface reserved totals so the picker can render
+        // "Fully reserved" as a distinct state (totalAvailable === 0
+        // AND totalReserved > 0 means stock exists but is all
+        // promised) vs "Out of stock" (totalOnHand === 0).
+        totalReserved: String(it.stock?.totalReserved ?? "0"),
+        locationCount: Number(it.stock?.locationCount ?? 0),
+      });
+    }
+    return m;
+  }, [inventoryEnabled, query.data]);
+}
+
 export function PricebookPickerModal({
   open,
   onOpenChange,
@@ -186,6 +234,16 @@ export function PricebookPickerModal({
   // open so closed pickers don't pay for the round-trip.
   const groupsQuery = usePricebookGroups({ enabled: open });
   const groups = groupsQuery.data ?? [];
+
+  // Phase 4: stock overlay. When the tenant has the inventory_core
+  // feature, fetch /api/inventory/items in parallel with the catalog
+  // and build a Map<itemId, PricebookItemStockOverlay>. The card
+  // renders a chip when (a) the overlay row exists AND (b) the item
+  // is product + trackInventory. Service items + non-stock products
+  // are silently filtered out — they never see a chip. The query is
+  // gated on the feature so tenants without inventory pay zero
+  // network cost for the overlay.
+  const stockOverlay = useStockOverlay({ enabled: open });
 
   // Client-side filter as a preview while typing — keeps the grid
   // responsive even before the server query settles.
@@ -451,6 +509,7 @@ export function PricebookPickerModal({
                       quantity={qty}
                       onIncrement={onIncrement}
                       onDecrement={onDecrement}
+                      stock={stockOverlay?.get(item.id)}
                     />
                   </li>
                 );
@@ -611,11 +670,31 @@ function formatPickerSummary({
 
 // ── Item card ────────────────────────────────────────────────────────
 
+/** Phase 4 (2026-05-08) — optional stock overlay for inventory-aware
+ *  visibility on picker rows. The picker fetches /api/inventory/items
+ *  in parallel with the catalog query when the inventory_core feature
+ *  is enabled, then maps results by item id and passes the per-row
+ *  entry into the card. The card renders a small "In Stock" / "Out of
+ *  Stock" chip only when (a) the overlay row exists and (b) the item
+ *  is product + trackInventory. Service items + non-stock products
+ *  never see a chip. */
+export interface PricebookItemStockOverlay {
+  trackInventory: boolean;
+  totalAvailable: string;
+  totalOnHand: string;
+  /** Phase 5: total reserved across locations. Used to distinguish
+   *  "fully reserved" (stock exists but is held) from "out of stock"
+   *  (no physical stock). */
+  totalReserved: string;
+  locationCount: number;
+}
+
 interface PricebookItemCardProps {
   item: ProductOption;
   quantity: number;
   onIncrement: (itemId: string) => void;
   onDecrement: (itemId: string) => void;
+  stock?: PricebookItemStockOverlay;
 }
 
 /**
@@ -629,6 +708,7 @@ const PricebookItemCard = memo(function PricebookItemCard({
   quantity,
   onIncrement,
   onDecrement,
+  stock,
 }: PricebookItemCardProps) {
   const isSelected = quantity > 0;
   const typeLabel = item.type === "service" ? "Service" : "Product";
@@ -683,6 +763,46 @@ const PricebookItemCard = memo(function PricebookItemCard({
         >
           {item.description}
         </p>
+      )}
+
+      {/* Phase 4 + Phase 5: inventory stock chip. Only renders when
+          the tenant has inventory_core enabled AND the item is a
+          product that tracks inventory. Three mutually-exclusive
+          states (Phase 5 added "fully reserved"):
+            - Out of stock     : totalOnHand <= 0 (nothing physical)
+            - Fully reserved   : totalAvailable <= 0 AND totalOnHand > 0
+                                 (stock exists but is all held by
+                                 active reservations)
+            - In stock         : totalAvailable > 0
+          We don't compute "low stock" at this level (low-stock is
+          per-(item, location) and surfaces in the rails — appropriate
+          for triage, not picker selection). */}
+      {stock && stock.trackInventory && (
+        <div className="mt-1.5" data-testid={`pricebook-item-stock-${item.id}`}>
+          {Number(stock.totalOnHand) <= 0 ? (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200"
+              data-testid={`pricebook-item-stock-out-${item.id}`}
+            >
+              Out of stock
+            </span>
+          ) : Number(stock.totalAvailable) <= 0 ? (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200"
+              data-testid={`pricebook-item-stock-fully-reserved-${item.id}`}
+            >
+              Fully reserved · {Number(stock.totalReserved)}
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200"
+              data-testid={`pricebook-item-stock-in-${item.id}`}
+            >
+              {Number(stock.totalAvailable)} available
+              {stock.locationCount > 1 ? ` · ${stock.locationCount} locations` : ""}
+            </span>
+          )}
+        </div>
       )}
 
       <div className="mt-auto pt-1.5 flex items-center justify-between gap-1.5">

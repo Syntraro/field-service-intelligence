@@ -10,10 +10,19 @@
  *
  * If a chrome change is needed, change it here — both surfaces source
  * this card.
+ *
+ * Phase 2 RailContentCard adoption (2026-05-08): replaced shadcn
+ * Card/CardHeader/CardContent with canonical RailContentCard family.
+ * Removes the double-card chrome layering inside the rail panel body.
  */
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  RailContentCard,
+  RailContentCardHeader,
+  RailContentCardTitle,
+  RailContentCardFieldList,
+  RailContentCardField,
+} from "@/components/detail-rail/RailContentCard";
 import { formatCurrency } from "@/lib/formatters";
-import { QuoteMetaRow } from "./shared/QuoteMetaRow";
 
 export interface QuoteSummaryCardProps {
   /** Pre-tax sum of all line item subtotals. Decimal string. */
@@ -26,20 +35,27 @@ export interface QuoteSummaryCardProps {
 
 export function QuoteSummaryCard({ subtotal, taxTotal, total }: QuoteSummaryCardProps) {
   return (
-    <Card data-testid="card-quote-summary">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium">Quote Summary</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 text-sm">
-        <QuoteMetaRow label="Subtotal" value={formatCurrency(subtotal)} />
-        <QuoteMetaRow label="Tax" value={formatCurrency(taxTotal)} />
-        <div className="pt-2 border-t flex justify-between items-baseline">
-          <span className="text-muted-foreground font-medium">Total</span>
-          <span className="text-lg font-bold text-slate-900" data-testid="text-quote-total">
-            {formatCurrency(total)}
-          </span>
-        </div>
-      </CardContent>
-    </Card>
+    <RailContentCard testId="card-quote-summary">
+      <RailContentCardHeader>
+        <RailContentCardTitle as="h4">Quote Summary</RailContentCardTitle>
+      </RailContentCardHeader>
+
+      <RailContentCardFieldList>
+        <RailContentCardField label="Subtotal">
+          {formatCurrency(subtotal)}
+        </RailContentCardField>
+        <RailContentCardField label="Tax">
+          {formatCurrency(taxTotal)}
+        </RailContentCardField>
+      </RailContentCardFieldList>
+
+      {/* Total row — border-t separator with emphasis value */}
+      <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-baseline">
+        <span className="text-label text-text-secondary">Total</span>
+        <span className="text-row-emphasis text-text-primary" data-testid="text-quote-total">
+          {formatCurrency(total)}
+        </span>
+      </div>
+    </RailContentCard>
   );
 }

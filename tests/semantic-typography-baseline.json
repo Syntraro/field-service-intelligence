@@ -1,1176 +1,1629 @@
 {
   "generatedAt": "2026-05-08",
-  "description": "Frozen baseline of legacy typography-ramp + arbitrary text-[Npx] usage. tests/semantic-typography-guard.test.ts fails when any file's count increases or a new file introduces these classes. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
-  "totalLegacy": 2894,
+  "description": "Frozen baseline of (a) legacy typography-ramp + arbitrary text-[Npx], and (b) deprecated component-specific aliases per Phase S1 (Simplified Semantic Typography). tests/semantic-typography-guard.test.ts fails when any file's count increases for any of the three families or a new file introduces them. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
+  "totalLegacy": 2884,
   "totalArbitrary": 766,
+  "totalDeprecated": 92,
   "files": {
     "client/src/App.tsx": {
       "legacy": 2,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/ActionRequiredModal.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/AddEquipmentDialog.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/AddVisitDialog.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/AppSidebar.tsx": {
       "legacy": 1,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/ApplyQuoteTemplateModal.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/BulkEditTagsModal.tsx": {
       "legacy": 12,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ContactFormDialog.tsx": {
       "legacy": 10,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/components/CreateClientModal.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/CreateNewDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/DashboardActionModal.tsx": {
       "legacy": 32,
-      "arbitrary": 52
+      "arbitrary": 52,
+      "deprecated": 0
     },
     "client/src/components/EditCompanyDialog.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/EditTagsModal.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/EquipmentCatalogItemsSection.tsx": {
       "legacy": 13,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/EquipmentDetailModal.tsx": {
       "legacy": 1,
-      "arbitrary": 15
+      "arbitrary": 15,
+      "deprecated": 0
     },
     "client/src/components/EquipmentPicker.tsx": {
       "legacy": 8,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/EquipmentTypeCombobox.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/GlobalNotice.tsx": {
       "legacy": 0,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/ImpersonationBanner.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/InvoiceCompositionDialog.tsx": {
       "legacy": 10,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/JobEquipmentSection.tsx": {
       "legacy": 6,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/JobHeaderCard.tsx": {
       "legacy": 10,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/components/JobTemplateModal.tsx": {
       "legacy": 10,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/LocPricingTab.tsx": {
       "legacy": 4,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/LocationFormModal.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/MultiSelectDropdown.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/PMScheduleCard.tsx": {
       "legacy": 16,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/PartsBillingCard.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/PartsSelectorModal.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/PortalLayout.tsx": {
       "legacy": 8,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/PostVisitCompletionDialog.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ProtectedRoute.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/PwaUpdatePrompt.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/QuickAddJobDialog.tsx": {
       "legacy": 72,
-      "arbitrary": 13
+      "arbitrary": 13,
+      "deprecated": 0
     },
     "client/src/components/QuoteHeaderCard.tsx": {
       "legacy": 22,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/QuoteTemplateModal.tsx": {
       "legacy": 8,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/TaskDialog.tsx": {
       "legacy": 25,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/TechnicianSelector.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/TimezoneSetupBanner.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/TimezoneSetupDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/UniversalSearch.tsx": {
       "legacy": 11,
-      "arbitrary": 6
+      "arbitrary": 6,
+      "deprecated": 0
+    },
+    "client/src/components/activity-feed/ActivityFeedDrawer.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 3
+    },
+    "client/src/components/activity-feed/ActivityFeedItem.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/activity-feed/CustomizeActivityFeedView.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/activity/ActivityCard.tsx": {
       "legacy": 7,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/admin/BulkArchivedJobsCleanupCard.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/attachments/AttachmentView.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/attachments/NoteAttachmentStrip.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/common/AddressBlock.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/communication/BatchSendInvoicesModal.tsx": {
       "legacy": 10,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/communication/ContactPickerPopover.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/communication/DeliveryStatusCard.tsx": {
-      "legacy": 10,
-      "arbitrary": 0
+      "legacy": 9,
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/communication/SendCommunicationModal.tsx": {
       "legacy": 14,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/communication/SystemImagePickerDialog.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/communications/ContactCenterSummary.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/ContactsListColumn.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/ConversationDetailsPanel.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/ConversationListColumn.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/ConversationPanel.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/LinkContactDialog.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 3
+    },
+    "client/src/components/communications/TeamChatCenter.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/communications/TeamMembersListColumn.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/dashboard/LowerOpsCards.tsx": {
       "legacy": 8,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/dashboard/OperationalAlertsCard.tsx": {
-      "legacy": 4,
-      "arbitrary": 2
+      "legacy": 3,
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/dashboard/PMHealthCard.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/dashboard/QuotePipelineCard.tsx": {
       "legacy": 3,
-      "arbitrary": 13
+      "arbitrary": 13,
+      "deprecated": 0
     },
     "client/src/components/dashboard/RevenueCenterCard.tsx": {
       "legacy": 4,
-      "arbitrary": 9
+      "arbitrary": 9,
+      "deprecated": 0
     },
     "client/src/components/dashboard/RightColumnFinancialCards.tsx": {
       "legacy": 7,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/dashboard/TopKpiRow.tsx": {
       "legacy": 1,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
+    },
+    "client/src/components/detail-rail/RailContentCard.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/detail-rail/RailPanelRenderer.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
     },
     "client/src/components/detail/CanonicalDetailHeader.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchBoardHeader.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchDetailPanel.tsx": {
       "legacy": 23,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchFiltersBar.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchOutsideWindowIndicators.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchTaskBlock.tsx": {
       "legacy": 0,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchTechnicianSidebar.tsx": {
       "legacy": 6,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchTimeline.tsx": {
       "legacy": 1,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/dispatch/DispatchUnscheduledPanel.tsx": {
       "legacy": 12,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/dispatch/MonthDispatchGrid.tsx": {
       "legacy": 2,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/dispatch/TimeOffOverlay.tsx": {
       "legacy": 0,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/dispatch/VisitCardContent.tsx": {
       "legacy": 0,
-      "arbitrary": 11
+      "arbitrary": 11,
+      "deprecated": 0
     },
     "client/src/components/dispatch/WeekDispatchCell.tsx": {
       "legacy": 0,
-      "arbitrary": 9
+      "arbitrary": 9,
+      "deprecated": 0
     },
     "client/src/components/dispatch/WeekDispatchGrid.tsx": {
       "legacy": 2,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/filters/FiltersButton.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/help/HelpPanel.tsx": {
       "legacy": 6,
-      "arbitrary": 14
+      "arbitrary": 14,
+      "deprecated": 0
     },
     "client/src/components/imports/ColumnMapper.tsx": {
       "legacy": 4,
-      "arbitrary": 8
+      "arbitrary": 8,
+      "deprecated": 1
     },
     "client/src/components/imports/CustomFieldConfigForm.tsx": {
       "legacy": 1,
-      "arbitrary": 10
+      "arbitrary": 10,
+      "deprecated": 0
     },
     "client/src/components/imports/CustomFieldPlanSummary.tsx": {
       "legacy": 2,
-      "arbitrary": 11
+      "arbitrary": 11,
+      "deprecated": 0
     },
     "client/src/components/imports/ImportWizard.tsx": {
       "legacy": 11,
-      "arbitrary": 13
+      "arbitrary": 13,
+      "deprecated": 3
     },
     "client/src/components/imports/PreviewTable.tsx": {
       "legacy": 5,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/imports/SourceSelector.tsx": {
       "legacy": 4,
-      "arbitrary": 11
+      "arbitrary": 11,
+      "deprecated": 0
     },
     "client/src/components/imports/SummaryCards.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/imports/TemplateDownloadLink.tsx": {
       "legacy": 1,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/imports/UploadStep.tsx": {
       "legacy": 5,
-      "arbitrary": 6
+      "arbitrary": 6,
+      "deprecated": 1
     },
     "client/src/components/inventory/InventoryItemModal.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/inventory/InventoryItemRail.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 5
     },
     "client/src/components/inventory/InventoryLocationModal.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/inventory/InventoryLocationRail.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 6
+    },
+    "client/src/components/inventory/JobInventoryUsageSection.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/inventory/TransferStockModal.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/invoice/CollectPaymentDialog.tsx": {
       "legacy": 16,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/invoice/DiscountEditor.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/invoice/DraftNotesCard.tsx": {
       "legacy": 7,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/components/invoice/EditableMessageCard.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/invoice/EmbeddedStripeCardForm.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/invoice/InvoiceMetaCard.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/invoice/InvoiceTimelineCard.tsx": {
       "legacy": 5,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/invoice/PaymentHistoryCard.tsx": {
       "legacy": 5,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/components/invoice/QboOverrideModal.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/invoice/QboSyncBanner.tsx": {
       "legacy": 8,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/invoice/RefundPaymentDialog.tsx": {
       "legacy": 10,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/invoice/SelectJobsForInvoiceModal.tsx": {
       "legacy": 3,
-      "arbitrary": 8
+      "arbitrary": 8,
+      "deprecated": 0
     },
     "client/src/components/job/JobStatusTimeline.tsx": {
-      "legacy": 5,
-      "arbitrary": 3
+      "legacy": 4,
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/job/SchedulingHistory.tsx": {
       "legacy": 6,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/components/job/StatusProgressBar.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/jobs/JobScheduleFields.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/layout/DetailPageShell.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/leads/LeadDetailsRail.tsx": {
-      "legacy": 3,
-      "arbitrary": 2
+      "legacy": 1,
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/leads/LeadSummaryCard.tsx": {
-      "legacy": 14,
-      "arbitrary": 1
+      "legacy": 19,
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/leads/LeadVisitsCard.tsx": {
       "legacy": 11,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/leads/ScheduleLeadVisitModal.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/line-items/AddLineItemForm.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/line-items/LineItemEditModal.tsx": {
       "legacy": 10,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/line-items/LineItemRow.tsx": {
       "legacy": 15,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/line-items/LineItemsCard.tsx": {
       "legacy": 14,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/line-items/PricebookGroupModal.tsx": {
       "legacy": 5,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/line-items/PricebookGroupsRail.tsx": {
       "legacy": 5,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/components/line-items/PricebookPickerModal.tsx": {
       "legacy": 11,
-      "arbitrary": 3
+      "arbitrary": 5,
+      "deprecated": 0
+    },
+    "client/src/components/lists/EntityListTable.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/notes/EntityNoteDialog.tsx": {
       "legacy": 12,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/notes/EntityNotesPanel.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/pm/CreateMaintenancePlanDialog.tsx": {
       "legacy": 13,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/pm/PmBillingFields.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/pm/PmGenerationModeSelector.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/pm/PmMonthPicker.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/pm/PmServiceWindowInputs.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/portal/SendPaymentLinkDialog.tsx": {
       "legacy": 3,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/products-services/ProductServiceDeleteDialog.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/products-services/ProductServiceFormDialog.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/products-services/ProductsServicesTable.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/products-services/ProductsServicesToolbar.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/quotes/QuoteDescriptionCard.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/quotes/QuoteSummaryCard.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/settings/TemplateEditor.tsx": {
       "legacy": 12,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/components/settings/VariablePicker.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/shared/ApplyTemplateModalBase.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/shared/CreateOrSelectField.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/shared/ReferenceFieldsSection.tsx": {
       "legacy": 9,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/tasks/TasksPanel.tsx": {
       "legacy": 12,
-      "arbitrary": 16
+      "arbitrary": 16,
+      "deprecated": 0
     },
     "client/src/components/team-hub/AddMemberDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/BulkActionsBar.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/CalendarSyncSection.tsx": {
       "legacy": 6,
-      "arbitrary": 10
+      "arbitrary": 10,
+      "deprecated": 0
     },
     "client/src/components/team-hub/CompensationTab.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/team-hub/InviteMemberDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/MemberOverviewPanel.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/MembersTab.tsx": {
       "legacy": 7,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/RolesAccessTab.tsx": {
       "legacy": 37,
-      "arbitrary": 10
+      "arbitrary": 10,
+      "deprecated": 0
     },
     "client/src/components/team-hub/SchedulesTab.tsx": {
       "legacy": 16,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/team-hub/TeamMemberList.tsx": {
       "legacy": 8,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/team-hub/TeamMemberWorkspace.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/team-hub/TeamMetricsStrip.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/time/TimeEntryModal.tsx": {
       "legacy": 33,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/timesheets/DaySummaryCard.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/timesheets/DayView.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/timesheets/JobSessionCreateModal.tsx": {
       "legacy": 13,
-      "arbitrary": 12
+      "arbitrary": 12,
+      "deprecated": 0
     },
     "client/src/components/timesheets/JobSessionEditModal.tsx": {
       "legacy": 8,
-      "arbitrary": 7
+      "arbitrary": 7,
+      "deprecated": 0
     },
     "client/src/components/timesheets/JobTimeGroupCard.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/timesheets/TimeEntryEditModal.tsx": {
       "legacy": 11,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/timesheets/TimeEntryRowCompact.tsx": {
       "legacy": 3,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/timesheets/TimelineRail.tsx": {
       "legacy": 1,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/timesheets/timeline/WeekTimeline.tsx": {
       "legacy": 6,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/components/ui/AddressAutocomplete.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/accordion.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/ui/alert-dialog.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/ui/alert.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/badge.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/button.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/calendar.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/components/ui/card.tsx": {
       "legacy": 5,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 1
     },
     "client/src/components/ui/command.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/compact-field.tsx": {
       "legacy": 1,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/components/ui/dialog.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 1
     },
     "client/src/components/ui/dropdown-menu.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/empty-state.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/form-field.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 1
+    },
+    "client/src/components/ui/form.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/ui/input.tsx": {
       "legacy": 1,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 1
+    },
+    "client/src/components/ui/label.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/ui/list-surface.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/ui/modal.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/components/ui/select.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 2
     },
     "client/src/components/ui/sheet.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/sidebar.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/table-page-shell.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/table.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 2
     },
     "client/src/components/ui/tabs.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/textarea.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 1
     },
     "client/src/components/ui/toast.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/ui/tooltip.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/components/visits/EditVisitModal.tsx": {
       "legacy": 16,
-      "arbitrary": 8
+      "arbitrary": 8,
+      "deprecated": 9
     },
     "client/src/components/visits/VisitTeamAssignment.tsx": {
       "legacy": 7,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/dashboard/DashboardCustomizeDrawer.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/lib/chipVariants.ts": {
       "legacy": 0,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/lib/platformAuth.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/AccountsReceivablePage.tsx": {
       "legacy": 7,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/BusinessHoursSettingsPage.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/CategoryManagementPage.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/ClientDetailPage.tsx": {
       "legacy": 104,
-      "arbitrary": 30
+      "arbitrary": 30,
+      "deprecated": 1
     },
     "client/src/pages/Clients.tsx": {
-      "legacy": 3,
-      "arbitrary": 0
+      "legacy": 2,
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/CommunicationSettingsPage.tsx": {
       "legacy": 6,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
+    },
+    "client/src/pages/CommunicationsHub.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
     },
     "client/src/pages/CreateLeadPage.tsx": {
       "legacy": 7,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/CreateQuotePage.tsx": {
       "legacy": 24,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/pages/CustomFieldsPage.tsx": {
       "legacy": 15,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/DispatchPreview.tsx": {
       "legacy": 5,
-      "arbitrary": 19
+      "arbitrary": 19,
+      "deprecated": 0
     },
     "client/src/pages/FinancialDashboard.tsx": {
       "legacy": 39,
-      "arbitrary": 44
+      "arbitrary": 44,
+      "deprecated": 0
     },
     "client/src/pages/ImportCenterPage.tsx": {
       "legacy": 5,
-      "arbitrary": 8
+      "arbitrary": 8,
+      "deprecated": 0
     },
     "client/src/pages/IntegrationsPage.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/pages/InventoryPage.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 3
     },
     "client/src/pages/InvoiceDetailPage.tsx": {
       "legacy": 29,
-      "arbitrary": 9
+      "arbitrary": 9,
+      "deprecated": 0
     },
     "client/src/pages/InvoiceDisplaySettingsPage.tsx": {
       "legacy": 4,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 1
     },
     "client/src/pages/InvoiceRemindersSettingsPage.tsx": {
       "legacy": 26,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/pages/InvoicesListPage.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
     },
     "client/src/pages/JobDetailPage.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 5
     },
     "client/src/pages/JobTemplatesPage.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/pages/Jobs.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
     },
     "client/src/pages/LeadDetailPage.tsx": {
-      "legacy": 15,
-      "arbitrary": 2
+      "legacy": 6,
+      "arbitrary": 2,
+      "deprecated": 0
+    },
+    "client/src/pages/LeadsPage.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
     },
     "client/src/pages/Locations.tsx": {
       "legacy": 2,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/Login.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/ManageRoles.tsx": {
       "legacy": 11,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/pages/NewInvoicePage.tsx": {
       "legacy": 16,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/NotificationsPage.tsx": {
       "legacy": 7,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/pages/OnboardingWizard.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/PMDetailPage.tsx": {
       "legacy": 29,
-      "arbitrary": 15
+      "arbitrary": 15,
+      "deprecated": 0
     },
     "client/src/pages/PMTemplateEditorPage.tsx": {
       "legacy": 22,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/PMWizardPage.tsx": {
       "legacy": 61,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 4
+    },
+    "client/src/pages/PMWorkspacePage.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/pages/PaymentsDashboardPage.tsx": {
       "legacy": 42,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/PaymentsSettingsPage.tsx": {
       "legacy": 12,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/PayrollPage.tsx": {
       "legacy": 24,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/QboConsolePage.tsx": {
       "legacy": 196,
-      "arbitrary": 38
+      "arbitrary": 38,
+      "deprecated": 1
     },
     "client/src/pages/QuoteDetailPage.tsx": {
       "legacy": 13,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/QuoteTemplatesPage.tsx": {
       "legacy": 7,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/pages/Quotes.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 2
+    },
+    "client/src/pages/RecurringJobsPage.tsx": {
+      "legacy": 0,
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/pages/Reports.tsx": {
       "legacy": 39,
-      "arbitrary": 8
+      "arbitrary": 8,
+      "deprecated": 0
     },
     "client/src/pages/ReportsAR.tsx": {
       "legacy": 22,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/ReportsJobs.tsx": {
       "legacy": 19,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/pages/ReportsLibrary.tsx": {
       "legacy": 6,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/ReportsPartsForecast.tsx": {
       "legacy": 18,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/ReportsRevenue.tsx": {
       "legacy": 25,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/pages/ReportsSalesFunnel.tsx": {
       "legacy": 19,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/ReportsTeam.tsx": {
       "legacy": 21,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/pages/RequestReset.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/ResetPassword.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SettingsPage.tsx": {
       "legacy": 28,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SubscriptionSettings.tsx": {
       "legacy": 19,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SupplierDetailPage.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SuppliersListPage.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SupportAccessPage.tsx": {
       "legacy": 12,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/SupportConsole.tsx": {
       "legacy": 15,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/TagsSettingsPage.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/pages/TaxBillingRulesPage.tsx": {
       "legacy": 26,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 1
     },
     "client/src/pages/TeamHubPage.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/TeamMemberDetail.tsx": {
       "legacy": 17,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/TimeBillingRulesPage.tsx": {
       "legacy": 25,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/TimesheetReportPage.tsx": {
       "legacy": 26,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/not-found.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/BulkTenantActions.tsx": {
       "legacy": 9,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformBulkRuns.tsx": {
       "legacy": 7,
-      "arbitrary": 6
+      "arbitrary": 6,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformFeatureDetail.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformFeaturesCatalog.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformFeedbackPage.tsx": {
       "legacy": 8,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformIssuesPage.tsx": {
       "legacy": 9,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformKpiStrip.tsx": {
       "legacy": 1,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformLayout.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformLogin.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformPlanDetail.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformPlansList.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformRequestReset.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformResetPassword.tsx": {
       "legacy": 6,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformSupportSessionsPage.tsx": {
       "legacy": 14,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformTenantDetail.tsx": {
       "legacy": 21,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformTenantsList.tsx": {
       "legacy": 8,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/pages/platform/PlatformTrialsPipeline.tsx": {
       "legacy": 14,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/platform/TenantDangerZone.tsx": {
       "legacy": 25,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/platform/TenantTimeline.tsx": {
       "legacy": 5,
-      "arbitrary": 4
+      "arbitrary": 4,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalDashboard.tsx": {
       "legacy": 15,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalInvoiceDetail.tsx": {
       "legacy": 30,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalInvoicesList.tsx": {
       "legacy": 11,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalLogin.tsx": {
       "legacy": 10,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalPayInvoiceForm.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalPaymentMethods.tsx": {
       "legacy": 11,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/portal/PortalVerify.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/signup/SignupInvite.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/signup/StepCredentials.tsx": {
       "legacy": 2,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/signup/StepIdentity.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/pages/timesheets/WeekStackPage.tsx": {
       "legacy": 25,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/tech-app/app/TechApp.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/ActiveTimerConflictDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/ClockOutConflictDialog.tsx": {
       "legacy": 1,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/DaySelector.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/GeofenceStartPrompt.tsx": {
       "legacy": 5,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/MidnightRolloverBanner.tsx": {
       "legacy": 3,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/components/MobileShell.tsx": {
       "legacy": 3,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/tech-app/components/OfflineStatusBar.tsx": {
       "legacy": 0,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/tech-app/components/ViewingScopePicker.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/CreateClientPage.tsx": {
       "legacy": 4,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/CreateJobPage.tsx": {
       "legacy": 16,
-      "arbitrary": 3
+      "arbitrary": 3,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/CreateLeadPage.tsx": {
       "legacy": 9,
-      "arbitrary": 1
+      "arbitrary": 1,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/CreateTaskPage.tsx": {
       "legacy": 22,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/LeadVisitDetailPage.tsx": {
       "legacy": 15,
-      "arbitrary": 9
+      "arbitrary": 9,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/LocationDetailPage.tsx": {
       "legacy": 19,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/LoginPage.tsx": {
       "legacy": 10,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/MePage.tsx": {
       "legacy": 6,
-      "arbitrary": 9
+      "arbitrary": 9,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/SearchPage.tsx": {
       "legacy": 13,
-      "arbitrary": 0
+      "arbitrary": 0,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/TaskDetailPage.tsx": {
       "legacy": 16,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/TimesheetPage.tsx": {
       "legacy": 30,
-      "arbitrary": 5
+      "arbitrary": 5,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/TodayPage.tsx": {
       "legacy": 39,
-      "arbitrary": 18
+      "arbitrary": 18,
+      "deprecated": 0
     },
     "client/src/tech-app/pages/VisitDetailPage.tsx": {
       "legacy": 121,
-      "arbitrary": 23
+      "arbitrary": 23,
+      "deprecated": 0
     },
     "client/src/tech-app/utils/visitDisplay.ts": {
       "legacy": 0,
-      "arbitrary": 2
+      "arbitrary": 2,
+      "deprecated": 0
     }
   }
 }

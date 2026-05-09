@@ -4,12 +4,13 @@
  *
  * Locks the contract that:
  *   • The shared `EntityListTable.kindCellClasses()` resolver maps every
- *     column kind to the canonical typography token (text-row body, or
- *     `text-caption font-medium` for primary names — the operational
- *     density baseline introduced 2026-05-07), not to a raw Tailwind
- *     size utility. The resolver is the single source of truth for row
- *     body typography across Jobs, Invoices, Leads, Quotes, and any
- *     future page that adopts the shared component.
+ *     column kind to the canonical typography token (`text-caption
+ *     font-medium` for primary names; `text-caption` for date/money
+ *     secondary-metadata cells; `text-row` for generic text/status/badge
+ *     cells), not to a raw Tailwind size utility. The resolver is the
+ *     single source of truth for row body typography across Jobs,
+ *     Invoices, Leads, Quotes, and any future page that adopts the
+ *     shared component. (date/money → text-caption migration: 2026-05-08)
  *   • Per-page render() functions on Jobs, Invoices, Leads, Quotes do
  *     NOT add ad-hoc font-size classes (`text-xs`/`text-sm`/`text-base`
  *     /`text-lg` or arbitrary `text-[...px]`) on the main row body —
@@ -142,12 +143,12 @@ describe("EntityListTable.kindCellClasses — canonical typography baseline", ()
     expect(fn).toMatch(/case\s+"text":[\s\S]+?text-row\b/);
   });
 
-  it("date cells apply the canonical text-row baseline", () => {
-    expect(fn).toMatch(/case\s+"date":[\s\S]+?text-row\b/);
+  it("date cells apply text-caption (2026-05-08: reduced weight for secondary metadata)", () => {
+    expect(fn).toMatch(/case\s+"date":[\s\S]+?text-caption\b/);
   });
 
-  it("money cells apply the canonical text-row baseline (right-aligned + tabular)", () => {
-    expect(fn).toMatch(/case\s+"money":[\s\S]+?text-row\b/);
+  it("money cells apply text-caption, right-aligned + tabular (2026-05-08: reduced weight for secondary metadata)", () => {
+    expect(fn).toMatch(/case\s+"money":[\s\S]+?text-caption\b/);
     expect(fn).toMatch(/case\s+"money":[\s\S]+?text-right/);
     expect(fn).toMatch(/case\s+"money":[\s\S]+?tabular-nums/);
   });

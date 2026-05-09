@@ -64,6 +64,40 @@ type StatusInfo = {
   variant: "default" | "secondary" | "destructive" | "outline";
 };
 
+/**
+ * 2026-05-08 (Phase 3 — Quote Workflow relocation): Owner + Assessment
+ * lifecycle controls moved out of the right-rail "Workflow" tab into
+ * Section B of this header card. Controls are entity-level mutations
+ * (sales-owner assignment + assessment-status lifecycle), so they belong
+ * with Send / Approve / Decline / Convert in the header action area —
+ * not a rail tab. The page (QuoteDetailPage) still owns all mutations,
+ * dialog state, and team-member queries; this card receives the data
+ * + handlers via the optional `workflow` prop. When `workflow` is
+ * undefined (e.g. a future surface that uses this header without
+ * workflow controls), Section B renders without the workflow cluster.
+ */
+export interface QuoteHeaderWorkflow {
+  /** Selected sales-owner user id. `null` = Unassigned. */
+  salesOwnerUserId: string | null;
+  /** Team-member options for the owner select. */
+  teamMembers: Array<{
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+  }>;
+  /** `null` = no assessment, `"required"`/`"scheduled"`/`"completed"` =
+   *  lifecycle states. Mirrors the `quotes.assessmentStatus` column. */
+  assessmentStatus: "required" | "scheduled" | "completed" | null;
+  isOwnerMutating?: boolean;
+  isAssessmentMutating?: boolean;
+  onOwnerChange: (userId: string | null) => void;
+  onMarkAssessmentNeeded: () => void;
+  onClearAssessmentNeeded: () => void;
+  onScheduleAssessment: () => void;
+  onCompleteAssessment: () => void;
+  onCancelAssessment: () => void;
+}
+
 interface QuoteHeaderCardProps {
   quote: Quote;
   location: Client;
@@ -84,6 +118,9 @@ interface QuoteHeaderCardProps {
   onConvertToJob: () => void;
   onDelete: () => void;
   onEditPlaceholder?: () => void;
+  /** 2026-05-08: optional Owner + Assessment controls; rendered in
+   *  Section B's left cluster (before the flex-1 spacer). */
+  workflow?: QuoteHeaderWorkflow;
 }
 
 export function QuoteHeaderCard({
@@ -105,6 +142,7 @@ export function QuoteHeaderCard({
   onConvertToJob,
   onDelete,
   onEditPlaceholder,
+  workflow,
 }: QuoteHeaderCardProps) {
   const clientName = customerCompany?.name ?? location.companyName ?? "Client";
   const addressParts = [location.address, location.address2].filter(Boolean);
@@ -265,8 +303,14 @@ export function QuoteHeaderCard({
         )}
       </div>
 
-      {/* Section B — action bar. Matches Invoice/Job density (h-7 buttons, px-4 py-1.5). */}
-      <div className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap">
+      {/* Section B — action bar. Matches Invoice/Job density (h-7 buttons, px-4 py-1.5).
+          2026-05-08: workflow cluster (Owner + Assessment) lives on the
+          LEFT, before the flex-1 spacer. Primary entity actions (Send /
+          Approve / Decline / Convert / PDF / overflow) stay on the RIGHT. */}
+      <div
+        className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap"
+        data-testid="quote-header-action-bar"
+      >
         {isDraft && (
           <Button
             variant="outline"
@@ -277,6 +321,103 @@ export function QuoteHeaderCard({
           >
             <FileText className="h-3.5 w-3.5" />Apply Template
           </Button>
+        )}
+
+        {/* 2026-05-08 (Phase 3 — Workflow relocation): Owner +
+            Assessment lifecycle controls. Page owns mutations + dialog
+            state; the card just renders the controls. */}
+        {workflow && (
+          <div
+            className="flex items-center gap-1.5 flex-wrap"
+            data-testid="quote-header-workflow-cluster"
+          >
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">
+              <span>Owner</span>
+              <select
+                className="text-xs h-7 border rounded px-2 py-0.5 max-w-[140px] bg-white"
+                value={workflow.salesOwnerUserId || ""}
+                onChange={(e) =>
+                  workflow.onOwnerChange(e.target.value || null)
+                }
+                disabled={workflow.isOwnerMutating}
+                data-testid="quote-header-owner-select"
+              >
+                <option value="">Unassigned</option>
+                {workflow.teamMembers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {[u.firstName, u.lastName].filter(Boolean).join(" ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <span className="text-xs text-muted-foreground" data-testid="quote-header-assessment-label">Assessment</span>
+            {!workflow.assessmentStatus && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1 text-xs h-7"
+                onClick={workflow.onMarkAssessmentNeeded}
+                disabled={workflow.isAssessmentMutating}
+                data-testid="quote-header-assessment-mark-needed"
+              >
+                Mark needed
+              </Button>
+            )}
+            {workflow.assessmentStatus === "required" && (
+              <>
+                <Badge variant="outline" className="text-xs border-amber-300 text-amber-700">Needed</Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1 text-xs h-7"
+                  onClick={workflow.onScheduleAssessment}
+                  disabled={workflow.isAssessmentMutating}
+                  data-testid="quote-header-assessment-schedule"
+                >
+                  Schedule
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1 text-xs h-7 text-muted-foreground"
+                  onClick={workflow.onClearAssessmentNeeded}
+                  disabled={workflow.isAssessmentMutating}
+                  data-testid="quote-header-assessment-clear"
+                >
+                  Clear
+                </Button>
+              </>
+            )}
+            {workflow.assessmentStatus === "scheduled" && (
+              <>
+                <Badge variant="outline" className="text-xs border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1 text-xs h-7"
+                  onClick={workflow.onCompleteAssessment}
+                  disabled={workflow.isAssessmentMutating}
+                  data-testid="quote-header-assessment-complete"
+                >
+                  Complete
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1 text-xs h-7 text-muted-foreground"
+                  onClick={workflow.onCancelAssessment}
+                  disabled={workflow.isAssessmentMutating}
+                  data-testid="quote-header-assessment-cancel"
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
+            {workflow.assessmentStatus === "completed" && (
+              <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700">Completed</Badge>
+            )}
+          </div>
         )}
 
         <div className="flex-1" />

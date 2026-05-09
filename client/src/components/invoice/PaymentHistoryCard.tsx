@@ -13,13 +13,27 @@
  * No mutations live here — create/delete flows remain on the parent
  * page so the canonical `recalculateInvoiceBalance` tx path isn't
  * bypassed.
+ *
+ * Phase 3 RailContentCard adoption (2026-05-08): replaced shadcn
+ * Card/CardHeader/CardContent/CardTitle with canonical RailContentCard
+ * family. Provider badges migrated from ad-hoc outline Badge color
+ * triplets to RailContentCardChip. Typography normalized to canonical
+ * role tokens throughout (text-xs / text-[10px] / text-[11px] /
+ * text-slate-* removed). Row layout DOM is unchanged — rows are
+ * static/non-clickable so neither RailContentCardSubrow nor
+ * RailContentCardField applies.
  */
 import { format } from "date-fns";
 import {
   Receipt, Undo2, CornerUpLeft, CreditCard, Banknote, Building2, Mail,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import {
+  RailContentCard,
+  RailContentCardHeader,
+  RailContentCardTitle,
+  RailContentCardMeta,
+  RailContentCardChip,
+} from "@/components/detail-rail/RailContentCard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
@@ -78,22 +92,17 @@ function typeMeta(paymentType: string): {
   return { label: "Payment", icon: <Receipt className="h-3 w-3" />, tone: "default" };
 }
 
+// 2026-05-08 Phase 3: migrated from ad-hoc outline Badge color triplets
+// (text-[10px] px-1.5 py-0 border-*-300 text-*-700 bg-*-50) to the
+// canonical RailContentCardChip. Stripe → purple, QBO → info.
 function providerBadge(providerSource: string, qboPaymentId?: string | null) {
   // Show a provider chip only for non-manual rows so the common case
   // (office-entered cash/cheque) stays uncluttered.
   if (providerSource === "stripe") {
-    return (
-      <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-violet-300 text-violet-700 bg-violet-50">
-        Stripe
-      </Badge>
-    );
+    return <RailContentCardChip variant="purple">Stripe</RailContentCardChip>;
   }
   if (providerSource === "qbo" || qboPaymentId) {
-    return (
-      <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-sky-300 text-sky-700 bg-sky-50">
-        QuickBooks
-      </Badge>
-    );
+    return <RailContentCardChip variant="info">QuickBooks</RailContentCardChip>;
   }
   return null;
 }
@@ -110,106 +119,105 @@ export function PaymentHistoryCard({ payments, isLoading, onRefund }: PaymentHis
     isPaymentRefundable(row, payments);
 
   return (
-    <Card data-testid="card-payment-history">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Receipt className="h-4 w-4 text-muted-foreground" />
+    <RailContentCard testId="card-payment-history">
+      <RailContentCardHeader>
+        <RailContentCardTitle as="h4" className="flex items-center gap-2">
+          <Receipt className="h-4 w-4 text-muted-foreground shrink-0" />
           Payment History
           {payments.length > 0 && (
-            <span className="text-xs font-normal text-muted-foreground">
+            <span className="text-helper font-normal text-muted-foreground">
               ({payments.length})
             </span>
           )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0">
-        {isLoading ? (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        ) : sorted.length === 0 ? (
-          <p className="text-xs text-muted-foreground" data-testid="empty-payment-history">
-            No payments recorded yet.
-          </p>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {sorted.map((p) => {
-              const meta = typeMeta(p.paymentType);
-              const amountNum = parseFloat(p.amount || "0");
-              // Display amount with an explicit sign for refund/reversal —
-              // the stored value is already signed (negative) on those rows,
-              // so formatCurrency will render the minus on its own; we just
-              // tone the number to signal AR direction.
-              const toneClass =
-                meta.tone === "refund"
-                  ? "text-red-700"
-                  : meta.tone === "reversal"
-                    ? "text-amber-700"
-                    : "text-slate-900";
-              return (
-                <div
-                  key={p.id}
-                  className="py-2 text-xs flex items-start gap-2"
-                  data-testid={`payment-row-${p.id}`}
-                >
-                  <div className={cn(
-                    "mt-0.5 shrink-0 rounded p-1",
-                    meta.tone === "refund" ? "bg-red-50 text-red-700"
-                    : meta.tone === "reversal" ? "bg-amber-50 text-amber-700"
-                    : "bg-emerald-50 text-emerald-700",
-                  )}>
-                    {meta.icon}
-                  </div>
-                  <div className="flex-1 min-w-0 space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium text-slate-900">{meta.label}</span>
-                      {providerBadge(p.providerSource, p.qboPaymentId)}
-                      <span className={cn("ml-auto font-semibold tabular-nums", toneClass)}>
-                        {formatCurrency(amountNum)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        {methodIcon(p.method)}
-                        <span className="capitalize">{p.method.replace(/_/g, " ")}</span>
-                      </span>
-                      <span>·</span>
-                      <span>{format(new Date(p.receivedAt), "MMM d, yyyy")}</span>
-                      {p.reference && (
-                        <>
-                          <span>·</span>
-                          <span className="truncate" title={p.reference}>
-                            {p.reference}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    {p.notes && (
-                      <p className="text-[11px] text-slate-500 whitespace-pre-wrap">{p.notes}</p>
-                    )}
-                    {/* 2026-04-29 Stripe completion: refund affordance.
-                        Only renders for parent payments with remaining
-                        refundable amount; the dialog enforces the rest. */}
-                    {onRefund && isRefundable(p) && (
-                      <div className="pt-0.5">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-[11px] text-rose-700 hover:text-rose-900 hover:bg-rose-50"
-                          onClick={() => onRefund(p)}
-                          data-testid={`button-refund-${p.id}`}
-                        >
-                          <Undo2 className="h-3 w-3 mr-1" />
-                          Refund
-                        </Button>
-                      </div>
-                    )}
-                  </div>
+        </RailContentCardTitle>
+      </RailContentCardHeader>
+
+      {isLoading ? (
+        <RailContentCardMeta className="mt-2">Loading…</RailContentCardMeta>
+      ) : sorted.length === 0 ? (
+        <RailContentCardMeta className="mt-2" data-testid="empty-payment-history">
+          No payments recorded yet.
+        </RailContentCardMeta>
+      ) : (
+        <div className="divide-y divide-slate-100 mt-2">
+          {sorted.map((p) => {
+            const meta = typeMeta(p.paymentType);
+            const amountNum = parseFloat(p.amount || "0");
+            // Display amount with an explicit sign for refund/reversal —
+            // the stored value is already signed (negative) on those rows,
+            // so formatCurrency will render the minus on its own; we just
+            // tone the number to signal AR direction.
+            const toneClass =
+              meta.tone === "refund"
+                ? "text-red-700"
+                : meta.tone === "reversal"
+                  ? "text-amber-700"
+                  : "text-text-primary";
+            return (
+              <div
+                key={p.id}
+                className="py-2 flex items-start gap-2"
+                data-testid={`payment-row-${p.id}`}
+              >
+                <div className={cn(
+                  "mt-0.5 shrink-0 rounded p-1",
+                  meta.tone === "refund" ? "bg-red-50 text-red-700"
+                  : meta.tone === "reversal" ? "bg-amber-50 text-amber-700"
+                  : "bg-emerald-50 text-emerald-700",
+                )}>
+                  {meta.icon}
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-helper font-medium text-text-primary">{meta.label}</span>
+                    {providerBadge(p.providerSource, p.qboPaymentId)}
+                    <span className={cn("ml-auto text-helper font-semibold tabular-nums", toneClass)}>
+                      {formatCurrency(amountNum)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-helper text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      {methodIcon(p.method)}
+                      <span className="capitalize">{p.method.replace(/_/g, " ")}</span>
+                    </span>
+                    <span>·</span>
+                    <span>{format(new Date(p.receivedAt), "MMM d, yyyy")}</span>
+                    {p.reference && (
+                      <>
+                        <span>·</span>
+                        <span className="truncate" title={p.reference}>
+                          {p.reference}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {p.notes && (
+                    <p className="text-helper text-text-secondary whitespace-pre-wrap">{p.notes}</p>
+                  )}
+                  {/* 2026-04-29 Stripe completion: refund affordance.
+                      Only renders for parent payments with remaining
+                      refundable amount; the dialog enforces the rest. */}
+                  {onRefund && isRefundable(p) && (
+                    <div className="pt-0.5">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-helper text-rose-700 hover:text-rose-900 hover:bg-rose-50"
+                        onClick={() => onRefund(p)}
+                        data-testid={`button-refund-${p.id}`}
+                      >
+                        <Undo2 className="h-3 w-3 mr-1" />
+                        Refund
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </RailContentCard>
   );
 }

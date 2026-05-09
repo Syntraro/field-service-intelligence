@@ -19,12 +19,25 @@
  * deliberate cleanup sweep, re-run the baseline generator
  * (`node scripts/scan-typography-baseline.mjs`) to lower the floor.
  *
- * Forbidden classes (this PR scope — most dangerous patterns first)
- * -----------------------------------------------------------------
- *   - `text-xs / -sm / -base / -lg / -xl / -2xl / -3xl / -4xl`
- *     (legacy size ramp).
- *   - `text-[Npx]` arbitrary values (e.g. `text-[12px]`,
- *     `text-[1.125rem]`).
+ * Forbidden classes
+ * -----------------
+ *
+ *   1. **Legacy size ramp** —
+ *      `text-xs / -sm / -base / -lg / -xl / -2xl / -3xl / -4xl`.
+ *
+ *   2. **Arbitrary text values** — `text-[Npx]`, `text-[1.125rem]`,
+ *      `text-[#hex]` etc.
+ *
+ *   3. **Deprecated component-specific aliases (Phase S1, 2026-05-08)** —
+ *      `text-page-title`, `text-section-title`, `text-subhead`,
+ *      `text-modal-title`, `text-row-emphasis`, `text-table-header`,
+ *      `text-table-cell`, `text-input`, `text-email-body`,
+ *      `text-empty-state`, `text-form-label`, `text-form-helper`,
+ *      `text-select-label`, `text-select-item`. Replaced by the
+ *      preferred visual-hierarchy set: `text-display`, `text-title`,
+ *      `text-header`, `text-subheader`, `text-body`, `text-row`,
+ *      `text-emphasis`, `text-caption`, `text-label`, `text-helper`,
+ *      `text-error`. See `docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md`.
  *
  * Out of scope for this PR (intentionally not yet enforced)
  * ---------------------------------------------------------
@@ -36,8 +49,11 @@
  * Allowlist
  * ---------
  *   - `client/src/pages/StyleGuideTypographyPage.tsx` is exempt — the
- *     style-guide page itself renders every token in the legacy ramp
+ *     style-guide page itself renders every legacy + deprecated token
  *     for visual comparison.
+ *   - `client/src/components/ui/typography.tsx` is exempt — the
+ *     canonical typography primitive module documents the legacy /
+ *     deprecated tokens in inline doc comments.
  *
  * What to do when this test fails
  * --------------------------------
@@ -71,9 +87,13 @@ const BASELINE_PATH = join(ROOT, "tests/semantic-typography-baseline.json");
 // ────────────────────────────────────────────────────────────────────
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set<string>([
-  // The style-guide page renders every legacy-ramp class for visual
-  // comparison. It's the documented exception.
+  // The style-guide page renders every legacy-ramp + deprecated alias
+  // class for visual comparison. It's the documented exception.
   "client/src/pages/StyleGuideTypographyPage.tsx",
+  // The canonical typography primitive module's doc-comments
+  // reference token names verbatim — the comment-stripper handles
+  // most of those, but the file is allowlisted defensively.
+  "client/src/components/ui/typography.tsx",
 ]);
 
 // ────────────────────────────────────────────────────────────────────
@@ -89,6 +109,45 @@ const LEGACY_RAMP_RE = /\btext-(xs|sm|base|lg|xl|2xl|3xl|4xl)\b/g;
  *  flagged by the audit. The baseline freezes whatever set was already
  *  in place at 2026-05-08. */
 const ARBITRARY_TEXT_RE = /\btext-\[[^\]]+\]/g;
+
+/** Phase S1 deprecated component-specific aliases. The preferred
+ *  visual-hierarchy set replaces these; the live tailwind config keeps
+ *  these tokens defined so existing code renders unchanged. */
+const DEPRECATED_ALIAS_NAMES = [
+  "page-title",
+  "section-title",
+  "subhead",
+  "modal-title",
+  "row-emphasis",
+  "table-header",
+  "table-cell",
+  "input",
+  "email-body",
+  "empty-state",
+  "form-label",
+  "form-helper",
+  "select-label",
+  "select-item",
+] as const;
+const DEPRECATED_ALIAS_RE = new RegExp(
+  `\\btext-(?:${DEPRECATED_ALIAS_NAMES.join("|")})\\b`,
+  "g",
+);
+
+const PREFERRED_TOKEN_NAMES = [
+  "text-display",
+  "text-title",
+  "text-header",
+  "text-subheader",
+  "text-body",
+  "text-row",
+  "text-emphasis",
+  "text-caption",
+  "text-label",
+  "text-helper",
+  "text-error",
+  "text-nav-compact",
+];
 
 // ────────────────────────────────────────────────────────────────────
 // Helpers
@@ -126,6 +185,10 @@ function stripComments(src: string): string {
 interface BaselineEntry {
   legacy: number;
   arbitrary: number;
+  /** Phase S1 (2026-05-08): per-file count of deprecated component-
+   *  specific aliases. May be undefined on files generated before
+   *  Phase S1 — treat as 0 in that case. */
+  deprecated?: number;
 }
 
 interface BaselineFile {
@@ -133,6 +196,7 @@ interface BaselineFile {
   description: string;
   totalLegacy: number;
   totalArbitrary: number;
+  totalDeprecated?: number;
   files: Record<string, BaselineEntry>;
 }
 
@@ -149,7 +213,7 @@ function countMatches(re: RegExp, src: string): number {
 
 interface Violation {
   file: string;
-  kind: "legacy" | "arbitrary";
+  kind: "legacy" | "arbitrary" | "deprecated";
   baseline: number;
   current: number;
 }
@@ -175,6 +239,7 @@ describe("semantic typography drift guard", () => {
       file: string;
       legacy: number;
       arbitrary: number;
+      deprecated: number;
     }> = [];
 
     for (const abs of files) {
@@ -183,11 +248,17 @@ describe("semantic typography drift guard", () => {
       const src = stripComments(readFileSync(abs, "utf-8"));
       const legacy = countMatches(LEGACY_RAMP_RE, src);
       const arbitrary = countMatches(ARBITRARY_TEXT_RE, src);
+      const deprecated = countMatches(DEPRECATED_ALIAS_RE, src);
       const baselineEntry = baseline.files[rel];
       if (!baselineEntry) {
         // New file — must have ZERO forbidden classes.
-        if (legacy > 0 || arbitrary > 0) {
-          newFilesWithDrift.push({ file: rel, legacy, arbitrary });
+        if (legacy > 0 || arbitrary > 0 || deprecated > 0) {
+          newFilesWithDrift.push({
+            file: rel,
+            legacy,
+            arbitrary,
+            deprecated,
+          });
         }
         continue;
       }
@@ -207,6 +278,15 @@ describe("semantic typography drift guard", () => {
           current: arbitrary,
         });
       }
+      const baselineDeprecated = baselineEntry.deprecated ?? 0;
+      if (deprecated > baselineDeprecated) {
+        violations.push({
+          file: rel,
+          kind: "deprecated",
+          baseline: baselineDeprecated,
+          current: deprecated,
+        });
+      }
     }
 
     if (violations.length === 0 && newFilesWithDrift.length === 0) {
@@ -216,10 +296,14 @@ describe("semantic typography drift guard", () => {
     }
 
     const lines: string[] = [
-      "Use semantic typography tokens instead of raw Tailwind text utilities.",
+      "Use preferred visual-hierarchy typography tokens instead:",
+      "  text-display, text-title, text-header, text-subheader,",
+      "  text-body, text-row, text-emphasis, text-caption, text-label,",
+      "  text-helper, text-error.",
       "",
-      "See `/style-guide/typography` for the visual reference and",
-      "`docs/SEMANTIC_TOKENS_AUDIT.md` for the full token inventory.",
+      "See `/style-guide/typography` for the visual reference,",
+      "`docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md` for the deprecated-alias",
+      "mapping, and `docs/SEMANTIC_TOKENS_AUDIT.md` for the full audit.",
       "",
     ];
     if (violations.length > 0) {
@@ -237,7 +321,7 @@ describe("semantic typography drift guard", () => {
       );
       for (const n of newFilesWithDrift) {
         lines.push(
-          `  - ${n.file} :: legacy=${n.legacy}, arbitrary=${n.arbitrary}`,
+          `  - ${n.file} :: legacy=${n.legacy}, arbitrary=${n.arbitrary}, deprecated=${n.deprecated}`,
         );
       }
       lines.push("");
@@ -284,4 +368,72 @@ describe("semantic typography drift guard", () => {
     expect("text-[1.125rem]".match(ARBITRARY_TEXT_RE)?.length).toBe(1);
     expect("text-row".match(ARBITRARY_TEXT_RE)).toBeNull();
   });
+
+  it("Phase S1 deprecated aliases match correctly (regex sanity)", () => {
+    // Each deprecated alias matches as a standalone class.
+    for (const name of DEPRECATED_ALIAS_NAMES) {
+      const cls = `text-${name}`;
+      const m = cls.match(DEPRECATED_ALIAS_RE);
+      expect(m, `text-${name} should match the deprecated-alias regex`).not.toBeNull();
+      expect(m?.length).toBe(1);
+    }
+    // Preferred tokens must NOT match.
+    for (const cls of PREFERRED_TOKEN_NAMES) {
+      // Reset regex global state.
+      DEPRECATED_ALIAS_RE.lastIndex = 0;
+      const m = cls.match(DEPRECATED_ALIAS_RE);
+      expect(
+        m,
+        `preferred token ${cls} must NOT be flagged as a deprecated alias`,
+      ).toBeNull();
+    }
+    // Word-boundary safety: `text-inputs` (plural) must NOT match
+    // `text-input`.
+    expect("text-inputs".match(DEPRECATED_ALIAS_RE)).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Phase S1 — preferred / deprecated token vocabulary lives in the
+// tailwind config. These tests pin the contract so the simplified
+// system can't be quietly removed.
+// ────────────────────────────────────────────────────────────────────
+
+describe("Phase S1 — preferred typography tokens declared in tailwind.config.ts", () => {
+  const tailwindConfig = readFileSync(
+    join(ROOT, "tailwind.config.ts"),
+    "utf-8",
+  );
+
+  for (const tokenClass of PREFERRED_TOKEN_NAMES) {
+    const tokenName = tokenClass.replace(/^text-/, "");
+    it(`declares \`${tokenClass}\` (token name "${tokenName}")`, () => {
+      // The token name appears as a key in the fontSize block, either
+      // bare (display:, body:, row:, …) or quoted ("page-title": …).
+      const bareKey = new RegExp(`^\\s*${tokenName}:\\s*\\[`, "m");
+      const quotedKey = new RegExp(`^\\s*"${tokenName}":\\s*\\[`, "m");
+      expect(
+        bareKey.test(tailwindConfig) || quotedKey.test(tailwindConfig),
+        `tailwind.config.ts must declare \`${tokenClass}\` (key "${tokenName}").`,
+      ).toBe(true);
+    });
+  }
+});
+
+describe("Phase S1 — deprecated aliases retained in tailwind.config.ts (back-compat)", () => {
+  const tailwindConfig = readFileSync(
+    join(ROOT, "tailwind.config.ts"),
+    "utf-8",
+  );
+
+  for (const alias of DEPRECATED_ALIAS_NAMES) {
+    it(`retains deprecated alias \`text-${alias}\` for back-compat`, () => {
+      const bareKey = new RegExp(`^\\s*${alias}:\\s*\\[`, "m");
+      const quotedKey = new RegExp(`^\\s*"${alias}":\\s*\\[`, "m");
+      expect(
+        bareKey.test(tailwindConfig) || quotedKey.test(tailwindConfig),
+        `tailwind.config.ts must retain deprecated alias \`text-${alias}\` so existing consumers render unchanged.`,
+      ).toBe(true);
+    });
+  }
 });

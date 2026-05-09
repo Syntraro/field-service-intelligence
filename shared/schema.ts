@@ -8076,6 +8076,12 @@ export const jobInventoryUsage = pgTable(
       () => inventoryTransactions.id,
       { onDelete: "set null" },
     ),
+    // 2026-05-08 Phase 4: optional, one-directional linkage from a
+    // consumption row back to the job_parts line it fulfilled. NULL
+    // when the consumption was started without a line context (the
+    // rail-driven Add Inventory flow). FK lives here so the line
+    // tables stay untouched.
+    lineItemId: varchar("line_item_id"),
     deletedAt: timestamp("deleted_at"),
     createdAt: timestamp("created_at")
       .notNull()
@@ -8103,6 +8109,112 @@ export const jobInventoryUsage = pgTable(
   }),
 );
 
+// ============================================================================
+// INVENTORY RESERVATIONS (2026-05-08 — Inventory Phase 5)
+// ============================================================================
+//
+// First-class reservation rows that activate the existing
+// inventory_quantities.reserved_quantity column. Every status
+// transition is preserved for audit (no hard delete). Reserve /
+// release / cancel are mediated by inventoryService and pair with
+// the reserved_quantity update in a single Drizzle tx.
+//
+// Why no inventory_transactions row for reserve / release / cancel
+// ----------------------------------------------------------------
+// inventory_transactions historically records stock MOVEMENTS
+// (from_location → to_location). A reservation has neither a
+// movement nor a destination — only the (on_hand vs reserved) split
+// shifts. The reservation row IS the audit log for these state
+// transitions. When a reservation is consumed against, the canonical
+// inventory_transactions audit row is still written (transactionType
+// = 'job_consumption') because that DOES move on_hand.
+
+export const inventoryReservationStatusEnum = [
+  "active",
+  "consumed",
+  "released",
+  "canceled",
+] as const;
+export type InventoryReservationStatus =
+  (typeof inventoryReservationStatusEnum)[number];
+
+export const inventoryReservations = pgTable(
+  "inventory_reservations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    itemId: varchar("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "restrict" }),
+    locationId: varchar("location_id")
+      .notNull()
+      .references(() => inventoryLocations.id, { onDelete: "restrict" }),
+    jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    // Forward-compat for visit-level reservations. NO FK enforced now
+    // because the system has multiple visit-shape candidates; a
+    // future pass picks the canonical visit table.
+    visitId: varchar("visit_id"),
+    lineItemId: varchar("line_item_id"),
+    quantity: numeric("quantity", { precision: 14, scale: 4 }).notNull(),
+    consumedQuantity: numeric("consumed_quantity", {
+      precision: 14,
+      scale: 4,
+    })
+      .notNull()
+      .default("0"),
+    status: text("status").notNull().default("active"),
+    reservedByUserId: varchar("reserved_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    notes: text("notes"),
+    releasedAt: timestamp("released_at"),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => ({
+    activeCompanyIdx: index("inventory_reservations_active_company_idx").on(
+      table.companyId,
+      table.itemId,
+      table.locationId,
+    ),
+    itemRecentIdx: index("inventory_reservations_item_recent_idx").on(
+      table.companyId,
+      table.itemId,
+      table.createdAt,
+    ),
+    locationRecentIdx: index("inventory_reservations_location_recent_idx").on(
+      table.companyId,
+      table.locationId,
+      table.createdAt,
+    ),
+    jobActiveIdx: index("inventory_reservations_job_active_idx").on(
+      table.companyId,
+      table.jobId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const reserveInventorySchema = z.object({
+  itemId: z.string().min(1),
+  locationId: z.string().min(1),
+  quantity: z
+    .string()
+    .refine((v) => Number(v) > 0, "quantity must be > 0"),
+  jobId: z.string().nullable().optional(),
+  visitId: z.string().nullable().optional(),
+  lineItemId: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export type ReserveInventoryInput = z.infer<typeof reserveInventorySchema>;
+export type InventoryReservation = typeof inventoryReservations.$inferSelect;
+
 export const consumeInventoryForJobSchema = z.object({
   itemId: z.string().min(1),
   locationId: z.string().min(1),
@@ -8110,6 +8222,11 @@ export const consumeInventoryForJobSchema = z.object({
     .string()
     .refine((v) => Number(v) > 0, "quantity must be > 0"),
   notes: z.string().nullable().optional(),
+  // 2026-05-08 Phase 4: optional linkage to the job_parts line that
+  // triggered this consumption. The server validates the line belongs
+  // to the same (companyId, jobId). Nullable + optional so the
+  // existing rail-driven Add Inventory flow stays unchanged.
+  lineItemId: z.string().nullable().optional(),
 });
 
 export const returnInventoryFromJobSchema = z.object({

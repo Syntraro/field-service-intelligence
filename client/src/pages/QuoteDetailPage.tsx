@@ -15,7 +15,7 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
   Loader2, Plus,
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
-  DollarSign, StickyNote, Tag, GitBranch, Activity as ActivityIcon,
+  DollarSign, StickyNote, Tag, Activity as ActivityIcon,
 } from "lucide-react";
 // 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
 // transition class. Mirrors Job Detail / Invoice Detail / Lead Detail.
@@ -149,7 +149,11 @@ export default function QuoteDetailPage() {
   // 2026-05-08 RALPH (rail migration): canonical right-rail tab state.
   // `null` = no panel open (icon strip only). Default open: "summary"
   // — the most-frequently-read tab on this page (totals at a glance).
-  type QuoteRailTab = "summary" | "notes" | "references" | "workflow" | "activity";
+  // 2026-05-08 (Phase 3 — Quote Workflow relocation): the prior
+  // "workflow" tab was retired. Owner + Assessment lifecycle controls
+  // moved into <QuoteHeaderCard>'s Section B action bar. The rail
+  // hosts only contextual / informational tabs now.
+  type QuoteRailTab = "summary" | "notes" | "references" | "activity";
   const [quoteRailTab, setQuoteRailTab] = useState<QuoteRailTab | null>("summary");
   // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
   // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
@@ -464,30 +468,17 @@ export default function QuoteDetailPage() {
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
-  if (!quoteId) {
-    return <div className="p-6">Quote not found</div>;
-  }
-
-  if (isLoading) {
-    return (
-      <div className="p-6 flex items-center justify-center min-h-[400px]">
-        <div className="text-muted-foreground">Loading quote...</div>
-      </div>
-    );
-  }
-
-  if (!details) {
-    return <div className="p-6">Quote not found</div>;
-  }
-
-  const { quote, lines, location, customerCompany, isExpired } = details;
-  const statusInfo = getQuoteStatusBadge(quote.status);
-  const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "Client");
-  const isDraft = quote.status === "draft";
-  const isSent = quote.status === "sent";
-  const isApproved = quote.status === "approved";
-
   // ─── 2026-04-29 (Phase 2 canonical extraction): line-items adapter ──
+  // 2026-05-08 (hook-order fix): the useMemo + useLineItemsDrafts pair
+  // MUST be declared BEFORE the early returns below. The prior location
+  // (after the `if (!quoteId)` / `if (isLoading)` / `if (!details)`
+  // guards) caused React to see fewer hooks during the initial loading
+  // render and more after `details` resolved — "Rendered more hooks
+  // than during the previous render". The adapter's lambdas only fire
+  // on user interaction, by which time `details` has loaded; using
+  // `details?.lines ?? []` for the draft-hook seed is safe before
+  // resolution. None of the early-return JSX uses these hooks, so
+  // hoisting is functionally equivalent.
   // Quote semantics:
   //   • showCost: false (quote schema has no unit_cost column).
   //   • showTax: false (no per-line tax editor in canonical row).
@@ -597,6 +588,33 @@ export default function QuoteDetailPage() {
     serverItems: details?.lines ?? [],
   });
 
+  // ── Early returns AFTER all hook declarations ──
+  // Hook order is now stable across render passes — see the multi-line
+  // doc comment above the `quoteLineItemsAdapter` useMemo for the full
+  // background on the prior bug.
+  if (!quoteId) {
+    return <div className="p-6">Quote not found</div>;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="p-6 flex items-center justify-center min-h-[400px]">
+        <div className="text-muted-foreground">Loading quote...</div>
+      </div>
+    );
+  }
+
+  if (!details) {
+    return <div className="p-6">Quote not found</div>;
+  }
+
+  const { quote, lines, location, customerCompany, isExpired } = details;
+  const statusInfo = getQuoteStatusBadge(quote.status);
+  const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "Client");
+  const isDraft = quote.status === "draft";
+  const isSent = quote.status === "sent";
+  const isApproved = quote.status === "approved";
+
   // PDF handlers
   const handleDownloadPdf = () => {
     window.open(`/api/quotes/${quoteId}/pdf`, "_blank");
@@ -660,62 +678,6 @@ export default function QuoteDetailPage() {
       content: <ReferenceFieldsSection entityType="quote" entityId={quote.id} />,
     },
     {
-      id: "workflow",
-      label: "Workflow",
-      icon: GitBranch,
-      testId: "quote-rail-tab-workflow",
-      content: (
-        // Drop the prior <Card>/<CardHeader>/<CardContent> wrapper —
-        // the rail panel chrome already provides title + container.
-        <div className="space-y-2 text-sm" data-testid="quote-rail-workflow">
-          <div className="flex justify-between items-center">
-            <span className="text-muted-foreground">Owner</span>
-            <select
-              className="text-sm border rounded px-2 py-1 max-w-[140px]"
-              value={(quote as any).salesOwnerUserId || ""}
-              onChange={(e) => updateOwnerMutation.mutate(e.target.value || null)}
-              disabled={updateOwnerMutation.isPending}
-            >
-              <option value="">Unassigned</option>
-              {teamMembers.map(u => (
-                <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ")}</option>
-              ))}
-            </select>
-          </div>
-          <div className="pt-2 border-t flex justify-between items-center">
-            <span className="text-muted-foreground">Assessment</span>
-            {!(quote as any).assessmentStatus ? (
-              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => toggleAssessmentMutation.mutate(true)}>
-                Mark needed
-              </Button>
-            ) : (quote as any).assessmentStatus === "required" ? (
-              <div className="flex items-center gap-1">
-                <Badge variant="outline" className="text-xs border-amber-300 text-amber-700">Needed</Badge>
-                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowScheduleAssessment(true)}>
-                  Schedule
-                </Button>
-                <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => toggleAssessmentMutation.mutate(false)}>
-                  Clear
-                </Button>
-              </div>
-            ) : (quote as any).assessmentStatus === "scheduled" ? (
-              <div className="flex items-center gap-1">
-                <Badge variant="outline" className="text-xs border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
-                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => completeAssessmentMutation.mutate()}>
-                  Complete
-                </Button>
-                <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => cancelAssessmentMutation.mutate()}>
-                  Cancel
-                </Button>
-              </div>
-            ) : (quote as any).assessmentStatus === "completed" ? (
-              <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700">Completed</Badge>
-            ) : null}
-          </div>
-        </div>
-      ),
-    },
-    {
       id: "activity",
       label: "Activity",
       icon: ActivityIcon,
@@ -741,7 +703,15 @@ export default function QuoteDetailPage() {
           className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
           data-testid="quote-detail-left-column-shell"
         >
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 lg:px-6 py-4 space-y-4">
+          {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer
+              owns its own `flex-1 min-h-0 overflow-y-auto`. Per the
+              App.tsx shell comment, `<main className="flex-1
+              overflow-auto">` is THE SOLE canonical vertical scroll
+              surface. Mirror Job Detail exactly: padding + space-y on
+              the body, scrolling delegated to <main>. The prior pattern
+              created a split-scroll feel (rail static, inner column
+              scrolling) — gone. */}
+          <div className="px-4 lg:px-6 py-4 space-y-4">
             <QuoteHeaderCard
               quote={quote}
               location={location}
@@ -761,6 +731,32 @@ export default function QuoteDetailPage() {
               onConvertToJob={() => setShowConvertToJobConfirm(true)}
               onDelete={() => setShowDeleteConfirm(true)}
               onEditPlaceholder={() => toast({ title: "Edit coming soon" })}
+              // 2026-05-08 (Phase 3 — Quote Workflow relocation): Owner +
+              // Assessment lifecycle moved out of the right-rail Workflow
+              // tab into Section B of the header. Page still owns
+              // mutations / dialog state / team-members query; the card
+              // just renders the controls.
+              workflow={{
+                salesOwnerUserId: (quote as any).salesOwnerUserId ?? null,
+                teamMembers,
+                assessmentStatus:
+                  ((quote as any).assessmentStatus as
+                    | "required"
+                    | "scheduled"
+                    | "completed"
+                    | null) ?? null,
+                isOwnerMutating: updateOwnerMutation.isPending,
+                isAssessmentMutating:
+                  toggleAssessmentMutation.isPending ||
+                  completeAssessmentMutation.isPending ||
+                  cancelAssessmentMutation.isPending,
+                onOwnerChange: (userId) => updateOwnerMutation.mutate(userId),
+                onMarkAssessmentNeeded: () => toggleAssessmentMutation.mutate(true),
+                onClearAssessmentNeeded: () => toggleAssessmentMutation.mutate(false),
+                onScheduleAssessment: () => setShowScheduleAssessment(true),
+                onCompleteAssessment: () => completeAssessmentMutation.mutate(),
+                onCancelAssessment: () => cancelAssessmentMutation.mutate(),
+              }}
             />
             {/* ↓ Description + Line Items inside same scroll column ↓ */}
             <div className="space-y-4">

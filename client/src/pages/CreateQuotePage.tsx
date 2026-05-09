@@ -51,6 +51,8 @@ import {
   Loader2,
   Star,
   X,
+  // 2026-05-08 (create-page rail canonicalization): Summary tab icon.
+  DollarSign,
 } from "lucide-react";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -76,7 +78,16 @@ import {
   CommandList,
 } from "@/components/ui/command";
 
-import { DetailPageShell } from "@/components/layout/DetailPageShell";
+// 2026-05-08 (create-page rail canonicalization): mount the same canonical
+// `<DetailRightRail>` the saved Quote detail page uses. Create mode hosts
+// only the Summary tab — Notes / References / Activity need a saved
+// quoteId; Workflow controls live on `<QuoteHeaderCard>`'s Section B
+// (saved-only) and have no draft meaning.
+import {
+  DetailRightRail,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import {
   useLocationSearch,
@@ -582,6 +593,16 @@ export default function CreateQuotePage() {
 
   const hasTemplates = templates.length > 0;
 
+  // 2026-05-08 (create-page rail canonicalization): canonical right-rail
+  // tab state. Declared BEFORE the early returns below to keep hook
+  // order stable (mirrors the hook-order fix on `QuoteDetailPage`).
+  // Only the Summary tab is valid in draft mode — Notes / References /
+  // Activity all need a saved quoteId, and Workflow controls (owner /
+  // assessment) live on `<QuoteHeaderCard>` Section B which only
+  // renders in saved mode.
+  type CreateQuoteRailTab = "summary";
+  const [quoteRailTab, setQuoteRailTab] = useState<CreateQuoteRailTab | null>("summary");
+
   // ── Lead-flow guards ──────────────────────────────────────────────
   // When ?leadId is present, the page is in "convert this lead"
   // territory — surface a clear blocked / error state instead of
@@ -905,12 +926,48 @@ export default function CreateQuotePage() {
     </div>
   );
 
+  // 2026-05-08 (create-page rail canonicalization): rail tab registry —
+  // ONLY Summary is valid before first save. Notes / References /
+  // Activity all need a saved quoteId, and Workflow controls (owner /
+  // assessment lifecycle) live on `<QuoteHeaderCard>` Section B (saved-
+  // only). Once the user clicks "Create Quote", the route flips to
+  // /quotes/:id and the saved page mounts its full 4-tab registry.
+  const quoteRailTabs: DetailRailTab[] = [
+    {
+      id: "summary",
+      label: "Summary",
+      icon: DollarSign,
+      testId: "create-quote-rail-tab-summary",
+      content: (
+        <QuoteSummaryCard
+          subtotal={subtotalPreview}
+          taxTotal="0.00"
+          total={subtotalPreview}
+        />
+      ),
+    },
+  ];
+
   return (
     <>
-      <DetailPageShell
-        dataTestId="create-quote-page"
-        leftColumn={
-          <>
+      {/* 2026-05-08 (create-page rail canonicalization): canonical flex
+          shell mirrors the saved Quote detail page exactly. Replaces the
+          legacy `<DetailPageShell rightRail={...} leftColumn={...}>`
+          mount + stacked-cards aside. The page now scrolls at the
+          App-level `<main>` (no inner overflow-y-auto), and the rail
+          rides up the right side. Save + Cancel relocated from the
+          prior right-rail Actions stacked-card to an inline action row
+          at the bottom of the left column. */}
+      <div
+        className="flex h-full flex-col lg:flex-row bg-app-bg"
+        data-testid="create-quote-page"
+      >
+        {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+        <div
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          data-testid="create-quote-left-column-shell"
+        >
+          <div className="px-4 lg:px-6 py-4 space-y-4">
             {headerCard}
 
             {/* Description — extracted card in draft mode. Editable
@@ -961,72 +1018,80 @@ export default function CreateQuotePage() {
                 </div>
               }
             />
-          </>
-        }
-        rightRail={
-          <>
-            <QuoteSummaryCard
-              subtotal={subtotalPreview}
-              taxTotal="0.00"
-              total={subtotalPreview}
-            />
 
-            {/* Saved-only sections (Notes, Reference Fields, Workflow,
-                Activity) need a quoteId — render a single "Save first"
-                placeholder card so the rail layout stays stable
-                between create ↔ saved transitions. */}
+            {/* Save / Cancel action row — relocated from the prior rail
+                Actions stacked-card. Saved-only header actions (Send /
+                Approve / Decline / Convert) have no draft meaning, so
+                this is the only entity-level affordance in create mode. */}
             <div
-              className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
-              data-testid="card-quote-saved-only-placeholder"
+              className="flex items-center justify-end gap-2 pt-2"
+              data-testid="create-quote-action-row"
             >
-              <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
-                <span className="text-sm font-semibold text-[#0f172a]">More</span>
-              </div>
-              <p
-                className="px-4 py-6 text-sm text-muted-foreground"
-                data-testid="quote-saved-only-save-first"
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={navigateBack}
+                disabled={createQuoteMutation.isPending}
+                data-testid="button-cancel-quote"
               >
-                Save the quote to add notes, reference fields, send it,
-                approve / decline, or convert to a job.
-              </p>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+                onClick={() => createQuoteMutation.mutate()}
+                disabled={!canSave}
+                data-testid="button-create-quote"
+              >
+                {createQuoteMutation.isPending && (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                )}
+                <FileText className="h-3.5 w-3.5" />
+                Create Quote
+              </Button>
             </div>
+          </div>
+        </div>
+        {/* ═══ /LEFT COLUMN ═══ */}
 
-            {/* Actions card — Save + Cancel. Replaces the saved page's
-                action bar (which is on QuoteHeaderCard); pre-save those
-                actions have no meaning. */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
-                <span className="text-sm font-semibold text-[#0f172a]">Actions</span>
-              </div>
-              <div className="px-4 py-2.5 space-y-1.5">
-                <Button
-                  className="w-full justify-center gap-2 h-8 text-xs"
-                  size="sm"
-                  onClick={() => createQuoteMutation.mutate()}
-                  disabled={!canSave}
-                  data-testid="button-create-quote"
-                >
-                  {createQuoteMutation.isPending && (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  )}
-                  <FileText className="h-3.5 w-3.5" />
-                  Create Quote
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-center gap-2 h-8 text-xs"
-                  size="sm"
-                  onClick={navigateBack}
-                  disabled={createQuoteMutation.isPending}
-                  data-testid="button-cancel-quote"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          </>
-        }
-      />
+        {/* ═════════ RIGHT RAIL ═════════ */}
+        <aside
+          className={cn(
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+            "border-t lg:border-t-0 lg:border-l border-slate-200",
+          )}
+          style={{
+            ["--create-quote-rail-width" as any]: `${quoteRailTab === null ? 80 : 380}px`,
+          }}
+          data-testid="create-quote-detail-rail-column"
+          data-panel-open={quoteRailTab === null ? "false" : "true"}
+        >
+          <div className="lg:hidden">
+            <DetailRightRail
+              tabs={quoteRailTabs}
+              activeTabId={quoteRailTab}
+              onActiveTabChange={(id) => setQuoteRailTab(id as CreateQuoteRailTab | null)}
+              testIdPrefix="create-quote-side"
+              ariaLabel="New quote information rail"
+            />
+          </div>
+          <div
+            className={cn(
+              "hidden lg:flex h-full w-[var(--create-quote-rail-width)] flex-col relative",
+              RAIL_WIDTH_TRANSITION,
+            )}
+          >
+            <DetailRightRail
+              tabs={quoteRailTabs}
+              activeTabId={quoteRailTab}
+              onActiveTabChange={(id) => setQuoteRailTab(id as CreateQuoteRailTab | null)}
+              testIdPrefix="create-quote-side"
+              ariaLabel="New quote information rail"
+            />
+          </div>
+        </aside>
+      </div>
 
       {/* Inline create-client flow — preserved from the canonical
           location-selection pattern. Opens via the search field's

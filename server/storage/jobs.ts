@@ -1208,7 +1208,7 @@ export class JobRepository extends BaseRepository {
   /**
    * Create job equipment link
    *
-   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   * Equipment links are metadata only (never line items) — no invoice lock.
    */
   async createJobEquipment(
     companyId: string,
@@ -1224,9 +1224,6 @@ export class JobRepository extends BaseRepository {
     if (!job) {
       throw this.notFoundError("Job");
     }
-
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, jobId, options);
 
     const rows = await db
       .insert(jobEquipment)
@@ -1265,7 +1262,7 @@ export class JobRepository extends BaseRepository {
   /**
    * Update job equipment
    *
-   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   * Equipment links are metadata only (never line items) — no invoice lock.
    */
   async updateJobEquipment(
     companyId: string,
@@ -1276,7 +1273,6 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
 
-    // First, get the job equipment to find its jobId for the invoice lock check
     const [existing] = await db
       .select()
       .from(jobEquipment)
@@ -1290,10 +1286,6 @@ export class JobRepository extends BaseRepository {
       return null;
     }
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, existing.jobId, options);
-
-    // Direct tenant isolation via companyId column
     const rows = await db
       .update(jobEquipment)
       .set({ ...patch, updatedAt: new Date() })
@@ -1309,7 +1301,7 @@ export class JobRepository extends BaseRepository {
   /**
    * Delete job equipment link
    *
-   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   * Equipment links are metadata only (never line items) — no invoice lock.
    */
   async deleteJobEquipment(
     companyId: string,
@@ -1319,7 +1311,6 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
 
-    // First, get the job equipment to find its jobId for the invoice lock check
     const [existing] = await db
       .select()
       .from(jobEquipment)
@@ -1333,10 +1324,6 @@ export class JobRepository extends BaseRepository {
       return false;
     }
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, existing.jobId, options);
-
-    // Direct tenant isolation via companyId column
     const result = await db
       .delete(jobEquipment)
       .where(and(

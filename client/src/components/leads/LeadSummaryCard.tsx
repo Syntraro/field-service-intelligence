@@ -15,8 +15,15 @@
  * caller; if a chrome change is needed, change it here.
  */
 import type { ReactNode } from "react";
-import { ArrowLeft, MapPin, User } from "lucide-react";
+import {
+  ArrowLeft, MapPin, User,
+  // 2026-05-08 (Phase 3 — Lead Actions relocation): icons for the
+  // canonical Section B action bar, mirroring the Quote / Invoice
+  // header action-bar pattern (h-7 text-xs gap-1).
+  FileText, Send, Trash2, AlertTriangle, ChevronRight,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -59,10 +66,45 @@ export interface LeadSummaryShape {
   customerCompany?: LeadSummaryCustomerCompany | null;
 }
 
+/**
+ * 2026-05-08 (Phase 3 — Lead Actions relocation): the prior right-rail
+ * "Actions" tab was retired. Convert / Mark Contacted / Mark Lost /
+ * Archive / Delete / View-Linked-Quote moved into a Section B action
+ * bar at the bottom of this card, mirroring the QuoteHeaderCard /
+ * InvoiceHeaderCard pattern (border-t divider, h-7 text-xs buttons,
+ * flex-wrap gap-1.5). Gating flags (`canConvert`, `canContact`,
+ * `canMarkLost`) and the destructive AlertDialogs stay on
+ * LeadDetailPage; this card only renders the buttons + forwards clicks
+ * via callbacks. All optional — when omitted (or in draft mode), the
+ * action bar is not rendered.
+ */
+export interface LeadSummaryActions {
+  /** Show the primary `Convert to Quote` button. */
+  canConvert: boolean;
+  /** Show the `Mark Contacted` button. */
+  canContact: boolean;
+  /** Show the `Mark Lost` button. */
+  canMarkLost: boolean;
+  /** Pre-existing converted-quote id; when set, surfaces a `View Quote` button. */
+  convertedQuoteId: string | null;
+  /** Disabled state mirror of `statusMutation.isPending`. */
+  isStatusMutating?: boolean;
+  onConvertToQuote: () => void;
+  onMarkContacted: () => void;
+  onMarkLost: () => void;
+  onArchive: () => void;
+  onHardDelete: () => void;
+  onViewQuote: () => void;
+}
+
 type SavedProps = {
   mode: "saved";
   lead: LeadSummaryShape;
   onBack: () => void;
+  /** Optional action handlers — when provided, the card renders a
+   *  Section B action bar at the bottom (border-t separator). When
+   *  omitted, the card renders identity-only chrome. */
+  actions?: LeadSummaryActions;
 };
 
 type DraftProps = {
@@ -107,6 +149,102 @@ export function LeadSummaryCard(props: LeadSummaryCardProps) {
           ? renderSaved(props.lead)
           : renderDraft(props)}
       </div>
+
+      {/* Section B — action bar (saved mode + actions present).
+          Mirrors QuoteHeaderCard's border-t + px-4 py-1.5 + h-7 text-xs
+          density so Lead belongs to the same header-action visual
+          family as Quote / Invoice / Job. */}
+      {props.mode === "saved" && props.actions
+        ? renderActionBar(props.actions)
+        : null}
+    </div>
+  );
+}
+
+// ── Action bar — mirrors QuoteHeaderCard "Section B" ──────────────
+
+function renderActionBar(actions: LeadSummaryActions) {
+  const {
+    canConvert, canContact, canMarkLost, convertedQuoteId, isStatusMutating,
+    onConvertToQuote, onMarkContacted, onMarkLost, onArchive, onHardDelete, onViewQuote,
+  } = actions;
+  // Hide the bar entirely when no action is currently applicable. Archive
+  // + Delete are always allowed, so this guard never trips in practice
+  // — left in place as a defensive zero-state.
+  const hasAnyAction =
+    canConvert || canContact || canMarkLost || !!convertedQuoteId || true;
+  if (!hasAnyAction) return null;
+  return (
+    <div
+      className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap"
+      data-testid="lead-header-action-bar"
+    >
+      {canConvert && !convertedQuoteId && (
+        <Button
+          size="sm"
+          className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
+          onClick={onConvertToQuote}
+          data-testid="button-convert-to-quote"
+        >
+          <FileText className="h-3.5 w-3.5" />Convert to Quote
+        </Button>
+      )}
+      {canContact && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1 text-xs h-7"
+          onClick={onMarkContacted}
+          disabled={isStatusMutating}
+          data-testid="button-mark-contacted"
+        >
+          <Send className="h-3.5 w-3.5" />Mark Contacted
+        </Button>
+      )}
+      {canMarkLost && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1 text-xs h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
+          onClick={onMarkLost}
+          disabled={isStatusMutating}
+          data-testid="button-mark-lost"
+        >
+          Mark Lost
+        </Button>
+      )}
+      {convertedQuoteId && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1 text-xs h-7"
+          onClick={onViewQuote}
+          data-testid="button-view-quote"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />View Quote
+        </Button>
+      )}
+
+      <div className="flex-1" />
+
+      <Button
+        variant="ghost"
+        size="sm"
+        className="gap-1 text-xs h-7 text-slate-500 hover:text-amber-700 hover:bg-amber-50"
+        onClick={onArchive}
+        data-testid="button-archive-lead"
+      >
+        <Trash2 className="h-3.5 w-3.5" />Archive
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="gap-1 text-xs h-7 text-slate-500 hover:text-red-700 hover:bg-red-50"
+        onClick={onHardDelete}
+        data-testid="button-hard-delete-lead"
+      >
+        <AlertTriangle className="h-3.5 w-3.5" />Delete
+      </Button>
     </div>
   );
 }

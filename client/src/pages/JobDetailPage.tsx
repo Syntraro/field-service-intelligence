@@ -88,8 +88,14 @@ import {
   CardShellHeader,
   CardShellTitle,
 } from "@/components/ui/card";
-// 2026-05-07: standalone CanonicalDetailHeader strip removed from this
-// page. Job summary, status, Job # / Scheduled / Invoice # meta blocks
+// 2026-05-08: CanonicalDetailHeader re-introduced with layout="card".
+// The 2026-05-07 merge unified the standalone strip + the CardShell into
+// one card. This pass extracts that card's content layout into the
+// canonical component so Quote/Lead can reuse the same shell pattern.
+// The outer CardShell + description section + edit footer remain on this
+// page as CardShell siblings (not inside the canonical component).
+import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+// Job summary, status, Job # / Scheduled / Invoice # meta blocks
 // and all action buttons now live inside the existing client/location
 // CardShell below — one unified detail card instead of two stacked
 // regions. CanonicalDetailHeader is still mounted by InvoiceDetailPage.
@@ -151,6 +157,7 @@ import { AddressBlock } from "@/components/common/AddressBlock";
 // auto-hides when the tenant doesn't have inventory_core. Mounts
 // between Line Items and Billing Summary in the main column.
 import { JobInventoryUsageSection } from "@/components/inventory/JobInventoryUsageSection";
+import { JobReservationsSection } from "@/components/inventory/JobReservationsSection";
 // 2026-05-06 RALPH: dedupe-resolver for the service-address location
 // label. Shared with InvoiceDetailPage so both surfaces apply the same
 // raw-only / no-customer-duplicate rule.
@@ -1832,195 +1839,147 @@ export default function JobDetailPage() {
                   `job.status`, and `jobInvoice` / `firstJobInvoice` /
                   `jobInvoiceCount` are all reused as-is. */}
               <CardShell data-testid="card-job-context">
-                <div
-                  className="px-5 pt-4 pb-4"
-                  data-testid="job-detail-header"
-                >
-                  {/* TOP ROW: title block (left) + actions+meta cluster
-                      (right). 2026-05-07: switched from a 3-sibling
-                      flex-wrap row (title / meta / actions) to a
-                      2-sibling column-on-mobile / row-on-lg layout so
-                      the title block keeps its width at narrow viewports
-                      and the Job # / Scheduled / Invoice # meta blocks
-                      sit UNDER the action buttons in a compact right-side
-                      stack. `min-w-0 flex-1` on the left allows title
-                      truncation/wrapping; `shrink-0` on the right
-                      preserves its content. Below `lg`, the right cluster
-                      drops below the title for full-width readability. */}
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-
-                    {/* ── LEFT: title + status, client name, address.
-                        `min-w-0 flex-1` keeps the title from being
-                        squeezed by the right cluster on tighter
-                        viewports. `max-w-2xl` ceiling preserved so the
-                        H1 doesn't run wall-to-wall on extra-wide
-                        viewports. */}
-                    <div className="flex-1 min-w-0 max-w-2xl">
-                      <div className="flex items-start gap-3 flex-wrap">
-                        {editingHeader ? (
-                          <textarea
-                            ref={summaryInputRef}
-                            value={headerDraft.summary}
-                            onChange={(e) => {
-                              setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
-                              setHeaderError(null);
-                            }}
-                            onKeyDown={(e) => {
-                              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                                e.preventDefault();
-                                handleHeaderSave();
-                              } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                handleHeaderCancel();
-                              }
-                            }}
-                            rows={1}
-                            maxLength={500}
-                            placeholder="Job summary"
-                            className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                            data-testid="input-job-summary-header"
-                          />
-                        ) : (
-                          <h1
-                            className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
-                            data-testid="job-detail-header-title"
-                          >
-                            {job.summary || (clientName ?? "Job")}
-                          </h1>
-                        )}
-                        <StatusPill
-                          variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
-                          className="shrink-0 mt-1"
-                          data-testid="header-status-pill"
-                        >
-                          {getJobStatusDisplay(job).label}
-                        </StatusPill>
-                      </div>
-
-                      {/* IDENTITY STACK — clientName + service address
-                          grouped under the title row. The address is
-                          wrapped in its own `<div>` so the structural
-                          close-tag chain at the end of the title block
-                          reads `</div></div></div>` (address wrapper,
-                          identity stack, title block) — the pin the
-                          unified-header test contract relies on to
-                          assert meta testids never leak into the title
-                          subtree. */}
-                      <div className="mt-2 space-y-2">
-                        {clientName && (
-                          <button
-                            type="button"
-                            onClick={() => setLocation(`/clients/${job.locationId}`)}
-                            className="block text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate max-w-full min-w-0"
-                            data-testid="link-client-context"
-                          >
-                            {clientName}
-                          </button>
-                        )}
-
-                        {/* 2026-05-06 RALPH: pass the RAW `location.location`
-                            column (the user-entered location name), NOT
-                            the server-side `locationDisplayNameExpr`
-                            COALESCE that this object's `companyName`
-                            field carries. The COALESCE resolves to the
-                            parent customer name and was duplicating the
-                            H1 above. */}
-                        <div>
-                          <AddressBlock
-                            variant="job"
-                            label="Service Address"
-                            locationName={resolveServiceLocationName(job.location?.location, clientName)}
-                            street={streetLine}
-                            cityLine={cityLine}
-                            testId="block-service-address"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* ── RIGHT: action cluster (top) + meta blocks
-                        (under). 2026-05-07: meta moved out of its own
-                        sibling slot into this right-side stack so the
-                        title can keep more width on smaller viewports.
-                        Outer column is `shrink-0 flex flex-col items-end
-                        gap-3`; on narrow viewports the parent flex-col
-                        layout above lets this whole stack drop below
-                        the title. */}
-                    <div
-                      className="shrink-0 flex flex-col items-end gap-3"
-                      data-testid="job-detail-header-right"
+                {/* 2026-05-08: replaced inline 2-column layout with the
+                    canonical CanonicalDetailHeader layout="card". Card
+                    chrome stays on the outer CardShell; description +
+                    edit footer are CardShell siblings below. */}
+                <CanonicalDetailHeader
+                  layout="card"
+                  testId="job-detail-header"
+                  isEditing={editingHeader}
+                  title={
+                    editingHeader ? (
+                      <textarea
+                        ref={summaryInputRef}
+                        value={headerDraft.summary}
+                        onChange={(e) => {
+                          setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
+                          setHeaderError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                            e.preventDefault();
+                            handleHeaderSave();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            handleHeaderCancel();
+                          }
+                        }}
+                        rows={1}
+                        maxLength={500}
+                        placeholder="Job summary"
+                        className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                        data-testid="input-job-summary-header"
+                      />
+                    ) : (
+                      <h1
+                        className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
+                        data-testid="job-detail-header-title"
+                      >
+                        {job.summary || (clientName ?? "Job")}
+                      </h1>
+                    )
+                  }
+                  statusBadge={
+                    <StatusPill
+                      variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
+                      className="shrink-0 mt-1"
+                      data-testid="header-status-pill"
                     >
-                      {/* Action cluster — edit pencil + add-equipment +
-                          overflow menu + status-driven primary CTA. */}
-                      <div
-                        className="flex items-center gap-2"
-                        data-testid="job-detail-header-actions"
+                      {getJobStatusDisplay(job).label}
+                    </StatusPill>
+                  }
+                  clientSlot={
+                    clientName ? (
+                      <button
+                        type="button"
+                        onClick={() => setLocation(`/clients/${job.locationId}`)}
+                        className="block text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate max-w-full min-w-0"
+                        data-testid="link-client-context"
                       >
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={enterHeaderEdit}
-                        className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
-                        aria-label="Edit job header"
-                        data-testid="button-edit-job-card"
-                        disabled={editingHeader}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      {/* 2026-05-07: Add Equipment combo button (Wrench
-                          + Plus) removed from the top header actions.
-                          Equipment is now a canonical right-rail tab
-                          and the Equipment tab's panel-header `+ Add
-                          Equipment` button is the sole canonical
-                          affordance for opening AddEquipmentDialog. */}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-52">
-                          {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
-                            <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
-                              <Pause className="h-4 w-4 mr-2" />Hold Job
-                            </DropdownMenuItem>
-                          )}
-                          {job.status === "open" && isOfficeUser && (
-                            <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
-                              <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
-                            </DropdownMenuItem>
-                          )}
-                          {job.status === "completed" && isOfficeUser && (
-                            <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
-                              <Archive className="h-4 w-4 mr-2" />Archive Job
-                            </DropdownMenuItem>
-                          )}
-                          {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
-                            <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
-                              <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuSeparator />
-                          {isOfficeUser && (
-                            <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
-                              <Send className="h-4 w-4 mr-2" />Send Email
-                            </DropdownMenuItem>
-                          )}
-                          {/* 2026-05-02: Create Similar Job opens canonical
-                              CreateNewDialog with `jobInitialCloneFromJobId`. */}
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setCreateSimilarFromId(job.id);
-                              setCreateSimilarOpen(true);
-                            }}
-                            data-testid="menu-create-similar"
-                          >
-                            <Copy className="h-4 w-4 mr-2" />Create Similar Job
+                        {clientName}
+                      </button>
+                    ) : undefined
+                  }
+                  addressSlot={
+                    // 2026-05-06 RALPH: pass the RAW `location.location`
+                    // column (the user-entered location name), NOT the
+                    // COALESCE `companyName` which duplicates the H1.
+                    <AddressBlock
+                      variant="job"
+                      label="Service Address"
+                      locationName={resolveServiceLocationName(job.location?.location, clientName)}
+                      street={streetLine}
+                      cityLine={cityLine}
+                      testId="block-service-address"
+                    />
+                  }
+                  actions={<>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={enterHeaderEdit}
+                      className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                      aria-label="Edit job header"
+                      data-testid="button-edit-job-card"
+                      disabled={editingHeader}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    {/* 2026-05-07: Add Equipment combo button (Wrench
+                        + Plus) removed from the top header actions.
+                        Equipment is now a canonical right-rail tab
+                        and the Equipment tab's panel-header `+ Add
+                        Equipment` button is the sole canonical
+                        affordance for opening AddEquipmentDialog. */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-52">
+                        {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
+                          <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
+                            <Pause className="h-4 w-4 mr-2" />Hold Job
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
-                            <Printer className="h-4 w-4 mr-2" />Print
+                        )}
+                        {job.status === "open" && isOfficeUser && (
+                          <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
+                            <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
                           </DropdownMenuItem>
-                          {isOfficeUser && (
+                        )}
+                        {job.status === "completed" && isOfficeUser && (
+                          <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
+                            <Archive className="h-4 w-4 mr-2" />Archive Job
+                          </DropdownMenuItem>
+                        )}
+                        {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
+                          <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
+                            <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuSeparator />
+                        {isOfficeUser && (
+                          <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
+                            <Send className="h-4 w-4 mr-2" />Send Email
+                          </DropdownMenuItem>
+                        )}
+                        {/* 2026-05-02: Create Similar Job opens canonical
+                            CreateNewDialog with `jobInitialCloneFromJobId`. */}
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setCreateSimilarFromId(job.id);
+                            setCreateSimilarOpen(true);
+                          }}
+                          data-testid="menu-create-similar"
+                        >
+                          <Copy className="h-4 w-4 mr-2" />Create Similar Job
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
+                          <Printer className="h-4 w-4 mr-2" />Print
+                        </DropdownMenuItem>
+                        {isOfficeUser && (
                             <>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
@@ -2066,111 +2025,78 @@ export default function JobDetailPage() {
                           Restore Job
                         </Button>
                       )}
-                      </div>
-
-                      {/* META BLOCKS — Job # / Scheduled / Invoice #
-                          stacked under the action cluster. Compact
-                          horizontal flex with gap-x-6 / gap-y-3
-                          flex-wrap so the three label/value pairs
-                          stay aligned with the action cluster's right
-                          edge on desktop and wrap to a second row at
-                          tablet widths without overflowing the right
-                          column.
-
-                          2026-05-07: moved out of its own sibling slot
-                          beside the title and into this right-side
-                          stack so the title block keeps its width on
-                          smaller viewports. Edit affordances + entity-
-                          number variants preserved verbatim. */}
-                      <div
-                        className="flex items-start gap-x-6 gap-y-3 flex-wrap justify-end"
-                        data-testid="job-detail-header-items"
-                      >
-                        <div
-                          className="flex flex-col items-end min-w-0"
-                          data-testid="job-detail-header-item-job-number"
-                        >
-                          <span className="text-label uppercase text-text-muted">Job #</span>
-                          <span className="mt-1 text-row font-medium text-text-primary tabular-nums">
-                            {editingHeader ? (
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                pattern="[0-9]*"
-                                value={headerDraft.jobNumber}
-                                onChange={(e) => {
-                                  const next = e.target.value.replace(/[^0-9]/g, "");
-                                  setHeaderDraft((d) => ({ ...d, jobNumber: next }));
-                                  setHeaderError(null);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    handleHeaderSave();
-                                  } else if (e.key === "Escape") {
-                                    e.preventDefault();
-                                    handleHeaderCancel();
-                                  }
-                                }}
-                                className="w-20 h-7 px-1.5 text-row font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                                data-testid="input-job-number"
-                              />
-                            ) : (
-                              // 2026-05-02 entity-number system: current
-                              // entity → "primary" variant (blue pill).
-                              <EntityNumber variant="primary" data-testid="header-job-number-pill">
-                                {job.jobNumber}
-                              </EntityNumber>
-                            )}
-                          </span>
-                        </div>
-
-                        <div
-                          className="flex flex-col items-end min-w-0"
-                          data-testid="job-detail-header-item-scheduled"
-                        >
-                          <span className="text-label uppercase text-text-muted">Scheduled</span>
-                          <span className="mt-1 text-row font-medium text-text-primary tabular-nums">
-                            {nextVisit?.scheduledStart ? (
-                              <>
-                                {format(new Date(nextVisit.scheduledStart), "MMM d")}
-                                <span className="text-text-disabled mx-1">·</span>
-                                {format(new Date(nextVisit.scheduledStart), "h:mm a")}
-                              </>
-                            ) : (
-                              <span className="text-text-disabled">—</span>
-                            )}
-                          </span>
-                        </div>
-
-                        <div
-                          className="flex flex-col items-end min-w-0"
-                          data-testid="job-detail-header-item-invoice-number"
-                        >
-                          <span className="text-label uppercase text-text-muted">Invoice #</span>
-                          <span className="mt-1 text-row font-medium text-text-primary">
-                            {(() => {
-                              // 2026-05-02 entity-number system: cross-entity
-                              // (Invoice # shown on Job page) → "linked" variant.
-                              const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
-                              return inv ? (
-                                <EntityNumber
-                                  variant="linked"
-                                  onClick={() => setLocation(`/invoices/${inv.id}`)}
-                                  data-testid="header-invoice-link"
-                                >
-                                  {inv.invoiceNumber || "View invoice"}
-                                </EntityNumber>
-                              ) : (
-                                <EntityNumber variant="missing" />
-                              );
-                            })()}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  </>}
+                  items={[
+                    {
+                      key: "job-number",
+                      label: "Job #",
+                      value: (
+                        // 2026-05-02 entity-number system: current entity
+                        // → "primary" variant (blue pill).
+                        <EntityNumber variant="primary" data-testid="header-job-number-pill">
+                          {job.jobNumber}
+                        </EntityNumber>
+                      ),
+                      editNode: (
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={headerDraft.jobNumber}
+                          onChange={(e) => {
+                            const next = e.target.value.replace(/[^0-9]/g, "");
+                            setHeaderDraft((d) => ({ ...d, jobNumber: next }));
+                            setHeaderError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleHeaderSave();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              handleHeaderCancel();
+                            }
+                          }}
+                          className="w-20 h-7 px-1.5 text-row font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                          data-testid="input-job-number"
+                        />
+                      ),
+                    },
+                    {
+                      key: "scheduled",
+                      label: "Scheduled",
+                      value: nextVisit?.scheduledStart ? (
+                        <span className="tabular-nums">
+                          {format(new Date(nextVisit.scheduledStart), "MMM d")}
+                          <span className="text-text-disabled mx-1">·</span>
+                          {format(new Date(nextVisit.scheduledStart), "h:mm a")}
+                        </span>
+                      ) : (
+                        <span className="text-text-disabled">—</span>
+                      ),
+                    },
+                    {
+                      key: "invoice-number",
+                      label: "Invoice #",
+                      // 2026-05-02 entity-number system: cross-entity
+                      // (Invoice # shown on Job page) → "linked" variant.
+                      value: (() => {
+                        const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
+                        return inv ? (
+                          <EntityNumber
+                            variant="linked"
+                            onClick={() => setLocation(`/invoices/${inv.id}`)}
+                            data-testid="header-invoice-link"
+                          >
+                            {inv.invoiceNumber || "View invoice"}
+                          </EntityNumber>
+                        ) : (
+                          <EntityNumber variant="missing" />
+                        );
+                      })(),
+                    },
+                  ]}
+                />
 
                 {/* JOB DESCRIPTION (OPTIONAL) — appended at the bottom of
                     the header card, mirroring InvoiceMetaCard's bottom
@@ -2286,6 +2212,11 @@ export default function JobDetailPage() {
                   (totals) so the page composition reads:
                   catalog ► inventory consumed ► totals. */}
               <JobInventoryUsageSection jobId={jobId!} />
+
+              {/* Phase 5: Reservations section — sits under usage so the
+                  flow reads consume ► reserve future. The component
+                  hides itself when inventory_core is disabled. */}
+              <JobReservationsSection jobId={jobId!} />
 
               {/* BILLING SUMMARY — Expenses sub-section + Totals panel.
                   Kept as a separate Studio-styled card (warm cream chrome)

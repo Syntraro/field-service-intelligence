@@ -172,3 +172,69 @@ export interface RecentUsageRow {
   createdAt: string;
   consumedByUserName: string | null;
 }
+
+// ── Phase 4: line linkage + suggestions ─────────────────────────────
+
+/** Per-line aggregate consumption, returned by
+ *  GET /api/inventory/jobs/:jobId/line-fulfillment. */
+export interface JobLineFulfillment {
+  lineItemId: string;
+  consumedQuantity: string;
+  returnedQuantity: string;
+  netConsumedQuantity: string;
+}
+
+/** Line suggestion row, returned by
+ *  GET /api/inventory/jobs/:jobId/line-suggestions. The server
+ *  applies the same eligibility rules consumeForJob enforces
+ *  (product + trackInventory + active) so a clicked suggestion
+ *  always lands in a valid consumption. */
+export interface JobLineSuggestion {
+  lineItemId: string;
+  itemId: string;
+  itemName: string | null;
+  itemSku: string | null;
+  description: string | null;
+  lineQuantity: string;
+  netConsumedQuantity: string;
+  /** lineQuantity − netConsumedQuantity, clamped at 0. Default qty
+   *  for the consume-from-line-item modal. */
+  remainingQuantity: string;
+}
+
+// ── Phase 5: reservations ──────────────────────────────────────────
+
+export type InventoryReservationStatus =
+  | "active"
+  | "consumed"
+  | "released"
+  | "canceled";
+
+/** Reservation row returned by /api/inventory/jobs/:jobId/reservations,
+ *  /api/inventory/items/:id/reservations, and the location variant.
+ *  Server hydrates display fields so the rail / job section never N+1s. */
+export interface InventoryReservationRow {
+  id: string;
+  companyId: string;
+  itemId: string;
+  itemName: string | null;
+  itemSku: string | null;
+  itemModel: string | null;
+  locationId: string;
+  locationName: string;
+  jobId: string | null;
+  jobName: string | null;
+  visitId: string | null;
+  lineItemId: string | null;
+  quantity: string;
+  consumedQuantity: string;
+  /** Server-derived: quantity − consumedQuantity (clamped >= 0). */
+  remainingQuantity: string;
+  status: InventoryReservationStatus;
+  reservedByUserId: string | null;
+  reservedByUserName: string | null;
+  notes: string | null;
+  releasedAt: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}

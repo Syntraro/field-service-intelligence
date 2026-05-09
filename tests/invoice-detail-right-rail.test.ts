@@ -191,3 +191,72 @@ describe("InvoiceDetailPage — closed-rail behavior delegates to the canonical 
     expect(railMounts.length).toBe(2);
   });
 });
+
+// ── Scroll canonicalization (2026-05-08) ──────────────────────────
+//
+// The biggest visual regression on Invoice was a *split-scroll feel*:
+// the inner body had its own `flex-1 min-w-0 min-h-0 overflow-y-auto`
+// scrollbar AND `<CanonicalDetailHeader>` was rendered OUTSIDE that
+// scroll wrapper, so the header looked sticky/pinned while the body
+// scrolled below it. App.tsx's shell comment is explicit:
+// `<main className="flex-1 overflow-auto">` is THE SOLE canonical
+// vertical scroll surface; no page should introduce its own. Pin
+// against regression.
+
+describe("InvoiceDetailPage — single-scroll canonical layout (mirrors Job Detail)", () => {
+  it("the body wrapper has no inner `overflow-y-auto` / `flex-1 min-h-0` (would create split-scroll)", () => {
+    const startIdx = invoiceDetailCodeOnly.indexOf(
+      'data-testid="invoice-detail-left-column-shell"',
+    );
+    const endIdx = invoiceDetailCodeOnly.indexOf(
+      'data-testid="invoice-detail-rail-column"',
+      startIdx,
+    );
+    expect(startIdx).toBeGreaterThan(-1);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    const leftSlice = invoiceDetailCodeOnly.slice(startIdx, endIdx);
+    expect(leftSlice).not.toMatch(/overflow-y-auto/);
+    const innerBodyPattern = /<div\s+className="[^"]*\bflex-1\s+min-h-0\b[^"]*"/;
+    expect(leftSlice).not.toMatch(innerBodyPattern);
+    const innerBodyPatternAlt = /<div\s+className="[^"]*\bmin-h-0\s+overflow-y-auto\b[^"]*"/;
+    expect(leftSlice).not.toMatch(innerBodyPatternAlt);
+  });
+
+  it("the body wrapper uses the canonical Job pattern: padding + space-y only", () => {
+    // Body wrapper directly inside the shell is
+    // `<div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">` (no
+    // flex-1 / min-h-0 / overflow). The wrapper now contains BOTH
+    // the CanonicalDetailHeader and the prior body content.
+    expect(invoiceDetailSrc).toMatch(
+      /data-testid="invoice-detail-left-column-shell"[\s\S]{0,1500}?<div\s+className="px-4 lg:px-6 pt-0 pb-4 space-y-2\.5">/,
+    );
+  });
+
+  it("the CanonicalDetailHeader lives INSIDE the body wrapper (scrolls with content, no sticky/pinned feel)", () => {
+    // The body wrapper opens BEFORE the CanonicalDetailHeader mount
+    // — so when <main> scrolls, the header scrolls with the body
+    // instead of staying pinned at the top of the shell.
+    const wrapperIdx = invoiceDetailCodeOnly.indexOf(
+      'className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5"',
+    );
+    const headerIdx = invoiceDetailCodeOnly.indexOf(
+      "<CanonicalDetailHeader",
+      wrapperIdx,
+    );
+    expect(wrapperIdx).toBeGreaterThan(-1);
+    expect(headerIdx).toBeGreaterThan(wrapperIdx);
+  });
+
+  it("no sticky-positioned chrome inside the left column (header is not pinned)", () => {
+    const startIdx = invoiceDetailCodeOnly.indexOf(
+      'data-testid="invoice-detail-left-column-shell"',
+    );
+    const endIdx = invoiceDetailCodeOnly.indexOf(
+      'data-testid="invoice-detail-rail-column"',
+      startIdx,
+    );
+    const leftSlice = invoiceDetailCodeOnly.slice(startIdx, endIdx);
+    expect(leftSlice).not.toMatch(/className="[^"]*\bsticky\s/);
+    expect(leftSlice).not.toMatch(/className="[^"]*\bsticky"/);
+  });
+});

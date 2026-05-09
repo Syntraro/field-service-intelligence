@@ -224,7 +224,9 @@ function kindToTrack(col: EntityListColumn<unknown>): string {
  *     primary-name density. Sub-lines must explicitly set
  *     `font-normal text-helper text-slate-500` (or similar) to break
  *     the medium-weight cascade.
- *   - text / date / money: `text-row text-slate-700` — body color.
+ *   - text: `text-row text-slate-700` — body baseline for generic text cells.
+ *   - date / money: `text-caption text-slate-700` — reduced weight (14px)
+ *     for secondary metadata (dates, timestamps, amounts). 2026-05-08.
  *   - status / badge: `text-row` only — no color (caller controls
  *     because Badge / StatusPill ship their own typography).
  *   - select: no typography (checkbox cell).
@@ -250,9 +252,12 @@ function kindCellClasses(kind: EntityListColumnKind): string {
       // the size baseline.
       return "px-4 py-2.5 min-w-0 text-row";
     case "date":
-      return "px-4 py-2.5 whitespace-nowrap text-row text-slate-700";
+      // 2026-05-08: date/timestamp cells use text-caption (14px) rather
+      // than text-row (15px) — reduced visual weight for secondary metadata.
+      return "px-4 py-2.5 whitespace-nowrap text-caption text-slate-700";
     case "money":
-      return "px-4 py-2.5 whitespace-nowrap tabular-nums text-right text-row text-slate-700";
+      // 2026-05-08: money cells use text-caption (14px) — same rationale as date.
+      return "px-4 py-2.5 whitespace-nowrap tabular-nums text-right text-caption text-slate-700";
     case "badge":
       // `badge` is a layout marker for inline pill content. Pills
       // (Badge / EntityNumber) carry their own typography; the cell

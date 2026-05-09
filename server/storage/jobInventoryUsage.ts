@@ -13,11 +13,12 @@
  */
 
 import { db } from "../db";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   jobInventoryUsage,
   inventoryLocations,
   items,
+  jobParts,
   users,
   type JobInventoryUsage,
 } from "@shared/schema";
@@ -37,6 +38,10 @@ export interface JobInventoryUsageRow {
   locationName: string;
   kind: "consumption" | "return";
   parentUsageId: string | null;
+  /** Phase 4: optional linkage back to the job_parts line that
+   *  triggered this consumption. NULL when the consumption was
+   *  started without a line context. */
+  lineItemId: string | null;
   quantity: string;
   unitCostSnapshot: string;
   /** Derived: signed quantity (consumption=positive, return=negative)
@@ -83,6 +88,7 @@ async function listForJob(
       locationName: inventoryLocations.name,
       kind: jobInventoryUsage.kind,
       parentUsageId: jobInventoryUsage.parentUsageId,
+      lineItemId: jobInventoryUsage.lineItemId,
       quantity: jobInventoryUsage.quantity,
       unitCostSnapshot: jobInventoryUsage.unitCostSnapshot,
       consumedByUserId: jobInventoryUsage.consumedByUserId,
@@ -306,10 +312,143 @@ async function returnableQuantityFor(
   return Number(parent.quantity) - Number(existing?.total ?? 0);
 }
 
+// ─── Phase 4: per-line fulfillment + line suggestion reads ──────────
+
+/** Per-line consumption fulfillment, returned by
+ *  GET /api/inventory/jobs/:jobId/line-fulfillment. The client
+ *  consumes this to render small "X consumed of Y" indicators next to
+ *  job line items + to compute the default quantity for the consume-
+ *  from-line-item flow. */
+export interface JobLineFulfillment {
+  lineItemId: string;
+  consumedQuantity: string;
+  returnedQuantity: string;
+  /** consumedQuantity − returnedQuantity. */
+  netConsumedQuantity: string;
+}
+
+async function fulfillmentByLineForJob(
+  companyId: string,
+  jobId: string,
+): Promise<JobLineFulfillment[]> {
+  // Aggregate per (line_item_id, kind) with one GROUP BY pass. Rows
+  // without a lineItemId are skipped (they belong to the rail-driven
+  // flow + don't fulfill any specific line).
+  const rows = await db
+    .select({
+      lineItemId: jobInventoryUsage.lineItemId,
+      kind: jobInventoryUsage.kind,
+      total: sql<string>`COALESCE(SUM(${jobInventoryUsage.quantity}), 0)`,
+    })
+    .from(jobInventoryUsage)
+    .where(
+      and(
+        eq(jobInventoryUsage.companyId, companyId),
+        eq(jobInventoryUsage.jobId, jobId),
+        sql`${jobInventoryUsage.lineItemId} IS NOT NULL`,
+        isNull(jobInventoryUsage.deletedAt),
+      ),
+    )
+    .groupBy(jobInventoryUsage.lineItemId, jobInventoryUsage.kind);
+
+  const map = new Map<string, { consumed: number; returned: number }>();
+  for (const r of rows) {
+    if (!r.lineItemId) continue;
+    const acc = map.get(r.lineItemId) ?? { consumed: 0, returned: 0 };
+    if (r.kind === "consumption") acc.consumed += Number(r.total);
+    else acc.returned += Number(r.total);
+    map.set(r.lineItemId, acc);
+  }
+
+  return Array.from(map.entries()).map(([lineItemId, acc]) => ({
+    lineItemId,
+    consumedQuantity: roundQty(acc.consumed).toString(),
+    returnedQuantity: roundQty(acc.returned).toString(),
+    netConsumedQuantity: roundQty(acc.consumed - acc.returned).toString(),
+  }));
+}
+
+/** Suggestion row for the "consume from line item" UX. Returns the
+ *  job's product line items whose linked catalog item is product +
+ *  trackInventory + active, with the line's quantity, the catalog
+ *  itemId, and the already-fulfilled net quantity (from
+ *  fulfillmentByLineForJob). The client picks "remaining = max(0,
+ *  line.quantity − netConsumed)" as the suggested default qty. */
+export interface JobLineSuggestion {
+  lineItemId: string;
+  itemId: string;
+  itemName: string | null;
+  itemSku: string | null;
+  description: string | null;
+  /** The line's quantity on jobParts.quantity (text → string). */
+  lineQuantity: string;
+  /** Already consumed against this line (consumption − return). */
+  netConsumedQuantity: string;
+  /** lineQuantity − netConsumedQuantity, clamped at 0. */
+  remainingQuantity: string;
+}
+
+async function suggestLinesForJob(
+  companyId: string,
+  jobId: string,
+): Promise<JobLineSuggestion[]> {
+  // Only product, trackInventory, active items are suggested. Service
+  // items + non-stock products + inactive items can never be the
+  // source of an inventory consumption — this matches the consumeForJob
+  // service guards exactly so no suggestion ever fails server-side.
+  const lineRows = await db
+    .select({
+      lineItemId: jobParts.id,
+      itemId: jobParts.productId,
+      itemName: items.name,
+      itemSku: items.sku,
+      description: jobParts.description,
+      lineQuantity: jobParts.quantity,
+    })
+    .from(jobParts)
+    .innerJoin(items, eq(jobParts.productId, items.id))
+    .where(
+      and(
+        eq(jobParts.companyId, companyId),
+        eq(jobParts.jobId, jobId),
+        isNull(jobParts.deletedAt),
+        eq(items.type, "product"),
+        eq(items.trackInventory, true),
+        eq(items.isActive, true),
+      ),
+    );
+
+  if (lineRows.length === 0) return [];
+
+  const fulfillments = await fulfillmentByLineForJob(companyId, jobId);
+  const fulfillByLine = new Map(fulfillments.map((f) => [f.lineItemId, f]));
+
+  return lineRows
+    .filter((r): r is typeof r & { itemId: string } => r.itemId != null)
+    .map((r) => {
+      const f = fulfillByLine.get(r.lineItemId);
+      const net = f ? Number(f.netConsumedQuantity) : 0;
+      const lineQty = Number(r.lineQuantity ?? "0");
+      const remaining = Math.max(0, lineQty - net);
+      return {
+        lineItemId: r.lineItemId,
+        itemId: r.itemId,
+        itemName: r.itemName,
+        itemSku: r.itemSku,
+        description: r.description,
+        lineQuantity: String(roundQty(lineQty)),
+        netConsumedQuantity: String(roundQty(net)),
+        remainingQuantity: String(roundQty(remaining)),
+      };
+    });
+}
+
 export const jobInventoryUsageRepository = {
   listForJob,
   listRecentForItem,
   listRecentForLocation,
   getById,
   returnableQuantityFor,
+  fulfillmentByLineForJob,
+  suggestLinesForJob,
 };

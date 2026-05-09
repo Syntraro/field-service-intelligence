@@ -10,10 +10,10 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import {
-  ArrowLeft, Loader2, Trash2, FileText, Send, ChevronRight, Briefcase,
+  ArrowLeft, Loader2, Briefcase,
   Pencil, AlertTriangle, Plus,
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
-  Info, StickyNote, Zap,
+  Info, StickyNote,
 } from "lucide-react";
 // 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
 // transition class. Mirrors Job Detail / Invoice Detail / Quote Detail.
@@ -112,7 +112,12 @@ export default function LeadDetailPage() {
   // `null` = no panel open (icon strip only). Default open: "details"
   // — the most-frequently-read tab on this page (estimated value, next
   // visit, captured-by, audit dates).
-  type LeadRailTab = "details" | "notes" | "actions";
+  // 2026-05-08 (Phase 2 — Lead Actions relocation): the prior "actions"
+  // tab was removed. Convert / Mark Contacted / Mark Lost / Archive /
+  // Delete / View-Linked-Quote moved into the page main header
+  // (`<LeadSummaryCard>` Section B action bar, mirroring the Quote /
+  // Invoice header pattern). The rail now hosts only Details + Notes.
+  type LeadRailTab = "details" | "notes";
   const [leadRailTab, setLeadRailTab] = useState<LeadRailTab | null>("details");
   // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
   // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
@@ -308,57 +313,6 @@ export default function LeadDetailPage() {
         />
       ),
     },
-    {
-      id: "actions",
-      label: "Actions",
-      icon: Zap,
-      testId: "lead-rail-tab-actions",
-      content: (
-        <div className="space-y-1.5" data-testid="lead-rail-actions">
-          {canConvert && !lead.convertedQuoteId && (
-            <Button
-              className="w-full justify-start gap-2 h-8 text-xs"
-              size="sm"
-              onClick={handleConvertToQuote}
-              data-testid="button-convert-to-quote"
-            >
-              <FileText className="h-3.5 w-3.5" />Convert to Quote
-            </Button>
-          )}
-          {canContact && (
-            <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs" size="sm" onClick={() => statusMutation.mutate("contacted")} disabled={statusMutation.isPending}>
-              <Send className="h-3.5 w-3.5" />Mark Contacted
-            </Button>
-          )}
-          {canMarkLost && (
-            <Button variant="outline" className="w-full justify-start gap-2 h-8 text-xs text-red-600 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => statusMutation.mutate("lost")} disabled={statusMutation.isPending}>
-              Mark Lost
-            </Button>
-          )}
-          <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-amber-700 hover:bg-amber-50" size="sm" onClick={() => setShowArchiveConfirm(true)}>
-            <Trash2 className="h-3.5 w-3.5" />Archive Lead
-          </Button>
-          <Button variant="ghost" className="w-full justify-start gap-2 h-8 text-xs text-slate-500 hover:text-red-700 hover:bg-red-50" size="sm" onClick={() => setShowHardDeleteConfirm(true)}>
-            <AlertTriangle className="h-3.5 w-3.5" />Delete Permanently
-          </Button>
-
-          {/* Quote section */}
-          <div className="border-t border-slate-100 pt-2 mt-1">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
-            {lead.convertedQuoteId ? (
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-emerald-700">Converted {lead.convertedAt ? fmtDate(lead.convertedAt) : ""}</p>
-                <Button variant="outline" size="sm" className="w-full justify-start gap-2 h-8 text-xs" onClick={() => setLocation(`/quotes/${lead.convertedQuoteId}`)}>
-                  <ChevronRight className="h-3 w-3" />View Quote
-                </Button>
-              </div>
-            ) : (
-              <p className="text-xs text-slate-400">No linked quote</p>
-            )}
-          </div>
-        </div>
-      ),
-    },
   ];
 
   return (
@@ -371,13 +325,42 @@ export default function LeadDetailPage() {
         className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
         data-testid="lead-detail-left-column-shell"
       >
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 lg:px-6 py-4 space-y-3">
+        {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer
+            owns its own `flex-1 min-h-0 overflow-y-auto` — that pattern
+            created a split-scroll feel with the rail static on the
+            right while only the inner column scrolled. Per the App.tsx
+            shell comment, `<main className="flex-1 overflow-auto">` is
+            THE SOLE canonical vertical scroll surface. Mirror Job
+            Detail exactly: padding + space-y on the body, scrolling
+            delegated to <main>. */}
+        <div className="px-4 lg:px-6 py-4 space-y-3">
 
-          {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard */}
+          {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard.
+              2026-05-08 (Phase 3 — Lead Actions relocation): the prior
+              right-rail "Actions" tab is gone; Convert / Mark Contacted /
+              Mark Lost / Archive / Delete / View-Linked-Quote now live on
+              the card's Section B action bar. Gating flags + AlertDialog
+              wiring stay on this page; the card just renders the buttons. */}
           <LeadSummaryCard
             mode="saved"
             lead={lead}
             onBack={() => setLocation("/leads")}
+            actions={{
+              canConvert,
+              canContact,
+              canMarkLost,
+              convertedQuoteId: lead.convertedQuoteId,
+              isStatusMutating: statusMutation.isPending,
+              onConvertToQuote: handleConvertToQuote,
+              onMarkContacted: () => statusMutation.mutate("contacted"),
+              onMarkLost: () => statusMutation.mutate("lost"),
+              onArchive: () => setShowArchiveConfirm(true),
+              onHardDelete: () => setShowHardDeleteConfirm(true),
+              onViewQuote: () =>
+                lead.convertedQuoteId
+                  ? setLocation(`/quotes/${lead.convertedQuoteId}`)
+                  : undefined,
+            }}
           />
 
           {/* Description */}

@@ -295,7 +295,12 @@ export function DetailRightRail({
                 />
               )}
               <Icon className="h-4 w-4" />
-              <span className="leading-tight">{tab.label}</span>
+              {/* 2026-05-08 text-nav-compact — purpose-built compact-navigation
+                  token (12px / 14px LH / 500). Replaces the text-label visual
+                  experiment which caused overflow on "MAINTENANCE" in the 68px
+                  effective column width (UPPERCASE + 0.04em tracking pushed
+                  ~93px needed). No uppercase, no aggressive tracking. */}
+              <span className="text-nav-compact leading-tight">{tab.label}</span>
               {typeof tab.count === "number" && (
                 <span
                   // 2026-05-07: count chip rides the same typography scale

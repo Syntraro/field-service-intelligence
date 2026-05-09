@@ -15,7 +15,18 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
-import { Briefcase, Loader2 } from "lucide-react";
+// 2026-05-08 (create-page rail canonicalization): icons for the rail tab.
+import { Briefcase, Loader2, Info } from "lucide-react";
+// 2026-05-08 (create-page rail canonicalization): mount the same canonical
+// `<DetailRightRail>` the saved Lead detail page uses. Create mode hosts
+// only the Details tab — Notes / Actions / linked-quote affordances need
+// a saved leadId and have no meaning before first save.
+import {
+  DetailRightRail,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+import { cn } from "@/lib/utils";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
@@ -73,6 +84,13 @@ export default function CreateLeadPage() {
   // the canonical AlertDialog primitive (modal taxonomy rule #1) so the
   // surface matches the rest of the app's destructive confirmations.
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
+  // 2026-05-08 (create-page rail canonicalization): canonical right-rail
+  // tab state. Mirrors the saved Lead Detail page contract — null = panel
+  // closed (icon strip only). Default open: "details" (the only tab valid
+  // before save).
+  type CreateLeadRailTab = "details";
+  const [leadRailTab, setLeadRailTab] = useState<CreateLeadRailTab | null>("details");
 
   // ── Create-client mutation — canonical full-create. ──
   const createClientMutation = useMutation({
@@ -255,105 +273,170 @@ export default function CreateLeadPage() {
     </div>
   );
 
-  return (
-    <div className="bg-[#f1f5f9] h-full flex flex-col" data-testid="create-lead-page">
-      <div className="px-4 lg:px-6 py-4 flex-1 min-h-0">
-        {/* Same two-column shell the saved detail page uses. */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-full">
-          {/* ── LEFT COLUMN ── */}
-          <div className="space-y-3 min-w-0 min-h-0 overflow-y-auto lg:pr-1">
-            <LeadSummaryCard
-              mode="draft"
-              onBack={navigateBack}
-              title={title}
-              onTitleChange={setTitle}
-              priority={priority}
-              onPriorityChange={setPriority}
-              sourceType={SOURCE_TYPE}
-              clientLocationSlot={clientLocationSlot}
+  // 2026-05-08 (create-page rail canonicalization): rail tab registry —
+  // ONLY Details is valid before first save. Notes (needs leadId), Actions
+  // (saved-only — Convert / Mark Contacted / Archive / Delete moved into
+  // <LeadSummaryCard>'s Section B in saved mode and have no draft meaning),
+  // and the linked-quote affordance are intentionally omitted. Once the
+  // user saves, the route flips to /leads/:id and the saved page mounts
+  // its full Details + Notes registry.
+  const leadRailTabs: DetailRailTab[] = [
+    {
+      id: "details",
+      label: "Details",
+      icon: Info,
+      testId: "create-lead-rail-tab-details",
+      content: (
+        <LeadDetailsRail
+          mode="draft"
+          estimatedValue={estimatedValue}
+          onEstimatedValueChange={setEstimatedValue}
+          capturedBySlot={
+            <TechnicianSelector
+              mode="single"
+              value={capturedByUserId || null}
+              onChange={(id) => setCapturedByUserId(id ?? "")}
+              placeholder="Select..."
             />
+          }
+        />
+      ),
+    },
+  ];
 
-            {/* Description — same chrome as the saved detail page's
-                Description card. Editable on the create flow. */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
-                <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-                  <Briefcase className="h-4 w-4 text-[#64748b]" />Description
-                </span>
-              </div>
-              <div className="px-5 py-3">
-                <Textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Details about the opportunity..."
-                  rows={4}
-                  maxLength={2000}
-                  className="min-h-[96px] text-sm resize-y"
-                  data-testid="input-description"
-                />
-              </div>
+  return (
+    <div
+      className="flex h-full flex-col lg:flex-row bg-[#f1f5f9]"
+      data-testid="create-lead-page"
+    >
+      {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+      <div
+        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+        data-testid="create-lead-left-column-shell"
+      >
+        {/* 2026-05-08 (single-scroll canonicalization): body wrapper has
+            no inner `flex-1 min-h-0 overflow-y-auto` — App.tsx's
+            `<main className="flex-1 overflow-auto">` is the SOLE
+            canonical scroll surface. Mirrors the saved Lead detail page
+            after the scroll-canonicalization fix. */}
+        <div className="px-4 lg:px-6 py-4 space-y-3">
+          <LeadSummaryCard
+            mode="draft"
+            onBack={navigateBack}
+            title={title}
+            onTitleChange={setTitle}
+            priority={priority}
+            onPriorityChange={setPriority}
+            sourceType={SOURCE_TYPE}
+            clientLocationSlot={clientLocationSlot}
+          />
+
+          {/* Description — same chrome as the saved detail page's
+              Description card. Editable on the create flow. */}
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
+              <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                <Briefcase className="h-4 w-4 text-[#64748b]" />Description
+              </span>
+            </div>
+            <div className="px-5 py-3">
+              <Textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Details about the opportunity..."
+                rows={4}
+                maxLength={2000}
+                className="min-h-[96px] text-sm resize-y"
+                data-testid="input-description"
+              />
             </div>
           </div>
 
-          {/* ── RIGHT RAIL ── */}
-          <aside className="space-y-3 min-h-0 overflow-y-auto">
-            <LeadDetailsRail
-              mode="draft"
-              estimatedValue={estimatedValue}
-              onEstimatedValueChange={setEstimatedValue}
-              capturedBySlot={
-                <TechnicianSelector
-                  mode="single"
-                  value={capturedByUserId || null}
-                  onChange={(id) => setCapturedByUserId(id ?? "")}
-                  placeholder="Select..."
-                />
-              }
-            />
-
-            {/* Actions card — Save + Cancel. Replaces the saved detail's
-                status / convert / archive / delete actions; saved-only
-                actions have no meaning before first save. */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
-                <span className="text-sm font-semibold text-[#0f172a]">Actions</span>
-              </div>
-              <div className="px-4 py-2.5 space-y-1.5">
-                <Button
-                  className="w-full justify-center gap-2 h-8 text-xs"
-                  size="sm"
-                  onClick={() => createLeadMutation.mutate()}
-                  disabled={!canSubmit}
-                  aria-describedby={disabledReason ? "create-lead-disabled-reason" : undefined}
-                  data-testid="button-create-lead"
-                >
-                  {createLeadMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  Create Lead
-                </Button>
-                {disabledReason && (
-                  <p
-                    id="create-lead-disabled-reason"
-                    className="text-[11px] text-slate-500 leading-snug px-0.5"
-                    data-testid="text-create-lead-disabled-reason"
-                  >
-                    {disabledReason}
-                  </p>
-                )}
-                <Button
-                  variant="outline"
-                  className="w-full justify-center gap-2 h-8 text-xs"
-                  size="sm"
-                  onClick={navigateBack}
-                  disabled={createLeadMutation.isPending}
-                  data-testid="button-cancel-lead"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          </aside>
+          {/* 2026-05-08 (create-page rail canonicalization): Save / Cancel
+              relocated from the prior right-rail Actions stacked-card to
+              an inline action row at the bottom of the left column.
+              Saved-only actions (Convert, Mark Contacted, Archive,
+              Delete) have no draft meaning, so the rail no longer hosts
+              an Actions tab — the action row stays in the page main
+              flow. */}
+          <div
+            className="flex items-center justify-end gap-2 pt-2"
+            data-testid="create-lead-action-row"
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={navigateBack}
+              disabled={createLeadMutation.isPending}
+              data-testid="button-cancel-lead"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={() => createLeadMutation.mutate()}
+              disabled={!canSubmit}
+              aria-describedby={disabledReason ? "create-lead-disabled-reason" : undefined}
+              data-testid="button-create-lead"
+            >
+              {createLeadMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              Create Lead
+            </Button>
+          </div>
+          {disabledReason && (
+            <p
+              id="create-lead-disabled-reason"
+              className="text-[11px] text-slate-500 leading-snug text-right px-0.5"
+              data-testid="text-create-lead-disabled-reason"
+            >
+              {disabledReason}
+            </p>
+          )}
         </div>
       </div>
+      {/* ═══ /LEFT COLUMN ═══ */}
+
+      {/* ═════════ RIGHT RAIL ═════════
+          Page-level sibling of the left column (mirrors Job Detail).
+          Width driven by `--create-lead-rail-width`. Below `lg` the row
+          collapses to a column and the rail stacks under the body. */}
+      <aside
+        className={cn(
+          "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+          "border-t lg:border-t-0 lg:border-l border-slate-200",
+        )}
+        style={{
+          ["--create-lead-rail-width" as any]: `${leadRailTab === null ? 80 : 380}px`,
+        }}
+        data-testid="create-lead-detail-rail-column"
+        data-panel-open={leadRailTab === null ? "false" : "true"}
+      >
+        <div className="lg:hidden">
+          <DetailRightRail
+            tabs={leadRailTabs}
+            activeTabId={leadRailTab}
+            onActiveTabChange={(id) => setLeadRailTab(id as CreateLeadRailTab | null)}
+            testIdPrefix="create-lead-side"
+            ariaLabel="New lead information rail"
+          />
+        </div>
+        <div
+          className={cn(
+            "hidden lg:flex h-full w-[var(--create-lead-rail-width)] flex-col relative",
+            RAIL_WIDTH_TRANSITION,
+          )}
+        >
+          <DetailRightRail
+            tabs={leadRailTabs}
+            activeTabId={leadRailTab}
+            onActiveTabChange={(id) => setLeadRailTab(id as CreateLeadRailTab | null)}
+            testIdPrefix="create-lead-side"
+            ariaLabel="New lead information rail"
+          />
+        </div>
+      </aside>
 
       {/* Discard-confirm dialog — fires when Cancel/back is pressed
           on a dirty form. Uses AlertDialog per modal taxonomy rule #1

@@ -12,6 +12,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Trash2, Loader2, Wrench, Info, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+// 2026-05-08: real-error surfacing for the equipment-link flows. The
+// helper translates ApiError into a user-facing toast description and
+// special-cases JOB_INVOICED_LOCKED. Lives in its own module so the
+// translation contract is unit-testable without a React renderer.
+import { describeMutationError } from "./equipmentLinkErrors";
 import type { LocationEquipment, JobEquipment } from "@shared/schema";
 import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
 import { EquipmentDetailModal } from "./EquipmentDetailModal";
@@ -252,10 +257,10 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
         description: "The equipment has been linked to this job.",
       });
     },
-    onError: () => {
+    onError: (error: unknown) => {
       toast({
-        title: "Error",
-        description: "Failed to add equipment to job.",
+        title: "Couldn't add equipment",
+        description: describeMutationError(error, "Failed to add equipment to job."),
         variant: "destructive",
       });
     },
@@ -274,10 +279,10 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
         description: "The equipment has been unlinked from this job.",
       });
     },
-    onError: () => {
+    onError: (error: unknown) => {
       toast({
-        title: "Error",
-        description: "Failed to remove equipment from job.",
+        title: "Couldn't remove equipment",
+        description: describeMutationError(error, "Failed to remove equipment from job."),
         variant: "destructive",
       });
     },

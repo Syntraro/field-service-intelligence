@@ -29,14 +29,17 @@ import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import {
   inventoryLocations,
   inventoryQuantities,
+  inventoryReservations,
   inventoryTransactions,
   jobInventoryUsage,
   items,
   jobs,
+  jobParts,
   users,
   type InventoryLocation,
   type InventoryQuantity,
   type InventoryTransaction,
+  type InventoryReservation,
   type InsertInventoryLocation,
   type UpdateInventoryLocation,
   type UpdateInventoryQuantitySettings,
@@ -44,6 +47,7 @@ import {
   type AdjustInventoryInput,
   type ConsumeInventoryForJobInput,
   type ReturnInventoryFromJobInput,
+  type ReserveInventoryInput,
 } from "@shared/schema";
 
 // ─── Locations ─────────────────────────────────────────────────────────────
@@ -276,6 +280,36 @@ async function listInventoryAtLocation(
   });
 }
 
+/** Phase 6: resolve the inventory_location assigned to a specific user.
+ *  Used by the tech AddPart flow to default the consume source so techs
+ *  don't have to re-pick their truck for every line item. Returns the
+ *  ONE active assignment, or null when the user has none.
+ *
+ *  Multi-assignment rule: the schema does not enforce uniqueness on
+ *  (company_id, assigned_user_id) — a user could in principle be
+ *  assigned to multiple locations (vehicle + a backup van). We return
+ *  the most-recently-updated active row deterministically; the office
+ *  Locations tab is the canonical UI for resolving multi-assignment
+ *  drift. */
+async function getAssignedLocationForUser(
+  companyId: string,
+  userId: string,
+): Promise<InventoryLocation | null> {
+  const [row] = await db
+    .select()
+    .from(inventoryLocations)
+    .where(
+      and(
+        eq(inventoryLocations.companyId, companyId),
+        eq(inventoryLocations.assignedUserId, userId),
+        eq(inventoryLocations.isActive, true),
+      ),
+    )
+    .orderBy(desc(inventoryLocations.updatedAt))
+    .limit(1);
+  return row ?? null;
+}
+
 export const inventoryLocationsRepository = {
   list: listLocations,
   listWithAggregates: listLocationsWithAggregates,
@@ -284,6 +318,7 @@ export const inventoryLocationsRepository = {
   update: updateLocation,
   archive: archiveLocation,
   listInventoryAtLocation,
+  getAssignedLocationForUser,
 };
 
 // ─── Quantities ────────────────────────────────────────────────────────────
@@ -986,6 +1021,31 @@ async function consumeForJob(
     // Location must be active.
     await assertLocationActive(tx, companyId, input.locationId);
 
+    // Phase 4: optional line linkage. The line MUST belong to the
+    // same (company, job) — if it doesn't, treat the request as a
+    // tampering attempt and refuse the consumption rather than
+    // silently ignoring the linkage. Line tables remain untouched —
+    // the linkage is one-directional from consumption → line.
+    if (input.lineItemId) {
+      const [line] = await tx
+        .select({ id: jobParts.id, jobId: jobParts.jobId })
+        .from(jobParts)
+        .where(
+          and(
+            eq(jobParts.id, input.lineItemId),
+            eq(jobParts.jobId, jobId),
+            eq(jobParts.companyId, companyId),
+          ),
+        )
+        .limit(1);
+      if (!line) {
+        throw new InventoryError(
+          "ITEM_NOT_FOUND",
+          "Linked line item does not belong to this job.",
+        );
+      }
+    }
+
     // Decrement source on-hand.
     const fromRow = await ensureQuantityRow(tx, companyId, input.itemId, input.locationId);
     if (Number(fromRow.onHandQuantity) < Number(qty)) {
@@ -1001,6 +1061,77 @@ async function consumeForJob(
         updatedAt: new Date(),
       })
       .where(eq(inventoryQuantities.id, fromRow.id));
+
+    // Phase 5: consume-against-active-reservation hop. If there is at
+    // least one matching active reservation for this (company, job,
+    // item, location), pull from those FIRST before letting the
+    // consumption count as fresh on-hand draw. This:
+    //   - Decrements inventory_quantities.reserved_quantity by the
+    //     consumed-from-reservation amount (since that quantity was
+    //     formerly counted in the reserved bucket, the on-hand-only
+    //     decrement above would otherwise underflow available unless
+    //     we also free the reservation).
+    //   - Increments each reservation's consumed_quantity counter and
+    //     transitions to status='consumed' when fully consumed.
+    //   - Spreads the consumption across multiple matching active
+    //     reservations FIFO (oldest first) when more than one exists.
+    //   - Leaves the reservation alone (no-op) when no matching
+    //     active reservation exists — the legacy "consume from raw
+    //     on-hand" path still works for tenants that never adopted
+    //     the reservation flow.
+    let remainingToApply = Number(qty);
+    if (jobId) {
+      const matching = await tx
+        .select({
+          id: inventoryReservations.id,
+          quantity: inventoryReservations.quantity,
+          consumedQuantity: inventoryReservations.consumedQuantity,
+        })
+        .from(inventoryReservations)
+        .where(
+          and(
+            eq(inventoryReservations.companyId, companyId),
+            eq(inventoryReservations.jobId, jobId),
+            eq(inventoryReservations.itemId, input.itemId),
+            eq(inventoryReservations.locationId, input.locationId),
+            eq(inventoryReservations.status, "active"),
+          ),
+        )
+        .orderBy(inventoryReservations.createdAt);
+
+      let releasedTotalFromReservations = 0;
+      for (const r of matching) {
+        if (remainingToApply <= 0) break;
+        const open = Number(r.quantity) - Number(r.consumedQuantity);
+        if (open <= 0) continue;
+        const take = Math.min(open, remainingToApply);
+        const nextConsumed = Number(r.consumedQuantity) + take;
+        const nowFull = Math.abs(nextConsumed - Number(r.quantity)) < 1e-9;
+        await tx
+          .update(inventoryReservations)
+          .set({
+            consumedQuantity: String(Math.round(nextConsumed * 10000) / 10000),
+            status: nowFull ? "consumed" : "active",
+            updatedAt: new Date(),
+          })
+          .where(eq(inventoryReservations.id, r.id));
+        releasedTotalFromReservations += take;
+        remainingToApply -= take;
+      }
+
+      if (releasedTotalFromReservations > 0) {
+        const releasedStr = String(
+          Math.round(releasedTotalFromReservations * 10000) / 10000,
+        );
+        await tx
+          .update(inventoryQuantities)
+          .set({
+            reservedQuantity: sql`${inventoryQuantities.reservedQuantity} - ${releasedStr}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(inventoryQuantities.id, fromRow.id));
+      }
+    }
 
     // Audit row.
     const [txn] = await tx
@@ -1035,6 +1166,10 @@ async function consumeForJob(
         consumedByUserId: userId,
         notes: input.notes ?? null,
         inventoryTransactionId: txn.id,
+        // Phase 4: persist the optional linkage. Returns inherit
+        // their parent's lineItemId via the parent row — they don't
+        // duplicate the FK because the parent already carries it.
+        lineItemId: input.lineItemId ?? null,
       })
       .returning({ id: jobInventoryUsage.id });
 
@@ -1272,10 +1407,220 @@ async function removeUsage(
   });
 }
 
+// ─── Phase 5: Reservations (reserve / release / cancel) ────────────────
+//
+// Single-tx invariant carried forward: every reserved_quantity mutation
+// is paired with an INSERT or UPDATE on inventory_reservations inside
+// the same Drizzle tx. Reservations are their own audit log — we do
+// NOT write inventory_transactions rows for reserve/release/cancel
+// because no quantity moves physically (only the on_hand vs reserved
+// split shifts).
+//
+// Available-stock guard. A new reservation must fit inside CURRENT
+// availability (on_hand − reserved), not just on_hand. Otherwise
+// stacking reservations would silently push availability negative.
+
+async function reserveInventory(
+  companyId: string,
+  userId: string | null,
+  input: ReserveInventoryInput,
+): Promise<{ reservationId: string }> {
+  const qty = String(input.quantity);
+  if (Number(qty) <= 0) {
+    throw new InventoryError(
+      "INSUFFICIENT_STOCK",
+      "Reservation quantity must be greater than zero.",
+    );
+  }
+  return db.transaction(async (tx) => {
+    await assertItemTracksInventory(tx, companyId, input.itemId);
+    await assertLocationActive(tx, companyId, input.locationId);
+
+    // Optional job linkage — same tampering check as consumeForJob.
+    if (input.jobId) {
+      const [job] = await tx
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.id, input.jobId), eq(jobs.companyId, companyId)))
+        .limit(1);
+      if (!job) {
+        throw new InventoryError("ITEM_NOT_FOUND", "Job not found.");
+      }
+    }
+    // Optional line linkage — must belong to the same (company, job).
+    if (input.lineItemId) {
+      if (!input.jobId) {
+        throw new InventoryError(
+          "ITEM_NOT_FOUND",
+          "Reservation linked to a line item must also include the job id.",
+        );
+      }
+      const [line] = await tx
+        .select({ id: jobParts.id })
+        .from(jobParts)
+        .where(
+          and(
+            eq(jobParts.id, input.lineItemId),
+            eq(jobParts.jobId, input.jobId),
+            eq(jobParts.companyId, companyId),
+          ),
+        )
+        .limit(1);
+      if (!line) {
+        throw new InventoryError(
+          "ITEM_NOT_FOUND",
+          "Linked line item does not belong to this job.",
+        );
+      }
+    }
+
+    // Available-stock guard. A reservation must fit inside (on_hand −
+    // reserved). Stacking reservations beyond availability would push
+    // available negative, so we refuse the request rather than
+    // silently allow over-allocation.
+    const qtyRow = await ensureQuantityRow(tx, companyId, input.itemId, input.locationId);
+    const available =
+      Number(qtyRow.onHandQuantity) - Number(qtyRow.reservedQuantity);
+    if (available < Number(qty)) {
+      throw new InventoryError(
+        "INSUFFICIENT_STOCK",
+        `Cannot reserve ${qty} — only ${available > 0 ? available : 0} available at this location after existing reservations.`,
+      );
+    }
+
+    // Bump reserved_quantity on the (item, location) row.
+    await tx
+      .update(inventoryQuantities)
+      .set({
+        reservedQuantity: sql`${inventoryQuantities.reservedQuantity} + ${qty}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventoryQuantities.id, qtyRow.id));
+
+    // Insert the reservation row (the audit log).
+    const [row] = await tx
+      .insert(inventoryReservations)
+      .values({
+        companyId,
+        itemId: input.itemId,
+        locationId: input.locationId,
+        jobId: input.jobId ?? null,
+        visitId: input.visitId ?? null,
+        lineItemId: input.lineItemId ?? null,
+        quantity: qty,
+        consumedQuantity: "0",
+        status: "active",
+        reservedByUserId: userId,
+        notes: input.notes ?? null,
+      })
+      .returning({ id: inventoryReservations.id });
+
+    return { reservationId: row.id };
+  });
+}
+
+/** Release frees the un-consumed remainder back to availability. The
+ *  consumed portion is permanent (it already became real stock movement
+ *  via consumeForJob). Released rows stay in the table for audit.
+ *
+ *  Status guard: only `active` reservations can be released. Re-releasing
+ *  a `released`/`canceled`/`consumed` row is a no-op-error to preserve
+ *  the audit trail's integrity. */
+async function releaseReservation(
+  companyId: string,
+  userId: string | null,
+  reservationId: string,
+): Promise<{ reservationId: string; releasedQuantity: string }> {
+  return releaseOrCancel(companyId, userId, reservationId, "released");
+}
+
+async function cancelReservation(
+  companyId: string,
+  userId: string | null,
+  reservationId: string,
+): Promise<{ reservationId: string; releasedQuantity: string }> {
+  return releaseOrCancel(companyId, userId, reservationId, "canceled");
+}
+
+/** Internal: shared release / cancel path. Both flows do exactly the
+ *  same work — free the un-consumed remainder back to availability and
+ *  flip status — so they share the implementation. The only difference
+ *  is the terminal status string we write. */
+async function releaseOrCancel(
+  companyId: string,
+  userId: string | null,
+  reservationId: string,
+  terminalStatus: "released" | "canceled",
+): Promise<{ reservationId: string; releasedQuantity: string }> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.companyId, companyId),
+          eq(inventoryReservations.id, reservationId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      throw new InventoryError("ITEM_NOT_FOUND", "Reservation not found.");
+    }
+    if (row.status !== "active") {
+      throw new InventoryError(
+        "INSUFFICIENT_STOCK",
+        `Reservation is already ${row.status}; nothing to release.`,
+      );
+    }
+
+    const remaining =
+      Number(row.quantity) - Number(row.consumedQuantity);
+    const remainingStr = String(Math.round(remaining * 10000) / 10000);
+
+    if (remaining > 0) {
+      // Decrement reserved_quantity on the (item, location) row by the
+      // un-consumed remainder. The (item, location) row MUST exist
+      // because the reservation row's existence implies it was
+      // created/updated when the reservation was made.
+      const qtyRow = await ensureQuantityRow(
+        tx,
+        companyId,
+        row.itemId,
+        row.locationId,
+      );
+      await tx
+        .update(inventoryQuantities)
+        .set({
+          reservedQuantity: sql`${inventoryQuantities.reservedQuantity} - ${remainingStr}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(inventoryQuantities.id, qtyRow.id));
+    }
+
+    // Flip the status + stamp released_at. We never null reservedByUserId
+    // — the audit row records who made it; the actor doing the release
+    // is implicit in the API call (and surfaceable via audit log if/
+    // when we wire one).
+    await tx
+      .update(inventoryReservations)
+      .set({
+        status: terminalStatus,
+        releasedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(inventoryReservations.id, reservationId));
+
+    return { reservationId, releasedQuantity: remainingStr };
+  });
+}
+
 export const inventoryService = {
   performTransfer,
   performAdjustment,
   consumeForJob,
   returnFromJob,
   removeUsage,
+  reserveInventory,
+  releaseReservation,
+  cancelReservation,
 };

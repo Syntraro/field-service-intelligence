@@ -2,8 +2,13 @@
  * Quote Detail right rail — source pin tests (2026-05-08).
  *
  * Verifies QuoteDetailPage uses the canonical `<DetailRightRail>` primitive
- * with the spec'd 5-tab layout (Summary / Notes / References / Workflow /
- * Activity).
+ * with the spec'd 4-tab layout (Summary / Notes / References / Activity).
+ *
+ * 2026-05-08 (Phase 3 — Quote Workflow relocation): the prior 5th
+ * "Workflow" tab was retired. Owner + Assessment lifecycle controls
+ * moved into <QuoteHeaderCard>'s Section B action bar (entity-level
+ * mutations belong with Send / Approve / Decline / Convert in the
+ * header, not a rail tab).
  *
  * What stays the same:
  *   - LineItemsCard remains in the LEFT column (core document content).
@@ -14,7 +19,8 @@
  *   - reintroduces `<DetailPageShell rightRail={...}>` (legacy stacked-cards
  *     rail with drag-resize)
  *   - moves Line Items into the rail
- *   - re-wraps Workflow tab content in a `<Card>` (double-card layering)
+ *   - re-adds a Workflow tab to the rail
+ *   - moves Owner / Assessment controls back out of the header
  */
 
 import { describe, it, expect } from "vitest";
@@ -23,7 +29,9 @@ import { resolve } from "path";
 
 const ROOT = resolve(__dirname, "..");
 const QUOTE_DETAIL = resolve(ROOT, "client/src/pages/QuoteDetailPage.tsx");
+const QUOTE_HEADER_CARD = resolve(ROOT, "client/src/components/QuoteHeaderCard.tsx");
 const quoteDetailSrc = readFileSync(QUOTE_DETAIL, "utf-8");
+const quoteHeaderCardSrc = readFileSync(QUOTE_HEADER_CARD, "utf-8");
 
 function stripComments(src: string): string {
   return src
@@ -32,6 +40,7 @@ function stripComments(src: string): string {
     .replace(/\/\/[^\n]*/g, "");
 }
 const quoteDetailCodeOnly = stripComments(quoteDetailSrc);
+const quoteHeaderCardCodeOnly = stripComments(quoteHeaderCardSrc);
 
 describe("QuoteDetailPage — canonical right rail", () => {
   it("imports the DetailRightRail primitive + DetailRailTab type from the canonical module", () => {
@@ -89,22 +98,22 @@ describe("QuoteDetailPage — quoteRailTabs registry", () => {
     );
   });
 
-  it("has exactly FIVE tabs (Summary + Notes + References + Workflow + Activity)", () => {
+  it("has exactly FOUR tabs (Summary + Notes + References + Activity) — Workflow tab removed", () => {
     const arrStart = quoteDetailSrc.indexOf("const quoteRailTabs:");
     expect(arrStart).toBeGreaterThan(-1);
     const arrEnd = quoteDetailSrc.indexOf("];", arrStart);
     expect(arrEnd).toBeGreaterThan(arrStart);
     const arrSlice = quoteDetailSrc.slice(arrStart, arrEnd);
     const idMatches = arrSlice.match(/\bid:\s*"\w+"/g) ?? [];
-    expect(idMatches.length).toBe(5);
+    expect(idMatches.length).toBe(4);
     expect(arrSlice).toMatch(/id:\s*"summary"/);
     expect(arrSlice).toMatch(/id:\s*"notes"/);
     expect(arrSlice).toMatch(/id:\s*"references"/);
-    expect(arrSlice).toMatch(/id:\s*"workflow"/);
     expect(arrSlice).toMatch(/id:\s*"activity"/);
+    expect(arrSlice).not.toMatch(/id:\s*"workflow"/);
   });
 
-  it("rail tab order is Summary, Notes, References, Workflow, Activity (per spec)", () => {
+  it("rail tab order is Summary, Notes, References, Activity (per spec)", () => {
     const arrStart = quoteDetailSrc.indexOf("const quoteRailTabs:");
     const arrEnd = quoteDetailSrc.indexOf("];", arrStart);
     const arrSlice = quoteDetailSrc.slice(arrStart, arrEnd);
@@ -112,7 +121,18 @@ describe("QuoteDetailPage — quoteRailTabs registry", () => {
     const re = /\bid:\s*"(\w+)"/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(arrSlice)) !== null) idOrder.push(m[1]);
-    expect(idOrder).toEqual(["summary", "notes", "references", "workflow", "activity"]);
+    expect(idOrder).toEqual(["summary", "notes", "references", "activity"]);
+  });
+
+  it("QuoteRailTab union no longer includes \"workflow\"", () => {
+    expect(quoteDetailSrc).toMatch(
+      /type\s+QuoteRailTab\s*=\s*"summary"\s*\|\s*"notes"\s*\|\s*"references"\s*\|\s*"activity"/,
+    );
+    expect(quoteDetailSrc).not.toMatch(/type\s+QuoteRailTab\s*=[^;]*"workflow"/);
+  });
+
+  it("the GitBranch icon import (former Workflow tab icon) is gone", () => {
+    expect(quoteDetailSrc).not.toMatch(/\bGitBranch\b/);
   });
 
   it("Summary tab carries DollarSign icon + stable testId", () => {
@@ -130,12 +150,6 @@ describe("QuoteDetailPage — quoteRailTabs registry", () => {
   it("References tab carries Tag icon + stable testId", () => {
     expect(quoteDetailSrc).toMatch(
       /id:\s*"references"[\s\S]{0,400}?label:\s*"References"[\s\S]{0,400}?icon:\s*Tag[\s\S]{0,400}?testId:\s*"quote-rail-tab-references"/,
-    );
-  });
-
-  it("Workflow tab carries GitBranch icon + stable testId", () => {
-    expect(quoteDetailSrc).toMatch(
-      /id:\s*"workflow"[\s\S]{0,400}?label:\s*"Workflow"[\s\S]{0,400}?icon:\s*GitBranch[\s\S]{0,400}?testId:\s*"quote-rail-tab-workflow"/,
     );
   });
 
@@ -174,25 +188,99 @@ describe("QuoteDetailPage — quoteRailTabs registry", () => {
     );
   });
 
-  it("Workflow tab content does NOT wrap in a <Card> (rail panel chrome already provides the title)", () => {
-    const arrStart = quoteDetailCodeOnly.indexOf('id: "workflow"');
-    const arrEnd = quoteDetailCodeOnly.indexOf('id: "activity"', arrStart);
-    expect(arrStart).toBeGreaterThan(-1);
-    expect(arrEnd).toBeGreaterThan(arrStart);
-    const slice = quoteDetailCodeOnly.slice(arrStart, arrEnd);
-    expect(slice).not.toMatch(/<Card\b/);
-    expect(slice).not.toMatch(/<CardHeader\b/);
-    expect(slice).not.toMatch(/<CardContent\b/);
-    expect(slice).not.toMatch(/<CardTitle\b/);
-    // Workflow body still surfaces Owner + Assessment.
-    expect(slice).toMatch(/Owner/);
-    expect(slice).toMatch(/Assessment/);
+  it("the rail registry no longer references the Workflow tab's content (Owner select / Assessment lifecycle)", () => {
+    const arrStart = quoteDetailCodeOnly.indexOf("const quoteRailTabs:");
+    const arrEnd = quoteDetailCodeOnly.indexOf("];", arrStart);
+    const railSlice = quoteDetailCodeOnly.slice(arrStart, arrEnd);
+    expect(railSlice).not.toMatch(/data-testid="quote-rail-workflow"/);
+    expect(railSlice).not.toMatch(/updateOwnerMutation/);
+    expect(railSlice).not.toMatch(/toggleAssessmentMutation/);
+    expect(railSlice).not.toMatch(/Mark needed/);
   });
 
   it("Activity tab content slot mounts <ActivityCard entityType=\"quote\">", () => {
     expect(quoteDetailSrc).toMatch(
       /id:\s*"activity"[\s\S]{0,400}?<ActivityCard[\s\S]{0,400}?entityType="quote"/,
     );
+  });
+});
+
+// ── Quote workflow controls — relocated to header ───────────────────
+
+describe("QuoteHeaderCard — workflow controls (Owner + Assessment) in Section B", () => {
+  it("declares the canonical `QuoteHeaderWorkflow` interface for header workflow controls", () => {
+    expect(quoteHeaderCardSrc).toMatch(
+      /export\s+interface\s+QuoteHeaderWorkflow\s*\{/,
+    );
+  });
+
+  it("QuoteHeaderCardProps accepts an optional `workflow: QuoteHeaderWorkflow` prop", () => {
+    expect(quoteHeaderCardSrc).toMatch(/workflow\?:\s*QuoteHeaderWorkflow/);
+  });
+
+  it("Section B action bar carries the canonical testid `quote-header-action-bar`", () => {
+    expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-action-bar"/);
+  });
+
+  it("renders an Owner select inside the Section B workflow cluster", () => {
+    expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-workflow-cluster"/);
+    expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-owner-select"/);
+    // Owner change still routes to the page-owned mutation via the
+    // `workflow.onOwnerChange` callback (not direct mutation calls
+    // inside the card).
+    expect(quoteHeaderCardSrc).toMatch(/workflow\.onOwnerChange\(e\.target\.value\s*\|\|\s*null\)/);
+  });
+
+  it("renders the Assessment lifecycle controls (Mark needed / Schedule / Clear / Complete / Cancel)", () => {
+    expect(quoteHeaderCardSrc).toMatch(
+      /data-testid="quote-header-assessment-mark-needed"/,
+    );
+    expect(quoteHeaderCardSrc).toMatch(
+      /data-testid="quote-header-assessment-schedule"/,
+    );
+    expect(quoteHeaderCardSrc).toMatch(
+      /data-testid="quote-header-assessment-clear"/,
+    );
+    expect(quoteHeaderCardSrc).toMatch(
+      /data-testid="quote-header-assessment-complete"/,
+    );
+    expect(quoteHeaderCardSrc).toMatch(
+      /data-testid="quote-header-assessment-cancel"/,
+    );
+  });
+
+  it("the workflow cluster is gated on the optional `workflow` prop (not rendered when absent)", () => {
+    // Look for the canonical rendering guard on the cluster.
+    expect(quoteHeaderCardCodeOnly).toMatch(
+      /\{workflow\s*&&\s*\([\s\S]{0,200}?data-testid="quote-header-workflow-cluster"/,
+    );
+  });
+
+  it("page-level QuoteDetailPage passes the canonical `workflow` prop into <QuoteHeaderCard>", () => {
+    expect(quoteDetailCodeOnly).toMatch(
+      /<QuoteHeaderCard[\s\S]{0,4000}?workflow=\{\{/,
+    );
+  });
+
+  it("the page-level workflow prop wires Owner + Assessment mutations", () => {
+    const idx = quoteDetailCodeOnly.indexOf("workflow={{");
+    expect(idx).toBeGreaterThan(-1);
+    const slice = quoteDetailCodeOnly.slice(idx, idx + 2000);
+    expect(slice).toMatch(/onOwnerChange:\s*\(userId\)\s*=>\s*updateOwnerMutation\.mutate\(userId\)/);
+    expect(slice).toMatch(/onMarkAssessmentNeeded:\s*\(\)\s*=>\s*toggleAssessmentMutation\.mutate\(true\)/);
+    expect(slice).toMatch(/onScheduleAssessment:\s*\(\)\s*=>\s*setShowScheduleAssessment\(true\)/);
+    expect(slice).toMatch(/onCompleteAssessment:\s*\(\)\s*=>\s*completeAssessmentMutation\.mutate\(\)/);
+    expect(slice).toMatch(/onCancelAssessment:\s*\(\)\s*=>\s*cancelAssessmentMutation\.mutate\(\)/);
+  });
+
+  it("the rail-shell layout markers are still canonical (post-Workflow-relocation)", () => {
+    // Belt-and-suspenders: confirm the layout migration done by an
+    // earlier phase is still intact after this change.
+    expect(quoteDetailSrc).toMatch(
+      /<div\s+className="flex h-full flex-col lg:flex-row bg-app-bg"\s+data-testid="quote-detail-page"/,
+    );
+    expect(quoteDetailSrc).toMatch(/data-testid="quote-detail-left-column-shell"/);
+    expect(quoteDetailSrc).toMatch(/data-testid="quote-detail-rail-column"/);
   });
 });
 
@@ -246,5 +334,49 @@ describe("QuoteDetailPage — closed-rail behavior delegates to the canonical pr
     const slice = quoteDetailSrc.slice(idx, idx + 3000);
     const railMounts = slice.match(/<DetailRightRail\b/g) ?? [];
     expect(railMounts.length).toBe(2);
+  });
+});
+
+// ── Scroll canonicalization (2026-05-08) ──────────────────────────
+//
+// Pin against the split-scroll regression — see
+// `lead-detail-right-rail.test.ts` for the cross-page contract.
+
+describe("QuoteDetailPage — single-scroll canonical layout (mirrors Job Detail)", () => {
+  it("the body wrapper has no inner `overflow-y-auto` / `flex-1 min-h-0` (would create split-scroll)", () => {
+    const startIdx = quoteDetailCodeOnly.indexOf(
+      'data-testid="quote-detail-left-column-shell"',
+    );
+    const endIdx = quoteDetailCodeOnly.indexOf(
+      'data-testid="quote-detail-rail-column"',
+      startIdx,
+    );
+    expect(startIdx).toBeGreaterThan(-1);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    const leftSlice = quoteDetailCodeOnly.slice(startIdx, endIdx);
+    expect(leftSlice).not.toMatch(/overflow-y-auto/);
+    const innerBodyPattern = /<div\s+className="flex-1\s+min-h-0[^"]*"/;
+    expect(leftSlice).not.toMatch(innerBodyPattern);
+  });
+
+  it("the body wrapper uses the canonical Job pattern: padding + space-y only", () => {
+    // Body wrapper directly inside the shell is
+    // `<div className="px-4 lg:px-6 py-4 space-y-4">`.
+    expect(quoteDetailSrc).toMatch(
+      /data-testid="quote-detail-left-column-shell"[\s\S]{0,1500}?<div\s+className="px-4 lg:px-6 py-4 space-y-4">/,
+    );
+  });
+
+  it("no sticky-positioned chrome inside the left column (header scrolls with content)", () => {
+    const startIdx = quoteDetailCodeOnly.indexOf(
+      'data-testid="quote-detail-left-column-shell"',
+    );
+    const endIdx = quoteDetailCodeOnly.indexOf(
+      'data-testid="quote-detail-rail-column"',
+      startIdx,
+    );
+    const leftSlice = quoteDetailCodeOnly.slice(startIdx, endIdx);
+    expect(leftSlice).not.toMatch(/className="[^"]*\bsticky\s/);
+    expect(leftSlice).not.toMatch(/className="[^"]*\bsticky"/);
   });
 });

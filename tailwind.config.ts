@@ -64,19 +64,65 @@ export default {
         // still relies on the `@layer components` rule in
         // `client/src/index.css` for `text-transform: uppercase`.
         // ──────────────────────────────────────────────────────────────
+        // ──────────────────────────────────────────────────────────────
+        // Preferred visual-hierarchy typography tokens (2026-05-08 Phase
+        // S1 — Simplified Semantic Typography System).
+        //
+        // Single canonical set, named by VISUAL ROLE, not by component
+        // location. This is the ONLY surface new code should reach for.
+        // The legacy component-specific tokens further down (modal-title,
+        // form-label, table-cell, etc.) remain available for back-compat
+        // but are deprecated and guarded against new usage by
+        // tests/semantic-typography-guard.test.ts.
+        //
+        // Each new token is an EXACT alias of an existing visual scale —
+        // no new pixel sizes, no visual delta. The renaming is a pure
+        // role-naming improvement.
+        //
+        //   text-display    32/40/700  — biggest visible value (KPI hero)
+        //   text-title      30/36/700  — page title (h1)
+        //   text-header     18/24/600  — card / panel / modal title (h2)
+        //   text-subheader  16/22/500  — sub-grouping (h3)
+        //   text-body       15/22/400  — default reading text
+        //   text-row        15/22/400  — default list/table row content
+        //   text-emphasis   15/22/500  — emphasized row value / entity name
+        //   text-caption    14/20/400  — secondary text alongside rows
+        //   text-label      13/16/500/0.04em UPPERCASE — labels, eyebrows
+        //   text-helper     13/16/400  — hint / footnote / dense secondary
+        //   text-error      15.2/22.8/500 — validation error (pair with
+        //                                   text-destructive for color)
+        //
+        // See docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md for the canonical usage
+        // table + the deprecated-alias mapping. text-label still relies
+        // on the @layer components rule in client/src/index.css for
+        // text-transform: uppercase.
+        // ──────────────────────────────────────────────────────────────
         // Headings
         display:         ["32px", { lineHeight: "40px", fontWeight: "700" }],
+        title:           ["30px", { lineHeight: "36px", fontWeight: "700" }],
+        header:          ["18px", { lineHeight: "24px", fontWeight: "600" }],
+        subheader:       ["16px", { lineHeight: "22px", fontWeight: "500" }],
+        // Deprecated aliases of the heading roles above — kept at their
+        // original specs so existing consumers render unchanged.
+        // Migration mapping documented in SEMANTIC_TYPOGRAPHY_SYSTEM.md.
         "page-title":    ["30px", { lineHeight: "36px", fontWeight: "700" }],
         "section-title": ["18px", { lineHeight: "24px", fontWeight: "600" }],
         subhead:         ["16px", { lineHeight: "22px", fontWeight: "500" }],
         // Body
         body:            ["15px", { lineHeight: "22px" }],
         row:             ["15px", { lineHeight: "22px" }],
+        emphasis:        ["15px", { lineHeight: "22px", fontWeight: "500" }],
+        // Deprecated alias.
         "row-emphasis":  ["15px", { lineHeight: "22px", fontWeight: "500" }],
         // Small
         caption:         ["14px", { lineHeight: "20px" }],
         label:           ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
         helper:          ["13px", { lineHeight: "16px" }],
+        // Specialized compact-navigation semantic (2026-05-08). Purpose-built for
+        // constrained-width vertical nav strips (e.g. right-rail tab labels):
+        // 12px keeps labels in-column on narrow rails; 500 weight preserves
+        // scannability; no uppercase or tracking (unlike text-label).
+        "nav-compact":   ["12px", { lineHeight: "14px", fontWeight: "500" }],
 
         // ──────────────────────────────────────────────────────────────
         // 2026-05-03 Phase E — semantic role tokens for app-wide
@@ -121,6 +167,25 @@ export default {
         // rule. The raw classes are documented as the form-label /
         // form-helper canonical pattern in those primitives' source.
         // ──────────────────────────────────────────────────────────────
+        // 2026-05-08 Phase S1: every component-specific token below is
+        // DEPRECATED in favour of the visual-hierarchy preferred set
+        // above (text-title / text-header / text-subheader / text-body
+        // / text-row / text-emphasis / text-caption / text-label /
+        // text-helper / text-error). The values stay at their original
+        // specs so existing consumers render unchanged. The drift guard
+        // in tests/semantic-typography-guard.test.ts blocks new usage.
+        // See docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md for the alias map +
+        // which mappings are exact vs. need-design-decision.
+        //
+        // Exact aliases (rebrand-only):
+        //   text-table-header → text-label
+        //   text-table-cell   → text-row
+        //   text-input        → text-body
+        //   text-email-body   → text-body
+        // Imperfect (different size or different role identity):
+        //   text-modal-title  ≈ text-header (different size: 21.4 vs 18)
+        //   text-empty-state  ≈ text-body   (different size: 15.2 vs 15)
+        // text-error remains canonical (kept in the preferred set above).
         "modal-title":  ["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }],
         "table-header": ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
         "table-cell":   ["15px", { lineHeight: "22px" }],
@@ -158,6 +223,19 @@ export default {
         // identity from these form roles. This is NOT a second
         // typography system: same naming convention, same tailwind
         // theme.fontSize map, just additional semantic roles.
+        //
+        // 2026-05-08 Phase S1: the form/select tokens are now
+        // DEPRECATED. They cannot be cleanly aliased to the preferred
+        // set because their visual identity (sentence-case 15.2px)
+        // differs from text-label (UPPERCASE 13px) and from text-helper
+        // (sans 13px). Mapping is "needs design decision" — values are
+        // preserved verbatim so consumers render unchanged. The
+        // simplification will continue once the form/select primitives
+        // pick a canonical hierarchy: either adopt text-label /
+        // text-helper at 13px (loses size match with shadcn defaults)
+        // or extend the preferred set with a sentence-case form-label
+        // role. Until then, do NOT introduce new usages of these
+        // tokens — guarded by tests/semantic-typography-guard.test.ts.
         // ──────────────────────────────────────────────────────────────
         "form-label":   ["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }],
         "form-helper":  ["0.8rem", { lineHeight: "1.2rem" }],

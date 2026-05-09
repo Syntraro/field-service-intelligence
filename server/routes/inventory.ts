@@ -75,6 +75,7 @@ import {
   adjustInventorySchema,
   consumeInventoryForJobSchema,
   returnInventoryFromJobSchema,
+  reserveInventorySchema,
   type InsertItem,
   type Item,
 } from "@shared/schema";
@@ -86,6 +87,7 @@ import {
   InventoryError,
 } from "../storage/inventory";
 import { jobInventoryUsageRepository } from "../storage/jobInventoryUsage";
+import { inventoryReservationsRepository } from "../storage/inventoryReservations";
 
 const router = Router();
 
@@ -269,6 +271,31 @@ router.get(
   }),
 );
 
+// Phase 6 (2026-05-08): resolve the assigned inventory location for the
+// authenticated user. Used by the tech AddPart flow to default the
+// consume source. Returns { location: null } when the user has no
+// active assignment so the client can fall through to the manual
+// picker without treating "no assignment" as an error.
+//
+// IMPORTANT: This literal route MUST be registered BEFORE the
+// `/locations/:id` param route below — Express matches the first
+// declared route, and `:id` would otherwise swallow the literal
+// segment and produce a 404 lookup for a location with
+// id="assigned-to-me".
+router.get(
+  "/locations/assigned-to-me",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const userId = req.user?.id;
+    if (!userId) throw createError(401, "Unauthenticated");
+    const row = await inventoryLocationsRepository.getAssignedLocationForUser(
+      req.companyId,
+      userId,
+    );
+    res.json({ location: row ?? null });
+  }),
+);
+
 router.get(
   "/locations/:id",
   requirePermission("inventory.view"),
@@ -441,6 +468,37 @@ router.get(
   }),
 );
 
+// Phase 4: per-line aggregate. Surfaces "X consumed of Y" indicators
+// next to job line items + drives the consume-from-line-item modal's
+// default quantity.
+router.get(
+  "/jobs/:jobId/line-fulfillment",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const rows = await jobInventoryUsageRepository.fulfillmentByLineForJob(
+      req.companyId,
+      req.params.jobId,
+    );
+    res.json({ rows });
+  }),
+);
+
+// Phase 4: suggested lines for the consume-from-line-item UX. Server
+// applies the same consume-eligibility rules consumeForJob enforces
+// (product + trackInventory + active) so no suggestion ever fails on
+// submit.
+router.get(
+  "/jobs/:jobId/line-suggestions",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const rows = await jobInventoryUsageRepository.suggestLinesForJob(
+      req.companyId,
+      req.params.jobId,
+    );
+    res.json({ rows });
+  }),
+);
+
 router.post(
   "/jobs/:jobId/usage",
   requirePermission("inventory.manage"),
@@ -501,6 +559,140 @@ router.delete(
     } catch (err) {
       throw mapInventoryError(err);
     }
+  }),
+);
+
+// ─── Phase 5: Reservations ───────────────────────────────────────────
+//
+// Reservation reads on inventory.view; writes on inventory.manage.
+// Reservations are gated by the same requireFeature("inventory_core")
+// that wraps every route in this router.
+//
+// Routes:
+//   GET    /jobs/:jobId/reservations           — active reservations for a job
+//   POST   /jobs/:jobId/reservations           — create one (jobId from URL wins)
+//   POST   /reservations                       — create one (no job, ad-hoc)
+//   POST   /reservations/:id/release           — free remainder, status='released'
+//   POST   /reservations/:id/cancel            — free remainder, status='canceled'
+//   GET    /items/:id/reservations             — recent reservations for an item
+//   GET    /locations/:id/reservations         — recent reservations for a location
+
+router.get(
+  "/jobs/:jobId/reservations",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    // Active-only by default. ?includeHistorical=true expands to all
+    // statuses for the audit-trail view.
+    const activeOnly = req.query.includeHistorical !== "true";
+    const rows = await inventoryReservationsRepository.listForJob(
+      req.companyId,
+      req.params.jobId,
+      { activeOnly },
+    );
+    res.json({ rows });
+  }),
+);
+
+router.post(
+  "/jobs/:jobId/reservations",
+  requirePermission("inventory.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    // URL jobId wins over body jobId so a stale client cannot reserve
+    // against a different job than the URL implies.
+    const data = validateSchema(reserveInventorySchema, {
+      ...req.body,
+      jobId: req.params.jobId,
+    });
+    try {
+      const result = await inventoryService.reserveInventory(
+        req.companyId,
+        req.user?.id ?? null,
+        data,
+      );
+      res.status(201).json(result);
+    } catch (err) {
+      throw mapInventoryError(err);
+    }
+  }),
+);
+
+router.post(
+  "/reservations",
+  requirePermission("inventory.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const data = validateSchema(reserveInventorySchema, req.body);
+    try {
+      const result = await inventoryService.reserveInventory(
+        req.companyId,
+        req.user?.id ?? null,
+        data,
+      );
+      res.status(201).json(result);
+    } catch (err) {
+      throw mapInventoryError(err);
+    }
+  }),
+);
+
+router.post(
+  "/reservations/:id/release",
+  requirePermission("inventory.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    try {
+      const result = await inventoryService.releaseReservation(
+        req.companyId,
+        req.user?.id ?? null,
+        req.params.id,
+      );
+      res.json(result);
+    } catch (err) {
+      throw mapInventoryError(err);
+    }
+  }),
+);
+
+router.post(
+  "/reservations/:id/cancel",
+  requirePermission("inventory.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    try {
+      const result = await inventoryService.cancelReservation(
+        req.companyId,
+        req.user?.id ?? null,
+        req.params.id,
+      );
+      res.json(result);
+    } catch (err) {
+      throw mapInventoryError(err);
+    }
+  }),
+);
+
+router.get(
+  "/items/:id/reservations",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 10), 50);
+    const rows = await inventoryReservationsRepository.listRecentForItem(
+      req.companyId,
+      req.params.id,
+      Number.isFinite(limit) && limit > 0 ? limit : 10,
+    );
+    res.json({ rows });
+  }),
+);
+
+router.get(
+  "/locations/:id/reservations",
+  requirePermission("inventory.view"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 10), 50);
+    const rows = await inventoryReservationsRepository.listRecentForLocation(
+      req.companyId,
+      req.params.id,
+      Number.isFinite(limit) && limit > 0 ? limit : 10,
+    );
+    res.json({ rows });
   }),
 );
 

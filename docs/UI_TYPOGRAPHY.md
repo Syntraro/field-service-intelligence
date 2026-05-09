@@ -2,18 +2,25 @@
 
 Owner: frontend · Last updated: 2026-05-01 (Typography Phase C — sizes bumped to detail-page scale)
 
-> **⚠ Source-of-truth notice (2026-05-08).** Some tables in this document
-> reflect the pre-2026-05-08 token sizes (e.g. `text-section-title: 18/24/600`,
-> `text-row-emphasis: 15/22/500`). After the 2026-05-08 typography
-> recalibration both tokens resolve to **17/24/600**, and `text-row` bakes
-> weight 500. The CURRENT source of truth is:
+> **⚠ SUPERSEDED — see `docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md`.**
 >
-> 1. `tailwind.config.ts > theme.extend.fontSize` — the live token definitions.
-> 2. `docs/SEMANTIC_TOKENS_AUDIT.md` — the canonical inventory + drift findings.
-> 3. `/style-guide/typography` — the visual preview page (admin-only).
+> As of Phase S1 (2026-05-08), the canonical typography source of truth
+> is **`docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md`** — it documents the
+> simplified visual-hierarchy token set (`text-display`, `text-title`,
+> `text-header`, `text-subheader`, `text-body`, `text-row`,
+> `text-emphasis`, `text-caption`, `text-label`, `text-helper`,
+> `text-error`) plus the deprecated-alias mapping for the
+> component-specific tokens this doc previously documented.
 >
-> If a value here contradicts those, trust those — this doc is being
-> rewritten in a follow-up sweep.
+> The visual preview lives at `/style-guide/typography` (admin-only).
+> The drift guard is in `tests/semantic-typography-guard.test.ts`.
+>
+> Sections below this notice describe the pre-Phase-S1 token names
+> (`text-page-title`, `text-section-title`, `text-modal-title`, …) and
+> their pre-recalibration sizes. They are retained for historical
+> context only — **do not pattern new code on them.** Where a value here
+> contradicts `tailwind.config.ts` or the new system doc, trust the
+> config + the new system doc.
 
 ## Canonical semantic tokens (2026-05-01 Typography Phase C)
 

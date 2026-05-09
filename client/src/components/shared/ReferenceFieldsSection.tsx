@@ -7,6 +7,12 @@
  * - Empty state: header-only (minimized)
  * - Populated state: header + label/value rows
  * - Modal: full editing surface for all applicable definitions
+ *
+ * Phase 2 RailContentCard adoption (2026-05-08): replaced hand-rolled
+ * bg-white/border/shadow-sm chrome with canonical RailContentCard family.
+ * Removes double-card layering inside the rail panel body. Tinted
+ * bg-[#f8fafc] header removed in favour of the card's uniform white
+ * surface. Edit affordance consolidated to the Plus button only.
  */
 
 import { useState, useCallback } from "react";
@@ -19,6 +25,14 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  RailContentCard,
+  RailContentCardHeader,
+  RailContentCardTitle,
+  RailContentCardFieldList,
+  RailContentCardField,
+  RailContentCardMeta,
+} from "@/components/detail-rail/RailContentCard";
 
 // ============================================================================
 // Types
@@ -111,61 +125,49 @@ export function ReferenceFieldsSection({
   const hasDefinitions = allFields.length > 0;
   const hasValues = populatedFields.length > 0;
 
-  // ── Card wrapper — matches right-rail pattern ──
   return (
     <>
-      <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-        {/* Header — matches Notes/Labour/Equipment pattern */}
-        <div
-          className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors cursor-pointer"
-          onClick={!readOnly && hasDefinitions ? openModal : undefined}
-          role={!readOnly && hasDefinitions ? "button" : undefined}
-        >
-          <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-            <Tag className="h-4 w-4 text-[#64748b]" />
+      <RailContentCard testId="card-reference-fields">
+        <RailContentCardHeader>
+          <RailContentCardTitle as="span" className="flex items-center gap-2">
+            <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             Reference
-          </span>
+          </RailContentCardTitle>
           {!readOnly && hasDefinitions && (
             <Button
-              variant="ghost" size="icon" className="h-6 w-6"
-              onClick={(e) => { e.stopPropagation(); openModal(); }}
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0"
+              onClick={openModal}
               title="Edit reference fields"
             >
               <Plus className="h-3.5 w-3.5" />
             </Button>
           )}
-        </div>
+        </RailContentCardHeader>
 
-        {/* Body — only rendered when there are populated values */}
         {isLoading && (
-          <div className="px-4 py-2 border-t border-slate-200 flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" /> Loading...
-          </div>
+          <RailContentCardMeta className="flex items-center gap-1.5 mt-2">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+          </RailContentCardMeta>
         )}
 
         {error && (
-          <div className="px-4 py-2 border-t border-slate-200 text-xs text-muted-foreground">
+          <RailContentCardMeta className="mt-2">
             Unable to load reference fields.
-          </div>
+          </RailContentCardMeta>
         )}
 
         {!isLoading && !error && hasValues && (
-          <div
-            className="border-t border-slate-200 px-4 py-2 space-y-1 cursor-pointer hover:bg-muted/30 transition-colors"
-            onClick={!readOnly ? openModal : undefined}
-            role={!readOnly ? "button" : undefined}
-          >
+          <RailContentCardFieldList>
             {populatedFields.map((f) => (
-              <div key={f.definitionId} className="flex items-center justify-between gap-3">
-                <span className="text-xs text-slate-500 truncate">{f.label}</span>
-                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate text-right">
-                  {f.textValue}
-                </span>
-              </div>
+              <RailContentCardField key={f.definitionId} label={f.label}>
+                {f.textValue}
+              </RailContentCardField>
             ))}
-          </div>
+          </RailContentCardFieldList>
         )}
-      </div>
+      </RailContentCard>
 
       {/* ── Edit Modal ── */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>

@@ -58,7 +58,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Loader2 } from "lucide-react";
+// 2026-05-08 (create-page rail canonicalization): Eye icon for the
+// Visibility tab, mirrors the saved Invoice detail page rail.
+import { Loader2, Eye } from "lucide-react";
+// 2026-05-08 (create-page rail canonicalization): mount the same canonical
+// `<DetailRightRail>` the saved Invoice detail page uses. Create mode
+// hosts only the Visibility tab — Notes and Payments both need a saved
+// invoiceId and have no meaning before first save.
+import {
+  DetailRightRail,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -120,12 +132,11 @@ import {
   MONO,
 } from "./InvoiceDetailPage";
 import { EditableMessageCard } from "@/components/invoice/EditableMessageCard";
-// 2026-05-03 visual-parity pass: mount the same canonical layout shell
-// the live page uses. Pre-save the right-rail notes card surfaces a
-// disabled "Save first" state inline (see render below) — no
-// DraftNotesCard, since the prior `notesInternal`-as-draft-notes
-// pattern was retired alongside the canonical invoice-notes rewrite.
-import { InvoiceDetailShell } from "@/components/invoice/InvoiceDetailShell";
+// 2026-05-08 (create-page rail canonicalization): the prior
+// `<InvoiceDetailShell>` mount + stacked-cards `rightRail` were retired.
+// This page now mounts the same canonical flex shell + `<DetailRightRail>`
+// the saved Invoice detail page uses; see the render-block doc comment
+// for the full migration story.
 import { formatCurrency } from "@/lib/formatters";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -382,6 +393,15 @@ export default function NewInvoicePage() {
   const [createProductInitialName, setCreateProductInitialName] = useState("");
   const [savingCreatedProduct, setSavingCreatedProduct] = useState(false);
   const createProductResolverRef = useRef<((value: ProductOption | null) => void) | null>(null);
+
+  // 2026-05-08 (create-page rail canonicalization): canonical right-rail
+  // tab state. Only the Visibility tab is valid in draft mode — Notes
+  // and Payments both need a saved invoiceId. The visibility toggles
+  // are pure local draft state shipped on Save Invoice (`dirty=false`
+  // and `onSave`/`onReset` are no-ops in this mode), so the card can
+  // safely render before save.
+  type CreateInvoiceRailTab = "visibility";
+  const [invoiceRailTab, setInvoiceRailTab] = useState<CreateInvoiceRailTab | null>("visibility");
 
   const requestCreateProduct = (name: string): Promise<ProductOption | null> =>
     new Promise((resolve) => {
@@ -788,11 +808,66 @@ export default function NewInvoicePage() {
   // primitives' `disabled` / `isLocked` / `customerIdentitySlot`
   // props. Picking a client/location unlocks editability in place;
   // no card appears or disappears.
+  // 2026-05-08 (create-page rail canonicalization): rail tab registry —
+  // ONLY Visibility is valid before first save. Notes (needs invoiceId,
+  // routes through /api/invoices/:id/notes) and Payments (needs invoiceId
+  // for the per-invoice payment list) both have no draft meaning. Once
+  // the user saves, the route flips to /invoices/:id and the saved page
+  // mounts its full Visibility / Notes / Payments registry.
+  const invoiceRailTabs: DetailRailTab[] = [
+    {
+      id: "visibility",
+      label: "Visibility",
+      icon: Eye,
+      testId: "create-invoice-rail-tab-visibility",
+      content: (
+        // `server={visibilityDraft}` pins dirty=false in create mode —
+        // every toggle is captured into draft and shipped on Save
+        // Invoice. The `onSave` / `onReset` callbacks are deliberate
+        // no-ops; nothing in draft mode can dirty against a "server"
+        // baseline because no invoice exists yet.
+        <ClientVisibilityCardV2
+          draft={visibilityDraft}
+          server={visibilityDraft}
+          onToggle={(key, value) =>
+            setVisibilityDraft((d) => ({ ...d, [key]: value }))
+          }
+          onSave={() => {
+            /* no-op in draft mode — never called because dirty=false */
+          }}
+          onReset={() => {
+            /* no-op in draft mode — never called because dirty=false */
+          }}
+          dirty={false}
+          isSaving={false}
+          disabled={!selectedLocation}
+        />
+      ),
+    },
+  ];
+
   return (
     <>
-      <InvoiceDetailShell
-        testId="new-invoice-page"
-        header={
+      {/* 2026-05-08 (create-page rail canonicalization): canonical flex
+          shell mirrors the saved Invoice detail page exactly. Replaces
+          the legacy `<InvoiceDetailShell header / leftColumn / rightRail>`
+          mount + stacked-cards aside. The page now scrolls at the
+          App-level `<main>` (no inner overflow-y-auto), and the rail
+          rides up the right side. CanonicalDetailHeader stays inline
+          inside the body wrapper so it scrolls with content (matches
+          the saved page's single-scroll layout). The prior
+          "Save invoice before adding notes" placeholder card is gone —
+          notes simply aren't a tab in create mode. */}
+      <div
+        className="flex h-full flex-col lg:flex-row bg-app-bg"
+        data-testid="new-invoice-page"
+      >
+        {/* ═════════ LEFT COLUMN: header + body ═════════ */}
+        <div
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          data-testid="new-invoice-left-column-shell"
+        >
+          <div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">
           <CanonicalDetailHeader
             testId="new-invoice-header"
             // 2026-05-03: header title resolves from the canonical
@@ -858,9 +933,7 @@ export default function NewInvoicePage() {
               </>
             )}
           />
-        }
-        leftColumn={
-          <>
+          {/* ── Body content (was the prior `leftColumn` slot) ── */}
             <InvoiceMetaCard
               mode="draft"
               // Identity column is replaced by the selector pre-location;
@@ -1051,58 +1124,54 @@ export default function NewInvoicePage() {
               saveButtonTestId="button-save-client-message"
               disabled={!selectedLocation}
             />
-          </>
-        }
-        rightRail={
-          <>
-            {/* Client visibility — same canonical card the live page
-                rail uses. `server={visibilityDraft}` pins dirty=false
-                in create mode (every toggle is captured into draft
-                and shipped on Save Invoice). */}
-            <ClientVisibilityCardV2
-              draft={visibilityDraft}
-              server={visibilityDraft}
-              onToggle={(key, value) =>
-                setVisibilityDraft((d) => ({ ...d, [key]: value }))
-              }
-              onSave={() => {
-                /* no-op in draft mode — never called because dirty=false */
-              }}
-              onReset={() => {
-                /* no-op in draft mode — never called because dirty=false */
-              }}
-              dirty={false}
-              isSaving={false}
-              disabled={!selectedLocation}
-            />
+          </div>
+        </div>
+        {/* ═══ /LEFT COLUMN ═══ */}
 
-            {/* Notes placeholder — 2026-05-03 rewrite. Invoice notes
-                are first-class via /api/invoices/:id/notes; the saved
-                detail page mounts the canonical EntityNotesSection.
-                Pre-save, no invoiceId exists yet so the notes card
-                surfaces a disabled "Save first" state instead of a
-                competing draft editor. The visual chrome matches
-                `<EntityNotesSection embedded>` so the rail layout is
-                stable across new ↔ saved transitions. */}
-            <div
-              className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card"
-              data-testid="card-invoice-notes"
-            >
-              <div className="flex items-center justify-between gap-2 border-b border-card-border px-4 py-3">
-                <h3 className="text-sm font-semibold text-foreground">
-                  Notes
-                </h3>
-              </div>
-              <p
-                className="px-4 py-6 text-sm text-muted-foreground"
-                data-testid="invoice-notes-save-first"
-              >
-                Save the invoice before adding notes.
-              </p>
-            </div>
-          </>
-        }
-      />
+        {/* ═════════ RIGHT RAIL ═════════
+            2026-05-08 (create-page rail canonicalization): canonical
+            <DetailRightRail> aside replaces the prior stacked-cards
+            rightRail slot. Visibility is the only valid tab in create
+            mode; the prior "Save invoice before adding notes"
+            placeholder card was retired (notes simply aren't a tab
+            here). The rail rides the full right side, mirroring the
+            saved Invoice detail page. */}
+        <aside
+          className={cn(
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+            "border-t lg:border-t-0 lg:border-l border-slate-200",
+          )}
+          style={{
+            ["--new-invoice-rail-width" as any]: `${invoiceRailTab === null ? 80 : 380}px`,
+          }}
+          data-testid="new-invoice-rail-column"
+          data-panel-open={invoiceRailTab === null ? "false" : "true"}
+        >
+          <div className="lg:hidden">
+            <DetailRightRail
+              tabs={invoiceRailTabs}
+              activeTabId={invoiceRailTab}
+              onActiveTabChange={(id) => setInvoiceRailTab(id as CreateInvoiceRailTab | null)}
+              testIdPrefix="create-invoice-side"
+              ariaLabel="New invoice information rail"
+            />
+          </div>
+          <div
+            className={cn(
+              "hidden lg:flex h-full w-[var(--new-invoice-rail-width)] flex-col relative",
+              RAIL_WIDTH_TRANSITION,
+            )}
+          >
+            <DetailRightRail
+              tabs={invoiceRailTabs}
+              activeTabId={invoiceRailTab}
+              onActiveTabChange={(id) => setInvoiceRailTab(id as CreateInvoiceRailTab | null)}
+              testIdPrefix="create-invoice-side"
+              ariaLabel="New invoice information rail"
+            />
+          </div>
+        </aside>
+      </div>
 
       {/* Modals — siblings of the shell so they portal cleanly. */}
       <SelectJobsForInvoiceModal

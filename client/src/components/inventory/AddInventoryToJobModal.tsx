@@ -61,6 +61,12 @@ interface AddInventoryToJobModalProps {
    *  that already implies an item / location. Reset on close. */
   prefillItemId?: string | null;
   prefillLocationId?: string | null;
+  /** Phase 4: optional line linkage. Set when the modal is opened
+   *  from a job line-item suggestion so the consumption row records
+   *  the linkage server-side. The line picker / suggestion source
+   *  also passes prefillItemId + prefillQuantity in tandem. */
+  prefillLineItemId?: string | null;
+  prefillQuantity?: string | null;
 }
 
 export function AddInventoryToJobModal({
@@ -69,6 +75,8 @@ export function AddInventoryToJobModal({
   jobId,
   prefillItemId,
   prefillLocationId,
+  prefillLineItemId,
+  prefillQuantity,
 }: AddInventoryToJobModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -124,9 +132,9 @@ export function AddInventoryToJobModal({
     setError(null);
     setItemId(prefillItemId ?? "");
     setLocationId(prefillLocationId ?? "");
-    setQuantity("");
+    setQuantity(prefillQuantity ?? "");
     setNotes("");
-  }, [open, prefillItemId, prefillLocationId]);
+  }, [open, prefillItemId, prefillLocationId, prefillQuantity]);
 
   const items = itemsQuery.data?.items ?? [];
   const locations = locationsQuery.data?.rows ?? [];
@@ -152,6 +160,10 @@ export function AddInventoryToJobModal({
           locationId,
           quantity: quantity.trim(),
           notes: notes.trim() || null,
+          // Phase 4: forward the optional line linkage so the server
+          // persists it on the consumption row. Server validates the
+          // line belongs to (companyId, jobId).
+          lineItemId: prefillLineItemId ?? null,
         }),
       });
       if (!res.ok) {
@@ -191,6 +203,15 @@ export function AddInventoryToJobModal({
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
       queryClient.invalidateQueries({
         queryKey: ["/api/inventory/jobs", jobId, "usage"],
+      });
+      // Phase 4: also invalidate the per-line aggregate + suggestions
+      // so the JobInventoryUsageSection's suggestions sub-strip
+      // re-renders with the updated remaining quantities.
+      queryClient.invalidateQueries({
+        queryKey: ["/api/inventory/jobs", jobId, "line-fulfillment"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/inventory/jobs", jobId, "line-suggestions"],
       });
       toast({ title: "Inventory added to job" });
       onOpenChange(false);

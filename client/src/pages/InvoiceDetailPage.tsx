@@ -1934,6 +1934,19 @@ export default function InvoiceDetailPage() {
           className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
           data-testid="invoice-detail-left-column-shell"
         >
+          {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer
+              owns its own `flex-1 min-w-0 min-h-0 overflow-y-auto` — that
+              pattern combined with the prior placement of
+              <CanonicalDetailHeader> OUTSIDE the body wrapper to make
+              the header look pinned/sticky and the rail static on the
+              right while only the inner column scrolled (split-scroll
+              feel). Per the App.tsx shell comment, `<main
+              className="flex-1 overflow-auto">` is THE SOLE canonical
+              vertical scroll surface. Mirror Job Detail exactly:
+              padding + space-y on the body, scrolling delegated to
+              <main>. The detail header now lives INSIDE the body
+              wrapper so it scrolls with the rest of the content. */}
+          <div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">
           {/* Canonical detail header — same JSX <InvoiceDetailShell>
               previously rendered in its `header` slot. */}
           <CanonicalDetailHeader
@@ -2069,10 +2082,11 @@ export default function InvoiceDetailPage() {
             </>
           )}
         />
-          {/* Body wrapper — left-column scroll surface. Mirrors the
-              spacing the prior <InvoiceDetailShell> applied
-              (`px-4 lg:px-6 pt-0 pb-4` + `space-y-2.5`). */}
-          <div className="px-4 lg:px-6 pt-0 pb-4 flex-1 min-w-0 min-h-0 overflow-y-auto space-y-2.5">
+          {/* 2026-05-08 (scroll-canonicalization): the prior inner body
+              wrapper `flex-1 min-w-0 min-h-0 overflow-y-auto` is gone —
+              the outer wrapper opened above the CanonicalDetailHeader
+              already provides padding + space-y, and scrolling lives at
+              the page-level `<main>` per App.tsx canonical contract. */}
             <QboSyncBanner invoice={invoice} />
 
               {/* 2026-04-27 — Identity card (per Studio reference). 2026-04-29:

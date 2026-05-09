@@ -143,7 +143,7 @@ export default function InventoryPage() {
   }
 
   return (
-    <div className="px-6 py-5 space-y-4" data-testid="inventory-page">
+    <div className="p-6 space-y-5" data-testid="inventory-page">
       {/* ── Page header ──────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -564,7 +564,7 @@ function ItemsFilterBar({
 }: ItemsFilterBarProps) {
   return (
     <div
-      className="flex flex-wrap items-center gap-2"
+      className="flex flex-wrap items-center gap-3"
       data-testid="inventory-items-filter-bar"
     >
       <div className="relative flex-1 min-w-[220px] max-w-md">
@@ -877,7 +877,7 @@ function LocationsTabBody({
           stat-card primitive exists — every list page implements its
           own row of summary tiles). Industry-agnostic copy. */}
       <div
-        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3"
+        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4"
         data-testid="inventory-locations-summary"
       >
         <SummaryCard
@@ -1035,7 +1035,7 @@ function LocationsFilterBar({
 }: LocationsFilterBarProps) {
   return (
     <div
-      className="flex flex-wrap items-center gap-2"
+      className="flex flex-wrap items-center gap-3"
       data-testid="inventory-locations-filter-bar"
     >
       <div className="relative flex-1 min-w-[220px] max-w-md">
@@ -1236,7 +1236,7 @@ interface SummaryCardProps {
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg, testId }: SummaryCardProps) {
   return (
     <div
-      className="bg-white rounded-md border border-slate-200 shadow-sm px-4 py-3"
+      className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4"
       data-testid={testId}
     >
       <div className="flex items-center gap-2">
@@ -1245,7 +1245,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg, testId
         </div>
         <div className="text-caption font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-1.5">{value}</div>
+      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
       {note && <div className="text-caption text-slate-500 mt-0.5">{note}</div>}
     </div>
   );

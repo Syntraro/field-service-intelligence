@@ -47,6 +47,7 @@ import { ReturnInventoryFromJobModal } from "./ReturnInventoryFromJobModal";
 import type {
   JobInventoryUsageResponse,
   JobInventoryUsageRow,
+  JobLineSuggestion,
 } from "@/lib/inventory/types";
 
 interface JobInventoryUsageSectionProps {
@@ -79,6 +80,35 @@ export function JobInventoryUsageSection({ jobId }: JobInventoryUsageSectionProp
 
   const [addOpen, setAddOpen] = useState(false);
   const [returnTarget, setReturnTarget] = useState<JobInventoryUsageRow | null>(null);
+  // Phase 4: when the user clicks "Consume" on a line suggestion, we
+  // open the same Add Inventory modal but with prefill populated from
+  // the suggestion (item id + remaining qty + line linkage).
+  const [addPrefill, setAddPrefill] = useState<{
+    itemId: string;
+    quantity: string;
+    lineItemId: string;
+  } | null>(null);
+
+  // Phase 4: server-derived list of job line items eligible for
+  // inventory consumption. Capability-gated identically to the main
+  // usage query so a tenant without inventory_core never fires it.
+  const suggestionsQuery = useQuery<{ rows: JobLineSuggestion[] }>({
+    queryKey: ["/api/inventory/jobs", jobId, "line-suggestions"],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/inventory/jobs/${jobId}/line-suggestions`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error(`Failed to load line suggestions (${res.status})`);
+      return res.json();
+    },
+    enabled: inventoryEnabled,
+  });
+  // Surface only the lines that still have remaining qty to consume —
+  // a fully fulfilled line shouldn't keep nagging the user.
+  const suggestions = (suggestionsQuery.data?.rows ?? []).filter(
+    (s) => Number(s.remainingQuantity) > 0,
+  );
 
   // Per-parent already-returned aggregate, computed from the rows so
   // the Return modal can show "Up to X remaining" without refetching.
@@ -163,13 +193,60 @@ export function JobInventoryUsageSection({ jobId }: JobInventoryUsageSectionProp
           </div>
           <Button
             size="sm"
-            onClick={() => setAddOpen(true)}
+            onClick={() => {
+              setAddPrefill(null);
+              setAddOpen(true);
+            }}
             data-testid="job-inventory-add-button"
           >
             <Plus className="h-4 w-4 mr-1" />
             Add Inventory
           </Button>
         </div>
+
+        {/* Phase 4: line-item suggestion strip. Surfaces job line
+            items whose linked catalog item is product +
+            trackInventory + active AND that still have remaining
+            qty to consume. Clicking "Consume" opens the same
+            AddInventoryToJobModal with item / qty / lineItemId
+            prefilled — same modal, no duplicate form. */}
+        {suggestions.length > 0 && (
+          <div
+            className="px-4 py-2 border-b border-slate-200 bg-slate-50/50"
+            data-testid="job-inventory-usage-suggestions"
+          >
+            <p className="text-helper text-slate-500 mb-1.5">
+              Lines on this job that can pull from stock:
+            </p>
+            <ul className="flex flex-wrap gap-1.5">
+              {suggestions.map((s) => (
+                <li key={s.lineItemId}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-helper text-slate-700"
+                    onClick={() => {
+                      setAddPrefill({
+                        itemId: s.itemId,
+                        quantity: s.remainingQuantity,
+                        lineItemId: s.lineItemId,
+                      });
+                      setAddOpen(true);
+                    }}
+                    data-testid={`job-inventory-suggestion-${s.lineItemId}`}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    {s.itemName ?? s.description ?? "Unnamed item"}
+                    <span className="ml-1 text-slate-400 tabular-nums">
+                      {s.remainingQuantity} left
+                    </span>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Body */}
         <div data-testid="job-inventory-usage-body">
@@ -208,8 +285,14 @@ export function JobInventoryUsageSection({ jobId }: JobInventoryUsageSectionProp
 
       <AddInventoryToJobModal
         open={addOpen}
-        onOpenChange={setAddOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setAddPrefill(null);
+        }}
         jobId={jobId}
+        prefillItemId={addPrefill?.itemId}
+        prefillQuantity={addPrefill?.quantity}
+        prefillLineItemId={addPrefill?.lineItemId}
       />
       <ReturnInventoryFromJobModal
         open={!!returnTarget}
