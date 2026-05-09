@@ -142,55 +142,142 @@ describe("Sidebar — Price Book navigation", () => {
   });
 });
 
-// ─── 6. Create New action lives in the sidebar ─────────────────────
+// ─── 6. Sidebar Create nav action ──────────────────────────────────
 
-describe("Sidebar — Create New action", () => {
+describe("Sidebar — Create nav action (2026-05-09 redesign)", () => {
   const code = read(SIDEBAR_PATH);
 
   it("renders a button-create-new trigger inside the sidebar", () => {
     expect(code).toMatch(/data-testid="button-create-new"/);
   });
 
-  it("the trigger opens a DropdownMenu (not a navigation link)", () => {
-    // The brief is explicit: the action opens the existing
-    // CreateNewDialog flow via callbacks. The DropdownMenu primitive
-    // wires the menu items.
-    expect(code).toMatch(/<DropdownMenu>/);
-    expect(code).toMatch(/<DropdownMenuTrigger asChild>/);
+  it("uses ActionMenu (canonical descriptor-driven primitive)", () => {
+    // The raw inline DropdownMenu + items were replaced by <ActionMenu>
+    // so the menu rendering logic is not duplicated between sidebar and header.
+    expect(code).toMatch(/<ActionMenu/);
   });
 
-  it("the Create New menu calls back into App-level launchers", () => {
-    expect(code).toMatch(/onOpenCreate\(/);
+  it("uses a SidebarMenuButton for nav items (SidebarMenuButton still present in file)", () => {
+    // Nav items (Dashboard, Dispatch, etc.) still use SidebarMenuButton.
+    // The Create trigger itself uses a plain <button> to fix the forwardRef issue.
+    expect(code).toMatch(/<SidebarMenuButton/);
+  });
+
+  it("trigger renders 'Create' text (approved label)", () => {
+    expect(code).toMatch(/>Create</);
+  });
+
+  it("uses TooltipTrigger asChild for collapsed-state discoverability (forwardRef-safe)", () => {
+    // Plain <button> + TooltipTrigger asChild replaces SidebarMenuButton + tooltip prop.
+    // TooltipTrigger IS a forwardRef component, so the Radix positioning ref properly
+    // flows through to the DOM button — fixing the "sidebar Create does nothing" bug.
+    expect(code).toMatch(/TooltipTrigger asChild/);
+    expect(code).toMatch(/<TooltipContent[\s\S]*?>\s*Create\s*<\/TooltipContent>/);
+  });
+
+  it("Create action is inside SidebarContent (integrated in nav, not floating in header)", () => {
+    // SidebarHeader now contains only the toggle. Create is the first
+    // item in SidebarContent so it reads as part of navigation.
+    expect(code).toMatch(/<SidebarContent[\s\S]*?button-create-new/);
+  });
+
+  it("threads App-level create callbacks into makeCreateMenuItems", () => {
+    expect(code).toMatch(/makeCreateMenuItems/);
+    expect(code).toMatch(/onOpenCreate/);
     expect(code).toMatch(/onOpenAddClient/);
     expect(code).toMatch(/onOpenCreatePm/);
   });
 
-  it("menu items include Job, Client, Invoice, Quote, Task, PM Plan", () => {
-    expect(code).toMatch(/data-testid="quick-new-job"/);
-    expect(code).toMatch(/data-testid="quick-new-client"/);
-    expect(code).toMatch(/data-testid="quick-new-invoice"/);
-    expect(code).toMatch(/data-testid="quick-new-quote"/);
-    expect(code).toMatch(/data-testid="quick-new-task"/);
-    expect(code).toMatch(/data-testid="quick-new-pm"/);
+  it("does NOT use a green bg-brand pill as the sidebar trigger", () => {
+    // The approved design: green text only, no pill background.
+    // bg-brand belongs only on the header icon button.
+    const triggerBlock = code.match(/data-testid="button-create-new"[\s\S]*?(?=<\/button>)/)?.[0] ?? "";
+    expect(triggerBlock).not.toMatch(/bg-brand/);
   });
 });
 
-// ─── 7. Header no longer renders a duplicate Create dropdown ───────
+// ─── 6b. Sidebar Create trigger — green lightweight styling ────────
 
-describe("App header — Create New dropdown removed", () => {
+describe("Sidebar — Create trigger: approved green lightweight styling", () => {
+  const code = read(SIDEBAR_PATH);
+
+  it("Create trigger uses h-9 (consistent vertical rhythm with nav items)", () => {
+    // h-9 keeps the Create row the same height as Dashboard, Dispatch, etc.
+    expect(code).toMatch(/data-testid="button-create-new"[\s\S]*?h-9/);
+  });
+
+  it("Create trigger uses text-brand (green icon + text, no pill background)", () => {
+    // Approved design: green text only. Previous design was text-white/70 (nav inactive).
+    expect(code).toMatch(/data-testid="button-create-new"[\s\S]*?text-brand/);
+  });
+
+  it("Create trigger uses hover:opacity-75 (lightweight hover, no background added)", () => {
+    // Approved: subtle opacity dim on hover instead of adding a background color.
+    expect(code).toMatch(/data-testid="button-create-new"[\s\S]*?hover:opacity-75/);
+  });
+
+  it("Plus icon is h-4 w-4 (consistent with nav icons)", () => {
+    expect(code).toMatch(/<Plus className="h-4 w-4/);
+  });
+
+  it("does NOT use h-8 on the Create trigger (old pill height)", () => {
+    const triggerClass = code.match(/data-testid="button-create-new"[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
+    expect(triggerClass).not.toMatch(/\bh-8\b/);
+  });
+
+  it("does NOT use bg-brand on the Create trigger (not a green pill)", () => {
+    const triggerClass = code.match(/data-testid="button-create-new"[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
+    expect(triggerClass).not.toMatch(/bg-brand/);
+  });
+
+  it("does NOT use inline-flex / self-center (old pill layout idioms)", () => {
+    const triggerClass = code.match(/data-testid="button-create-new"[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
+    expect(triggerClass).not.toMatch(/\binline-flex\b/);
+    expect(triggerClass).not.toMatch(/\bself-center\b/);
+  });
+
+  it("does NOT use text-white/70 (old nav inactive color — replaced by text-brand)", () => {
+    const triggerClass = code.match(/data-testid="button-create-new"[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
+    expect(triggerClass).not.toMatch(/text-white\/70/);
+  });
+});
+
+// ─── 7. Header + App-level wiring ─────────────────────────────────
+
+describe("App header — compact green Create button (2026-05-09)", () => {
   const code = read(APP_PATH);
 
-  it("App.tsx no longer mounts a button-create-new in the header", () => {
-    // The trigger lives ONLY in the sidebar now. App.tsx must not
-    // also render data-testid="button-create-new" — otherwise we'd
-    // have two buttons with the same test id and competing menus.
+  it("App.tsx mounts button-create-header (the new header icon button)", () => {
+    expect(code).toMatch(/data-testid="button-create-header"/);
+  });
+
+  it("button-create-header is NOT button-create-new (distinct testids)", () => {
+    // The sidebar trigger keeps button-create-new; the header button is
+    // button-create-header. No two elements share the same testid.
     expect(code).not.toMatch(/data-testid="button-create-new"/);
   });
 
+  it("header button carries bg-brand (green, visually primary)", () => {
+    const buttonBlock = code.match(/button-create-header[\s\S]*?(?=<\/Button>)/)?.[0] ?? "";
+    expect(buttonBlock).toMatch(/bg-brand/);
+  });
+
+  it("header button is icon-only (no text label in the button)", () => {
+    // The approved design: compact square with ONLY a plus icon.
+    // Only check JSX text nodes (>…<), not attribute values like aria-label.
+    const buttonBlock = code.match(/button-create-header[\s\S]*?(?=<\/Button>)/)?.[0] ?? "";
+    expect(buttonBlock).not.toMatch(/>\s*(Create|New)\s*</);
+  });
+
+  it("App.tsx uses ActionMenu for the header create trigger", () => {
+    expect(code).toMatch(/<ActionMenu/);
+  });
+
+  it("App.tsx uses makeCreateMenuItems (shared config, not a duplicate list)", () => {
+    expect(code).toMatch(/makeCreateMenuItems/);
+  });
+
   it("App.tsx still defines the launchers (state + dialog mounts)", () => {
-    // Removing the header dropdown must NOT remove the underlying
-    // CreateNewDialog mount — the sidebar trigger calls `openCreate`
-    // which sets `createNewOpen=true`.
     expect(code).toMatch(/<CreateNewDialog/);
     expect(code).toMatch(/setCreateNewOpen/);
     expect(code).toMatch(/setAddClientModalOpen/);
@@ -210,12 +297,18 @@ describe("Sidebar — collapse control", () => {
   const code = read(SIDEBAR_PATH);
 
   it("SidebarTrigger remains in the SidebarHeader", () => {
-    // Trigger lives ABOVE the Create New action so the two don't
-    // fight. Pin both presences.
+    // SidebarHeader now contains ONLY the toggle — no Create button.
+    // This keeps the toggle at the very top regardless of sidebar state.
     expect(code).toMatch(/<SidebarHeader[\s\S]*?<SidebarTrigger/);
   });
 
-  it("the trigger is canonically reachable via the data-testid", () => {
+  it("SidebarHeader no longer contains the Create button", () => {
+    // Create was moved into SidebarContent. The header is toggle-only.
+    const headerBlock = code.match(/<SidebarHeader[\s\S]*?<\/SidebarHeader>/)?.[0] ?? "";
+    expect(headerBlock).not.toMatch(/button-create-new/);
+  });
+
+  it("the toggle is canonically reachable via the data-testid", () => {
     expect(code).toMatch(/data-testid="button-sidebar-toggle"/);
   });
 
@@ -223,82 +316,83 @@ describe("Sidebar — collapse control", () => {
     expect(code).toMatch(/<Sidebar collapsible="icon"/);
   });
 
-  it("the Create New button collapses to an icon when the sidebar is collapsed", () => {
-    // When state === "collapsed", className becomes the icon-only square;
-    // when expanded, the compact self-centered pill. Pin both branches.
-    expect(code).toMatch(/isCollapsed/);
-    expect(code).toMatch(/h-8 w-8 p-0 self-center inline-flex items-center justify-center/);
-    expect(code).toMatch(/h-8 self-center inline-flex items-center px-3/);
+  it("Create trigger has a TooltipContent for discoverability when collapsed", () => {
+    // When the sidebar collapses to icon-only mode, TooltipContent with "Create"
+    // shows on hover — the canonical collapse pattern.
+    // (tooltip="Create" on SidebarMenuButton was the old approach; replaced by
+    // explicit Tooltip + TooltipContent to fix the forwardRef positioning bug.)
+    expect(code).toMatch(/<TooltipContent[\s\S]*?>\s*Create\s*<\/TooltipContent>/);
   });
 });
 
-// ─── 6b. Create New button compact styling guardrails ──────────────
+// ─── 9. Create menu config — canonical item list ───────────────────
 
-describe("Sidebar — Create New button compact styling", () => {
-  const code = read(SIDEBAR_PATH);
+describe("createMenuConfig — shared canonical item list", () => {
+  const CONFIG_PATH = path("client/src/components/create/createMenuConfig.ts");
+  const config = read(CONFIG_PATH);
 
-  it("expanded button uses h-8 height (not oversized)", () => {
-    // h-8 = 32px — compact action height in the sidebar.
-    expect(code).toMatch(/h-8 self-center inline-flex/);
+  it("exports makeCreateMenuItems", () => {
+    expect(config).toMatch(/export function makeCreateMenuItems/);
   });
 
-  it("expanded button uses self-center (overrides flex-col stretch, not w-full)", () => {
-    // SidebarHeader is flex-col; default align-items: stretch would make the
-    // button fill the full sidebar width. self-center overrides that.
-    expect(code).toMatch(/self-center inline-flex/);
+  it("includes New Job (testId: quick-new-job)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-job"/);
   });
 
-  it("expanded button uses inline-flex (content-based width)", () => {
-    expect(code).toMatch(/inline-flex items-center px-3/);
+  it("includes New Lead (testId: quick-new-lead) — previously missing", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-lead"/);
   });
 
-  it("expanded button uses rounded-lg radius", () => {
-    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
-    expect(expandedClass).toMatch(/rounded-lg/);
+  it("New Lead navigates to /leads/new", () => {
+    expect(config).toMatch(/navigate.*\/leads\/new|\/leads\/new.*navigate/s);
   });
 
-  it("expanded button uses canonical text-nav-compact token (not raw text-sm)", () => {
-    // text-nav-compact = 12px — purpose-built for constrained sidebar strips.
-    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
-    expect(expandedClass).toMatch(/\btext-nav-compact\b/);
-    expect(expandedClass).not.toMatch(/\btext-sm\b/);
-    expect(expandedClass).not.toMatch(/\btext-row\b/);
+  it("includes New Client (testId: quick-new-client)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-client"/);
   });
 
-  it("Plus icon is h-4 w-4 (not oversized)", () => {
-    expect(code).toMatch(/<Plus className="h-4 w-4"/);
+  it("includes New Quote (testId: quick-new-quote)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-quote"/);
   });
 
-  it("expanded button does NOT use w-full (no full-bleed)", () => {
-    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
-    expect(expandedClass).not.toMatch(/\bw-full\b/);
+  it("includes New Invoice (testId: quick-new-invoice)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-invoice"/);
   });
 
-  it("expanded button does NOT use w-[90%] or mx-auto (content-width, not fractional)", () => {
-    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
-    expect(expandedClass).not.toMatch(/w-\[90%\]/);
-    expect(expandedClass).not.toMatch(/\bmx-auto\b/);
+  it("includes New Service Plan (testId: quick-new-pm)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-pm"/);
   });
 
-  it("expanded button does NOT use oversized padding (no px-4 or px-6)", () => {
-    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
-    expect(expandedClass).not.toMatch(/\bpx-4\b/);
-    expect(expandedClass).not.toMatch(/\bpx-6\b/);
+  it("includes New Task (testId: quick-new-task)", () => {
+    expect(config).toMatch(/testId:\s*"quick-new-task"/);
   });
 
-  it("collapsed button also uses h-8 (consistent height)", () => {
-    const collapsedClass = code.match(/h-8 w-8 p-0 self-center[^"']*/)?.[0] ?? "";
-    expect(collapsedClass).toBeTruthy();
+  it("menu order: Job before Lead", () => {
+    expect(config.indexOf('"quick-new-job"')).toBeLessThan(config.indexOf('"quick-new-lead"'));
   });
 
-  it("collapsed button does NOT grow beyond w-8 (icon-only square)", () => {
-    const collapsedClass = code.match(/h-8 w-8 p-0 self-center[^"']*/)?.[0] ?? "";
-    expect(collapsedClass).not.toMatch(/\bw-9\b/);
-    expect(collapsedClass).not.toMatch(/\bw-10\b/);
+  it("menu order: Lead before Client", () => {
+    expect(config.indexOf('"quick-new-lead"')).toBeLessThan(config.indexOf('"quick-new-client"'));
   });
 
-  it("DropdownMenuTrigger asChild and data-testid remain wired (behavior preserved)", () => {
-    expect(code).toMatch(/<DropdownMenuTrigger asChild>/);
-    expect(code).toMatch(/data-testid="button-create-new"/);
+  it("menu order: Client before Quote", () => {
+    expect(config.indexOf('"quick-new-client"')).toBeLessThan(config.indexOf('"quick-new-quote"'));
+  });
+
+  it("menu order: Quote before Invoice", () => {
+    expect(config.indexOf('"quick-new-quote"')).toBeLessThan(config.indexOf('"quick-new-invoice"'));
+  });
+
+  it("menu order: Invoice before Service Plan", () => {
+    expect(config.indexOf('"quick-new-invoice"')).toBeLessThan(config.indexOf('"quick-new-pm"'));
+  });
+
+  it("menu order: Service Plan before Task", () => {
+    expect(config.indexOf('"quick-new-pm"')).toBeLessThan(config.indexOf('"quick-new-task"'));
+  });
+
+  it("Client and Service Plan items carry hidden flag (conditional on callback)", () => {
+    expect(config).toMatch(/id:\s*"client"[\s\S]*?hidden:/);
+    expect(config).toMatch(/id:\s*"pm"[\s\S]*?hidden:/);
   });
 });

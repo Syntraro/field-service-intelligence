@@ -579,7 +579,7 @@ export function DayView({
       <Card>
         <CardContent className="py-3">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Time Entries</h2>
+            <h2 className="text-row font-semibold">Time Entries</h2>
             <Button
               size="sm"
               onClick={handleAddClick}
@@ -606,7 +606,7 @@ export function DayView({
                 {groups.length === 0 && (
                   <div className="py-8 text-center text-muted-foreground">
                     <Clock className="mx-auto mb-2 h-6 w-6 opacity-50" />
-                    <p className="text-sm">No time entries.</p>
+                    <p className="text-row">No time entries.</p>
                   </div>
                 )}
 

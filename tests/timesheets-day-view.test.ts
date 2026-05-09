@@ -36,6 +36,8 @@ const ROOT = resolve(__dirname, "..");
 const PAYROLL_PAGE = resolve(ROOT, "client/src/pages/PayrollPage.tsx");
 const DAY_VIEW = resolve(ROOT, "client/src/components/timesheets/DayView.tsx");
 const DAY_SUMMARY = resolve(ROOT, "client/src/components/timesheets/DaySummaryCard.tsx");
+const STRIP_FILE = resolve(ROOT, "client/src/components/timesheets/TimesheetSummaryStrip.tsx");
+const ENTRY_CARD = resolve(ROOT, "client/src/components/timesheets/TimesheetEntryCard.tsx");
 const TIMELINE_RAIL = resolve(ROOT, "client/src/components/timesheets/TimelineRail.tsx");
 const GROUP_CARD = resolve(ROOT, "client/src/components/timesheets/JobTimeGroupCard.tsx");
 const ROW_COMPACT = resolve(ROOT, "client/src/components/timesheets/TimeEntryRowCompact.tsx");
@@ -50,6 +52,8 @@ const REMOVED_CATEGORY_STRIP = resolve(ROOT, "client/src/components/timesheets/C
 const payrollSrc = readFileSync(PAYROLL_PAGE, "utf-8");
 const dayViewSrc = readFileSync(DAY_VIEW, "utf-8");
 const daySummarySrc = readFileSync(DAY_SUMMARY, "utf-8");
+const stripSrc = readFileSync(STRIP_FILE, "utf-8");
+const entryCardSrc = readFileSync(ENTRY_CARD, "utf-8");
 const railSrc = readFileSync(TIMELINE_RAIL, "utf-8");
 const groupSrc = readFileSync(GROUP_CARD, "utf-8");
 const rowCompactSrc = readFileSync(ROW_COMPACT, "utf-8");
@@ -279,13 +283,16 @@ describe("DayView grouping rule", () => {
 // ── Component testid surface ───────────────────────────────────────
 
 describe("Day View v2 component test surface", () => {
-  it("DaySummaryCard exposes header testids (including inline category strip)", () => {
-    expect(daySummarySrc).toMatch(/data-testid="day-summary-card"/);
-    expect(daySummarySrc).toMatch(/data-testid="day-employee-select"/);
-    expect(daySummarySrc).toMatch(/data-testid="day-total"/);
-    expect(daySummarySrc).toMatch(/data-testid="day-live-badge"/);
+  it("DaySummaryCard exposes header testids via TimesheetSummaryStrip props", () => {
+    // testid string literals passed as props — appear in DaySummaryCard source
+    expect(daySummarySrc).toMatch(/containerTestId="day-summary-card"/);
+    expect(daySummarySrc).toMatch(/selectorTestId="day-employee-select"/);
+    expect(daySummarySrc).toMatch(/totalTestId="day-total"/);
+    // category strip stays local to DaySummaryCard (chips slot)
     expect(daySummarySrc).toMatch(/data-testid="day-category-strip"/);
     expect(daySummarySrc).toMatch(/category-total-\$\{cat\}/);
+    // live badge owned by the strip shell
+    expect(stripSrc).toMatch(/data-testid="strip-live-badge"/);
   });
 
   it("TimelineRail exposes per-entry marker testids", () => {
@@ -302,10 +309,23 @@ describe("Day View v2 component test surface", () => {
     expect(groupSrc).toMatch(/data-testid="job-group-location"/);
   });
 
-  it("TimeEntryRowCompact exposes per-row testids and the clockout action", () => {
-    expect(rowCompactSrc).toMatch(/day-entry-compact-\$\{entry\.id\}/);
-    expect(rowCompactSrc).toMatch(/day-entry-compact-duration-\$\{entry\.id\}/);
-    expect(rowCompactSrc).toMatch(/day-entry-compact-clockout-\$\{entry\.id\}/);
+  it("TimesheetEntryCard is the canonical entry row renderer — exposes all per-row testids", () => {
+    // All testid strings live in TimesheetEntryCard (both variants share them).
+    expect(entryCardSrc).toMatch(/day-entry-compact-\$\{entry\.id\}/);
+    expect(entryCardSrc).toMatch(/day-entry-compact-duration-\$\{entry\.id\}/);
+    expect(entryCardSrc).toMatch(/day-entry-compact-clockout-\$\{entry\.id\}/);
+    // TimeEntryRowCompact is a thin wrapper that delegates to TimesheetEntryCard.
+    expect(rowCompactSrc).toMatch(/TimesheetEntryCard/);
+  });
+
+  it("JobTimeGroupCard general variant uses TimesheetEntryCard", () => {
+    expect(groupSrc).toMatch(/import.*TimesheetEntryCard/);
+    expect(groupSrc).toMatch(/variant="general-flat"/);
+  });
+
+  it("TimesheetEntryCard has no text-sm\/text-xs typography drift", () => {
+    expect(entryCardSrc).not.toMatch(/text-xs/);
+    expect(entryCardSrc).not.toMatch(/text-sm/);
   });
 
   it("JobSessionCreateModal exposes compact Add-Entry testids", () => {
@@ -329,9 +349,9 @@ describe("Day View v2 component test surface", () => {
 // ── Spec hard-pins ──────────────────────────────────────────────────
 
 describe("Day View spec compliance — hard pins", () => {
-  it("running entries have no end time and surface a Clock out action in the compact row", () => {
-    expect(rowCompactSrc).toMatch(/Clock out/);
-    expect(rowCompactSrc).toMatch(/isRunning/);
+  it("running entries have no end time and surface a Clock out action in the entry card", () => {
+    expect(entryCardSrc).toMatch(/Clock out/);
+    expect(entryCardSrc).toMatch(/isRunning/);
   });
 
   it("Add Entry default view is 'labor' (Drive + On-site rows visible)", () => {
@@ -1207,11 +1227,17 @@ describe("Manual time-entry job validation", () => {
 
 describe("DayView label + chronological ordering", () => {
   it("General-variant card label renders 'General' (not 'General / Unbillable')", () => {
-    expect(groupSrc).toMatch(/>\s*General\s*</);
-    const codeOnly = groupSrc
+    // "General" text lives in TimesheetEntryCard general-flat variant.
+    expect(entryCardSrc).toMatch(/>\s*General\s*</);
+    // Neither source should ever use the old "General / Unbillable" copy.
+    const groupCodeOnly = groupSrc
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
-    expect(codeOnly).not.toMatch(/General\s*\/\s*Unbillable/);
+    expect(groupCodeOnly).not.toMatch(/General\s*\/\s*Unbillable/);
+    const cardCodeOnly = entryCardSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(cardCodeOnly).not.toMatch(/General\s*\/\s*Unbillable/);
   });
 
   it("internal categoryMap value is unchanged (still 'general')", () => {
@@ -1345,11 +1371,10 @@ describe("Day View — General card simplification (2026-05-05)", () => {
     expect(rowCompactSrc).toMatch(/hideTypeChip\s*=\s*false/);
   });
 
-  it("TimeEntryRowCompact only renders the chip when hideTypeChip is false", () => {
-    // The category chip is now conditionally rendered behind a
-    // !hideTypeChip guard. Suppressing on General avoids duplicating
-    // the bucket label that the card header already carries.
-    expect(rowCompactSrc).toMatch(/\{!hideTypeChip\s*&&[\s\S]+?\{style\.label\}/);
+  it("TimesheetEntryCard job-row only renders the chip when hideTypeChip is false", () => {
+    // The category chip is conditionally rendered behind a !hideTypeChip
+    // guard in TimesheetEntryCard. TimeEntryRowCompact forwards the prop.
+    expect(entryCardSrc).toMatch(/\{!hideTypeChip\s*&&[\s\S]+?\{style\.label\}/);
   });
 
   it("JobTimeGroupCard general variant renders inline rows (no hideTypeChip routing)", () => {
@@ -1364,28 +1389,24 @@ describe("Day View — General card simplification (2026-05-05)", () => {
     expect(groupSrc).toMatch(/<TimeEntryRowCompact/);
   });
 
-  it("TimeEntryRowCompact still exposes the per-row chip testid for non-general rows", () => {
+  it("TimesheetEntryCard exposes the per-row chip testid for job-row entries", () => {
     // Job cards still need the chip's data-testid for downstream UI
-    // tests. The testid wraps the chip's <span>, so it only mounts
-    // when the chip itself does (i.e. !hideTypeChip).
-    expect(rowCompactSrc).toMatch(/day-entry-compact-chip-\$\{entry\.id\}/);
+    // tests. The testid wraps the chip's <span> inside TimesheetEntryCard.
+    expect(entryCardSrc).toMatch(/day-entry-compact-chip-\$\{entry\.id\}/);
   });
 
-  it("General card header still labels the bucket 'General'", () => {
-    // The card header is the SOLE place "General" appears now —
-    // the duplicate per-row pill is suppressed but the header label
-    // must stay. Ditto the General-only group testid.
-    expect(groupSrc).toMatch(/variant === "general"[\s\S]+?>\s*General\s*</);
+  it("General variant gates on variant==='general' and delegates 'General' label to TimesheetEntryCard", () => {
+    // JobTimeGroupCard guards the general branch; the per-row "General"
+    // text label is owned by TimesheetEntryCard variant="general-flat".
+    expect(groupSrc).toMatch(/variant === "general"/);
+    expect(entryCardSrc).toMatch(/>\s*General\s*</);
     expect(groupSrc).toMatch(/"day-group-general"/);
   });
 
-  it("edit handler is preserved on the General row (whole row remains the click target)", () => {
-    // The chip lived inside the same <button onClick={onEdit}> that
-    // wraps the time range, so suppressing it does NOT change the
-    // edit-on-click behavior. The button still mounts and still
-    // routes to onEdit (which DayView wires to TimeEntryEditModal /
-    // JobSessionEditModal per the existing entry-driven router).
-    expect(rowCompactSrc).toMatch(
+  it("edit handler is preserved on the job-row entry (nested edit button in TimesheetEntryCard)", () => {
+    // The job-row variant renders a nested <button onClick={onEdit}> for
+    // the edit affordance inside TimesheetEntryCard. Behavior is unchanged.
+    expect(entryCardSrc).toMatch(
       /<button[\s\S]+?onClick=\{onEdit\}[\s\S]+?data-testid=\{`day-entry-compact-edit-\$\{entry\.id\}`\}/,
     );
   });

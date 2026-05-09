@@ -33,7 +33,6 @@ const createItemSchema = z.object({
   category: z.string().max(100).optional().nullable(),
   isActive: z.boolean().optional().default(true),
   estimatedDurationMinutes: z.number().int().min(0).optional().nullable(),
-  trackInventory: z.boolean().optional().default(false),
 }).strict();
 
 const updateItemSchema = createItemSchema.partial().strict();

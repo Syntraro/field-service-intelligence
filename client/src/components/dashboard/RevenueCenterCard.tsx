@@ -125,11 +125,11 @@ export function RevenueCenterCard({
     >
       <CardShellHeader>
         <div className="flex items-center gap-2 min-w-0">
-          <CardShellTitle icon={DollarSign} iconColor="text-[#76B054]">
+          <CardShellTitle icon={DollarSign} iconColor="text-primary">
             Revenue Center
           </CardShellTitle>
           {totalCount > 0 && (
-            <span className="text-helper text-text-muted tabular-nums shrink-0">
+            <span className="text-helper text-muted-foreground tabular-nums shrink-0">
               {totalCount} action{totalCount === 1 ? "" : "s"}
             </span>
           )}
@@ -138,7 +138,7 @@ export function RevenueCenterCard({
           <button
             type="button"
             onClick={() => setLocation("/financials")}
-            className="text-helper font-semibold text-[#76B054] hover:underline"
+            className="text-helper font-semibold text-primary hover:underline"
             data-testid="revenue-center-view-financial"
           >
             Open financials
@@ -148,10 +148,10 @@ export function RevenueCenterCard({
 
       <div className="flex-1">
         {isLoading ? (
-          <div className="p-4 text-xs text-[#4b5563]">Loading revenue actions…</div>
+          <div className="p-4 text-helper text-muted-foreground">Loading revenue actions…</div>
         ) : visibleRows.length === 0 ? (
           <div className="px-4 py-6 text-center">
-            <p className="text-xs text-[#4b5563]">
+            <p className="text-helper text-muted-foreground">
               No outstanding revenue actions. Everything's invoiced and sent.
             </p>
           </div>
@@ -169,25 +169,25 @@ export function RevenueCenterCard({
                     className={`w-full flex items-center justify-between gap-3 px-4 py-2 text-left transition-colors group ${
                       row.urgent && row.count > 0
                         ? "bg-red-50/60 hover:bg-red-50"
-                        : "hover:bg-[#F0F5F0]"
-                    } ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
+                        : "hover:bg-primary/5"
+                    } ${!isLast ? "border-b border-card-border" : ""}`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <Icon className={`h-3.5 w-3.5 shrink-0 ${row.urgent && row.count > 0 ? "text-red-600" : row.iconColor}`} />
                       <div className="min-w-0">
-                        <div className={`text-xs font-semibold truncate ${row.urgent && row.count > 0 ? "text-red-600" : "text-[#111827]"}`}>
+                        <div className={`text-helper font-semibold truncate ${row.urgent && row.count > 0 ? "text-red-600" : "text-foreground"}`}>
                           {row.label}
                         </div>
-                        <div className="text-helper text-[#6b7280] truncate">
+                        <div className="text-helper text-muted-foreground truncate">
                           {row.description}
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      <span className={`text-sm font-bold tabular-nums ${row.urgent && row.count > 0 ? "text-red-600" : "text-[#111827]"}`}>
+                      <span className={`text-row font-bold tabular-nums ${row.urgent && row.count > 0 ? "text-red-600" : "text-foreground"}`}>
                         {row.count}
                       </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-[#94a3b8] group-hover:text-[#111827] transition-colors" />
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
                     </div>
                   </button>
                 </li>

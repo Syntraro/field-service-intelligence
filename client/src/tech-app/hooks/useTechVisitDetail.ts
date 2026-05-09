@@ -465,76 +465,6 @@ export function useTechVisitDetail(visitId: string | undefined) {
     onError: handleMutationError,
   });
 
-  // 2026-05-08 (Inventory Phase 6): tech-side inventory consumption.
-  // Wraps the canonical /api/inventory/jobs/:jobId/usage endpoint so the
-  // AddPartSheet inline-consume disclosure can fire a follow-up
-  // mutation after a successful part add. The canonical inventory
-  // service (consumeForJob) still owns the single-tx invariant +
-  // reservation-aware consume hop — this hook is just the thin
-  // mutation shell for the tech surface.
-  //
-  // Invalidation: covers BOTH the tech visit detail (so the parts
-  // panel reflects the new line + its inventory state) AND every
-  // inventory surface that tracks availability (items, locations,
-  // low-stock, per-job usage / line-fulfillment / reservations).
-  // Rationale: a tech consume on an active job mutates state visible
-  // on office screens too (e.g. JobInventoryUsageSection), so the
-  // invalidation set must match what AddInventoryToJobModal already
-  // does — never less.
-  const consumeFromTechSheetMutation = useMutation({
-    mutationFn: async (params: {
-      jobId: string;
-      itemId: string;
-      locationId: string;
-      quantity: string;
-      lineItemId?: string | null;
-      notes?: string | null;
-    }) => {
-      const { jobId, ...body } = params;
-      return apiRequest(`/api/inventory/jobs/${jobId}/usage`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: (_data, variables) => {
-      invalidateAfterAction();
-      queryClient.invalidateQueries({ queryKey: ["/api/inventory/items"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/inventory/items", variables.itemId] });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/items", variables.itemId, "locations"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/items", variables.itemId, "transactions"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/items", variables.itemId, "recent-usage"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/locations", variables.locationId, "inventory"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/locations", variables.locationId, "transactions"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/locations", variables.locationId, "recent-usage"],
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/inventory/low-stock"] });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/jobs", variables.jobId, "usage"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/jobs", variables.jobId, "line-fulfillment"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/jobs", variables.jobId, "line-suggestions"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/inventory/jobs", variables.jobId, "reservations"],
-      });
-    },
-    onError: handleMutationError,
-  });
-
   return {
     visit,
     raw: query.data,
@@ -554,12 +484,6 @@ export function useTechVisitDetail(visitId: string | undefined) {
     updateNote: updateNoteMutation,
     deleteNote: deleteNoteMutation,
     addPart: addPartMutation,
-    // 2026-05-08 (Inventory Phase 6): companion mutation for the
-    // AddPartSheet's optional inline-consume flow. NOT a replacement
-    // for addPart — both mutations remain independently exposed so
-    // surfaces that don't want to consume can still add a line via
-    // addPart alone.
-    consumeFromTechSheet: consumeFromTechSheetMutation,
     deletePart: deletePartMutation,
     removeEquipment: removeEquipmentMutation,
     addEquipment: addEquipmentMutation,

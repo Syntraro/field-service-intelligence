@@ -33,13 +33,11 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  TimesheetSummaryStrip,
+  type TimesheetSummaryStripMember,
+} from "@/components/timesheets/TimesheetSummaryStrip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
@@ -53,8 +51,8 @@ import {
   buildWeekStackViewModel,
   formatHm,
   type WeekStackEntry,
-  type WeekStackRow,
 } from "@/components/timesheets/stack/buildWeekStackViewModel";
+import { CompactTimeEntryCard } from "@/components/timesheets/CompactTimeEntryCard";
 import type { TechnicianWeeklySummary } from "@shared/schema";
 
 interface WeekStackUser {
@@ -235,8 +233,8 @@ export default function WeekStackPage() {
     <div className="p-4 space-y-4" data-testid="week-stack-page">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Timesheets</h1>
-          <p className="text-muted-foreground text-sm">Weekly review of technician time entries.</p>
+          <h1 className="text-title">Timesheets</h1>
+          <p className="text-muted-foreground text-row">Weekly review of technician time entries.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setLocation("/reports/timesheets")}>
@@ -288,7 +286,7 @@ export default function WeekStackPage() {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 gap-2 font-medium text-sm min-w-[200px] justify-center"
+                className="h-8 gap-2 font-medium text-row min-w-[200px] justify-center"
               >
                 <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {format(parseISO(weekStart), "MMM d")} – {format(parseISO(weekEnd), "MMM d, yyyy")}
@@ -320,7 +318,7 @@ export default function WeekStackPage() {
           <button
             type="button"
             onClick={goToCurrent}
-            className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+            className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-row font-medium text-foreground hover:bg-slate-50 hover:border-slate-300 transition-colors"
           >
             Today
           </button>
@@ -340,14 +338,14 @@ export default function WeekStackPage() {
                     : "/timesheets?view=day",
                 );
               }}
-              className="px-3 py-1.5 text-sm font-medium rounded text-slate-500 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+              className="px-3 py-1.5 text-row font-medium rounded text-muted-foreground hover:text-foreground hover:bg-slate-200 transition-colors"
               data-testid="view-toggle-day"
             >
               Day
             </button>
             <button
               type="button"
-              className="px-3 py-1.5 text-sm font-medium rounded bg-white text-slate-900 shadow-sm"
+              className="px-3 py-1.5 text-row font-medium rounded bg-white text-foreground shadow-sm"
               aria-current="page"
               data-testid="view-toggle-week"
             >
@@ -369,53 +367,33 @@ export default function WeekStackPage() {
         </Button>
       </div>
 
-      {/* Timesheet Context Header — shared structure with Day View. Tech
-          selector on the left; tech name + week range + Job/General chips
-          on the right when a tech is selected. */}
-      <div
-        className="bg-white border border-slate-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
-        data-testid="timesheet-context-header"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <User className="h-4 w-4 text-muted-foreground shrink-0" />
-          <Select value={techId} onValueChange={setTechId}>
-            <SelectTrigger className="w-[220px] h-8 text-sm">
-              <SelectValue placeholder="Select team member" />
-            </SelectTrigger>
-            <SelectContent>
-              {technicians.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {getMemberDisplayName(u)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {techId && vm && (() => {
-          const selectedTech = technicians.find((t) => t.id === techId);
-          const techName = selectedTech ? getMemberDisplayName(selectedTech) : "";
-          return (
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-sm font-semibold text-slate-900">{techName}</span>
-                <span className="text-xs text-slate-500 tabular-nums">
-                  {format(parseISO(weekStart), "MMM d")} – {format(parseISO(weekEnd), "MMM d, yyyy")}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <SummaryPill variant="job" label="Job Time" minutes={vm.weekTotals.jobMinutes} />
-                <SummaryPill variant="general" label="General Time" minutes={vm.weekTotals.generalMinutes} />
-              </div>
-              <span
-                className="text-sm font-semibold tabular-nums text-slate-900"
-                data-testid="week-context-total"
-              >
-                {formatHm(vm.weekTotals.totalMinutes)}
-              </span>
-            </div>
-          );
-        })()}
-      </div>
+      {/* Timesheet Context Header — canonical strip shared with Day View. */}
+      {(() => {
+        const selectedTech = technicians.find((t) => t.id === techId) ?? null;
+        const stripMembers: TimesheetSummaryStripMember[] = technicians.map((u) => ({
+          id: u.id,
+          label: getMemberDisplayName(u),
+        }));
+        const contextChips = vm ? (
+          <div className="flex items-center gap-1.5">
+            <SummaryPill variant="job" label="Job Time" minutes={vm.weekTotals.jobMinutes} />
+            <SummaryPill variant="general" label="General Time" minutes={vm.weekTotals.generalMinutes} />
+          </div>
+        ) : undefined;
+        return (
+          <TimesheetSummaryStrip
+            members={stripMembers}
+            selectedMemberId={techId}
+            onSelectMember={setTechId}
+            techName={techId && vm && selectedTech ? getMemberDisplayName(selectedTech) : null}
+            dateLabel={`${format(parseISO(weekStart), "MMM d")} – ${format(parseISO(weekEnd), "MMM d, yyyy")}`}
+            chips={contextChips}
+            totalFormatted={vm ? formatHm(vm.weekTotals.totalMinutes) : null}
+            containerTestId="timesheet-context-header"
+            totalTestId="week-context-total"
+          />
+        );
+      })()}
 
       {!techId ? (
         <Card>
@@ -474,15 +452,15 @@ export default function WeekStackPage() {
         </Card>
       )}
 
-      <p className="text-xs text-muted-foreground italic">
+      <p className="text-helper text-muted-foreground italic">
         Read-only weekly review. Click a day header or any entry to edit in the canonical Day View.
       </p>
     </div>
   );
 }
 
-// Footer summary pill — primary (week total) is dark; variants are
-// blue (Job Time) / green (General Time) with optional percent suffix.
+// Footer summary pill — primary (week total) is a dark capsule;
+// job/general variants use canonical <Chip> (info/success tones).
 function SummaryPill({
   label,
   minutes,
@@ -499,7 +477,7 @@ function SummaryPill({
   if (primary) {
     return (
       <div
-        className="inline-flex items-center gap-2 rounded-full bg-slate-900 text-white px-3 py-1 text-xs"
+        className="inline-flex items-center gap-2 rounded-full bg-slate-900 text-white px-3 py-1 text-helper"
         data-testid="week-pill-total"
       >
         <span className="font-semibold uppercase tracking-wider">{label}</span>
@@ -507,26 +485,25 @@ function SummaryPill({
       </div>
     );
   }
-  const isJob = variant === "job";
-  const chipClasses = isJob
-    ? "bg-blue-50 text-blue-700 border-blue-200"
-    : "bg-emerald-50 text-emerald-700 border-emerald-200";
-  const dotClasses = isJob ? "bg-blue-500" : "bg-emerald-500";
+  const tone = variant === "job" ? "info" : "success";
   return (
-    <div
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs",
-        chipClasses,
-      )}
+    <Chip
+      tone={tone}
+      size="compact"
+      leadingIcon={
+        <span className="h-1.5 w-1.5 rounded-full bg-current shrink-0 opacity-80" aria-hidden />
+      }
       data-testid={`week-pill-${variant}`}
     >
-      <span className={cn("h-1.5 w-1.5 rounded-full", dotClasses)} aria-hidden />
-      <span className="font-medium">{label}</span>
-      <span className="font-mono font-semibold tabular-nums">{formatHm(minutes)}</span>
-      {percent != null && (
-        <span className="text-slate-500">({percent}%)</span>
+      {label}
+      {percent != null ? (
+        <span className="font-mono font-semibold tabular-nums ml-0.5">
+          {formatHm(minutes)} ({percent}%)
+        </span>
+      ) : (
+        <span className="font-mono font-semibold tabular-nums ml-0.5">{formatHm(minutes)}</span>
       )}
-    </div>
+    </Chip>
   );
 }
 
@@ -564,11 +541,11 @@ function DayStackCard({
         aria-label={`Open ${day.dayLabel} in Day View`}
       >
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-xs">
-            <span className="font-semibold uppercase tracking-wider text-slate-700">
+          <span className="text-helper">
+            <span className="font-semibold uppercase tracking-wider text-foreground">
               {day.dayLabel}
             </span>{" "}
-            <span className="text-slate-400">{dateLabel}</span>
+            <span className="text-muted-foreground">{dateLabel}</span>
           </span>
           {day.hasIssue && (
             <span
@@ -588,14 +565,21 @@ function DayStackCard({
           header and above the daily summary footer; `min-h-[300px]` keeps
           sparse days from feeling crushed. flex-1 keeps the column extending
           to the tallest body in the row so the bottom footers align. */}
-      <div className="flex-1 flex flex-col min-h-[300px] pt-3 pb-3">
-        {hasRows && (
-          <div className="divide-y divide-slate-200">
-            {day.rows.map((r) => (
-              <EntryRow key={r.key} row={r} onClick={() => onEditDay(day.date)} />
-            ))}
-          </div>
-        )}
+      <div className="flex-1 flex flex-col min-h-[300px] px-2 py-2 gap-1.5">
+        {hasRows && day.rows.map((r) => (
+          <CompactTimeEntryCard
+            key={r.key}
+            variant={r.kind}
+            totalMinutes={r.totalMinutes}
+            onClick={() => onEditDay(day.date)}
+            testId={`stack-row-${r.key}`}
+            jobNumber={r.jobNumber}
+            locationName={r.locationName}
+            jobSummary={r.jobSummary}
+            hasOpenEntry={r.hasOpenEntry}
+            isUnallocated={r.isUnallocated}
+          />
+        ))}
       </div>
 
       {/* Daily summary footer — bottom-anchored. Job Time + General Time +
@@ -606,9 +590,9 @@ function DayStackCard({
         <DaySummaryLine variant="job" label="Job Time" minutes={day.jobMinutes} />
         <DaySummaryLine variant="general" label="General Time" minutes={day.generalMinutes} />
         <div className="border-t border-slate-200 pt-1.5 mt-1.5 grid grid-cols-[1fr_auto] gap-2 items-baseline">
-          <span className="text-sm font-semibold text-slate-900">Total</span>
+          <span className="text-row font-semibold text-foreground">Total</span>
           <span
-            className="text-sm font-semibold tabular-nums text-slate-900"
+            className="text-row font-semibold tabular-nums text-foreground"
             data-testid={`stack-day-total-${day.date}`}
           >
             {formatHm(day.totalMinutes)}
@@ -633,98 +617,15 @@ function DaySummaryLine({
 }) {
   const dotClasses = variant === "job" ? "bg-blue-500" : "bg-emerald-500";
   return (
-    <div className="grid grid-cols-[1fr_auto] gap-2 items-baseline text-xs">
+    <div className="grid grid-cols-[1fr_auto] gap-2 items-baseline text-helper">
       <div className="flex items-baseline gap-1.5 min-w-0">
         <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotClasses)} aria-hidden />
-        <span className="text-slate-600 font-medium truncate">{label}</span>
+        <span className="text-muted-foreground truncate">{label}</span>
       </div>
-      <span className="tabular-nums text-slate-700 font-semibold">
+      <span className="tabular-nums text-foreground font-semibold">
         {formatHm(minutes)}
       </span>
     </div>
   );
 }
 
-// Flat row in the daily entry list. Outer layout is a 2-column grid —
-// `1fr auto` — so the right column is pinned to the row's right edge and
-// times line up vertically across the column regardless of left-side
-// content length. `items-start` baselines the time with the first line of
-// left content. No per-row border / rounded / bg — dividers come from the
-// parent's `divide-y divide-slate-200`.
-function EntryRow({
-  row,
-  onClick,
-}: {
-  row: WeekStackRow;
-  onClick: () => void;
-}) {
-  if (row.kind === "general") {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className="block w-full px-3 py-2 text-left bg-slate-50 hover:bg-slate-100 transition-colors"
-        data-testid={`stack-row-${row.key}`}
-      >
-        <div className="grid grid-cols-[1fr_auto] items-start gap-2">
-          <div className="flex items-baseline gap-2 min-w-0">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden />
-            <span className="text-sm font-medium text-slate-600 leading-tight">
-              General Time
-            </span>
-          </div>
-          <span className="text-sm font-semibold tabular-nums text-slate-900 leading-tight">
-            {formatHm(row.totalMinutes)}
-          </span>
-        </div>
-      </button>
-    );
-  }
-
-  // Job row — left column stacks identifier / location / summary; right
-  // column carries only the time. Secondary lines indent via `pl-3.5` so
-  // they align under the identifier rather than the dot.
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors"
-      data-testid={`stack-row-${row.key}`}
-    >
-      <div className="grid grid-cols-[1fr_auto] items-start gap-2">
-        <div className="min-w-0">
-          <div className="flex items-baseline gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" aria-hidden />
-            <span className="text-sm font-medium tabular-nums text-slate-700 leading-tight">
-              #{row.jobNumber ?? "—"}
-            </span>
-          </div>
-          {row.locationName && (
-            <div
-              className="pl-3.5 mt-0.5 text-sm text-slate-700 leading-tight break-words"
-              title={row.locationName}
-            >
-              {row.locationName}
-            </div>
-          )}
-          {row.jobSummary && (
-            <div
-              className="pl-3.5 mt-0.5 text-xs text-slate-500 leading-tight line-clamp-2 break-words"
-              title={row.jobSummary}
-            >
-              {row.jobSummary}
-            </div>
-          )}
-          {row.hasOpenEntry && (
-            <div className="pl-3.5 mt-1 text-[10px] font-medium text-amber-600">
-              Unfinished entry
-            </div>
-          )}
-        </div>
-        <span className="text-sm font-semibold tabular-nums text-slate-900 leading-tight">
-          {formatHm(row.totalMinutes)}
-        </span>
-      </div>
-    </button>
-  );
-}

@@ -64,6 +64,25 @@
   --danger: 0 72% 51%;          /* #DC2626 — destructive / error states */
   --info: 221 83% 53%;          /* #2563EB — informational states */
 
+  /* Semantic foreground tokens — two distinct uses:
+   *   bg-* (chips/fills): bg-warning → amber fill; bg-success → emerald fill; bg-info → blue fill.
+   *   text-*-foreground (tonal text/icons on white bg): amber-toned dark text for warning;
+   *     white for success/info since emerald-600/blue-600 pass WCAG AA at DEFAULT fill.
+   *
+   * --warning-foreground is dark amber (≈ amber-700, ~4.88:1 on white) — NOT near-black.
+   *   Amber fill (#F59E0B) is too bright for text (2.18:1). Dark amber keeps the tonal hue.
+   *   Near-black would pass contrast but lose semantic meaning.
+   *
+   * --success-foreground / --info-foreground remain white because emerald-600 / blue-600
+   *   are already dark enough that text-success / text-info pass WCAG AA directly.
+   *   These foreground tokens are for text-on-filled-surface (e.g. badge labels).
+   *
+   * 2026-05-09 Phase 3.1 — closes the token gap noted in action-menu.tsx.
+   * 2026-05-09 Phase 3.1 fix — --warning-foreground corrected from near-black to dark amber. */
+  --success-foreground: 0 0% 100%;    /* white on emerald bg — ~3.2:1 */
+  --warning-foreground: 28 90% 35%;   /* dark amber ≈ amber-700 on white — ~4.88:1 WCAG AA */
+  --info-foreground: 0 0% 100%;       /* white on blue bg — ~5.1:1 */
+
   /* Elevation — canonical card shadow.
      2026-04-29 Color Phase 3: mirrors `boxShadow.card` in
      `tailwind.config.ts` (`0 8px 18px rgba(15, 23, 42, 0.04)`) so the
@@ -286,6 +305,14 @@
 
   --destructive-foreground: 0 0% 100%;
 
+  /* Semantic foreground tokens — dark mode.
+   * success/info foreground: white (same as light — fills unchanged).
+   * warning foreground: lighter amber in dark mode so tonal text remains readable
+   *   on dark card surfaces (amber-400 range, ~4.5:1 on dark bg ≈ hsl(240 10% 15%)). */
+  --success-foreground: 0 0% 100%;
+  --warning-foreground: 38 95% 62%;   /* lighter amber — readable on dark surfaces */
+  --info-foreground: 0 0% 100%;
+
   /* Status colors - dark mode */
   --status-overdue: 1 78% 55%;
   --status-overdue-foreground: 0 0% 100%;
@@ -338,21 +365,14 @@
     @apply antialiased bg-background text-foreground text-base;
   }
 
-  h1 {
-    @apply text-2xl font-semibold;
-  }
-
-  h2 {
-    @apply text-xl font-semibold;
-  }
-
-  h3 {
-    @apply text-lg font-medium;
-  }
-
-  p {
-    @apply text-base;
-  }
+  /* 2026-05-09: h1/h2/h3/p element-level font-size rules removed.
+   * Every h1/h2/h3 in the app carries an explicit text-* className.
+   * Global p { text-base } overrides CSS inheritance from parent containers,
+   * breaking canonical component typography (e.g. text-list-body on a
+   * container div could not propagate to child <p> elements). Bare <p>
+   * elements without a className inherit from body (19px) — same visual
+   * result. Long-form/prose typography lives in .prose via
+   * @tailwindcss/typography if needed. */
 
   /* Header-aware sidebar: push fixed sidebar below the global header */
   [data-slot="sidebar-container"] {

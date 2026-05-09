@@ -33,11 +33,6 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // Inline edit state
-  const [inlineEditId, setInlineEditId] = useState<string | null>(null);
-  const [inlineEditField, setInlineEditField] = useState<string | null>(null);
-  const [inlineEditValue, setInlineEditValue] = useState<string>("");
-
   // Debounce search
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -163,8 +158,6 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
       queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Success", description: "Item updated." });
       onCloseDialog?.();
-      setInlineEditId(null);
-      setInlineEditField(null);
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to update item.", variant: "destructive" });
@@ -303,29 +296,6 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     }
   }, [sortField, sortDirection]);
 
-  // Inline edit handlers
-  const handleInlineEdit = useCallback((id: string, field: string, currentValue: string) => {
-    setInlineEditId(id);
-    setInlineEditField(field);
-    setInlineEditValue(currentValue);
-  }, []);
-
-  const handleInlineEditSave = useCallback((id: string, field: string) => {
-    let value: any = inlineEditValue;
-    // Parse duration as integer for API (nullable)
-    if (field === "estimatedDurationMinutes") {
-      const parsed = inlineEditValue.trim() ? parseInt(inlineEditValue, 10) : null;
-      value = (parsed !== null && !isNaN(parsed) && parsed >= 0) ? parsed : null;
-    }
-    updateMutation.mutate({ id, data: { [field]: value } });
-  }, [updateMutation, inlineEditValue]);
-
-  const handleInlineEditCancel = useCallback(() => {
-    setInlineEditId(null);
-    setInlineEditField(null);
-    setInlineEditValue("");
-  }, []);
-
   // Duplicate check helper
   const checkDuplicate = useCallback((formData: ProductFormData, editingProduct: Part | null) => {
     const nameLower = formData.name.trim().toLowerCase();
@@ -411,15 +381,6 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     setSelectedIds,
     handleSelectAll,
     handleSelectOne,
-
-    // Inline edit
-    inlineEditId,
-    inlineEditField,
-    inlineEditValue,
-    setInlineEditValue,
-    handleInlineEdit,
-    handleInlineEditSave,
-    handleInlineEditCancel,
 
     // Mutations
     createMutation,

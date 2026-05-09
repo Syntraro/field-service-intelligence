@@ -4,8 +4,8 @@ import { PRODUCT_FIELD_DEFS } from "@shared/importPipeline/zod/product";
 import { jobberProductsPreset } from "../presets";
 
 const TEMPLATE_CSV = [
-  "Name,Description,Category,Unit Price,Unit Cost,Taxable,Active,Duration (minutes),Track Inventory,SKU",
-  "Furnace Filter 16x20,Standard pleated filter,product,29.99,12.00,yes,yes,,yes,FILT-16X20",
+  "Name,Description,Category,Unit Price,Unit Cost,Taxable,Active,Duration (minutes),SKU",
+  "Furnace Filter 16x20,Standard pleated filter,product,29.99,12.00,yes,yes,,FILT-16X20",
   "Diagnostic Service,Standard diagnostic visit,service,129.00,,yes,yes,60,no,SVC-DIAG",
 ].join("\n");
 

@@ -136,10 +136,19 @@ describe("ProductServiceFormDialog — header/body/footer shape", () => {
     expect(codeOnly).not.toMatch(/<form\b/);
   });
 
-  it("ModalFooter wraps Cancel + Save buttons", () => {
-    expect(src).toMatch(
-      /<ModalFooter>\s*<Button[\s\S]*?Cancel[\s\S]*?<Button[\s\S]*?data-testid="button-save"/,
-    );
+  it("ModalFooter contains Cancel button and Save button", () => {
+    // Footer may include optional archive/delete buttons (added 2026-05-09)
+    // before the Cancel + Save buttons, so we check each button independently.
+    expect(src).toMatch(/<ModalFooter>/);
+    expect(src).toMatch(/<Button\s+variant="outline"\s+onClick=\{onCancel\}>\s*Cancel\s*<\/Button>/);
+    expect(src).toMatch(/data-testid="button-save"/);
+  });
+
+  it("ModalFooter exposes archive and delete actions when editing (2026-05-09)", () => {
+    expect(src).toMatch(/onArchiveClick\?:/);
+    expect(src).toMatch(/onDeleteClick\?:/);
+    expect(src).toMatch(/data-testid="button-archive-item"/);
+    expect(src).toMatch(/data-testid="button-delete-item"/);
   });
 });
 
@@ -149,8 +158,9 @@ describe("ProductServiceFormDialog — form sections preserved verbatim", () => 
   it("Row A: Type select + SKU input in 2-col grid (canonical testids select-type + input-sku)", () => {
     expect(src).toMatch(/data-testid="select-type"/);
     expect(src).toMatch(/data-testid="input-sku"/);
+    // Phase 2C: internal helper renamed from setFormField → setField
     expect(src).toMatch(
-      /<Select\s+value=\{formData\.type\}[\s\S]*?onValueChange=\{[^}]*setFormField\("type",\s*v\)\}/,
+      /<Select\s+value=\{formData\.type\}[\s\S]*?onValueChange=\{[^}]*setField\("type",\s*v\)\}/,
     );
     expect(src).toMatch(/<SelectItem\s+value="product">Product<\/SelectItem>/);
     expect(src).toMatch(/<SelectItem\s+value="service">Service<\/SelectItem>/);
@@ -161,8 +171,9 @@ describe("ProductServiceFormDialog — form sections preserved verbatim", () => 
     expect(src).toMatch(
       /<Input[\s\S]*?value=\{formData\.name\}[\s\S]*?className=\{checkDuplicate\s*\?\s*"border-destructive"\s*:\s*""\}/,
     );
+    // Phase 2C: raw <p className="text-xs text-destructive"> replaced by <FormErrorText>
     expect(src).toMatch(
-      /\{checkDuplicate\s*&&\s*\(\s*<p\s+className="text-xs text-destructive">An item named "\{checkDuplicate\.name\}" already exists<\/p>/,
+      /\{checkDuplicate\s*&&\s*\(\s*<FormErrorText>An item named "\{checkDuplicate\.name\}" already exists<\/FormErrorText>/,
     );
   });
 
@@ -172,24 +183,26 @@ describe("ProductServiceFormDialog — form sections preserved verbatim", () => 
     );
   });
 
-  it("Row D: Pricing card with border-t separator + 3-col grid (Cost / Markup / Price)", () => {
-    expect(src).toMatch(
-      /<div\s+className="border-t pt-2">[\s\S]*?Pricing[\s\S]*?<div\s+className="grid grid-cols-3 gap-3">/,
-    );
+  it("Row D: Pricing section with border-t separator + 3-col FormRow (Cost / Markup / Price)", () => {
+    // Phase 2C: raw div stacks → FormSection + FormRow canonical primitives
+    expect(src).toMatch(/<FormSection\s+title="Pricing"[\s\S]*?border-t pt-2/);
+    expect(src).toMatch(/<FormRow\s+className="grid-cols-3">/);
     expect(src).toMatch(/data-testid="input-cost"/);
     expect(src).toMatch(/data-testid="input-markup"/);
     expect(src).toMatch(/data-testid="input-price"/);
   });
 
-  it("Row E: Duration + Category in 2-col grid with border-t separator", () => {
-    expect(src).toMatch(
-      /<div\s+className="grid grid-cols-2 gap-3 border-t pt-2">[\s\S]*?data-testid="input-duration"[\s\S]*?data-testid="select-category"/,
-    );
+  it("Row E: Duration + Category in 2-col FormRow with border-t separator", () => {
+    // Phase 2C: raw grid div → <FormRow className="grid-cols-2 border-t pt-2">
+    expect(src).toMatch(/<FormRow\s+className="grid-cols-2 border-t pt-2">/);
+    expect(src).toMatch(/data-testid="input-duration"/);
+    expect(src).toMatch(/data-testid="select-category"/);
   });
 
   it("Category select uses '__none__' sentinel for the Uncategorized option (round-trips to empty string)", () => {
+    // Phase 2C: setFormField renamed to setField
     expect(src).toMatch(
-      /<Select\s+value=\{formData\.category\s*\|\|\s*"__none__"\}[\s\S]*?onValueChange=\{[^}]*setFormField\("category",\s*v\s*===\s*"__none__"\s*\?\s*""\s*:\s*v\)\}/,
+      /<Select\s+value=\{formData\.category\s*\|\|\s*"__none__"\}[\s\S]*?onValueChange=\{[^}]*setField\("category",\s*v\s*===\s*"__none__"\s*\?\s*""\s*:\s*v\)\}/,
     );
     expect(src).toMatch(/<SelectItem\s+value="__none__">Uncategorized<\/SelectItem>/);
   });
@@ -198,11 +211,12 @@ describe("ProductServiceFormDialog — form sections preserved verbatim", () => 
     expect(src).toMatch(
       /<div\s+className="flex items-center gap-4 border-t pt-2">[\s\S]*?id="taxable"[\s\S]*?id="active"/,
     );
+    // Phase 2C: setFormField renamed to setField
     expect(src).toMatch(
-      /<Checkbox\s+id="taxable"[\s\S]*?checked=\{formData\.isTaxable\}[\s\S]*?onCheckedChange=\{\(c\)\s*=>\s*setFormField\("isTaxable",\s*c\s+as\s+boolean\)\}/,
+      /<Checkbox\s+id="taxable"[\s\S]*?checked=\{formData\.isTaxable\}[\s\S]*?onCheckedChange=\{\(c\)\s*=>\s*setField\("isTaxable",\s*c\s+as\s+boolean\)\}/,
     );
     expect(src).toMatch(
-      /<Checkbox\s+id="active"[\s\S]*?checked=\{formData\.isActive\}[\s\S]*?onCheckedChange=\{\(c\)\s*=>\s*setFormField\("isActive",\s*c\s+as\s+boolean\)\}/,
+      /<Checkbox\s+id="active"[\s\S]*?checked=\{formData\.isActive\}[\s\S]*?onCheckedChange=\{\(c\)\s*=>\s*setField\("isActive",\s*c\s+as\s+boolean\)\}/,
     );
   });
 });
@@ -232,8 +246,9 @@ describe("ProductServiceFormDialog — auto-calculation handlers preserved", () 
   });
 
   it("Price input is manually editable (overrides auto-calculation when the user types directly)", () => {
+    // Phase 2C: setFormField renamed to setField
     expect(src).toMatch(
-      /<Input[\s\S]*?value=\{formData\.unitPrice\}[\s\S]*?onChange=\{\(e\)\s*=>\s*setFormField\("unitPrice",\s*e\.target\.value\)\}/,
+      /<Input[\s\S]*?value=\{formData\.unitPrice\}[\s\S]*?onChange=\{\(e\)\s*=>\s*setField\("unitPrice",\s*e\.target\.value\)\}/,
     );
   });
 });
@@ -278,9 +293,10 @@ describe("ProductServiceFormDialog — create/edit mode resolution preserved", (
     expect(src).toMatch(/\{editingProduct\s*\?\s*"Save"\s*:\s*"Create"\}/);
   });
 
-  it("setFormField helper proxies to onFormDataChange (the dialog is a controlled component)", () => {
+  it("setField helper proxies to onFormDataChange (the dialog is a controlled component)", () => {
+    // Phase 2C: helper renamed from setFormField → setField
     expect(src).toMatch(
-      /setFormField\s*=\s*<K extends keyof ProductFormData>\(field:\s*K,\s*value:\s*ProductFormData\[K\]\)\s*=>\s*\{[\s\S]*?onFormDataChange\(\{\s*\.\.\.formData,\s*\[field\]:\s*value\s*\}\)/,
+      /setField\s*=\s*<K extends keyof ProductFormData>\(field:\s*K,\s*value:\s*ProductFormData\[K\]\)\s*=>\s*\{[\s\S]*?onFormDataChange\(\{\s*\.\.\.formData,\s*\[field\]:\s*value\s*\}\)/,
     );
   });
 });

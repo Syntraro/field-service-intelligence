@@ -7,7 +7,7 @@
  *   M2.  ActionMenuItemDescriptor has no className field.
  *   M3.  ActionMenu icon rendering does not include mr-2 (icon spacing via gap-2 only).
  *   M4.  TONE_CLASSES uses text-destructive / focus:text-destructive for destructive.
- *   M5.  TONE_CLASSES uses semantic tokens (text-success, text-warning, text-info).
+ *   M5.  TONE_CLASSES uses semantic tokens (text-success, text-warning-foreground, text-info); warning uses -foreground for WCAG AA.
  *   M6.  CDH's HeaderOverflowItem no longer has className or destructive fields.
  *   M7.  CDH delegates overflow rendering to ActionMenu (no raw DropdownMenuItem).
  *   M8.  JobDetailPage uses tone: "success" / tone: "destructive" — no className escape.
@@ -22,9 +22,6 @@
  *   M17. JobHeaderCard: migrated to ActionMenu; no raw DropdownMenuItem; delete-job uses tone: "destructive".
  *   M18. ClientDetailPage: migrated to ActionMenu; delete-client and delete-location use tone: "destructive".
  *   M19. JobTemplatesPage + QuoteTemplatesPage: migrated to ActionMenu; delete uses tone: "destructive".
- *   M20. ProductsServicesTable: migrated to ActionMenu; delete uses tone: "destructive"; missing focus:text-destructive fixed.
- *   M21. InventoryPage: locations action column migrated to ActionMenu; raw hover:bg-slate-100 trigger replaced.
- *   M22. JobReservationsSection + JobInventoryUsageSection: migrated to ActionMenu.
  */
 
 import { describe, it, expect } from "vitest";
@@ -43,10 +40,6 @@ const JOB_HEADER_CARD    = path("client/src/components/JobHeaderCard.tsx");
 const CLIENT_DETAIL      = path("client/src/pages/ClientDetailPage.tsx");
 const JOB_TEMPLATES      = path("client/src/pages/JobTemplatesPage.tsx");
 const QUOTE_TEMPLATES    = path("client/src/pages/QuoteTemplatesPage.tsx");
-const PRODUCTS_TABLE     = path("client/src/components/products-services/ProductsServicesTable.tsx");
-const INVENTORY_PAGE     = path("client/src/pages/InventoryPage.tsx");
-const JOB_RESERVATIONS   = path("client/src/components/inventory/JobReservationsSection.tsx");
-const JOB_USAGE          = path("client/src/components/inventory/JobInventoryUsageSection.tsx");
 
 function read(p: string): string { return readFileSync(p, "utf-8"); }
 
@@ -125,8 +118,8 @@ describe("ActionMenu — TONE_CLASSES canonical token map", () => {
     expect(src).toMatch(/success.*text-success focus:text-success/);
   });
 
-  it("warning uses text-warning focus:text-warning (semantic token)", () => {
-    expect(src).toMatch(/warning.*text-warning focus:text-warning/);
+  it("warning uses text-warning-foreground focus:text-warning-foreground (WCAG AA accessible token)", () => {
+    expect(src).toMatch(/warning.*text-warning-foreground focus:text-warning-foreground/);
   });
 
   it("info uses text-info focus:text-info (semantic token)", () => {
@@ -525,171 +518,3 @@ function assertTemplatePage(src: string, label: string) {
 assertTemplatePage(readFileSync(JOB_TEMPLATES, "utf-8"), "JobTemplatesPage");
 assertTemplatePage(readFileSync(QUOTE_TEMPLATES, "utf-8"), "QuoteTemplatesPage");
 
-// ── M20. ProductsServicesTable — migrated to ActionMenu ───────────────
-
-describe("ProductsServicesTable — row action menu uses ActionMenu descriptor", () => {
-  const src = read(PRODUCTS_TABLE);
-
-  it("M20 — imports ActionMenu from canonical action-menu path", () => {
-    expect(src).toMatch(/from "@\/components\/ui\/action-menu"/);
-  });
-
-  it("M20 — does not import from dropdown-menu", () => {
-    expect(src).not.toMatch(/from "@\/components\/ui\/dropdown-menu"/);
-  });
-
-  it("M20 — does not render raw <DropdownMenuItem", () => {
-    expect(stripComments(src)).not.toMatch(/<DropdownMenuItem/);
-  });
-
-  it("M20 — no mr-2 inside the ActionMenu items array", () => {
-    const itemsStart = src.indexOf("items={[");
-    expect(itemsStart, "ActionMenu items block must exist").toBeGreaterThan(-1);
-    const itemsEnd = src.indexOf("]}", itemsStart);
-    const block = stripComments(src.slice(itemsStart, itemsEnd));
-    expect(block).not.toMatch(/\bmr-2\b/);
-  });
-
-  it("M20 — delete item uses tone: 'destructive'", () => {
-    expect(src).toMatch(/tone:\s*["']destructive["']/);
-  });
-
-  it("M20 — no className text-destructive on raw DropdownMenuItem (bug fixed via tone)", () => {
-    // The original had className="text-destructive" without focus:text-destructive.
-    // The canonical tone covers both states; no raw className escape should remain.
-    expect(stripComments(src)).not.toMatch(/className=["']text-destructive["']/);
-  });
-
-  it("M20 — trigger button preserves data-testid menu-<id> pattern", () => {
-    expect(src).toMatch(/data-testid=\{`menu-\$\{part\.id\}`\}/);
-  });
-
-  it("M20 — trigger button preserves h-7 w-7 size", () => {
-    expect(src).toMatch(/className="h-7 w-7"/);
-  });
-});
-
-// ── M21. InventoryPage — locations action column migrated ─────────────
-
-describe("InventoryPage — location row action menu uses ActionMenu descriptor", () => {
-  const src = read(INVENTORY_PAGE);
-
-  it("M21 — imports ActionMenu from canonical action-menu path", () => {
-    expect(src).toMatch(/from "@\/components\/ui\/action-menu"/);
-  });
-
-  it("M21 — does not import from dropdown-menu", () => {
-    expect(src).not.toMatch(/from "@\/components\/ui\/dropdown-menu"/);
-  });
-
-  it("M21 — does not render raw <DropdownMenuItem", () => {
-    expect(stripComments(src)).not.toMatch(/<DropdownMenuItem/);
-  });
-
-  it("M21 — no h-3.5 or w-3.5 inside the ActionMenu items array", () => {
-    const itemsStart = src.indexOf("items={[");
-    expect(itemsStart, "ActionMenu items block must exist").toBeGreaterThan(-1);
-    const itemsEnd = src.indexOf("] satisfies ActionMenuItemDescriptor[]}", itemsStart);
-    const block = stripComments(src.slice(itemsStart, itemsEnd));
-    expect(block).not.toMatch(/\bh-3\.5\b|\bw-3\.5\b/);
-  });
-
-  it("M21 — no mr-2 inside the ActionMenu items array", () => {
-    const itemsStart = src.indexOf("items={[");
-    const itemsEnd = src.indexOf("] satisfies ActionMenuItemDescriptor[]}", itemsStart);
-    const block = stripComments(src.slice(itemsStart, itemsEnd));
-    expect(block).not.toMatch(/\bmr-2\b/);
-  });
-
-  it("M21 — no raw hover:bg-slate-100 trigger button (replaced by canonical Button)", () => {
-    expect(stripComments(src)).not.toMatch(/hover:bg-slate-100/);
-  });
-
-  it("M21 — archive item is hidden when location is inactive (hidden: !loc.isActive)", () => {
-    expect(stripComments(src)).toMatch(/id:\s*["']archive["'][\s\S]{0,200}hidden:/);
-  });
-
-  it("M21 — trigger preserves aria-label and data-testid for accessibility", () => {
-    expect(src).toMatch(/aria-label=\{`Actions for \$\{loc\.name\}`\}/);
-    expect(src).toMatch(/data-testid=\{`inventory-location-actions-\$\{loc\.id\}`\}/);
-  });
-});
-
-// ── M22. Inventory inline section components — migrated ───────────────
-
-function assertNoDropdown(src: string, label: string) {
-  describe(`${label} — uses ActionMenu, no raw DropdownMenu`, () => {
-    it("M22 — imports ActionMenu from canonical action-menu path", () => {
-      expect(src).toMatch(/from "@\/components\/ui\/action-menu"/);
-    });
-
-    it("M22 — does not import from dropdown-menu", () => {
-      expect(src).not.toMatch(/from "@\/components\/ui\/dropdown-menu"/);
-    });
-
-    it("M22 — does not render raw <DropdownMenuItem", () => {
-      expect(stripComments(src)).not.toMatch(/<DropdownMenuItem/);
-    });
-
-    it("M22 — no h-3.5 or w-3.5 in menu item descriptors", () => {
-      // Items live between items={[ and ]} — use a broad slice since
-      // non-menu code in the same file may legitimately use these sizes.
-      const start = src.indexOf("items={[");
-      if (start === -1) return; // file may have no items block (shouldn't happen)
-      const end = src.indexOf("]}", start);
-      const block = stripComments(src.slice(start, end));
-      expect(block).not.toMatch(/\bh-3\.5\b|\bw-3\.5\b/);
-    });
-
-    it("M22 — no mr-2 in menu item descriptors", () => {
-      const start = src.indexOf("items={[");
-      if (start === -1) return;
-      const end = src.indexOf("]}", start);
-      const block = stripComments(src.slice(start, end));
-      expect(block).not.toMatch(/\bmr-2\b/);
-    });
-  });
-}
-
-assertNoDropdown(readFileSync(JOB_RESERVATIONS, "utf-8"), "JobReservationsSection");
-assertNoDropdown(readFileSync(JOB_USAGE, "utf-8"), "JobInventoryUsageSection");
-
-describe("JobReservationsSection — action items preserved", () => {
-  const src = readFileSync(JOB_RESERVATIONS, "utf-8");
-
-  it("M22 — release item testId pattern present", () => {
-    expect(src).toMatch(/testId:\s*`job-reservation-release-\$\{row\.id\}`/);
-  });
-
-  it("M22 — cancel item testId pattern present", () => {
-    expect(src).toMatch(/testId:\s*`job-reservation-cancel-\$\{row\.id\}`/);
-  });
-
-  it("M22 — trigger button data-testid pattern preserved", () => {
-    expect(src).toMatch(/data-testid=\{`job-reservation-actions-\$\{row\.id\}`\}/);
-  });
-});
-
-describe("JobInventoryUsageSection — action items preserved", () => {
-  const src = readFileSync(JOB_USAGE, "utf-8");
-
-  it("M22 — remove item testId pattern present", () => {
-    expect(src).toMatch(/testId:\s*`job-inventory-usage-remove-\$\{row\.id\}`/);
-  });
-
-  it("M22 — remove item has disabled field (isRemoving)", () => {
-    expect(src).toMatch(/disabled:\s*isRemoving/);
-  });
-
-  it("M22 — removable guard preserved (ActionMenu conditional render)", () => {
-    expect(stripComments(src)).toMatch(/row\.removable[\s\S]{0,60}ActionMenu/);
-  });
-
-  it("M22 — trigger button data-testid pattern preserved", () => {
-    expect(src).toMatch(/data-testid=\{`job-inventory-usage-actions-\$\{row\.id\}`\}/);
-  });
-
-  it("M22 — no raw hover:bg-slate-100 trigger (replaced by canonical Button)", () => {
-    expect(stripComments(src)).not.toMatch(/hover:bg-slate-100/);
-  });
-});

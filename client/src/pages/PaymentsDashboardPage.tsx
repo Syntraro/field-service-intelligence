@@ -229,12 +229,12 @@ export default function PaymentsDashboardPage() {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1
-            className="text-xl font-semibold"
+            className="text-title"
             data-testid="text-payments-dashboard-title"
           >
             Payments
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             Track online payments, payouts, and disputes.
           </p>
         </div>
@@ -402,7 +402,7 @@ function OverviewTab(props: {
           {payoutSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : payoutSummary.isError ? (
-            <span className="text-sm text-destructive">Couldn&apos;t load</span>
+            <span className="text-caption text-destructive">Couldn&apos;t load</span>
           ) : (
             <>
               <div className="text-2xl font-semibold">
@@ -411,13 +411,13 @@ function OverviewTab(props: {
                     parseFloat(payoutSummary.data?.inTransitTotal ?? "0"),
                 )}
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-helper text-muted-foreground mt-1">
                 Pending {formatCurrency(payoutSummary.data?.pendingTotal ?? "0")}{" "}
                 · In transit{" "}
                 {formatCurrency(payoutSummary.data?.inTransitTotal ?? "0")}
               </p>
               {payoutSummary.data?.nextArrivalDate ? (
-                <p className="text-xs text-muted-foreground mt-1">
+                <p className="text-helper text-muted-foreground mt-1">
                   Next arrival {formatDate(payoutSummary.data.nextArrivalDate)}
                 </p>
               ) : null}
@@ -440,7 +440,7 @@ function OverviewTab(props: {
           {payoutSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : payoutSummary.isError ? (
-            <span className="text-sm text-destructive">Couldn&apos;t load</span>
+            <span className="text-caption text-destructive">Couldn&apos;t load</span>
           ) : (
             <div className="text-2xl font-semibold">
               {formatCurrency(payoutSummary.data?.paidLast30Days ?? "0")}
@@ -463,13 +463,13 @@ function OverviewTab(props: {
           {disputeSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : disputeSummary.isError ? (
-            <span className="text-sm text-destructive">Couldn&apos;t load</span>
+            <span className="text-caption text-destructive">Couldn&apos;t load</span>
           ) : (
             <>
               <div className="text-2xl font-semibold">
                 {disputeSummary.data?.needsResponseCount ?? 0}
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-helper text-muted-foreground mt-1">
                 Needs response · Open{" "}
                 {formatCurrency(disputeSummary.data?.totalOpenAmount ?? "0")}
               </p>
@@ -636,10 +636,10 @@ function TransactionRow({ row }: { row: TenantTransaction }) {
     row.paymentType === "refund" || row.paymentType === "reversal";
   return (
     <TableRow data-testid={`row-transaction-${row.id}`}>
-      <TableCell className="text-sm whitespace-nowrap">
+      <TableCell className="text-row whitespace-nowrap">
         {formatDateTime(row.receivedAt)}
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         {row.customerCompanyId && row.customerCompanyName ? (
           <Link
             href={`/clients/${row.customerCompanyId}`}
@@ -653,7 +653,7 @@ function TransactionRow({ row }: { row: TenantTransaction }) {
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         {row.invoiceId ? (
           <Link href={`/invoices/${row.invoiceId}`} className="hover:underline">
             {row.invoiceNumber ? `#${row.invoiceNumber}` : "View invoice"}
@@ -662,8 +662,8 @@ function TransactionRow({ row }: { row: TenantTransaction }) {
           <span className="text-muted-foreground">Multi-invoice</span>
         )}
       </TableCell>
-      <TableCell className="text-sm capitalize">{row.method}</TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row capitalize">{row.method}</TableCell>
+      <TableCell className="text-row">
         {row.paymentType === "payment" ? (
           <StatusPill variant="info">Payment</StatusPill>
         ) : row.paymentType === "refund" ? (
@@ -673,7 +673,7 @@ function TransactionRow({ row }: { row: TenantTransaction }) {
         )}
       </TableCell>
       <TableCell
-        className={`text-sm text-right font-medium ${
+        className={`text-row text-right font-medium ${
           isRefundOrReversal ? "text-destructive" : ""
         }`}
       >
@@ -811,18 +811,18 @@ function PayoutRow({ row }: { row: TenantPayout }) {
   const variant = PAYOUT_STATUS_VARIANTS[row.status] ?? "neutral";
   return (
     <TableRow data-testid={`row-payout-${row.id}`}>
-      <TableCell className="text-sm">{formatDate(row.arrivalDate)}</TableCell>
+      <TableCell className="text-row">{formatDate(row.arrivalDate)}</TableCell>
       <TableCell>
         <StatusPill variant={variant}>{label}</StatusPill>
       </TableCell>
-      <TableCell className="text-sm text-right font-medium">
+      <TableCell className="text-row text-right font-medium">
         {formatCurrency(row.amount)}
       </TableCell>
-      <TableCell className="text-sm uppercase">{row.currency}</TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row uppercase">{row.currency}</TableCell>
+      <TableCell className="text-row">
         {formatDestination(row.destinationLast4)}
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         {row.status === "failed" && row.failureMessage ? (
           <span className="text-destructive">
             {row.failureCode
@@ -1007,11 +1007,11 @@ function DisputeRow({ row }: { row: TenantDispute }) {
       data-testid={`row-dispute-${row.id}`}
       className={isUrgentDispute(row.status) ? "bg-destructive/5" : undefined}
     >
-      <TableCell className="text-sm">{formatDate(row.createdAt)}</TableCell>
+      <TableCell className="text-row">{formatDate(row.createdAt)}</TableCell>
       <TableCell>
         <StatusPill variant={variant}>{label}</StatusPill>
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         {row.invoiceId ? (
           <Link href={`/invoices/${row.invoiceId}`} className="hover:underline">
             View invoice
@@ -1020,15 +1020,15 @@ function DisputeRow({ row }: { row: TenantDispute }) {
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell className="text-sm text-right font-medium">
+      <TableCell className="text-row text-right font-medium">
         {formatCurrency(row.amount)}
       </TableCell>
-      <TableCell className="text-sm capitalize">
+      <TableCell className="text-row capitalize">
         {row.reason
           ? row.reason.replace(/_/g, " ")
           : <span className="text-muted-foreground">—</span>}
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         {row.evidenceDueBy ? (
           <span
             className={dueSoon ? "text-destructive font-medium" : undefined}
@@ -1036,7 +1036,7 @@ function DisputeRow({ row }: { row: TenantDispute }) {
             {formatDate(row.evidenceDueBy)}
             {dueSoon ? (
               <span
-                className="ml-2 text-xs"
+                className="ml-2 text-helper"
                 data-testid="indicator-evidence-due-soon"
               >
                 · Due soon
@@ -1047,7 +1047,7 @@ function DisputeRow({ row }: { row: TenantDispute }) {
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell className="text-sm">
+      <TableCell className="text-row">
         <Link
           href="/settings/payments"
           className="text-primary hover:underline"
@@ -1081,7 +1081,7 @@ function SummaryCard(props: {
         {props.loading ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         ) : props.error ? (
-          <span className="text-sm text-destructive">Couldn&apos;t load</span>
+          <span className="text-caption text-destructive">Couldn&apos;t load</span>
         ) : (
           <div className="text-2xl font-semibold">{props.value}</div>
         )}
@@ -1092,7 +1092,7 @@ function SummaryCard(props: {
 
 function EmptyRow({ message }: { message: string }) {
   return (
-    <div className="py-6 text-sm text-muted-foreground text-center">
+    <div className="py-6 text-caption text-muted-foreground text-center">
       {message}
     </div>
   );

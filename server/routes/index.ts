@@ -14,10 +14,6 @@ import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import pricebookGroupsRouter from "./pricebookGroups";
-// 2026-05-08 — Inventory module foundation. Mount-level
-// requireFeature("inventory_core") gate runs INSIDE the router so
-// tenants without the capability get 403 on every read + write.
-import inventoryRouter from "./inventory";
 import companySettingsRouter from "./companySettings";
 // 2026-05-05: tenant-level Invoice Display policy. Companion endpoint to
 // /api/company-settings — see `server/routes/invoiceDisplaySettings.ts`.
@@ -369,9 +365,6 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
   app.use("/api/pricebook-groups", pricebookGroupsRouter);
-  // 2026-05-08 Inventory foundation — capability + permission gates
-  // live inside the router itself.
-  app.use("/api/inventory", inventoryRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/invoice-display-settings", invoiceDisplaySettingsRouter);
   app.use("/api/company-tax-registrations", companyTaxRegistrationsRouter);

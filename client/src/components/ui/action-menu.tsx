@@ -12,27 +12,27 @@
  *   SVG child to 16px). Adding `mr-2` or `h-4 w-4` would double the spacing.
  *
  * Tone map (centralised here, nowhere else):
- *   destructive → text-destructive / focus:text-destructive  (semantic token)
- *   success     → text-success / focus:text-success          (semantic token)
- *   warning     → text-warning / focus:text-warning          (semantic token)
- *   info        → text-info / focus:text-info                (semantic token)
+ *   destructive → text-destructive / focus:text-destructive              (semantic token)
+ *   success     → text-success / focus:text-success                      (semantic token)
+ *   warning     → text-warning-foreground / focus:text-warning-foreground (dark amber, ~4.88:1)
+ *   info        → text-info / focus:text-info                            (semantic token)
  *
- * Token gap (2026-05-09):
- *   The --success, --warning, --info CSS variables are defined in index.css and
- *   generate valid Tailwind text-* utilities via tailwind.config.ts. However,
- *   they have no paired *-foreground token (only --destructive-foreground exists
- *   in the design system). The text-* classes resolve correctly today, but a
- *   future token-cleanup pass should add --success-foreground, --warning-foreground,
- *   --info-foreground and update TONE_CLASSES to use those instead.
+ * Token system (2026-05-09 Phase 3.1 — gap closed; fix applied same date):
+ *   --success-foreground, --warning-foreground, --info-foreground defined in index.css
+ *   and registered in tailwind.config.ts as foreground sub-keys.
+ *   warning uses text-warning-foreground (dark amber) not text-warning (amber fill = 2.18:1,
+ *   fails WCAG AA). success/info use DEFAULT fill as tonal text — both pass WCAG AA directly.
  */
 
 import { Fragment, type ReactNode } from "react";
 import { MoreHorizontal } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -66,7 +66,7 @@ const TONE_CLASSES: Record<ActionMenuTone, string> = {
   default:     "",
   destructive: "text-destructive focus:text-destructive",
   success:     "text-success focus:text-success",
-  warning:     "text-warning focus:text-warning",
+  warning:     "text-warning-foreground focus:text-warning-foreground",
   info:        "text-info focus:text-info",
 };
 
@@ -75,14 +75,20 @@ const TONE_CLASSES: Record<ActionMenuTone, string> = {
 interface ActionMenuProps {
   items: ActionMenuItemDescriptor[];
   /** Custom trigger element. When omitted, renders a ghost MoreHorizontal icon button.
-   *  The element must be a single React element — it is wrapped by DropdownMenuTrigger asChild. */
+   *  The element must be a single React element — it is wrapped by DropdownMenuTrigger asChild.
+   *  Must be a DOM element or a React.forwardRef component so Radix can attach its
+   *  positioning ref to the actual DOM node. */
   trigger?: ReactNode;
   align?: "start" | "end";
   /** Additional class on the DropdownMenuContent panel (e.g., "w-52"). */
   contentClassName?: string;
+  /** Optional muted section header rendered above all items (e.g. "CREATE NEW"). */
+  header?: string;
+  /** Extra className merged onto every DropdownMenuItem (e.g. "py-2" for more row spacing). */
+  itemClassName?: string;
 }
 
-export function ActionMenu({ items, trigger, align = "end", contentClassName }: ActionMenuProps) {
+export function ActionMenu({ items, trigger, align = "end", contentClassName, header, itemClassName }: ActionMenuProps) {
   const visible = items.filter((i) => !i.hidden);
   if (visible.length === 0) return null;
 
@@ -96,6 +102,11 @@ export function ActionMenu({ items, trigger, align = "end", contentClassName }: 
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align={align} className={contentClassName}>
+        {header && (
+          <DropdownMenuLabel className="text-[10px] font-semibold tracking-widest text-muted-foreground uppercase px-2 pt-1.5 pb-1">
+            {header}
+          </DropdownMenuLabel>
+        )}
         {visible.map((item) => {
           const toneClass = item.tone && item.tone !== "default"
             ? TONE_CLASSES[item.tone]
@@ -107,7 +118,7 @@ export function ActionMenu({ items, trigger, align = "end", contentClassName }: 
                 onClick={item.onSelect}
                 disabled={item.disabled}
                 title={item.disabled && item.disabledHint ? item.disabledHint : undefined}
-                className={toneClass}
+                className={cn(itemClassName, toneClass)}
                 data-testid={item.testId}
               >
                 {item.icon && <item.icon />}

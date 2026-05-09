@@ -44,6 +44,10 @@ interface ProductServiceFormDialogProps {
   checkDuplicate: Part | null | undefined;
   /** Available category options for the category selector */
   uniqueCategories?: string[];
+  /** Called when the user triggers archive/restore from inside the modal (edit mode only). */
+  onArchiveClick?: () => void;
+  /** Called when the user triggers delete from inside the modal (edit mode only). */
+  onDeleteClick?: () => void;
 }
 
 export function ProductServiceFormDialog({
@@ -57,6 +61,8 @@ export function ProductServiceFormDialog({
   isSaving,
   checkDuplicate,
   uniqueCategories = [],
+  onArchiveClick,
+  onDeleteClick,
 }: ProductServiceFormDialogProps) {
   const setField = <K extends keyof ProductFormData>(field: K, value: ProductFormData[K]) => {
     onFormDataChange({ ...formData, [field]: value });
@@ -251,6 +257,20 @@ export function ProductServiceFormDialog({
       </ModalBody>
 
       <ModalFooter>
+        {editingProduct && (onDeleteClick || onArchiveClick) && (
+          <div className="flex gap-2 mr-auto">
+            {onDeleteClick && (
+              <Button variant="outline" size="sm" onClick={onDeleteClick} data-testid="button-delete-item">
+                Delete
+              </Button>
+            )}
+            {onArchiveClick && (
+              <Button variant="outline" size="sm" onClick={onArchiveClick} data-testid="button-archive-item">
+                {editingProduct.isActive === false ? "Restore" : "Archive"}
+              </Button>
+            )}
+          </div>
+        )}
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
         <Button onClick={onSave} disabled={isSaving || !!checkDuplicate} data-testid="button-save">
           {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}

@@ -50,14 +50,8 @@ import {
   Wrench,
   CreditCard,
   Plus,
-  CheckSquare,
   BookMarked,
-  // 2026-05-08 — Inventory nav. Boxes glyph reads as physical stock /
-  // warehouse / shelves; the entry is gated on the inventory_core
-  // entitlement so tenants without the feature never see it.
-  Boxes,
 } from "lucide-react";
-import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import {
@@ -72,14 +66,13 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { makeCreateMenuItems } from "@/components/create/createMenuConfig";
 import type { CreateNewTab } from "@/components/CreateNewDialog";
 
 interface AppSidebarProps {
@@ -101,19 +94,7 @@ export function AppSidebar({
 }: AppSidebarProps) {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
-  // 2026-05-08 Inventory module: nav entry is hidden when the
-  // `inventory_core` capability is disabled. The hook returns
-  // `undefined` while loading; treat that as "not yet known" and hide
-  // (the nav re-renders the moment entitlements resolve, no flash).
-  // Server route is gated by requireFeature("inventory_core") so even
-  // a stale client cannot reach the API.
-  const inventoryEnabled = useFeatureEnabled("inventory_core") === true;
-  // `state` is "expanded" | "collapsed" — used to swap the Create New
-  // button between an icon-only square (collapsed) and a full label
-  // (expanded). The canonical Sidebar primitive owns the state.
-  const { state: sidebarState } = useSidebar();
-  const isCollapsed = sidebarState === "collapsed";
-
+  const { state: sidebarState, isMobile } = useSidebar();
   const menuItems = [];
 
   // 2026-04-10: Legacy technician sidebar entries (/technician, /daily-parts) removed.
@@ -241,22 +222,6 @@ export function AppSidebar({
       testId: "nav-price-book",
       hoverText: "Catalogue of priced products and services"
     });
-    // 2026-05-08 Inventory — capability-gated. The entry is pushed only
-    // when `inventory_core` is enabled for the tenant; the server-side
-    // requireFeature gate on /api/inventory/* is the authoritative
-    // enforcement. Pin: tests/inventory-foundation.test.ts.
-    if (inventoryEnabled) {
-      menuItems.push({
-        title: "Inventory",
-        icon: Boxes,
-        href: "/inventory",
-        isActive:
-          location === "/inventory" || location.startsWith("/inventory/"),
-        testId: "nav-inventory",
-        hoverText: "Track items, stock levels, and locations"
-      });
-    }
-
     // --- Group 4 leader: Clients → Suppliers (relationships) ---
     menuItems.push({
       title: "Clients",
@@ -319,92 +284,75 @@ export function AppSidebar({
   // not color.
   return (
     <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground" style={{ borderRight: 'none' }}>
-      {/* Sidebar collapse/expand toggle. Lives in its own row so it
-          doesn't fight with the Create New action below. */}
-      <SidebarHeader className="px-2 py-2 gap-2">
+      {/* Sidebar collapse/expand toggle — sits alone in the header
+          so it's always at the very top regardless of sidebar state. */}
+      <SidebarHeader className="px-2 py-2">
         <SidebarTrigger
           data-testid="button-sidebar-toggle"
           className="text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8"
         />
-        {/* 2026-05-07 RALPH — Create New action lives in the sidebar
-            now. Always visible (icon-only when sidebar is collapsed,
-            full label when expanded). Opens a dropdown that mirrors
-            the previous header dropdown so every flow it routed to
-            (job, client, invoice, quote, task, PM plan) is preserved. */}
-        {onOpenCreate && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                data-testid="button-create-new"
-                title="Create New"
-                aria-label="Create New"
-                className={
-                  isCollapsed
-                    ? "h-8 w-8 p-0 self-center inline-flex items-center justify-center rounded-lg bg-brand hover:bg-brand-hover text-white"
-                    : "h-8 self-center inline-flex items-center px-3 gap-1.5 rounded-lg text-nav-compact text-white font-medium bg-brand hover:bg-brand-hover"
-                }
-              >
-                <Plus className="h-4 w-4" />
-                {!isCollapsed && <span>New</span>}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" sideOffset={8} className="w-48">
-              <DropdownMenuItem
-                data-testid="quick-new-job"
-                onClick={() => onOpenCreate("job")}
-              >
-                <ClipboardList className="h-4 w-4 mr-2" />
-                New Job
-              </DropdownMenuItem>
-              {onOpenAddClient && (
-                <DropdownMenuItem
-                  data-testid="quick-new-client"
-                  onClick={onOpenAddClient}
-                >
-                  <Users className="h-4 w-4 mr-2" />
-                  New Client
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                data-testid="quick-new-invoice"
-                onClick={() => setLocation("/invoices/new")}
-              >
-                <Receipt className="h-4 w-4 mr-2" />
-                New Invoice
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="quick-new-quote"
-                onClick={() => setLocation("/quotes/new")}
-              >
-                <FileText className="h-4 w-4 mr-2" />
-                New Quote
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                data-testid="quick-new-task"
-                onClick={() => onOpenCreate("task")}
-              >
-                <CheckSquare className="h-4 w-4 mr-2" />
-                New Task
-              </DropdownMenuItem>
-              {onOpenCreatePm && (
-                <DropdownMenuItem
-                  data-testid="quick-new-pm"
-                  onClick={onOpenCreatePm}
-                >
-                  <Wrench className="h-4 w-4 mr-2" />
-                  New Service Plan
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
+              {/* Create — nav-integrated action at the top of the sidebar.
+                  2026-05-09: Approved redesign. The green pill in the
+                  SidebarHeader is replaced by a lightweight nav item that
+                  shares the same h-9 / gap-1 / px-1.5 rhythm as the rest
+                  of the nav. A matching compact icon-only button lives in
+                  the top header (App.tsx button-create-header) for fast
+                  access. Both share makeCreateMenuItems from createMenuConfig
+                  so the menu order, items, and testIds are always in sync. */}
+              {onOpenCreate && (
+                <>
+                  {/* Create — nav-integrated action.
+                      Root cause fix (2026-05-09): SidebarMenuButton is not a
+                      React.forwardRef component. When ActionMenu's DropdownMenuTrigger
+                      uses asChild (Radix Slot), it passes a positioning ref that
+                      SidebarMenuButton silently drops, so triggerRef.current stays null
+                      and the floating menu panel never renders ("does nothing").
+                      Fix: use a plain <button> (DOM element) as the trigger so the ref
+                      properly attaches. TooltipTrigger (IS a forwardRef component) wraps
+                      it for collapsed-state tooltip; the Tooltip context sits outside
+                      ActionMenu so TooltipContent can be a sibling. */}
+                  <SidebarMenuItem>
+                    <Tooltip>
+                      <ActionMenu
+                        header="CREATE NEW"
+                        items={makeCreateMenuItems({
+                          openCreate: onOpenCreate,
+                          openAddClient: onOpenAddClient,
+                          openCreatePm: onOpenCreatePm,
+                          navigate: setLocation,
+                        })}
+                        itemClassName="py-2"
+                        align="start"
+                        contentClassName="w-48"
+                        trigger={
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              data-testid="button-create-new"
+                              className="flex items-center gap-2 h-9 w-full px-2 rounded-md text-brand hover:opacity-75 transition-opacity group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+                            >
+                              <Plus className="h-4 w-4 shrink-0" />
+                              <span className="group-data-[collapsible=icon]:hidden">Create</span>
+                            </button>
+                          </TooltipTrigger>
+                        }
+                      />
+                      <TooltipContent
+                        side="right"
+                        hidden={sidebarState !== "collapsed" || isMobile}
+                      >
+                        Create
+                      </TooltipContent>
+                    </Tooltip>
+                  </SidebarMenuItem>
+                  <div className="mx-2 my-2 border-t border-white/10" />
+                </>
+              )}
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   {(item as any).isDivider && (

@@ -163,7 +163,7 @@ export function QuotePipelineCard({
             Quote Pipeline
           </CardShellTitle>
           {hasAny && (
-            <span className="text-helper text-text-muted tabular-nums shrink-0">
+            <span className="text-helper text-muted-foreground tabular-nums shrink-0">
               {totalCount} open
             </span>
           )}
@@ -172,7 +172,7 @@ export function QuotePipelineCard({
           <button
             type="button"
             onClick={() => setLocation("/quotes")}
-            className="text-helper font-semibold text-[#76B054] hover:underline"
+            className="text-helper font-semibold text-primary hover:underline"
             data-testid="quote-pipeline-view-all"
           >
             View all quotes
@@ -182,13 +182,13 @@ export function QuotePipelineCard({
 
       <div className="flex-1">
         {isLoading ? (
-          <div className="p-4 text-xs text-[#4b5563]">Loading quote pipeline…</div>
+          <div className="p-4 text-helper text-muted-foreground">Loading quote pipeline…</div>
         ) : !hasAny ? (
           <div className="px-4 py-6 text-center">
-            <p className="text-xs text-[#4b5563]">No quote actions right now.</p>
+            <p className="text-helper text-muted-foreground">No quote actions right now.</p>
           </div>
         ) : (
-          <div className="divide-y divide-[#e2e8f0]">
+          <div className="divide-y divide-card-border">
             {visibleBuckets.map((b) => {
               const Icon = b.icon;
               const remaining = b.count - b.visible.length;
@@ -197,18 +197,18 @@ export function QuotePipelineCard({
                   <button
                     type="button"
                     onClick={() => setLocation(b.destination)}
-                    className="w-full flex items-center justify-between px-4 pt-2 pb-1.5 text-left hover:bg-[#F0F5F0] transition-colors group"
+                    className="w-full flex items-center justify-between px-4 pt-2 pb-1.5 text-left hover:bg-primary/5 transition-colors group"
                   >
                     <div className="flex items-center gap-2 min-w-0">
                       <Icon className={`h-3.5 w-3.5 shrink-0 ${b.iconColor}`} />
-                      <span className="text-helper font-semibold uppercase tracking-wide text-[#4b5563] truncate">
+                      <span className="text-helper font-semibold uppercase tracking-wide text-muted-foreground truncate">
                         {b.label}
                       </span>
-                      <span className="text-helper text-[#111827] font-bold tabular-nums shrink-0">
+                      <span className="text-helper text-foreground font-bold tabular-nums shrink-0">
                         {b.count}
                       </span>
                     </div>
-                    <ChevronRight className="h-3.5 w-3.5 text-[#94a3b8] group-hover:text-[#111827] transition-colors shrink-0" />
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
                   </button>
                   <ul className="pb-1.5">
                     {b.visible.map((q) => (
@@ -225,7 +225,7 @@ export function QuotePipelineCard({
                         <button
                           type="button"
                           onClick={() => setLocation(b.destination)}
-                          className="w-full text-left px-4 py-1 text-helper text-[#76B054] hover:underline"
+                          className="w-full text-left px-4 py-1 text-helper text-primary hover:underline"
                         >
                           +{remaining} more →
                         </button>
@@ -262,30 +262,30 @@ function QuotePreviewRow({
       <button
         type="button"
         onClick={onOpen}
-        className="w-full flex items-center justify-between gap-2 px-4 py-1.5 hover:bg-[#F0F5F0] transition-colors group"
+        className="w-full flex items-center justify-between gap-2 px-4 py-1.5 hover:bg-primary/5 transition-colors group"
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-semibold text-[#111827] truncate">
+            <span className="text-helper font-semibold text-foreground truncate">
               {quote.customerName ?? "Unknown customer"}
             </span>
             {quote.total > 0 && (
-              <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
+              <span className="text-helper text-muted-foreground tabular-nums shrink-0">
                 · {money(quote.total)}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 text-helper text-[#6b7280] min-w-0">
+          <div className="flex items-center gap-1.5 text-helper text-muted-foreground min-w-0">
             <span className="truncate">{displayLabel}</span>
             {timingCopy && (
               <>
-                <span className="text-[#cbd5e1]">·</span>
+                <span className="text-muted-foreground/50">·</span>
                 <span className="shrink-0">{timingCopy}</span>
               </>
             )}
           </div>
         </div>
-        <span className="inline-flex items-center gap-0.5 text-helper font-semibold text-[#76B054] shrink-0 group-hover:underline">
+        <span className="inline-flex items-center gap-0.5 text-helper font-semibold text-primary shrink-0 group-hover:underline">
           {ctaLabel}
           <ChevronRight className="h-3 w-3" />
         </span>

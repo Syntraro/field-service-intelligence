@@ -1997,7 +1997,7 @@ export default function InvoiceDetailPage() {
       >
         {/* ═════════ LEFT COLUMN: header + body ═════════ */}
         <div
-          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden"
           data-testid="invoice-detail-left-column-shell"
         >
           {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer

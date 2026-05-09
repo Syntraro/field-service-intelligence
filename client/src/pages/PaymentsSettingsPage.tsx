@@ -308,7 +308,7 @@ export default function PaymentsSettingsPage() {
         <Card>
           <CardContent className="flex items-center gap-3 py-8 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="text-sm">Loading payment account…</span>
+            <span className="text-body">Loading payment account…</span>
           </CardContent>
         </Card>
       </div>
@@ -373,7 +373,7 @@ export default function PaymentsSettingsPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Country can't be changed after onboarding starts.
               </p>
             </div>
@@ -443,14 +443,14 @@ export default function PaymentsSettingsPage() {
                 testId="row-details-submitted"
               />
               {account.disabledReason ? (
-                <div className="text-sm text-destructive">
+                <div className="text-caption text-destructive">
                   <span className="font-medium">Reason:</span>{" "}
                   <span data-testid="text-disabled-reason">
                     {account.disabledReason}
                   </span>
                 </div>
               ) : null}
-              <div className="text-xs text-muted-foreground pt-2 border-t">
+              <div className="text-helper text-muted-foreground pt-2 border-t">
                 Provider:{" "}
                 <span className="capitalize">{account.provider}</span>
                 {account.country ? <> · Country: {account.country}</> : null}
@@ -538,7 +538,7 @@ export default function PaymentsSettingsPage() {
               </Button>
               {refreshMutation.isError ? (
                 <p
-                  className="text-xs text-destructive pt-1"
+                  className="text-helper text-destructive pt-1"
                   data-testid="text-refresh-warning"
                 >
                   Refresh failed:{" "}
@@ -587,12 +587,12 @@ function PageHeader() {
         </Link>
         <div>
           <h1
-            className="text-xl font-semibold"
+            className="text-title"
             data-testid="text-payments-settings-title"
           >
             Payments
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             Set up online card payments and bank-account payouts.
           </p>
         </div>

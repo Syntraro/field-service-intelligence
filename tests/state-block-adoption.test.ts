@@ -4,15 +4,13 @@
  * Verifies that migrated list pages pass typed StateBlock descriptors
  * through EntityListTable instead of hand-rolled ReactNode JSX.
  *
- * Migrated pages: Jobs, Leads, Quotes, Invoices, Suppliers, Inventory,
+ * Migrated pages: Jobs, Leads, Quotes, Invoices, Suppliers,
  *                 Clients, Locations, PMWorkspacePage.
  *
  * These pins fail if a future refactor:
  *   - Reintroduces hand-rolled loading/empty blocks on migrated pages
- *   - Re-adds CanonicalEmpty local function in InventoryPage
  *   - Re-imports EmptyState on migrated pages that now use descriptors
  *   - Re-adds Wrench/Loader2 imports to Jobs for state blocks
- *   - Removes errorState wiring from Inventory tables
  *   - Reverts Clients.tsx to legacyEmptyStateNode / EmptyState shim
  *   - Removes Locations typed descriptors or errorState
  *   - Reintroduces hand-rolled loading/empty divs in PMWorkspacePage tables
@@ -43,8 +41,6 @@ const invoices    = read("client/src/pages/InvoicesListPage.tsx");
 const invCode     = stripComments(invoices);
 const suppliers   = read("client/src/pages/SuppliersListPage.tsx");
 const suppCode    = stripComments(suppliers);
-const inventory   = read("client/src/pages/InventoryPage.tsx");
-const invtCode    = stripComments(inventory);
 const clients     = read("client/src/pages/Clients.tsx");
 const clientsCode = stripComments(clients);
 const locations   = read("client/src/pages/Locations.tsx");
@@ -187,93 +183,6 @@ describe("Suppliers — no hand-rolled state JSX", () => {
   it("has no text-center text-sm text-muted-foreground py-8 empty block", () => {
     expect(suppCode).not.toMatch(/className="text-center text-sm text-muted-foreground py-8"/);
   });
-});
-
-// ── Inventory ─────────────────────────────────────────────────────────
-
-describe("Inventory — StateBlock descriptor adoption", () => {
-  it("passes emptyState as typed descriptor for Items table", () => {
-    expect(inventory).toMatch(/testId:\s*"inventory-items-empty"/);
-  });
-
-  it("passes emptyState as typed descriptor for Locations table", () => {
-    expect(inventory).toMatch(/testId:\s*"inventory-locations-empty"/);
-  });
-
-  it("passes emptyState as typed descriptor for Low Stock table", () => {
-    expect(inventory).toMatch(/testId:\s*"inventory-low-stock-empty"/);
-  });
-
-  it("uses StateBlock directly for Transfers tab", () => {
-    expect(inventory).toMatch(/<StateBlock[\s\S]{0,400}?testId="inventory-transfers-empty"/);
-  });
-
-  it("uses StateBlock directly for Adjustments tab", () => {
-    expect(inventory).toMatch(/<StateBlock[\s\S]{0,400}?testId="inventory-adjustments-empty"/);
-  });
-
-  it("uses StateBlock directly for Counts tab", () => {
-    expect(inventory).toMatch(/<StateBlock[\s\S]{0,400}?testId="inventory-counts-empty"/);
-  });
-
-  it("skeleton loading preserved via legacyLoadingStateNode (intentional UX pattern)", () => {
-    expect(inventory).toMatch(/legacyLoadingStateNode/);
-  });
-});
-
-describe("Inventory — CanonicalEmpty removed", () => {
-  it("does not define local CanonicalEmpty function", () => {
-    expect(invtCode).not.toMatch(/function CanonicalEmpty\b/);
-  });
-
-  it("does not call <CanonicalEmpty in any JSX", () => {
-    expect(invtCode).not.toMatch(/<CanonicalEmpty\b/);
-  });
-});
-
-describe("Inventory — errorState wired on all EntityListTable instances", () => {
-  it("Items table passes errorState with kind='error'", () => {
-    expect(inventory).toMatch(/itemsQuery\.isError[\s\S]{0,300}?kind:\s*"error"/);
-  });
-
-  it("Items table errorState has Retry primaryAction", () => {
-    expect(inventory).toMatch(/itemsQuery\.isError[\s\S]{0,400}?Retry/);
-  });
-
-  it("Items table Retry onClick calls itemsQuery.refetch", () => {
-    expect(inventory).toMatch(/itemsQuery\.isError[\s\S]{0,500}?itemsQuery\.refetch/);
-  });
-
-  it("Locations table passes errorState with kind='error'", () => {
-    expect(inventory).toMatch(/locationsQuery\.isError[\s\S]{0,300}?kind:\s*"error"/);
-  });
-
-  it("Locations table errorState has Retry primaryAction", () => {
-    expect(inventory).toMatch(/locationsQuery\.isError[\s\S]{0,400}?Retry/);
-  });
-
-  it("Locations table Retry onClick calls locationsQuery.refetch", () => {
-    expect(inventory).toMatch(/locationsQuery\.isError[\s\S]{0,500}?locationsQuery\.refetch/);
-  });
-
-  it("LowStock table passes errorState with kind='error'", () => {
-    expect(inventory).toMatch(/lowStockQuery\.isError[\s\S]{0,300}?kind:\s*"error"/);
-  });
-
-  it("LowStock table errorState has Retry primaryAction", () => {
-    expect(inventory).toMatch(/lowStockQuery\.isError[\s\S]{0,400}?Retry/);
-  });
-
-  it("LowStock table Retry onClick calls lowStockQuery.refetch", () => {
-    expect(inventory).toMatch(/lowStockQuery\.isError[\s\S]{0,500}?lowStockQuery\.refetch/);
-  });
-
-  it("skeleton loading preserved — legacyLoadingStateNode still present", () => {
-    // Skeleton rows are intentionally better UX than a generic spinner.
-    // This pin fails if legacyLoadingStateNode is removed and replaced by loadingState.
-    expect(inventory).toMatch(/legacyLoadingStateNode/);
-  });
-
 });
 
 // ── Clients ───────────────────────────────────────────────────────────

@@ -276,11 +276,16 @@ export interface CanonicalDetailHeaderProps {
 
 // ── Alert tone → CSS class map ─────────────────────────────────────────
 
+// 2026-05-09 Phase 3.1: replaced hardcoded palette classes with semantic tokens.
+// 2026-05-09 Phase 3.1 fix: warning uses text-warning-foreground (dark amber, ~4.88:1 WCAG AA)
+//   not text-warning (--warning amber fill = 2.18:1, inaccessible as text on white bg).
+// text-info    = --info    (blue-600, passes WCAG AA on light bg).
+// text-success = --success (emerald-600, passes WCAG AA on light bg).
 const ALERT_TONE_CLASS: Record<AlertTone, string> = {
-  warning: "text-amber-700",
-  info: "text-blue-600",
-  error: "text-destructive",
-  success: "text-emerald-700",
+  warning: "text-warning-foreground",
+  info:    "text-info",
+  error:   "text-destructive",
+  success: "text-success",
 };
 
 // ── Card-mode render helpers ───────────────────────────────────────────
@@ -307,7 +312,7 @@ function renderHeaderAction(action: HeaderAction) {
       <Button
         variant="outline"
         size="sm"
-        className="gap-1 text-xs h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
+        className="gap-1 text-xs h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
         onClick={action.onClick}
         disabled={action.disabled}
         data-testid={action.testId}

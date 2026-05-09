@@ -10,10 +10,8 @@
  * Edit-on-click is handled by the parent (DayView) which mounts a
  * focused `TimeEntryEditModal`. This card never expands inline.
  */
-import { format, parseISO } from "date-fns";
-import { Lock } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { TimeEntryRowCompact, type TimeEntryRowCompactDatum } from "./TimeEntryRowCompact";
+import { TimesheetEntryCard } from "./TimesheetEntryCard";
 
 export interface JobGroupEntry extends TimeEntryRowCompactDatum {
   jobId: string | null;
@@ -50,21 +48,6 @@ function formatMinutes(minutes: number): string {
   return `${hrs}h ${mins}m`;
 }
 
-function formatTime(iso: string | null): string {
-  if (!iso) return "—";
-  return format(parseISO(iso), "h:mm a");
-}
-
-function formatDurationCompact(minutes: number | null): string {
-  if (minutes == null) return "Live";
-  if (minutes === 0) return "0m";
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  if (hrs === 0) return `${mins}m`;
-  if (mins === 0) return `${hrs}h`;
-  return `${hrs}h ${mins}m`;
-}
-
 export function JobTimeGroupCard({
   variant,
   jobId,
@@ -97,43 +80,17 @@ export function JobTimeGroupCard({
         data-variant="general"
       >
         <div data-testid={`${groupTestId}-rows`}>
-          {entries.map((entry, idx) => {
-            const locked = isEntryLocked(entry);
-            const isRunning = entry.endAt == null;
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => onEditEntry(entry)}
-                className={cn(
-                  "w-full flex items-center gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-slate-50",
-                  idx > 0 && "border-t border-slate-100",
-                  locked && "opacity-75",
-                )}
-                data-testid={`day-entry-compact-${entry.id}`}
-                title={locked ? "Open locked entry" : "Edit entry"}
-              >
-                <span className="text-sm font-semibold text-slate-700">General</span>
-                <span className="font-mono tabular-nums text-foreground/70">
-                  {formatTime(entry.startAt)} → {formatTime(entry.endAt)}
-                </span>
-                {locked && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600">
-                    <Lock className="h-3 w-3" /> Locked
-                  </span>
-                )}
-                <span
-                  className={cn(
-                    "ml-auto shrink-0 font-mono text-sm font-bold tabular-nums",
-                    isRunning && "animate-pulse text-emerald-600",
-                  )}
-                  data-testid={`day-entry-compact-duration-${entry.id}`}
-                >
-                  {formatDurationCompact(entry.durationMinutes)}
-                </span>
-              </button>
-            );
-          })}
+          {entries.map((entry, idx) => (
+            <TimesheetEntryCard
+              key={entry.id}
+              variant="general-flat"
+              entry={entry}
+              isLocked={isEntryLocked(entry)}
+              onEdit={() => onEditEntry(entry)}
+              onClockOut={() => onClockOutEntry(entry.id)}
+              index={idx}
+            />
+          ))}
         </div>
       </div>
     );
@@ -152,19 +109,19 @@ export function JobTimeGroupCard({
             type="button"
             onClick={() => jobId && onJobClick?.(jobId)}
             disabled={!jobId}
-            className="shrink-0 text-sm font-bold text-primary hover:underline disabled:no-underline tabular-nums"
+            className="shrink-0 text-row font-bold text-primary hover:underline disabled:no-underline tabular-nums"
             data-testid="job-group-job-number"
           >
             #{jobNumber ?? "?"}
           </button>
           {locationName && (
             <>
-              <span className="shrink-0 text-sm font-semibold text-slate-400">—</span>
+              <span className="shrink-0 text-row font-semibold text-muted-foreground">—</span>
               <button
                 type="button"
                 onClick={() => locationId && onLocationClick?.(locationId)}
                 disabled={!locationId}
-                className="truncate text-sm font-semibold text-primary hover:underline disabled:no-underline"
+                className="truncate text-row font-semibold text-primary hover:underline disabled:no-underline"
                 data-testid="job-group-location"
               >
                 {locationName}
@@ -173,9 +130,9 @@ export function JobTimeGroupCard({
           )}
           {jobSummary && (
             <>
-              <span className="shrink-0 text-sm font-medium text-slate-400">/</span>
+              <span className="shrink-0 text-row font-medium text-muted-foreground">/</span>
               <span
-                className="truncate text-sm text-slate-600"
+                className="truncate text-row text-muted-foreground"
                 data-testid="job-group-summary"
                 title={jobSummary}
               >
@@ -184,7 +141,7 @@ export function JobTimeGroupCard({
             </>
           )}
         </div>
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+        <span className="ml-auto shrink-0 text-helper text-muted-foreground tabular-nums">
           Total{" "}
           <strong className="ml-1 font-mono text-foreground">
             {formatMinutes(total)}

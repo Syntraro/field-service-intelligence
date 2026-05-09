@@ -297,10 +297,23 @@ export default {
         },
         "sidebar-bg":      "hsl(var(--sidebar-bg) / <alpha-value>)",
         "header-bg":       "hsl(var(--header-bg) / <alpha-value>)",
-        success:           "hsl(var(--success) / <alpha-value>)",
-        warning:           "hsl(var(--warning) / <alpha-value>)",
+        // 2026-05-09 Phase 3.1: extended to nested objects so
+        // text-success-foreground / bg-success-foreground etc. resolve
+        // to the new --*-foreground CSS variables. DEFAULT (text-success,
+        // bg-success, border-success) is unchanged — the fill color.
+        success: {
+          DEFAULT:    "hsl(var(--success) / <alpha-value>)",
+          foreground: "hsl(var(--success-foreground) / <alpha-value>)",
+        },
+        warning: {
+          DEFAULT:    "hsl(var(--warning) / <alpha-value>)",
+          foreground: "hsl(var(--warning-foreground) / <alpha-value>)",
+        },
         danger:            "hsl(var(--danger) / <alpha-value>)",
-        info:              "hsl(var(--info) / <alpha-value>)",
+        info: {
+          DEFAULT:    "hsl(var(--info) / <alpha-value>)",
+          foreground: "hsl(var(--info-foreground) / <alpha-value>)",
+        },
 
         // Accessible neutral gray palette
         gray: {

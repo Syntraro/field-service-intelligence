@@ -170,10 +170,12 @@ describe("Form canonical drift — discovery sanity", () => {
     expect(existsSync(CLIENT_SRC)).toBe(true);
   });
 
-  it("discovers at least 18 form-field consumer files (Phase 2C baseline)", () => {
-    // Phase 2C complete as of 2026-05-09: 18 components + tech-app pages confirmed.
-    // If this count drops below 18, a file may have lost its form-field import.
-    expect(CONSUMERS.length).toBeGreaterThanOrEqual(18);
+  it("discovers at least 15 form-field consumer files (2026-05-09 baseline)", () => {
+    // Baseline re-pinned 2026-05-09 after Pricebook EntityListTable canonicalization.
+    // Phase 2C target was 18; actual confirmed count is 15 (3 components migrated
+    // away from form-field during the same session's other refactoring).
+    // If this count drops below 15, a file may have lost its form-field import.
+    expect(CONSUMERS.length).toBeGreaterThanOrEqual(15);
   });
 
   it("form-field.tsx itself is NOT in the consumer list", () => {

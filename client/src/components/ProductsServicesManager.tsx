@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useProductsServices } from "@/hooks/useProductsServices";
 import { ProductsServicesToolbar } from "@/components/products-services/ProductsServicesToolbar";
-import { ProductsServicesTable } from "@/components/products-services/ProductsServicesTable";
 import { ProductServiceFormDialog } from "@/components/products-services/ProductServiceFormDialog";
 import {
   DeleteConfirmDialog,
@@ -10,15 +9,11 @@ import {
   BulkDeleteDialog,
   BulkCategoryDialog,
 } from "@/components/products-services/ProductServiceDeleteDialog";
-import { Part, ProductFormData, defaultFormData } from "@/components/products-services/types";
+import { Part, ProductFormData, defaultFormData, formatDuration } from "@/components/products-services/types";
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export default function ProductsServicesManager() {
-  // 2026-04-08: P5 — Removed `seedPartsMutation` (called non-existent
-  // POST /api/items/seed). Removed in-page Import dialog (called non-existent
-  // POST /api/items/import). The toolbar Import button now navigates to the
-  // canonical /settings/import-products page which uses the implemented
-  // /api/imports/products/{preview,commit} flow.
-
   const [, setLocation] = useLocation();
 
   // Dialog state
@@ -33,19 +28,16 @@ export default function ProductsServicesManager() {
   const [bulkCategoryDialogOpen, setBulkCategoryDialogOpen] = useState(false);
   const [bulkCategoryValue, setBulkCategoryValue] = useState("");
 
-  // Close dialog callback for the hook
   const handleCloseDialog = useCallback(() => {
     setProductDialogOpen(false);
     setEditingProduct(null);
     setFormData(defaultFormData);
   }, []);
 
-  // Hook
   const {
     filteredAndSortedParts,
     uniqueCategories,
     isLoading,
-    allParts,
     searchQuery,
     setSearchQuery,
     debouncedSearch,
@@ -59,15 +51,8 @@ export default function ProductsServicesManager() {
     sortDirection,
     handleSort,
     selectedIds,
-    setSelectedIds,
     handleSelectAll,
     handleSelectOne,
-    inlineEditId,
-    inlineEditField,
-    inlineEditValue,
-    setInlineEditValue,
-    handleInlineEdit,
-    handleInlineEditSave,
     createMutation,
     updateMutation,
     deletePartMutation,
@@ -78,22 +63,19 @@ export default function ProductsServicesManager() {
     handleExportSelected,
     handleSaveProduct,
     checkDuplicate,
-    toast,
   } = useProductsServices({ onCloseDialog: handleCloseDialog });
 
-  // Computed duplicate check for current form
   const duplicateItem = useMemo(() => {
     return checkDuplicate(formData, editingProduct);
   }, [checkDuplicate, formData, editingProduct]);
 
-  // Handlers
   const handleOpenAddDialog = () => {
     setEditingProduct(null);
     setFormData(defaultFormData);
     setProductDialogOpen(true);
   };
 
-  const handleOpenEditDialog = (product: Part) => {
+  const handleOpenEditDialog = useCallback((product: Part) => {
     setEditingProduct(product);
     setFormData({
       type: (product.type as "service" | "product") || "product",
@@ -110,16 +92,10 @@ export default function ProductsServicesManager() {
       estimatedDurationMinutes: product.estimatedDurationMinutes != null ? String(product.estimatedDurationMinutes) : "",
     });
     setProductDialogOpen(true);
-  };
+  }, []);
 
   const handleSaveClick = () => {
-    const success = handleSaveProduct(formData, editingProduct);
-    // Dialog will be closed by onCloseDialog callback on mutation success
-  };
-
-  const handleArchiveClick = (product: Part) => {
-    setProductToArchive(product);
-    setArchiveConfirmOpen(true);
+    handleSaveProduct(formData, editingProduct);
   };
 
   const handleConfirmArchive = () => {
@@ -130,11 +106,6 @@ export default function ProductsServicesManager() {
     }
   };
 
-  const handleDeleteClick = (product: Part) => {
-    setProductToDelete(product);
-    setDeleteConfirmOpen(true);
-  };
-
   const handleConfirmDelete = () => {
     if (productToDelete) {
       deletePartMutation.mutate(productToDelete.id);
@@ -142,6 +113,25 @@ export default function ProductsServicesManager() {
       setProductToDelete(null);
     }
   };
+
+  // Called from inside the edit modal — close modal first, then open confirm
+  const handleArchiveFromModal = useCallback(() => {
+    if (editingProduct) {
+      const product = editingProduct;
+      handleCloseDialog();
+      setProductToArchive(product);
+      setArchiveConfirmOpen(true);
+    }
+  }, [editingProduct, handleCloseDialog]);
+
+  const handleDeleteFromModal = useCallback(() => {
+    if (editingProduct) {
+      const product = editingProduct;
+      handleCloseDialog();
+      setProductToDelete(product);
+      setDeleteConfirmOpen(true);
+    }
+  }, [editingProduct, handleCloseDialog]);
 
   const handleBulkDelete = () => {
     bulkDeleteMutation.mutate(Array.from(selectedIds));
@@ -154,9 +144,111 @@ export default function ProductsServicesManager() {
     setBulkCategoryValue("");
   };
 
+  const allSelected = filteredAndSortedParts.length > 0 && selectedIds.size === filteredAndSortedParts.length;
+  const someSelected = selectedIds.size > 0 && selectedIds.size < filteredAndSortedParts.length;
+
+  const columns = useMemo<EntityListColumn<Part>[]>(() => [
+    {
+      id: "select",
+      header: (
+        <Checkbox
+          checked={allSelected ? true : someSelected ? "indeterminate" : false}
+          onCheckedChange={() => handleSelectAll()}
+          aria-label="Select all"
+        />
+      ),
+      kind: "select",
+      cell: {
+        type: "customRender",
+        reason: "CHECKBOX — bulk selection state machine with per-row toggle",
+        render: (row: Part) => (
+          <Checkbox
+            checked={selectedIds.has(row.id)}
+            onCheckedChange={(checked) => handleSelectOne(row.id, checked as boolean)}
+            aria-label={`Select ${row.name ?? "item"}`}
+          />
+        ),
+      },
+    },
+    {
+      id: "name",
+      header: "Name",
+      kind: "primary",
+      sortKey: "name",
+      cell: {
+        type: "entity-primary",
+        value: (row) => row.name,
+        secondary: (row) => row.description || null,
+      },
+    },
+    {
+      id: "type",
+      header: "Type",
+      kind: "badge",
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (row) => ({
+          label: row.type === "service" ? "Service" : "Product",
+          tone: row.type === "service" ? "info" : "neutral",
+        }),
+      },
+    },
+    {
+      id: "category",
+      header: "Category",
+      kind: "text",
+      sortKey: "category",
+      cell: {
+        type: "entity-text",
+        value: (row) => row.category || null,
+      },
+    },
+    {
+      id: "cost",
+      header: "Cost",
+      kind: "money",
+      sortKey: "cost",
+      cell: {
+        type: "entity-money",
+        value: (row) => row.cost,
+      },
+    },
+    {
+      id: "price",
+      header: "Price",
+      kind: "money",
+      sortKey: "unitPrice",
+      cell: {
+        type: "entity-money",
+        value: (row) => row.unitPrice,
+      },
+    },
+    {
+      id: "duration",
+      header: "Duration",
+      kind: "text",
+      sortKey: "estimatedDurationMinutes",
+      cell: {
+        type: "entity-text",
+        value: (row) => formatDuration(row.estimatedDurationMinutes),
+      },
+    },
+    {
+      id: "status",
+      header: "Status",
+      kind: "status",
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (row) => ({
+          label: row.isActive === false ? "Archived" : "Active",
+          tone: row.isActive === false ? "neutral" : "success",
+        }),
+      },
+    },
+  ], [allSelected, someSelected, selectedIds, handleSelectAll, handleSelectOne]);
+
   return (
     <div className="space-y-4" data-testid="products-services-manager">
-      {/* Toolbar */}
       <ProductsServicesToolbar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -179,29 +271,22 @@ export default function ProductsServicesManager() {
         bulkArchivePending={bulkArchiveMutation.isPending}
       />
 
-      {/* Table */}
-      <ProductsServicesTable
-        parts={filteredAndSortedParts}
-        isLoading={isLoading}
-        searchQuery={debouncedSearch}
-        selectedIds={selectedIds}
-        onSelectAll={handleSelectAll}
-        onSelectOne={handleSelectOne}
+      <EntityListTable
+        rows={filteredAndSortedParts}
+        columns={columns}
+        rowKey={(row) => row.id}
+        onRowClick={handleOpenEditDialog}
+        loadingState={isLoading}
+        emptyState={{
+          kind: "empty",
+          title: debouncedSearch ? "No items match your search" : "No items yet",
+          description: debouncedSearch ? "Try adjusting your filters." : "Add a product or service to get started.",
+        }}
         sortField={sortField}
         sortDirection={sortDirection}
-        onSort={handleSort}
-        inlineEditId={inlineEditId}
-        inlineEditField={inlineEditField}
-        inlineEditValue={inlineEditValue}
-        onInlineEditValueChange={setInlineEditValue}
-        onInlineEdit={handleInlineEdit}
-        onInlineEditSave={handleInlineEditSave}
-        onEditClick={handleOpenEditDialog}
-        onArchiveClick={handleArchiveClick}
-        onDeleteClick={handleDeleteClick}
+        onSort={(key) => handleSort(key as Parameters<typeof handleSort>[0])}
       />
 
-      {/* Form Dialog */}
       <ProductServiceFormDialog
         open={productDialogOpen}
         onOpenChange={setProductDialogOpen}
@@ -213,9 +298,10 @@ export default function ProductsServicesManager() {
         isSaving={createMutation.isPending || updateMutation.isPending}
         checkDuplicate={duplicateItem}
         uniqueCategories={uniqueCategories}
+        onArchiveClick={handleArchiveFromModal}
+        onDeleteClick={handleDeleteFromModal}
       />
 
-      {/* Delete Confirmation */}
       <DeleteConfirmDialog
         open={deleteConfirmOpen}
         onOpenChange={setDeleteConfirmOpen}
@@ -223,7 +309,6 @@ export default function ProductsServicesManager() {
         onConfirm={handleConfirmDelete}
       />
 
-      {/* Archive Confirmation */}
       <ArchiveConfirmDialog
         open={archiveConfirmOpen}
         onOpenChange={setArchiveConfirmOpen}
@@ -231,7 +316,6 @@ export default function ProductsServicesManager() {
         onConfirm={handleConfirmArchive}
       />
 
-      {/* Bulk Delete */}
       <BulkDeleteDialog
         open={bulkDeleteDialogOpen}
         onOpenChange={setBulkDeleteDialogOpen}
@@ -239,7 +323,6 @@ export default function ProductsServicesManager() {
         onConfirm={handleBulkDelete}
       />
 
-      {/* Bulk Category */}
       <BulkCategoryDialog
         open={bulkCategoryDialogOpen}
         onOpenChange={setBulkCategoryDialogOpen}
@@ -250,7 +333,6 @@ export default function ProductsServicesManager() {
         onApply={handleBulkCategory}
         isPending={bulkCategoryMutation.isPending}
       />
-
     </div>
   );
 }

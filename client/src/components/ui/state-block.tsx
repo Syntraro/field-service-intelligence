@@ -122,11 +122,14 @@ const OUTER_PAD: Record<StateBlockSize, string> = {
 };
 
 // Renderer-owned icon color per tone (semantic tokens only — no text-slate/red/rose).
+// 2026-05-09 Phase 3.1: text-amber-500 → text-warning-foreground (dark amber, ~4.88:1 WCAG AA).
+//   text-warning = amber fill (#F59E0B, 2.18:1) — inaccessible as icon color on white bg.
+//   text-sky-500 → text-info.
 function iconColor(tone: StateBlockTone): string {
   switch (tone) {
     case "danger":  return "text-destructive";
-    case "warning": return "text-amber-500";
-    case "info":    return "text-sky-500";
+    case "warning": return "text-warning-foreground";
+    case "info":    return "text-info";
     default:        return "text-muted-foreground/60";
   }
 }

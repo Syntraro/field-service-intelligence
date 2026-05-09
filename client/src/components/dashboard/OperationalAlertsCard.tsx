@@ -203,7 +203,7 @@ export function OperationalAlertsCard({
         <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
           <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
         </div>
-        <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
+        <h3 className="text-sm font-semibold text-foreground truncate">
           Operational alerts
         </h3>
         {!isLoading && (
@@ -258,7 +258,7 @@ export function OperationalAlertsCard({
                           ? "bg-red-50/40 hover:bg-red-50"
                           : muted
                             ? "cursor-default"
-                            : "hover:bg-[#F0F5F0]"
+                            : "hover:bg-primary/5"
                       }`}
                     >
                       <Icon
@@ -267,7 +267,7 @@ export function OperationalAlertsCard({
                         }`}
                       />
                       <span
-                        className={`flex-1 text-xs font-medium truncate ${
+                        className={`flex-1 text-helper font-medium truncate ${
                           muted
                             ? "text-slate-400"
                             : row.urgent
@@ -278,12 +278,12 @@ export function OperationalAlertsCard({
                         {row.label}
                       </span>
                       <span
-                        className={`text-sm font-semibold tabular-nums shrink-0 ${
+                        className={`text-row font-semibold tabular-nums shrink-0 ${
                           muted
                             ? "text-slate-400"
                             : row.urgent
                               ? "text-red-700"
-                              : "text-[#111827] dark:text-gray-100"
+                              : "text-foreground"
                         }`}
                       >
                         {row.count}

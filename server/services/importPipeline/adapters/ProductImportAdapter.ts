@@ -48,7 +48,6 @@ const FIELD_DEFS: readonly AdapterFieldDef[] = [
   { key: "isTaxable", label: "Taxable", required: false },
   { key: "isActive", label: "Active", required: false },
   { key: "estimatedDurationMinutes", label: "Duration (minutes)", required: false },
-  { key: "trackInventory", label: "Track Inventory", required: false },
   { key: "sku", label: "SKU", required: false },
 ];
 
@@ -98,10 +97,6 @@ const RAW_ALIASES: Record<string, keyof ProductImportRow> = {
   "duration (minutes)": "estimatedDurationMinutes",
   "estimated duration": "estimatedDurationMinutes",
   "time (minutes)": "estimatedDurationMinutes",
-  // Track inventory
-  "track inventory": "trackInventory",
-  inventory: "trackInventory",
-  "track stock": "trackInventory",
   // SKU
   sku: "sku",
   "item code": "sku",
@@ -177,7 +172,6 @@ export const productImportAdapter: ImportAdapter<
     const isTaxable = coerceBoolean(raw.isTaxable, true);
     const isActive = coerceBoolean(raw.isActive, true);
     const estimatedDurationMinutes = parseInteger(raw.estimatedDurationMinutes);
-    const trackInventory = coerceBoolean(raw.trackInventory, false);
     const sku = trimOrNull(raw.sku);
 
     return {
@@ -189,7 +183,6 @@ export const productImportAdapter: ImportAdapter<
       isTaxable,
       isActive,
       estimatedDurationMinutes,
-      trackInventory,
       sku,
     };
   },
@@ -393,7 +386,6 @@ export const productImportAdapter: ImportAdapter<
       isTaxable: row.isTaxable,
       isActive: row.isActive,
       estimatedDurationMinutes: row.estimatedDurationMinutes,
-      trackInventory: row.trackInventory,
       sku: row.sku,
       category: null,
     });

@@ -21,7 +21,6 @@ export const productImportRowSchema = z.object({
   isTaxable: z.boolean(),
   isActive: z.boolean(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
-  trackInventory: z.boolean(),
   sku: z.string().nullable().optional(),
 });
 
@@ -40,7 +39,6 @@ export const PRODUCT_FIELD_DEFS = [
   { key: "isTaxable", label: "Taxable", required: false },
   { key: "isActive", label: "Active", required: false },
   { key: "estimatedDurationMinutes", label: "Duration (minutes)", required: false },
-  { key: "trackInventory", label: "Track Inventory", required: false },
   { key: "sku", label: "SKU", required: false },
 ] as const;
 

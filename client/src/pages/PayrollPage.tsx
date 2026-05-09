@@ -621,8 +621,8 @@ export default function PayrollPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Timesheets</h1>
-          <p className="text-muted-foreground text-sm">Weekly and daily time tracking</p>
+          <h1 className="text-title">Timesheets</h1>
+          <p className="text-muted-foreground text-row">Weekly and daily time tracking</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -655,7 +655,7 @@ export default function PayrollPage() {
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPreviousWeek}><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={weekCalendarOpen} onOpenChange={setWeekCalendarOpen}>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-2 font-medium text-sm min-w-[200px] justify-center">
+                <Button variant="outline" size="sm" className="h-8 gap-2 font-medium text-row min-w-[200px] justify-center">
                   <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
                   {format(parseISO(weekStart), "MMM d")} – {format(parseISO(weekEnd), "MMM d, yyyy")}
                 </Button>
@@ -683,7 +683,7 @@ export default function PayrollPage() {
             <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={goToPreviousDay} aria-label="Previous day"><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
               <PopoverTrigger asChild>
-                <Button variant="outline" className="h-9 gap-2 font-semibold text-sm px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
+                <Button variant="outline" className="h-9 gap-2 font-semibold text-row px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
                   <CalendarIcon className="h-4 w-4 text-primary" />
                   {format(parseISO(dayViewDate), "EEE, MMM d, yyyy")}
                 </Button>
@@ -696,7 +696,7 @@ export default function PayrollPage() {
             <button
               type="button"
               onClick={goToToday}
-              className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+              className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-row font-medium text-foreground hover:bg-slate-50 hover:border-slate-300 transition-colors"
             >
               Today
             </button>
@@ -708,7 +708,7 @@ export default function PayrollPage() {
             >
               <button
                 type="button"
-                className="px-3 py-1.5 text-sm font-medium rounded bg-white text-slate-900 shadow-sm"
+                className="px-3 py-1.5 text-row font-medium rounded bg-white text-foreground shadow-sm"
                 aria-current="page"
                 data-testid="view-toggle-day"
               >
@@ -717,7 +717,7 @@ export default function PayrollPage() {
               <button
                 type="button"
                 onClick={() => setLocation("/timesheets")}
-                className="px-3 py-1.5 text-sm font-medium rounded text-slate-500 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+                className="px-3 py-1.5 text-row font-medium rounded text-muted-foreground hover:text-foreground hover:bg-slate-200 transition-colors"
                 data-testid="view-toggle-week"
               >
                 Week
@@ -753,9 +753,9 @@ export default function PayrollPage() {
                     const tech = technicians.find(t => t.id === weekTechId);
                     return (
                       <>
-                        <span className="text-sm font-semibold">{getTechName(weekTechId)}</span>
+                        <span className="text-row font-semibold">{getTechName(weekTechId)}</span>
                         {tech?.email && (
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <span className="flex items-center gap-1 text-helper text-muted-foreground">
                             <Mail className="h-3 w-3" />{tech.email}
                           </span>
                         )}
@@ -790,7 +790,7 @@ export default function PayrollPage() {
                         return (
                           <div
                             className={cn(
-                              "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
+                              "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-helper",
                               style.chip,
                             )}
                             data-testid={`week-category-total-${cat}`}
@@ -818,7 +818,7 @@ export default function PayrollPage() {
                     <div className="text-right">
                       {/* Shift total — sourced from work_sessions via currentSummary (payroll attendance), not time_entries. */}
                       <p className="font-mono font-semibold text-sm">{formatMinutes(currentSummary?.totalMinutes ?? 0)}</p>
-                      <p className="text-xs text-muted-foreground">total</p>
+                      <p className="text-helper text-muted-foreground">total</p>
                     </div>
                     {currentSummary?.approved ? (
                       <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
@@ -889,7 +889,7 @@ export default function PayrollPage() {
           {/* Read-only contract notice — week mode is overview-only.
               Edits happen on the Day View. */}
           {weekTechId && weekTimelineVm && (
-            <p className="text-xs text-muted-foreground italic">
+            <p className="text-helper text-muted-foreground italic">
               Read-only weekly overview. To edit a time entry, click the day or block.
             </p>
           )}
@@ -906,7 +906,7 @@ export default function PayrollPage() {
                       <TableRow>
                         <TableHead className="w-[220px]">Job</TableHead>
                         {DAY_ABBREVS.map((day, i) => (
-                          <TableHead key={day} className="text-center w-[80px] text-xs">
+                          <TableHead key={day} className="text-center w-[80px] text-helper">
                             {day}<br />
                             <span className="text-muted-foreground font-normal">{format(parseISO(weekDates[i]), "M/d")}</span>
                           </TableHead>
@@ -1006,7 +1006,7 @@ export default function PayrollPage() {
                             {weekDates.map((_, i) => {
                               const dailyTotal = currentSummary?.daily[i]?.totalMinutes ?? 0;
                               return (
-                                <TableCell key={i} className="text-center text-xs font-mono">
+                                <TableCell key={i} className="text-center text-helper font-mono">
                                   {dailyTotal === 0 ? "-" : formatMinutes(dailyTotal)}
                                 </TableCell>
                               );
@@ -1024,7 +1024,7 @@ export default function PayrollPage() {
                   "flex items-center justify-between mt-3 pt-3 border-t transition-all",
                   hasPendingEdits ? "opacity-100" : "opacity-40 pointer-events-none"
                 )}>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-helper text-muted-foreground">
                     {hasPendingEdits
                       ? `${Object.keys(pendingEdits).length} unsaved change(s)`
                       : "No unsaved changes"}

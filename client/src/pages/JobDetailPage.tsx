@@ -133,11 +133,6 @@ import { useAuth } from "@/lib/auth";
 import type { User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
-// 2026-05-08 — Inventory Phase 3: capability-gated section that
-// auto-hides when the tenant doesn't have inventory_core. Mounts
-// between Line Items and Billing Summary in the main column.
-import { JobInventoryUsageSection } from "@/components/inventory/JobInventoryUsageSection";
-import { JobReservationsSection } from "@/components/inventory/JobReservationsSection";
 // 2026-05-06 RALPH: dedupe-resolver for the service-address location
 // label. Shared with InvoiceDetailPage so both surfaces apply the same
 // raw-only / no-customer-duplicate rule.
@@ -1794,7 +1789,7 @@ export default function JobDetailPage() {
 
         {/* ═════════ LEFT COLUMN: page header + body ═════════ */}
         <div
-          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden"
           data-testid="job-detail-left-column-shell"
         >
         {/* ──────────── BODY ────────────
@@ -2084,19 +2079,6 @@ export default function JobDetailPage() {
                 jobId={jobId!}
                 onTotalsChange={setBillingTotals}
               />
-
-              {/* INVENTORY USAGE — 2026-05-08 Phase 3. Capability-gated
-                  (the section auto-hides via useFeatureEnabled when the
-                  tenant doesn't have inventory_core). Sits between
-                  Line Items (catalog selections) and Billing Summary
-                  (totals) so the page composition reads:
-                  catalog ► inventory consumed ► totals. */}
-              <JobInventoryUsageSection jobId={jobId!} />
-
-              {/* Phase 5: Reservations section — sits under usage so the
-                  flow reads consume ► reserve future. The component
-                  hides itself when inventory_core is disabled. */}
-              <JobReservationsSection jobId={jobId!} />
 
               {/* BILLING SUMMARY — Expenses sub-section + Totals panel.
                   Kept as a separate Studio-styled card (warm cream chrome)

@@ -92,6 +92,26 @@ describe("Sidebar width — single source of truth drives main-content offset", 
   });
 });
 
+describe("Create button — collapsed-mode rendering", () => {
+  it("Create span has group-data-[collapsible=icon]:hidden (text hidden in collapsed rail)", () => {
+    // Root cause fix: the Create button used a plain <button> that did not
+    // inherit SidebarMenuButton's automatic icon-collapse logic. Adding
+    // group-data-[collapsible=icon]:hidden to the span is the idiomatic
+    // shadcn approach — same selector the SidebarMenuButton CVA applies
+    // internally to its label spans.
+    expect(appSidebarSrc).toMatch(/group-data-\[collapsible=icon\]:hidden/);
+  });
+
+  it("Create button has group-data-[collapsible=icon]:justify-center (icon centers in 48px rail)", () => {
+    expect(appSidebarSrc).toMatch(/group-data-\[collapsible=icon\]:justify-center/);
+  });
+
+  it("Plus icon on Create button has shrink-0 (does not compress in collapsed rail)", () => {
+    // Ensures the Plus icon doesn't get squashed when the rail is 3rem wide.
+    expect(appSidebarSrc).toMatch(/Plus.*shrink-0|shrink-0.*Plus/s);
+  });
+});
+
 describe("Sidebar labels stay on one line at the trimmed width", () => {
   it("SidebarMenuButton applies truncate to the label (no wrapping)", () => {
     // The cva variant string includes `[&>span:last-child]:truncate`

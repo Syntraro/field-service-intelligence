@@ -1,9 +1,9 @@
 {
   "generatedAt": "2026-05-08",
   "description": "Frozen baseline of (a) legacy typography-ramp + arbitrary text-[Npx], and (b) deprecated component-specific aliases per Phase S1 (Simplified Semantic Typography). tests/semantic-typography-guard.test.ts fails when any file's count increases for any of the three families or a new file introduces them. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
-  "totalLegacy": 2805,
+  "totalLegacy": 2791,
   "totalArbitrary": 748,
-  "totalDeprecated": 95,
+  "totalDeprecated": 80,
   "files": {
     "client/src/App.tsx": {
       "legacy": 2,
@@ -489,41 +489,6 @@
       "legacy": 5,
       "arbitrary": 6,
       "deprecated": 1
-    },
-    "client/src/components/inventory/InventoryItemModal.tsx": {
-      "legacy": 6,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/components/inventory/InventoryItemRail.tsx": {
-      "legacy": 0,
-      "arbitrary": 0,
-      "deprecated": 5
-    },
-    "client/src/components/inventory/InventoryLocationModal.tsx": {
-      "legacy": 2,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/components/inventory/InventoryLocationRail.tsx": {
-      "legacy": 0,
-      "arbitrary": 0,
-      "deprecated": 6
-    },
-    "client/src/components/inventory/JobInventoryUsageSection.tsx": {
-      "legacy": 0,
-      "arbitrary": 0,
-      "deprecated": 1
-    },
-    "client/src/components/inventory/JobReservationsSection.tsx": {
-      "legacy": 5,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/components/inventory/TransferStockModal.tsx": {
-      "legacy": 1,
-      "arbitrary": 0,
-      "deprecated": 0
     },
     "client/src/components/invoice/CollectPaymentDialog.tsx": {
       "legacy": 16,
@@ -1104,11 +1069,6 @@
       "legacy": 4,
       "arbitrary": 0,
       "deprecated": 0
-    },
-    "client/src/pages/InventoryPage.tsx": {
-      "legacy": 0,
-      "arbitrary": 0,
-      "deprecated": 3
     },
     "client/src/pages/InvoiceDetailPage.tsx": {
       "legacy": 29,

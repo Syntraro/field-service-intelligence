@@ -4,6 +4,37 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-09: Pricebook EntityListTable Canonicalization
+
+### Status
+**Completed.**
+
+### Goal
+Bring the Pricebook / Products & Services settings page in line with the canonical EntityListTable pattern used by Jobs, Invoices, Quotes, Leads, Clients, Locations, Suppliers, Inventory, and PM Workspace.
+
+### Motivation
+`ProductsServicesTable.tsx` was a 284-line hand-rolled `<table>` with a 6-field per-cell inline editing system (name, description, category, cost, unitPrice, estimatedDurationMinutes). Inline edit state (3 variables, 3 handlers) was threaded through Manager → Table via 6 props, with no `onRowClick`. The edit modal (`ProductServiceFormDialog`) already handled all 6 fields. The inline edit system duplicated the modal's functionality at high maintenance cost with inconsistent UX.
+
+### What Changed
+
+- **Deleted:** `ProductsServicesTable.tsx` (284 lines)
+- **`ProductsServicesManager.tsx`** — full rewrite: uses `EntityListTable` with 8 typed column descriptors (select/CHECKBOX, name/entity-primary, type/entity-status, category/entity-text, cost/entity-money, price/entity-money, duration/entity-text, status/entity-status). `onRowClick` opens the edit modal. Archive/delete from the list now flows through the modal footer.
+- **`useProductsServices.ts`** — removed `inlineEditId`, `inlineEditField`, `inlineEditValue`, `handleInlineEdit`, `handleInlineEditSave`, `handleInlineEditCancel` (~35 lines removed).
+- **`ProductServiceFormDialog.tsx`** — added optional `onArchiveClick` / `onDeleteClick` props. ModalFooter now shows Delete + Archive/Restore buttons on the left when editing.
+
+### What Was Preserved
+- All API calls unchanged (`GET /api/items`, `PUT /api/items/:id`, `DELETE /api/items/:id`).
+- Bulk operations (bulk archive, bulk delete, bulk category) unchanged.
+- All ConfirmModal flows (delete, archive, bulk-delete) unchanged.
+- ProductService­FormDialog form behavior, validation, auto-calculation, and duplicate-name check unchanged.
+- Toolbar (search, type/category/status filters, export, import, Add New) unchanged.
+
+### Technical Notes
+- `handleSort` in the hook is typed `(field: SortField)` but EntityListTable's `onSort` expects `(key: string)`. Resolved via cast at the call site: `onSort={(key) => handleSort(key as Parameters<typeof handleSort>[0])}`.
+- `handleSelectOne` takes `(id: string, checked: boolean)` — two args. Checkbox `onCheckedChange` now passes both: `(checked) => handleSelectOne(row.id, checked as boolean)`.
+
+---
+
 ## 2026-05-09: CLAUDE.md Context Reduction (Documentation Refactor)
 
 ### Status

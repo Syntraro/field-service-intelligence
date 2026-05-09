@@ -40,7 +40,7 @@ function formatCurrency(amount: number): string {
 function ViewAllLink({ href }: { href: string }) {
   return (
     <Link href={href}>
-      <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 whitespace-nowrap">
+      <a className="text-xs text-primary hover:underline inline-flex items-center gap-1 whitespace-nowrap">
         View all
         <ExternalLink className="h-3 w-3" />
       </a>
@@ -105,15 +105,15 @@ export function TopOutstandingInvoicesCard({
               <li key={inv.id}>
                 <Link href={`/invoices/${inv.id}`}>
                   <a
-                    className={`flex items-center gap-3 px-4 py-2 hover:bg-[#F0F5F0] transition-colors group ${
-                      isLast ? "" : "border-b border-[#e2e8f0]"
+                    className={`flex items-center gap-3 px-4 py-2 hover:bg-primary/5 transition-colors group ${
+                      isLast ? "" : "border-b border-card-border"
                     }`}
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-normal text-[#111827] dark:text-gray-100 truncate">
+                      <p className="text-sm font-normal text-foreground truncate">
                         {inv.customerName ?? inv.locationName ?? "Customer"}
                       </p>
-                      <p className="text-xs text-slate-500 truncate">
+                      <p className="text-helper text-slate-500 truncate">
                         #{inv.invoiceNumber ?? "—"}
                         {overdue && (
                           <span className="ml-1.5 text-red-600 font-medium">
@@ -124,16 +124,16 @@ export function TopOutstandingInvoicesCard({
                     </div>
                     <div className="text-right whitespace-nowrap">
                       <div
-                        className={`text-sm font-semibold tabular-nums ${
+                        className={`text-row font-semibold tabular-nums ${
                           overdue
                             ? "text-red-700"
-                            : "text-[#111827] dark:text-gray-100"
+                            : "text-foreground"
                         }`}
                       >
                         {formatCurrency(inv.balance)}
                       </div>
                     </div>
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-[#111827] transition-colors" />
+                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-foreground transition-colors" />
                   </a>
                 </Link>
               </li>
@@ -200,15 +200,15 @@ export function TopCustomersOwingCard({
               <li key={c.customerCompanyId}>
                 <Link href={`/customer-companies/${c.customerCompanyId}`}>
                   <a
-                    className={`flex items-center gap-3 px-4 py-2 hover:bg-[#F0F5F0] transition-colors group ${
-                      isLast ? "" : "border-b border-[#e2e8f0]"
+                    className={`flex items-center gap-3 px-4 py-2 hover:bg-primary/5 transition-colors group ${
+                      isLast ? "" : "border-b border-card-border"
                     }`}
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-normal text-[#111827] dark:text-gray-100 truncate">
+                      <p className="text-sm font-normal text-foreground truncate">
                         {c.name ?? "Customer"}
                       </p>
-                      <p className="text-xs text-slate-500 truncate">
+                      <p className="text-helper text-slate-500 truncate">
                         {c.openCount} open
                         {hasOverdue && (
                           <span className="ml-1.5 text-red-600 font-medium">
@@ -219,16 +219,16 @@ export function TopCustomersOwingCard({
                     </div>
                     <div className="text-right whitespace-nowrap">
                       <div
-                        className={`text-sm font-semibold tabular-nums ${
+                        className={`text-row font-semibold tabular-nums ${
                           hasOverdue
                             ? "text-red-700"
-                            : "text-[#111827] dark:text-gray-100"
+                            : "text-foreground"
                         }`}
                       >
                         {formatCurrency(c.outstanding)}
                       </div>
                     </div>
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-[#111827] transition-colors" />
+                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-foreground transition-colors" />
                   </a>
                 </Link>
               </li>

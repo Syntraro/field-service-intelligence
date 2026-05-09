@@ -51,7 +51,7 @@ function formatHours(minutes: number): string {
 function ViewReportLink({ href }: { href: string }) {
   return (
     <Link href={href}>
-      <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 whitespace-nowrap">
+      <a className="text-xs text-primary hover:underline inline-flex items-center gap-1 whitespace-nowrap">
         View report
         <ExternalLink className="h-3 w-3" />
       </a>
@@ -118,13 +118,13 @@ export function OpenCapacityCard({
         ) : (
           <>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
+              <span className="text-2xl font-bold text-foreground tabular-nums leading-none">
                 {formatHours(totalMinutes)}
               </span>
               <span className="text-xs text-slate-500">available</span>
             </div>
             {ranked.length === 0 ? (
-              <p className="text-xs text-slate-400 italic">
+              <p className="text-helper text-slate-400 italic">
                 No team members have open availability today.
               </p>
             ) : (
@@ -132,12 +132,12 @@ export function OpenCapacityCard({
                 {ranked.map((t) => (
                   <li
                     key={t.id}
-                    className="flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded hover:bg-[#F0F5F0] transition-colors"
+                    className="flex items-center justify-between text-helper px-1.5 py-1 -mx-1.5 rounded hover:bg-primary/5 transition-colors"
                   >
-                    <span className="text-[#111827] dark:text-gray-100 truncate min-w-0 mr-2">
+                    <span className="text-foreground truncate min-w-0 mr-2">
                       {t.name}
                     </span>
-                    <span className="text-[#4b5563] tabular-nums shrink-0 font-medium">
+                    <span className="text-muted-foreground tabular-nums shrink-0 font-medium">
                       {formatHours(t.availableMinutes)}
                     </span>
                   </li>
@@ -227,7 +227,7 @@ export function JobsSnapshotCard({
         ) : (
           <>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
+              <span className="text-2xl font-bold text-foreground tabular-nums leading-none">
                 {total}
               </span>
               <span className="text-xs text-slate-500">jobs today</span>
@@ -237,15 +237,15 @@ export function JobsSnapshotCard({
                 <li key={r.label}>
                   <Link href={r.href}>
                     <a
-                      className={`flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded transition-colors ${
-                        r.urgent ? "hover:bg-red-50/60" : "hover:bg-[#F0F5F0]"
+                      className={`flex items-center justify-between text-helper px-1.5 py-1 -mx-1.5 rounded transition-colors ${
+                        r.urgent ? "hover:bg-red-50/60" : "hover:bg-primary/5"
                       }`}
                     >
                       <span
                         className={
                           r.urgent
                             ? "text-red-600 font-medium"
-                            : "text-[#4b5563] dark:text-gray-300"
+                            : "text-muted-foreground"
                         }
                       >
                         {r.label}
@@ -254,7 +254,7 @@ export function JobsSnapshotCard({
                         className={`tabular-nums font-semibold ${
                           r.urgent
                             ? "text-red-700"
-                            : "text-[#111827] dark:text-gray-100"
+                            : "text-foreground"
                         }`}
                       >
                         {r.value}

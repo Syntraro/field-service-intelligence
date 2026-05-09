@@ -1,7 +1,7 @@
 /**
  * EntityListTable canonical architecture guard (2026-05-09).
  *
- * Locks the descriptor-based rendering contract across all 9 core list pages.
+ * Locks the descriptor-based rendering contract across all 8 core list pages.
  * This test FAILS if:
  *   - A page stops importing or rendering EntityListTable
  *   - A page imports the shadcn Table / ListSurface helpers (PMWorkspacePage
@@ -35,7 +35,6 @@ const PAGE_PATHS = {
   clients:   "client/src/pages/Clients.tsx",
   locations: "client/src/pages/Locations.tsx",
   suppliers: "client/src/pages/SuppliersListPage.tsx",
-  inventory: "client/src/pages/InventoryPage.tsx",
   pm:        "client/src/pages/PMWorkspacePage.tsx",
 } as const;
 
@@ -58,7 +57,7 @@ function countMatches(src: string, pattern: string): number {
 
 // ── 1. All pages import and render EntityListTable ────────────────────────────
 
-describe("All 9 core list pages import EntityListTable", () => {
+describe("All 8 core list pages import EntityListTable", () => {
   const importRe = /import\s*\{[^}]*EntityListTable[^}]*\}\s*from\s*["']@\/components\/lists\/EntityListTable["']/;
   for (const key of Object.keys(PAGE_PATHS) as PageKey[]) {
     it(`${key} imports EntityListTable`, () => {
@@ -67,7 +66,7 @@ describe("All 9 core list pages import EntityListTable", () => {
   }
 });
 
-describe("All 9 core list pages render <EntityListTable", () => {
+describe("All 8 core list pages render <EntityListTable", () => {
   for (const key of Object.keys(PAGE_PATHS) as PageKey[]) {
     it(`${key} renders EntityListTable`, () => {
       expect(srcs[key]).toMatch(/<EntityListTable[\s<]/);
@@ -224,27 +223,6 @@ const CUSTOM_RENDER_ALLOWLIST: Record<PageKey, { count: number; entries: string[
       "SUPPLIER_COLUMNS:active — CONDITIONAL (CheckCircle2 or XCircle icon based on status)",
     ],
   },
-  inventory: {
-    count: 13,
-    entries: [
-      // Items tab (5; unit_cost + unit_price migrated to entity-money 2026-05-09)
-      "Items:sku        — ICON_COMPOSITE (monospace SKU badge + model sub-text)",
-      "Items:type       — BADGE_COMPONENT (ItemStockBadge)",
-      "Items:on_hand    — COMPUTED_FORMAT (renderQuantity helper with tracking-aware display)",
-      "Items:available  — COMPUTED_FORMAT (renderAvailable helper)",
-      "Items:status     — BADGE_COMPONENT (ItemActiveBadge)",
-      // Locations tab (5)
-      "Locations:type    — BADGE_COMPONENT (LocationTypeBadge)",
-      "Locations:items   — DATA_TESTID (item count with per-row data-testid)",
-      "Locations:qty     — DATA_TESTID (total qty with per-row data-testid)",
-      "Locations:status  — MULTI_BADGE (ItemActiveBadge + conditional low-stock chip)",
-      "Locations:actions — ACTION_BUTTON (DropdownMenu with edit/archive actions)",
-      // LowStock tab (3; minimum + reorder migrated to entity-text 2026-05-09)
-      "LowStock:item      — ICON_COMPOSITE (item name + SKU sub-text)",
-      "LowStock:available — COMPUTED_FORMAT (formatQty plain quantity string)",
-      "LowStock:suggested — DATA_TESTID (quantity with per-row data-testid)",
-    ],
-  },
   pm: {
     count: 7,
     entries: [
@@ -276,7 +254,7 @@ describe("customRender allowlist — exact counts", () => {
     });
   }
 
-  it(`total across all 9 pages is ${ALLOWLIST_TOTAL}`, () => {
+  it(`total across all 8 pages is ${ALLOWLIST_TOTAL}`, () => {
     const total = Object.values(srcs).reduce(
       (sum, src) => sum + countMatches(src, 'type:\\s*"customRender"'),
       0,
@@ -329,12 +307,6 @@ describe("No legacy text-size ramp classes in core list page column arrays", () 
     /className=["`][^"`]*\btext-(?:xs|sm|base|lg|xl|2xl|3xl)\b[^"`]*["`]/;
 
   // Pages whose column arrays are module-scoped constants or easily extractable.
-  // (Inventory and PM have no text-xs anywhere in the file — simpler full-file check.)
-  it("inventory — no legacy size ramp anywhere in file", () => {
-    const code = stripComments(srcs.inventory);
-    expect(code).not.toMatch(/\btext-(?:xs|sm|base|lg|xl|2xl)\b/);
-  });
-
   it("pm — no legacy size ramp anywhere in file", () => {
     const code = stripComments(srcs.pm);
     expect(code).not.toMatch(/\btext-(?:xs|sm|base|lg|xl|2xl)\b/);

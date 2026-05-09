@@ -82,16 +82,6 @@ import {
   normalizeProductRow,
   type ProductOption,
 } from "@/lib/entities/productEntity";
-// 2026-05-08 (Inventory Phase 6): capability-gated consume disclosure
-// inside the AddPartSheet. The hook + canonical wire types live in the
-// inventory module — the tech sheet only depends on the hook + types,
-// not on the office inventory components.
-import { useFeatureEnabled } from "@/hooks/useEntitlements";
-import type {
-  InventoryLocation,
-  ItemLocationStock,
-} from "@/lib/inventory/types";
-
 // ── Live timer ──
 
 function LiveTimer({ startedAt }: { startedAt: string }) {
@@ -329,42 +319,14 @@ function AddPartSheet({
   onSuccess,
   addPart,
   onError,
-  jobId,
-  consumeFromTechSheet,
 }: {
   equipmentId: string | null;
-  /** Optional human-readable equipment label, shown in the sheet header so
-   *  the tech sees which equipment context this add will attach to. */
   equipmentName?: string | null;
-  /** Parts already on this visit. Used to render "Recent on this visit"
-   *  chips for one-tap re-add of items the tech is already working with. */
   recentParts: DetailPart[];
   onClose: () => void;
-  /** Fired only when a part has actually been added. Caller uses this for
-   *  the success toast so a backdrop / X dismissal does not falsely
-   *  announce "Part added". */
   onSuccess?: () => void;
   addPart: { mutateAsync: (p: { productId: string; quantity: string; equipmentId?: string | null }) => Promise<any>; isPending: boolean };
   onError: (err: any) => void;
-  /** 2026-05-08 (Inventory Phase 6): the visit's parent job id. Used to
-   *  fire the optional inline-consume mutation against the canonical
-   *  /api/inventory/jobs/:jobId/usage endpoint. When null, the consume
-   *  disclosure is suppressed entirely (no job to consume against). */
-  jobId: string | null;
-  /** 2026-05-08 (Inventory Phase 6): companion mutation hook returned
-   *  from useTechVisitDetail. Owns invalidation. The sheet only fires
-   *  it AFTER the line-create mutation succeeds. */
-  consumeFromTechSheet: {
-    mutateAsync: (p: {
-      jobId: string;
-      itemId: string;
-      locationId: string;
-      quantity: string;
-      lineItemId?: string | null;
-      notes?: string | null;
-    }) => Promise<any>;
-    isPending: boolean;
-  };
 }) {
   // Canonical ProductOption is the in-memory shape — same as every office
   // selector after Phase A/B. No tech-local shadow type.
@@ -385,74 +347,6 @@ function AddPartSheet({
   const [lastAdded, setLastAdded] = useState<{ name: string; qty: string } | null>(null);
   const [pendingChipId, setPendingChipId] = useState<string | null>(null);
   const qtyInputRef = useRef<HTMLInputElement>(null);
-
-  // ── Inventory Phase 6 (2026-05-08): inline consume disclosure ──
-  //
-  // Capability gate: rendering + queries are short-circuited when the
-  // tenant doesn't have inventory_core. Tracking gate: the disclosure
-  // only renders when the *selected* product opts into inventory
-  // (product type + trackInventory flag). Context gate: needs a jobId
-  // (no job → no consume target).
-  //
-  // The toggle defaults ON when all three gates pass — that matches
-  // the operational rule: techs are working an active job and
-  // typically add a tracked product AFTER they used it. The tech can
-  // flip the toggle off for the rare "ordered, not consumed yet" case
-  // without losing the line itself.
-  const inventoryEnabled = useFeatureEnabled("inventory_core") === true;
-  const [consumeEnabled, setConsumeEnabled] = useState(true);
-  const [consumeLocationOverride, setConsumeLocationOverride] = useState<string | null>(null);
-
-  // Resolve the tech's assigned location once per sheet open — only
-  // when inventory is enabled, otherwise the gate keeps the request
-  // from firing.
-  const assignedLocationQuery = useQuery<{ location: InventoryLocation | null }>({
-    queryKey: ["/api/inventory/locations/assigned-to-me"],
-    queryFn: async () => apiRequest<{ location: InventoryLocation | null }>(
-      "/api/inventory/locations/assigned-to-me",
-    ),
-    enabled: inventoryEnabled,
-    staleTime: 60_000,
-  });
-  const assignedLocation = assignedLocationQuery.data?.location ?? null;
-
-  // Per-(item, location) availability rows for the SELECTED product.
-  // Drives the "X available" hint inside the disclosure + the
-  // insufficient-stock soft-guard. Only fires when a tracked product
-  // is selected.
-  const isTrackedProduct =
-    !!selected && selected.type === "product" && selected.trackInventory === true;
-  const itemLocationsQuery = useQuery<{ rows: ItemLocationStock[] }>({
-    queryKey: ["/api/inventory/items", selected?.id ?? null, "locations"],
-    queryFn: async () => apiRequest<{ rows: ItemLocationStock[] }>(
-      `/api/inventory/items/${selected!.id}/locations`,
-    ),
-    enabled: inventoryEnabled && isTrackedProduct,
-  });
-
-  const consumeLocationId =
-    consumeLocationOverride ??
-    assignedLocation?.id ??
-    null;
-  const consumeLocationName =
-    consumeLocationOverride
-      ? itemLocationsQuery.data?.rows.find((r) => r.locationId === consumeLocationOverride)?.locationName
-        ?? assignedLocation?.name
-        ?? null
-      : assignedLocation?.name ?? null;
-  const consumeStockHere = consumeLocationId
-    ? itemLocationsQuery.data?.rows.find((r) => r.locationId === consumeLocationId) ?? null
-    : null;
-  const availableHere = consumeStockHere
-    ? Number(consumeStockHere.availableQuantity)
-    : null;
-  // The disclosure renders only when ALL gates pass: capability,
-  // tracked product, active job context, and a resolved consume
-  // location. Without a location we hide the disclosure rather than
-  // rendering an unusable "Source: —" row that would silently fail
-  // server-side.
-  const showConsumeDisclosure =
-    inventoryEnabled && isTrackedProduct && !!jobId && !!consumeLocationId;
 
   // 2026-04-10 Phase C: canonical search hook. Fires after 2 chars; same
   // /api/items endpoint, same caching, same normalized ProductOption[] shape
@@ -538,72 +432,17 @@ function AddPartSheet({
   };
 
   const handleSubmit = async () => {
-    if (!selected || addPart.isPending || consumeFromTechSheet.isPending) return;
+    if (!selected || addPart.isPending) return;
     try {
-      // 2026-04-10 Phase C: REF-BASED save contract preserved verbatim.
-      // Server hydrates description/unitPrice/unitCost from the catalog row
-      // matching `productId`. Do NOT use draftToJobPartPayload — that's the
-      // office contract. See `shared/lineItem.ts` Rule 6 for the rationale.
-      const partResp = await addPart.mutateAsync({ productId: selected.id, quantity: qty, equipmentId });
-
-      // 2026-05-08 (Inventory Phase 6): chained inventory consume.
-      // Fires only when the disclosure is showing AND the tech kept
-      // the toggle on. The line is the primary operation; if the
-      // chained consume fails (insufficient stock at the resolved
-      // location, location archived, etc.) the line still lands and
-      // the tech sees an explicit toast directing them to the office
-      // Inventory section to deduct manually. The line stays — silent
-      // erasure would discard the tech's primary intent (recording
-      // what was used on the visit).
-      let consumeFailed: any = null;
-      if (showConsumeDisclosure && consumeEnabled && jobId && consumeLocationId) {
-        // Soft-guard insufficient stock here so the failure surfaces
-        // BEFORE the round-trip when we already know the answer.
-        const qtyNum = Number(qty);
-        if (availableHere != null && qtyNum > availableHere) {
-          consumeFailed = new Error(
-            `Source has only ${availableHere} available — line saved without inventory deduction. Adjust source / qty in the Inventory section.`,
-          );
-        } else {
-          try {
-            await consumeFromTechSheet.mutateAsync({
-              jobId,
-              itemId: selected.id,
-              locationId: consumeLocationId,
-              quantity: qty,
-              // Phase 4 line linkage — when the part-create response
-              // carries the new line's id, persist it on the
-              // consumption row so per-line fulfillment reflects this
-              // tech-side consume.
-              lineItemId:
-                (partResp && typeof partResp === "object" && "id" in partResp)
-                  ? (partResp as any).id
-                  : null,
-            });
-          } catch (err: any) {
-            consumeFailed = err;
-          }
-        }
-      }
-
+      await addPart.mutateAsync({ productId: selected.id, quantity: qty, equipmentId });
       const justAdded = { name: selected.name, qty };
       onSuccess?.();
-      if (consumeFailed) {
-        // Defer to the parent's error sink so the message lands in the
-        // canonical tech-app toast surface.
-        onError(consumeFailed);
-      }
 
       if (keepOpen) {
-        // Multi-part flow: clear and return to search so the next part can
-        // be entered without a sheet open/close cycle. Inline strip below
-        // confirms the add since we're not closing.
         setSelected(null);
         setSearchText("");
         setQty("1");
         setCreating(false);
-        setConsumeEnabled(true);
-        setConsumeLocationOverride(null);
         setLastAdded(justAdded);
       } else {
         onClose();
@@ -840,76 +679,11 @@ function AddPartSheet({
               </div>
             </div>
 
-            {/* 2026-05-08 (Inventory Phase 6): inline consume disclosure.
-                Renders only when ALL gates pass: tenant has inventory_core,
-                selected product is product+trackInventory, the visit has a
-                jobId, and a consume location is resolved (assigned vehicle
-                or tech-picked override). Stays HIDDEN for service items,
-                non-stock products, tenants without inventory, and ad-hoc
-                visits with no parent job. */}
-            {showConsumeDisclosure && (
-              <div
-                data-testid="add-part-inventory-consume-disclosure"
-                className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2"
-              >
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={consumeEnabled}
-                    onChange={(e) => setConsumeEnabled(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                    data-testid="add-part-consume-toggle"
-                  />
-                  <span className="text-sm font-medium text-slate-800">
-                    Deduct from inventory
-                  </span>
-                </label>
-                {consumeEnabled && (
-                  <div className="pl-6 space-y-1.5 text-xs text-slate-600">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>Source</span>
-                      <span
-                        className="font-medium text-slate-800 truncate"
-                        data-testid="add-part-consume-source-name"
-                      >
-                        {consumeLocationName ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span>Available</span>
-                      <span
-                        className={
-                          availableHere != null && Number(qty) > availableHere
-                            ? "font-semibold tabular-nums text-amber-700"
-                            : "font-medium tabular-nums text-slate-800"
-                        }
-                        data-testid="add-part-consume-available"
-                      >
-                        {availableHere != null
-                          ? `${availableHere} available`
-                          : itemLocationsQuery.isLoading
-                            ? "Checking…"
-                            : "—"}
-                      </span>
-                    </div>
-                    {availableHere != null && Number(qty) > availableHere && (
-                      <p
-                        className="text-amber-700"
-                        data-testid="add-part-consume-insufficient"
-                      >
-                        Quantity exceeds availability — line will save without inventory deduction.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
             <div className="flex gap-2">
               <button onClick={() => setSelected(null)} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Back</button>
-              <button onClick={handleSubmit} disabled={addPart.isPending || consumeFromTechSheet.isPending}
+              <button onClick={handleSubmit} disabled={addPart.isPending}
                 className="flex-1 h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
-                {(addPart.isPending || consumeFromTechSheet.isPending) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Add Part
+                {addPart.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Add Part
               </button>
             </div>
           </div>
@@ -1376,9 +1150,6 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     startTravel, startJob, complete, addNote, updateNote, deleteNote,
     addPart, deletePart, removeEquipment, addEquipment,
     updateVisitNotes, updateJob,
-    // 2026-05-08 (Inventory Phase 6): companion mutation for the
-    // AddPartSheet inline-consume flow.
-    consumeFromTechSheet,
     // 2026-04-09: reversible workflow controls + pause/resume
     cancelRoute, cancelStart, pauseJob, resumeJob,
   } = useTechVisitDetail(visitId);
@@ -2339,11 +2110,6 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           onSuccess={() => showSuccess("Part added")}
           addPart={addPart}
           onError={showError}
-          // 2026-05-08 (Inventory Phase 6): pass the parent job id +
-          // the companion consume mutation. The sheet hides the
-          // inline-consume disclosure entirely if jobId is null.
-          jobId={visit.jobId ?? null}
-          consumeFromTechSheet={consumeFromTechSheet}
         />
       )}
       {showAddEquipment && (

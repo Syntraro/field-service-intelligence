@@ -200,6 +200,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
 import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield } from "lucide-react";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { makeCreateMenuItems } from "@/components/create/createMenuConfig";
 import { HelpPanel } from "@/components/help/HelpPanel";
 // 2026-04-26: TaskDialog import removed from App.tsx — the canonical
 // CreateNewDialog mount below owns Task creation now (Task / Supplier Visit
@@ -223,14 +225,6 @@ import Locations from "@/pages/Locations";
 import DispatchBoard from "@/pages/DispatchPreview";
 import PMWorkspacePage from "@/pages/PMWorkspacePage";
 import PMWizardPage from "@/pages/PMWizardPage";
-// 2026-05-08 — Inventory module foundation. The route is gated by
-// `<ProtectedRoute>` for auth + admin role; capability gating happens
-// inside the page (it short-circuits to a "Inventory not available"
-// canonical message when `useFeatureEnabled("inventory_core")` is
-// false). The server-side requireFeature gate on /api/inventory/* is
-// the authoritative gate — the client check is just a UX improvement
-// so users don't see a broken page on a 403.
-import InventoryPage from "@/pages/InventoryPage";
 import PMDetailPage from "@/pages/PMDetailPage";
 // 2026-04-26: PMEditPage was merged into PMDetailPage (unified view+edit
 // surface). The /pm/:id/edit route now renders the same component, which
@@ -610,16 +604,6 @@ function Router() {
       <Route path="/settings/products">
         <ProtectedRoute requireAdmin>
           <PartsManagementPage />
-        </ProtectedRoute>
-      </Route>
-      {/* 2026-05-08 — Inventory module. The page itself short-circuits
-          on `useFeatureEnabled("inventory_core") === false` to a
-          canonical "Inventory not available" message; the server
-          requireFeature gate on /api/inventory/* enforces capability
-          authoritatively. Pin: tests/inventory-foundation.test.ts. */}
-      <Route path="/inventory">
-        <ProtectedRoute>
-          <InventoryPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/team">
@@ -1261,13 +1245,36 @@ function AppContent() {
                 </PopoverContent>
               </Popover>
 
-              {/* 2026-05-07 RALPH: the global "+ New" dropdown was
-                  moved from this header into the left sidebar. The
-                  header now owns search, activity, tasks, help, and
-                  the more-menu — Create lives at the top of the
-                  sidebar so it has a permanent, predictable home and
-                  doesn't fight for header space. See AppSidebar.tsx
-                  for the canonical mount. */}
+              {/* 2026-05-09 — Compact green Create button.
+                  Icon-only square matching the height/shape of other
+                  header icon buttons. Opens the same canonical dropdown
+                  as the sidebar Create nav item — both use
+                  makeCreateMenuItems so item order and testIds stay
+                  in sync. align="end" so the menu opens below-left. */}
+              <ActionMenu
+                header="CREATE NEW"
+                items={makeCreateMenuItems({
+                  openCreate,
+                  openAddClient: () => setAddClientModalOpen(true),
+                  openCreatePm: () => setCreatePmDialogOpen(true),
+                  navigate: setLocation,
+                })}
+                itemClassName="py-2"
+                align="end"
+                contentClassName="w-48"
+                trigger={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    data-testid="button-create-header"
+                    aria-label="Create new"
+                    title="Create new"
+                    className="h-8 w-8 bg-brand hover:bg-brand-hover text-white rounded-md border-0"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                }
+              />
 
               {/* 2026-04-15 — Help global popover. Sits between Tasks
                   and the More menu so it reads as a utility control,

@@ -60,16 +60,6 @@ export interface ProductOption {
    * only when constructing fresh drafts via `productOptionToCatalogItem`.
    */
   isTaxable?: boolean;
-  /**
-   * 2026-05-08 (Inventory Phase 6): inventory-tracking flag from the
-   * canonical `items.track_inventory` column. Surfaced so tech-side flows
-   * (AddPartSheet) can decide whether to show the inline "Deduct from
-   * inventory" disclosure. Office surfaces ignore this field — they
-   * route inventory consumption through JobInventoryUsageSection
-   * deliberately. Defaults to `false` when missing so legacy callers
-   * never accidentally trigger the consume disclosure.
-   */
-  trackInventory?: boolean;
 }
 
 // ── Search ──
@@ -261,17 +251,6 @@ export function normalizeProductRow(r: any): ProductOption {
         : typeof r.is_taxable === "boolean"
           ? r.is_taxable
           : true,
-    // 2026-05-08 (Inventory Phase 6): propagate `trackInventory` for the
-    // tech AddPart inline consume disclosure. Reads camelCase first,
-    // falls back to snake_case. DB default is false; treat missing as
-    // false so the disclosure stays hidden unless the catalog row
-    // explicitly opts in.
-    trackInventory:
-      typeof r.trackInventory === "boolean"
-        ? r.trackInventory
-        : typeof r.track_inventory === "boolean"
-          ? r.track_inventory
-          : false,
   };
 }
 
