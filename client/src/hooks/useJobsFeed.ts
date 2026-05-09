@@ -92,6 +92,8 @@ export interface JobHeaderDetail extends JobFeedItem {
     province: string | null;
     postalCode: string | null;
     parentCompanyId: string | null;
+    phone: string | null;
+    email: string | null;
   } | null;
   parentCompany: {
     id: string;

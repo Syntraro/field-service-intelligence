@@ -9,7 +9,6 @@ import { cn } from "@/lib/utils"
 // migration.
 import {
   ENTITY_NAME_CLASS,
-  SECTION_LABEL_CLASS,
 } from "./typography"
 
 /**
@@ -35,7 +34,7 @@ export const tableRowClass = "cursor-pointer hover:bg-[#f8fafc] dark:hover:bg-gr
 // Phase H2 owns that migration.
 
 /** Table header row: background, border, padding, text */
-export const listHeaderRowClass = `grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 ${SECTION_LABEL_CLASS} bg-[#f8fafc] dark:bg-gray-900/50`
+export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-row text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
 /** Primary cell text (company name, job location, invoice client) */
 export const listPrimaryClass = ENTITY_NAME_CLASS
 /** Secondary cell text (contact, sublocation, description) */
@@ -44,6 +43,17 @@ export const listSecondaryClass = "text-caption text-text-muted truncate"
 export const listBadgeClass = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
 /** Results count footer text */
 export const listResultsClass = "text-xs text-muted-foreground mt-2"
+
+/**
+ * Canonical secondary-line class for two-line primary cells in entity list
+ * pages. 13px (`text-helper`), muted slate-500, normal weight, truncated.
+ * Use this instead of copy-pasting the literal class string.
+ *
+ * 2026-05-08 canonicalization: extracted from 6 independent inline copies.
+ * 2026-05-09 typography visual test: text-caption → text-helper (inverted
+ * hierarchy proves token control propagates; primary is text-caption 14px).
+ */
+export const ENTITY_SECONDARY_CLASS = "text-helper text-slate-500 font-normal truncate"
 
 /**
  * ListSurface - Container for list/table content

@@ -347,7 +347,7 @@ export function DetailRightRail({
             className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 min-w-0"
             data-testid={`${testIdPrefix}-panel-header-${displayedTab.id}`}
           >
-            <span className="text-label text-slate-700 flex-shrink-0">
+            <span className="text-label text-text-secondary flex-shrink-0">
               {displayedTab.label}
             </span>
             <span className="flex-1" />
@@ -401,8 +401,8 @@ export function DetailRightRailEmpty({
       className="text-center py-6 px-2 space-y-1"
       data-testid={`${testIdPrefix}-panel-empty`}
     >
-      <p className="text-row text-slate-600">{message}</p>
-      {hint && <p className="text-helper text-slate-400">{hint}</p>}
+      <p className="text-row text-text-secondary">{message}</p>
+      {hint && <p className="text-helper text-text-muted">{hint}</p>}
     </div>
   );
 }

@@ -87,7 +87,6 @@ import { QuoteHeaderCard } from "@/components/QuoteHeaderCard";
 // and CreateQuotePage (draft mode) consume the same DOM/CSS so the two
 // pages cannot drift visually.
 import { QuoteSummaryCard } from "@/components/quotes/QuoteSummaryCard";
-import { QuoteDescriptionCard } from "@/components/quotes/QuoteDescriptionCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
 // Canonical notes section. Quote notes share the same UI + dialog +
 // attachment pipeline as job / invoice notes.
@@ -138,6 +137,14 @@ export default function QuoteDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showApplyTemplateModal, setShowApplyTemplateModal] = useState(false);
   const [showConvertToJobConfirm, setShowConvertToJobConfirm] = useState(false);
+
+  // ── Quote header inline title + description edit (2026-05-09) ──────────
+  // Pencil → edit quote.title + quote.notesCustomer together (unified session).
+  // Only enabled for draft quotes.
+  const [editingHeader, setEditingHeader] = useState(false);
+  const [headerTitleDraft, setHeaderTitleDraft] = useState("");
+  const [headerDescDraft, setHeaderDescDraft] = useState("");
+  const [headerError, setHeaderError] = useState<string | null>(null);
 
   // 2026-04-29 (Phase 2 canonical extraction): line-items state +
   // selector state + add-row dialog state moved into the canonical
@@ -282,6 +289,22 @@ export default function QuoteDetailPage() {
     },
   });
 
+  const updateTitleMutation = useMutation({
+    mutationFn: ({ title, notesCustomer }: { title: string; notesCustomer: string }) =>
+      apiRequest(`/api/quotes/${quoteId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title, notesCustomer: notesCustomer.trim() || null }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId, "details"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      setEditingHeader(false);
+      setHeaderError(null);
+      toast({ title: "Quote updated" });
+    },
+    onError: (err: Error) => setHeaderError(err.message ?? "Failed to save"),
+  });
+
   const addLineMutation = useMutation({
     // 2026-04-09 (P9-P10 Phase A): mutation accepts a canonical `LineItemDraft`
     // and serializes via `draftToQuoteLinePayload`. Line subtotal/total are
@@ -377,22 +400,6 @@ export default function QuoteDetailPage() {
   const [showScheduleAssessment, setShowScheduleAssessment] = useState(false);
   const [assessmentDate, setAssessmentDate] = useState("");
   const [assessmentAssignee, setAssessmentAssignee] = useState("");
-
-  // 2026-04-14 Phase 3E parity pass — description inline edit mutation.
-  // `notesCustomer` on quotes is the Quote Description field (same
-  // column the PDF/email consumes).
-  const updateDescriptionMutation = useMutation({
-    mutationFn: (text: string) =>
-      apiRequest(`/api/quotes/${quoteId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ notesCustomer: text.trim() || null }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-    },
-    onError: (err: Error) =>
-      toast({ title: "Failed to save description", description: err.message, variant: "destructive" }),
-  });
 
   // Phase 2: Owner update mutation
   const updateOwnerMutation = useMutation({
@@ -721,7 +728,6 @@ export default function QuoteDetailPage() {
               isSent={isSent}
               isApproved={isApproved}
               isExpired={!!isExpired}
-              onBack={() => setLocation("/quotes")}
               onPreviewPdf={handlePreviewPdf}
               onDownloadPdf={handleDownloadPdf}
               onSend={() => setShowSendModal(true)}
@@ -730,7 +736,25 @@ export default function QuoteDetailPage() {
               onDecline={() => setShowDeclineConfirm(true)}
               onConvertToJob={() => setShowConvertToJobConfirm(true)}
               onDelete={() => setShowDeleteConfirm(true)}
-              onEditPlaceholder={() => toast({ title: "Edit coming soon" })}
+              isHeaderEditing={editingHeader}
+              headerTitleDraft={headerTitleDraft}
+              onHeaderTitleChange={setHeaderTitleDraft}
+              headerDescDraft={headerDescDraft}
+              onHeaderDescChange={setHeaderDescDraft}
+              onStartHeaderEdit={() => {
+                setHeaderTitleDraft(quote.title ?? "");
+                setHeaderDescDraft(quote.notesCustomer ?? "");
+                setHeaderError(null);
+                setEditingHeader(true);
+              }}
+              onHeaderSave={() => {
+                const trimmed = headerTitleDraft.trim();
+                if (!trimmed) { setHeaderError("Title cannot be empty"); return; }
+                updateTitleMutation.mutate({ title: trimmed, notesCustomer: headerDescDraft });
+              }}
+              onHeaderCancel={() => { setEditingHeader(false); setHeaderError(null); }}
+              isHeaderSaving={updateTitleMutation.isPending}
+              headerError={headerError}
               // 2026-05-08 (Phase 3 — Quote Workflow relocation): Owner +
               // Assessment lifecycle moved out of the right-rail Workflow
               // tab into Section B of the header. Page still owns
@@ -757,58 +781,40 @@ export default function QuoteDetailPage() {
                 onCompleteAssessment: () => completeAssessmentMutation.mutate(),
                 onCancelAssessment: () => cancelAssessmentMutation.mutate(),
               }}
+              description={quote.notesCustomer ?? null}
             />
-            {/* ↓ Description + Line Items inside same scroll column ↓ */}
-            <div className="space-y-4">
-              {/* Description — 2026-05-06: extracted into
-                  <QuoteDescriptionCard mode="saved"> so CreateQuotePage's
-                  draft-mode rendering shares the same DOM/CSS. Behavior
-                  matches the prior inline implementation byte-for-byte
-                  (collapsible, click-to-edit, Cmd/Ctrl+Enter to save,
-                  Esc to cancel, Pencil affordance). PATCH still PATCHes
-                  /api/quotes/:id { notesCustomer } via the page's
-                  updateDescriptionMutation — the card is presentational. */}
-              <QuoteDescriptionCard
-                mode="saved"
-                value={quote.notesCustomer}
-                onSave={(text) => updateDescriptionMutation.mutateAsync(text)}
-                isSaving={updateDescriptionMutation.isPending}
-              />
-
-              {/* Line Items — canonical 2026-04-29 (Phase 2). The card
-                  chrome / header metrics / column header / row bodies /
-                  bottom action row / empty state all live in
-                  <LineItemsCard>. Quote-specific subtotal/tax/total
-                  block stays here as the renderTotalsFooter slot. The
-                  prior Collapsible wrapper + branded "Line Items"
-                  trigger were removed in favor of the canonical
-                  always-visible card pattern (matches Invoice). */}
-              <LineItemsCard
-                adapter={quoteLineItemsAdapter}
-                drafts={lineItemsDrafts}
-                serverItems={lines}
-                isLocked={!isDraft}
-                renderTotalsFooter={
-                  <div className="border-t border-slate-200 px-5 py-2.5 bg-slate-50/60" data-testid="card-totals-footer">
-                    <div className="flex flex-col items-end gap-1 text-xs">
-                      <div className="flex justify-between w-56">
-                        <span className="text-slate-400">Subtotal</span>
-                        <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.subtotal)}</span>
-                      </div>
-                      <div className="flex justify-between w-56">
-                        <span className="text-slate-400">Tax</span>
-                        <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.taxTotal)}</span>
-                      </div>
-                      <div className="flex justify-between w-56 pt-1.5 border-t border-slate-200 mt-1">
-                        <span className="font-semibold text-slate-700">Total</span>
-                        <span className="text-sm font-bold text-slate-900 tabular-nums">{formatCurrency(quote.total)}</span>
-                      </div>
+            {/* Line Items — canonical 2026-04-29 (Phase 2). The card
+                chrome / header metrics / column header / row bodies /
+                bottom action row / empty state all live in
+                <LineItemsCard>. Quote-specific subtotal/tax/total
+                block stays here as the renderTotalsFooter slot. The
+                prior Collapsible wrapper + branded "Line Items"
+                trigger were removed in favor of the canonical
+                always-visible card pattern (matches Invoice). */}
+            <LineItemsCard
+              adapter={quoteLineItemsAdapter}
+              drafts={lineItemsDrafts}
+              serverItems={lines}
+              isLocked={!isDraft}
+              renderTotalsFooter={
+                <div className="border-t border-slate-200 px-5 py-2.5 bg-slate-50/60" data-testid="card-totals-footer">
+                  <div className="flex flex-col items-end gap-1 text-xs">
+                    <div className="flex justify-between w-56">
+                      <span className="text-slate-400">Subtotal</span>
+                      <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.subtotal)}</span>
+                    </div>
+                    <div className="flex justify-between w-56">
+                      <span className="text-slate-400">Tax</span>
+                      <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.taxTotal)}</span>
+                    </div>
+                    <div className="flex justify-between w-56 pt-1.5 border-t border-slate-200 mt-1">
+                      <span className="font-semibold text-slate-700">Total</span>
+                      <span className="text-sm font-bold text-slate-900 tabular-nums">{formatCurrency(quote.total)}</span>
                     </div>
                   </div>
-                }
-              />
-
-            </div>
+                </div>
+              }
+            />
           </div>
         </div>
         {/* ═══ /LEFT COLUMN ═══ */}

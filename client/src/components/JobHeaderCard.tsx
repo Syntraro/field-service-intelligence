@@ -22,13 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // Card/CardContent removed — parent provides wrapping card
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import {
   Dialog,
   DialogContent,
@@ -395,80 +389,73 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
                   Edit Job
                 </Button>
 
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                <ActionMenu
+                  items={[
+                    {
+                      id: "close-job",
+                      label: "Close Job",
+                      icon: XCircle,
+                      onSelect: () => setShowCloseJobDialog(true),
+                      hidden: !isOfficeUser || isTerminal,
+                      testId: "menu-close-job",
+                    },
+                    {
+                      id: "reopen-job",
+                      label: reopenJobMutation.isPending ? "Reopening..." : "Reopen Job",
+                      icon: RotateCcw,
+                      onSelect: handleReopenJob,
+                      disabled: reopenJobMutation.isPending,
+                      hidden: !isOfficeUser || !(canReopen || isInvoiced),
+                      testId: "menu-reopen-job",
+                    },
+                    {
+                      id: "create-similar",
+                      label: "Create Similar Job",
+                      icon: Copy,
+                      onSelect: handleCreateSimilarJob,
+                      testId: "menu-create-similar",
+                    },
+                    // Create/View Invoice item removed (2026-03-22) — dead code
+                    {
+                      id: "collect-signature",
+                      label: "Collect Signature",
+                      icon: PenTool,
+                      onSelect: handleCollectSignature,
+                      separator: true,
+                      testId: "menu-collect-signature",
+                    },
+                    {
+                      id: "download-pdf",
+                      label: "Download PDF",
+                      icon: Download,
+                      onSelect: handleDownloadPDF,
+                      testId: "menu-download-pdf",
+                    },
+                    {
+                      id: "print",
+                      label: "Print",
+                      icon: Printer,
+                      onSelect: handlePrint,
+                      testId: "menu-print",
+                    },
+                    {
+                      id: "delete-job",
+                      label: "Delete Job",
+                      onSelect: () => setShowDeleteConfirm(true),
+                      hidden: !isOfficeUser,
+                      separator: true,
+                      tone: "destructive",
+                      testId: "menu-delete-job",
+                    },
+                  ] satisfies ActionMenuItemDescriptor[]}
+                  trigger={
                     <Button variant="outline" size="sm" data-testid="button-more-actions">
                       <MoreHorizontal className="h-4 w-4 mr-1" />
                       More Actions
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    {/* Office-only: Close Job (hidden for terminal states) */}
-                    {isOfficeUser && !isTerminal && (
-                      <DropdownMenuItem
-                        onClick={() => setShowCloseJobDialog(true)}
-                        data-testid="menu-close-job"
-                      >
-                        <XCircle className="h-4 w-4 mr-2" />
-                        Close Job
-                      </DropdownMenuItem>
-                    )}
-                    {/* Office-only: Reopen Job */}
-                    {isOfficeUser && (canReopen || isInvoiced) && (
-                      <DropdownMenuItem
-                        onClick={handleReopenJob}
-                        disabled={reopenJobMutation.isPending}
-                        data-testid="menu-reopen-job"
-                      >
-                        <RotateCcw className="h-4 w-4 mr-2" />
-                        {reopenJobMutation.isPending ? "Reopening..." : "Reopen Job"}
-                      </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem
-                      onClick={handleCreateSimilarJob}
-                      data-testid="menu-create-similar"
-                    >
-                      <Copy className="h-4 w-4 mr-2" />
-                      Create Similar Job
-                    </DropdownMenuItem>
-                    {/* Create/View Invoice menu item removed (2026-03-22) — dead code */}
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={handleCollectSignature}
-                      data-testid="menu-collect-signature"
-                    >
-                      <PenTool className="h-4 w-4 mr-2" />
-                      Collect Signature
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={handleDownloadPDF}
-                      data-testid="menu-download-pdf"
-                    >
-                      <Download className="h-4 w-4 mr-2" />
-                      Download PDF
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={handlePrint}
-                      data-testid="menu-print"
-                    >
-                      <Printer className="h-4 w-4 mr-2" />
-                      Print
-                    </DropdownMenuItem>
-                    {/* Office-only: Delete Job */}
-                    {isOfficeUser && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => setShowDeleteConfirm(true)}
-                          className="text-destructive"
-                          data-testid="menu-delete-job"
-                        >
-                          Delete Job
-                        </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  }
+                  align="start"
+                />
               </div>}
             </div>
           </div>

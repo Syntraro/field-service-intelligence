@@ -218,12 +218,14 @@ describe("QuoteHeaderCard — workflow controls (Owner + Assessment) in Section 
     expect(quoteHeaderCardSrc).toMatch(/workflow\?:\s*QuoteHeaderWorkflow/);
   });
 
-  it("Section B action bar carries the canonical testid `quote-header-action-bar`", () => {
-    expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-action-bar"/);
+  it("action bar uses CDH's structured primaryActions (no quote-header-action-bar standalone div — Task 3)", () => {
+    // Task 3 removed the standalone action-bar div; actions live in CDH primaryActions array
+    expect(quoteHeaderCardSrc).not.toMatch(/data-testid="quote-header-action-bar"/);
+    expect(quoteHeaderCardSrc).toMatch(/primaryActions=/);
   });
 
-  it("renders an Owner select inside the Section B workflow cluster", () => {
-    expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-workflow-cluster"/);
+  it("renders an Owner select inside the Section B workflow cluster content", () => {
+    // Task 4: CDH owns the flex container (quote-detail-header-workflow); QuoteHeaderCard passes content only
     expect(quoteHeaderCardSrc).toMatch(/data-testid="quote-header-owner-select"/);
     // Owner change still routes to the page-owned mutation via the
     // `workflow.onOwnerChange` callback (not direct mutation calls
@@ -249,11 +251,11 @@ describe("QuoteHeaderCard — workflow controls (Owner + Assessment) in Section 
     );
   });
 
-  it("the workflow cluster is gated on the optional `workflow` prop (not rendered when absent)", () => {
-    // Look for the canonical rendering guard on the cluster.
-    expect(quoteHeaderCardCodeOnly).toMatch(
-      /\{workflow\s*&&\s*\([\s\S]{0,200}?data-testid="quote-header-workflow-cluster"/,
-    );
+  it("the workflow cluster content is gated on the optional `workflow` prop (not rendered when absent)", () => {
+    // Task 4: CDH owns the outer container; QuoteHeaderCard passes content via workflowSlot=
+    // The guard is: workflow ? (<>..owner select..assessment..</>) : undefined
+    expect(quoteHeaderCardCodeOnly).toMatch(/workflow\s*\?/);
+    expect(quoteHeaderCardSrc).toMatch(/workflowSlot=/);
   });
 
   it("page-level QuoteDetailPage passes the canonical `workflow` prop into <QuoteHeaderCard>", () => {

@@ -12,9 +12,10 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Trash2, GripVertical,
-  ChevronDown, Pencil, MoreHorizontal,
+  ChevronDown, MoreHorizontal,
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
   Eye, StickyNote, Receipt,
+  Send, Download, CreditCard,
 } from "lucide-react";
 // 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
 // transition class. Mirrors Job Detail / Lead Detail / Quote Detail.
@@ -47,8 +48,12 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
-// 2026-05-01 canonical compact header — single owner for Job/Invoice/Quote detail headers.
-import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+import {
+  CanonicalDetailHeader,
+  type HeaderAction,
+  type HeaderOverflowItem,
+} from "@/components/detail/CanonicalDetailHeader";
+import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 // 2026-05-02 entity-number visual language: blue pill for current
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
@@ -66,13 +71,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import {
   Dialog,
   DialogContent,
@@ -155,17 +154,6 @@ import { formatCurrency } from "@/lib/formatters";
 // has a different shape (no emphasized name row) and is not duplicated
 // across surfaces.
 //
-// 2026-05-06 RALPH: the invoice variant no longer dash-falls when the
-// resolved location name is missing — it simply omits the location-name
-// row, matching the brief that "Show location name above the address
-// ONLY when [conditions]". The dedupe-resolver below decides whether a
-// real label exists.
-import { AddressBlock } from "@/components/common/AddressBlock";
-// 2026-05-06 RALPH: shared dedupe-resolver. Returns the raw
-// `clients.location` value when it's a real, distinct location label;
-// returns null when the value is empty OR matches the customer name
-// (case/whitespace-insensitive). Same helper JobDetailPage uses.
-import { resolveServiceLocationName } from "@/lib/serviceAddress";
 // 2026-05-02 (Audit #2 invoice-flow Phase 3): discount editor extracted
 // from this page into a draft-capable controlled primitive. The page
 // passes `value` from the persisted invoice, emits PATCHes through the
@@ -182,10 +170,6 @@ import { EditableMessageCard } from "@/components/invoice/EditableMessageCard";
 // this component; the shell owns every wrapper class so neither page
 // re-implements the spacing.
 import { InvoiceDetailShell } from "@/components/invoice/InvoiceDetailShell";
-// 2026-05-02: InvoiceMetaCard + its shared helpers/types/constants now
-// live in dedicated modules so the new-invoice draft page can import
-// them without going through this page file.
-import { InvoiceMetaCard } from "@/components/invoice/InvoiceMetaCard";
 import {
   META_LABEL_CLASS,
   formatDateOnlyDisplay,
@@ -1732,22 +1716,71 @@ export default function InvoiceDetailPage() {
     setEditingHeader(true);
   };
 
-  const headerActions = (
-    <>
-      {!editingHeader && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
-          onClick={enterMetaEdit}
-          aria-label="Edit invoice details"
-          data-testid="button-meta-edit"
-        >
-          <Pencil className="h-4 w-4 text-slate-500" />
-        </Button>
-      )}
-    </>
-  );
+  const handleHeaderCancel = () => {
+    setMetaDraft(null);
+    setReferenceDraft({});
+    setWorkDescDraft(invoice.workDescription || job?.description || "");
+    setEditingHeader(false);
+  };
+
+  const handleHeaderSave = async () => {
+    if (!metaDraft) return;
+    const payload: Record<string, unknown> = {};
+    const trimmedNum = metaDraft.invoiceNumber.trim();
+    if (trimmedNum && trimmedNum !== (invoice.invoiceNumber ?? "")) {
+      payload.invoiceNumber = trimmedNum;
+    }
+    if (metaDraft.issueDate && metaDraft.issueDate !== toDateInputValue(invoice.issueDate)) {
+      payload.issueDate = metaDraft.issueDate;
+    }
+    if (metaDraft.dueDate !== toDateInputValue(invoice.dueDate)) {
+      payload.dueDate = metaDraft.dueDate || null;
+    }
+    const termsRaw = metaDraft.paymentTermsDays.trim();
+    const termsNum = termsRaw === "" ? null : Number(termsRaw);
+    const currentTerms = invoice.paymentTermsDays ?? null;
+    if (termsNum !== currentTerms && (termsRaw === "" || Number.isFinite(termsNum))) {
+      payload.paymentTermsDays = termsNum;
+    }
+    const draftSummary = (metaDraft.summary ?? "").trim();
+    const serverSummary = ((invoice as any).summary ?? "").trim();
+    if (draftSummary !== serverSummary) {
+      payload.summary = draftSummary || null;
+    }
+    const serverDescription = invoice.workDescription || job?.description || "";
+    if (workDescDraft !== serverDescription) {
+      payload.workDescription = workDescDraft;
+    }
+    const refChanged = referenceFields.some((f) => {
+      if (!f.active) return false;
+      const draftVal = (referenceDraft[f.definitionId] ?? "").trim() || null;
+      const serverVal = (f.textValue ?? "").trim() || null;
+      return draftVal !== serverVal;
+    });
+    const tasks: Promise<unknown>[] = [];
+    if (Object.keys(payload).length > 0) {
+      tasks.push(updateInvoiceFieldsMutation.mutateAsync(payload));
+    }
+    if (refChanged) {
+      tasks.push(saveReferenceFieldsMutation.mutateAsync(referenceDraft));
+    }
+    if (tasks.length === 0) {
+      setMetaDraft(null);
+      setReferenceDraft({});
+      setEditingHeader(false);
+      return;
+    }
+    try {
+      await Promise.all(tasks);
+      setMetaDraft(null);
+      setReferenceDraft({});
+      setEditingHeader(false);
+    } catch {
+      // Per-mutation onError toasts already fired; stay in edit mode.
+    }
+  };
+
+  const isMetaSaving = updateInvoiceFieldsMutation.isPending || saveReferenceFieldsMutation.isPending;
 
   // Visible primary action: only render the inline button when the
   // primary action IS "Send invoice". Other primary actions (Record
@@ -1756,67 +1789,100 @@ export default function InvoiceDetailPage() {
   // visible buttons.
   const showSendInvoiceButton = primaryAction?.label === "Send invoice" && !primaryAction.disabled;
 
+  // True when the primary action belongs in the dropdown (not "Send invoice",
+  // which is surfaced as a visible button instead).
+  const hasPrimaryInDropdown = !!(primaryAction && primaryAction.label !== "Send invoice");
+
+  // 2026-05-09 Phase M3: descriptor-driven — no raw DropdownMenuItem JSX.
+  // Note: the `title` tooltip for disabled primary actions (primaryDisabledHint)
+  // is not carried over — ActionMenuItemDescriptor has no title/hint field.
+  // This is a minor UX regression documented for a future descriptor extension.
+  //
+  // 2026-04-29: "Refresh from job" / "Choose items from job…" removed per UX spec.
+  // 2026-05-06 PR3: "Charge credit card (Stripe)" removed; payments via Collect Payment dialog.
+  const actionBarItems: ActionMenuItemDescriptor[] = [
+    // Primary action in dropdown (only when it is NOT "Send invoice")
+    ...(hasPrimaryInDropdown ? [{
+      id: "primary-action",
+      label: primaryAction!.label,
+      onSelect: primaryAction!.onClick,
+      disabled: primaryAction!.disabled,
+      disabledHint: primaryAction!.disabled ? primaryDisabledHint : undefined,
+      testId: "menu-primary-action",
+    } satisfies ActionMenuItemDescriptor] : []),
+    // PDF actions — separator before them only when a primary action precedes
+    {
+      id: "download-pdf",
+      label: "Download PDF",
+      onSelect: handleDownloadPdf,
+      disabled: pdfPending,
+      separator: hasPrimaryInDropdown,
+    },
+    {
+      id: "print-pdf",
+      label: "Print PDF",
+      onSelect: handlePrintPdf,
+      disabled: pdfPending,
+    },
+    // Portal CTAs — hidden when portal not available; separator before the group
+    {
+      id: "copy-payment-link",
+      label: "Copy payment link",
+      onSelect: handleCopyPaymentLink,
+      hidden: !portalCtasAvailable,
+      separator: portalCtasAvailable,
+    },
+    {
+      id: "open-client-portal",
+      label: "Open client portal",
+      onSelect: handleOpenClientPortal,
+      hidden: !portalCtasAvailable,
+    },
+    {
+      id: "email-payment-link",
+      label: "Email payment link…",
+      onSelect: () => setShowSendPaymentLink(true),
+      hidden: !portalCtasAvailable,
+    },
+    // Lifecycle items — separator always present before this group
+    {
+      id: "toggle-sent",
+      label: invoice.sentAt ? "Mark as not sent" : "Mark as sent",
+      onSelect: () => handleToggleSent(!invoice.sentAt),
+      disabled: toggleSentPending,
+      separator: true,
+    },
+    // Destructive lifecycle — hidden by status; tone replaces text-rose-600
+    {
+      id: "void-invoice",
+      label: "Void invoice",
+      onSelect: () => setShowVoidConfirm(true),
+      disabled: voidMutation.isPending,
+      hidden: invoice.status === "voided" || invoice.status === "draft",
+      tone: "destructive",
+    },
+    {
+      id: "delete-draft",
+      label: "Delete draft",
+      onSelect: () => setShowDeleteConfirm(true),
+      disabled: deleteMutation.isPending,
+      hidden: invoice.status !== "draft",
+      tone: "destructive",
+    },
+  ];
+
   const actionBarDropdown = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <ActionMenu
+      items={actionBarItems}
+      trigger={
         <Button variant="outline" size="sm" className="h-8 w-8 p-0" data-testid="button-meta-more" aria-label="More actions">
           <MoreHorizontal className="h-4 w-4" />
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        {primaryAction && primaryAction.label !== "Send invoice" && (
-          <>
-            <DropdownMenuItem
-              onClick={primaryAction.onClick}
-              disabled={primaryAction.disabled}
-              title={primaryAction.disabled ? primaryDisabledHint : undefined}
-              data-testid="menu-primary-action"
-            >
-              {primaryAction.label}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        <DropdownMenuItem onClick={handleDownloadPdf} disabled={pdfPending}>Download PDF</DropdownMenuItem>
-        <DropdownMenuItem onClick={handlePrintPdf} disabled={pdfPending}>Print PDF</DropdownMenuItem>
-        {/* 2026-04-29: "Refresh from job" and "Choose items from job…"
-            removed from the overflow menu per UX spec. The mutations
-            (`refreshFromJobMutation`, the composition dialog setter)
-            remain wired in case they're surfaced from another entry
-            point later — only the menu items are removed. */}
-        {portalCtasAvailable && <DropdownMenuSeparator />}
-        {portalCtasAvailable && <DropdownMenuItem onClick={handleCopyPaymentLink}>Copy payment link</DropdownMenuItem>}
-        {portalCtasAvailable && <DropdownMenuItem onClick={handleOpenClientPortal}>Open client portal</DropdownMenuItem>}
-        {portalCtasAvailable && <DropdownMenuItem onClick={() => setShowSendPaymentLink(true)}>Email payment link…</DropdownMenuItem>}
-        {/* 2026-05-06 PR3: the legacy "Charge credit card (Stripe)" overflow
-            item is REMOVED. Card payments now route through the unified
-            Collect Payment dialog (method = "credit"), which embeds the
-            same Stripe Elements form and supports multi-invoice allocation
-            via a single PaymentIntent + webhook write. Collect Payment is
-            the single entry point for ALL payment methods. */}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => handleToggleSent(!invoice.sentAt)} disabled={toggleSentPending}>
-          {invoice.sentAt ? "Mark as not sent" : "Mark as sent"}
-        </DropdownMenuItem>
-        {invoice.status !== "voided" && invoice.status !== "draft" && (
-          <DropdownMenuItem onClick={() => setShowVoidConfirm(true)} disabled={voidMutation.isPending} className="text-rose-600">
-            Void invoice
-          </DropdownMenuItem>
-        )}
-        {invoice.status === "draft" && (
-          <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} disabled={deleteMutation.isPending} className="text-rose-600">
-            Delete draft
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      }
+      align="end"
+      contentClassName="w-56"
+    />
   );
-
-  // Bill-to lines for the meta card body. `primaryContact` is no longer
-  // surfaced inline — the picture shows just the address lines under
-  // "Billing Address" without an Attn row.
-  const billLine1 = billingAddress?.street ?? null;
-  const billLine2 = [billingAddress?.city, billingAddress?.province, billingAddress?.postalCode].filter(Boolean).join(", ") || null;
 
   // Group invoice lines by canonical `lineItemType`. Falls back to a single
   // "Line items" group if every row is the default service kind.
@@ -1946,276 +2012,204 @@ export default function InvoiceDetailPage() {
               padding + space-y on the body, scrolling delegated to
               <main>. The detail header now lives INSIDE the body
               wrapper so it scrolls with the rest of the content. */}
-          <div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">
-          {/* Canonical detail header — same JSX <InvoiceDetailShell>
-              previously rendered in its `header` slot. */}
+          <div className="px-4 lg:px-6 pt-4 pb-4 space-y-2.5">
+          {/* Invoice header — CanonicalDetailHeader (2026-05-09 migration). */}
           <CanonicalDetailHeader
-          testId="invoice-detail-header"
-          // 2026-05-03: canonical title fallback chain. Prefers the
-          // invoice's own `summary` (the new dedicated short-title
-          // column), then the linked job's summary (legacy invoices
-          // before the column existed), then the literal "Invoice
-          // <number>" / "Invoice" string. Never falls back to
-          // `clientName` — customer/company is an identity field, not
-          // an invoice title.
-          title={
-            ((invoice as any).summary ?? "").trim() ||
-            job?.summary ||
-            (invoice.invoiceNumber ? `Invoice ${invoice.invoiceNumber}` : "Invoice")
-          }
-          isEditing={editingHeader}
-          statusBadge={<StatusPill status={invoice.status} isPastDue={isPastDue} />}
-          items={[
-            {
-              key: "invoice-number",
-              label: "Invoice #",
-              // 2026-05-02 entity-number system: see
-              // `client/src/components/common/EntityNumber.tsx` for the
-              // canonical primitive. Invoice # on the Invoice page is
-              // the current/primary entity → "primary" variant.
-              value: <EntityNumber variant="primary" data-testid="header-invoice-number-pill">{invoice.invoiceNumber}</EntityNumber>,
-              editNode: metaDraft ? (
-                <input
-                  type="text"
-                  value={metaDraft.invoiceNumber}
-                  onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, invoiceNumber: e.target.value } : prev)}
-                  placeholder="INV-…"
-                  className="w-32 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                  data-testid="header-input-invoice-number"
-                />
-              ) : undefined,
-            },
-            {
-              key: "due-date",
-              label: "Due",
-              // 2026-05-01 root-cause date fix: route through the shared
-              // canonical extractor (was `format(new Date(invoice.dueDate))`,
-              // which UTC-drifted the same way fmtDate did).
-              value: invoice.dueDate
-                ? <span className="tabular-nums">{formatDateOnlyDisplay(invoice.dueDate, "—")}</span>
-                : <span className="text-text-disabled">—</span>,
-              // 2026-05-01: `clearable` removed from the top-header
-              // due-date picker. Users can change the due date but
-              // cannot clear it from this surface. The lower-card
-              // edit form (when surfaced) still owns the clearable
-              // semantics if needed; in the canonical header, due
-              // is treated as always-set per the refined spec.
-              editNode: metaDraft ? (
-                <CanonicalDatePicker
-                  value={metaDraft.dueDate}
-                  onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, dueDate: next ?? "" } : prev)}
-                  className="h-7 text-sm"
-                  data-testid="header-input-due-date"
-                />
-              ) : undefined,
-            },
-            {
-              key: "job-number",
-              label: "Job #",
-              // 2026-05-02 entity-number system: cross-entity (Job #
-              // shown on the Invoice page) → "linked" variant via the
-              // canonical primitive. Same look as the Job page's
-              // Invoice # link.
-              // Read-only / link-only — the existing invoice flow does
-              // not support changing the linked job from this surface,
-              // so no editNode.
-              value: job?.jobNumber != null
-                ? (
-                  <EntityNumber
-                    variant="linked"
-                    onClick={() => setLocation(`/jobs/${jobId}`)}
-                    data-testid="header-job-link"
-                  >
-                    {job.jobNumber}
-                  </EntityNumber>
-                )
-                : <EntityNumber variant="missing" />,
-            },
-          ]}
-          // 2026-05-01: edit pencil REMOVED from the canonical header.
-          // The InvoiceMetaCard's existing pencil (rendered via
-          // `headerActions`) is the single edit-mode entry point.
-          // Both pencils dispatch the same `enterMetaEdit` flow.
-          actions={(
-            <>
-              {showSendInvoiceButton && primaryAction && (
-                <Button
-                  size="sm"
-                  className="h-8 text-xs"
-                  onClick={primaryAction.onClick}
-                  disabled={primaryAction.disabled}
-                  data-testid="button-send-invoice"
-                >
-                  {primaryAction.label}
-                </Button>
-              )}
-              {/* 2026-05-06: primary green Collect Payment CTA. Visible
-                  whenever the invoice can accept a payment — same predicate
-                  as the canonical server-side `canAcceptInvoicePayment` plus
-                  a balance > 0 check. Opens the provider-neutral multi-invoice
-                  manual flow (cash / cheque / e-transfer / debit / external
-                  card / other). The Stripe direct-charge path remains in the
-                  overflow menu as "Charge credit card (Stripe)". */}
-              {!isDraft &&
-                invoice.status !== "voided" &&
-                invoice.status !== "paid" &&
-                parseFloat(invoice.balance ?? "0") > 0 && (
-                  <Button
-                    size="sm"
-                    className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                    onClick={() => setShowCollectPaymentDialog(true)}
-                    data-testid="button-collect-payment"
-                  >
-                    Collect Payment
-                  </Button>
-                )}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                onClick={() => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank")}
-                data-testid="button-preview-pdf"
-              >
-                Preview PDF
-              </Button>
-              {actionBarDropdown}
-            </>
-          )}
-        />
-          {/* 2026-05-08 (scroll-canonicalization): the prior inner body
-              wrapper `flex-1 min-w-0 min-h-0 overflow-y-auto` is gone —
-              the outer wrapper opened above the CanonicalDetailHeader
-              already provides padding + space-y, and scrolling lives at
-              the page-level `<main>` per App.tsx canonical contract. */}
+            testId="invoice-detail-header"
+            isEditing={editingHeader}
+            title={
+              ((invoice as any).summary ?? "").trim() ||
+              job?.summary ||
+              (invoice.invoiceNumber ? `Invoice ${invoice.invoiceNumber}` : "Invoice")
+            }
+            titleEdit={
+              editingHeader && metaDraft
+                ? {
+                    value: metaDraft.summary,
+                    onChange: (v) => setMetaDraft((prev) => prev ? { ...prev, summary: v } : prev),
+                    placeholder: "Invoice title or project name…",
+                    maxLength: 200,
+                  }
+                : undefined
+            }
+            editCapability={{
+              enabled: canEdit,
+              ariaLabel: "Edit invoice",
+              onStartEdit: enterMetaEdit,
+            }}
+            status={getInvoiceStatusMeta(invoice.status, isPastDue, invoice.dueDate ?? undefined)}
+            clientName={clientName || undefined}
+            clientHref={customerCompany?.id ? `/clients/${customerCompany.id}` : undefined}
+            addressLines={(() => {
+              const addr = serviceAddress ?? billingAddress;
+              if (!addr) return undefined;
+              const addrLines: string[] = [];
+              if (addr.street) addrLines.push(addr.street);
+              const cityLine = [addr.city, addr.province, addr.postalCode].filter(Boolean).join(", ");
+              if (cityLine) addrLines.push(cityLine);
+              return addrLines.length > 0 ? addrLines : undefined;
+            })()}
+            phone={primaryContact?.phone || location.phone || undefined}
+            email={primaryContact?.email || location.email || undefined}
+            primaryActions={[
+              {
+                id: "send-invoice",
+                label: primaryAction?.label ?? "Send invoice",
+                icon: Send,
+                onClick: primaryAction?.onClick ?? (() => {}),
+                variant: "primary",
+                disabled: primaryAction?.disabled,
+                hidden: !showSendInvoiceButton || !primaryAction,
+                testId: "button-send-invoice",
+              },
+              {
+                id: "collect-payment",
+                label: "Collect Payment",
+                icon: CreditCard,
+                onClick: () => setShowCollectPaymentDialog(true),
+                variant: "outline",
+                hidden: isDraft || invoice.status === "voided" || invoice.status === "paid" || !(parseFloat(invoice.balance ?? "0") > 0),
+                testId: "button-collect-payment",
+              },
+              {
+                id: "preview-pdf",
+                label: "Preview PDF",
+                icon: Eye,
+                onClick: () => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank"),
+                variant: "outline",
+                testId: "button-preview-pdf",
+              },
+            ] satisfies HeaderAction[]}
+            overflowActions={actionBarItems.map((item): HeaderOverflowItem => ({
+              id: item.id,
+              label: item.label,
+              onClick: item.onSelect,
+              disabled: item.disabled,
+              hidden: item.hidden,
+              separator: item.separator,
+              tone: item.tone as "destructive" | undefined,
+              testId: item.testId,
+            }))}
+            items={[
+              {
+                key: "invoice-number",
+                label: "Invoice #",
+                value: <EntityNumber variant="primary" data-testid="header-invoice-number-pill">{invoice.invoiceNumber}</EntityNumber>,
+                editNode: metaDraft ? (
+                  <input
+                    type="text"
+                    value={metaDraft.invoiceNumber}
+                    onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, invoiceNumber: e.target.value } : prev)}
+                    placeholder="INV-…"
+                    className="w-32 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                    data-testid="header-input-invoice-number"
+                  />
+                ) : undefined,
+              },
+              {
+                key: "due-date",
+                label: "Due",
+                value: invoice.dueDate
+                  ? <span className="tabular-nums">{formatDateOnlyDisplay(invoice.dueDate, "—")}</span>
+                  : <span className="text-text-disabled">—</span>,
+                editNode: metaDraft ? (
+                  <CanonicalDatePicker
+                    value={metaDraft.dueDate}
+                    onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, dueDate: next ?? "" } : prev)}
+                    className="h-7 text-sm"
+                    data-testid="header-input-due-date"
+                  />
+                ) : undefined,
+              },
+              {
+                key: "job-number",
+                label: "Job #",
+                value: job?.jobNumber != null
+                  ? (
+                    <EntityNumber
+                      variant="linked"
+                      onClick={() => setLocation(`/jobs/${jobId}`)}
+                      data-testid="header-job-link"
+                    >
+                      {job.jobNumber}
+                    </EntityNumber>
+                  )
+                  : <EntityNumber variant="missing" />,
+              },
+              {
+                key: "issued",
+                label: "Issued",
+                value: invoice.issueDate
+                  ? <span className="tabular-nums">{formatDateOnlyDisplay(invoice.issueDate, "—")}</span>
+                  : <span className="text-text-disabled">—</span>,
+                editNode: metaDraft ? (
+                  <CanonicalDatePicker
+                    value={metaDraft.issueDate}
+                    onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, issueDate: next ?? "" } : prev)}
+                    className="h-7 text-sm"
+                    data-testid="header-input-issue-date"
+                  />
+                ) : undefined,
+              },
+              {
+                key: "terms",
+                label: "Terms",
+                value: invoice.paymentTermsDays != null
+                  ? <span>{`Net ${invoice.paymentTermsDays}`}</span>
+                  : <span className="text-text-disabled">—</span>,
+                editNode: metaDraft ? (
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={metaDraft.paymentTermsDays}
+                    onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, paymentTermsDays: e.target.value.replace(/[^0-9]/g, "") } : prev)}
+                    className="h-7 w-20 px-2 py-0 text-right text-sm"
+                    placeholder="30"
+                    data-testid="header-input-payment-terms"
+                  />
+                ) : undefined,
+              },
+              ...referenceFields.map((f) => ({
+                key: `ref-${f.definitionId}`,
+                label: f.label,
+                value: f.textValue
+                  ? <span data-testid={`header-ref-${f.key}`}>{f.textValue}</span>
+                  : <span className="text-text-disabled">—</span>,
+                hidden: editingHeader ? !(f.active || !!f.textValue) : !f.textValue,
+                editNode: metaDraft ? (
+                  <Input
+                    value={referenceDraft[f.definitionId] ?? ""}
+                    onChange={(e) => setReferenceDraft((prev) => ({ ...prev, [f.definitionId]: e.target.value }))}
+                    disabled={!f.active || isMetaSaving}
+                    className="h-7 w-32 px-2 py-0 text-right text-sm"
+                    placeholder={`Enter ${f.label.toLowerCase()}…`}
+                    data-testid={`header-input-ref-${f.key}`}
+                  />
+                ) : undefined,
+              })),
+            ]}
+            descriptionEdit={
+              editingHeader && metaDraft
+                ? {
+                    value: workDescDraft,
+                    onChange: setWorkDescDraft,
+                    maxLength: 600,
+                  }
+                : undefined
+            }
+            description={!editingHeader ? (invoice.workDescription || job?.description || null) : null}
+            editControls={
+              editingHeader
+                ? {
+                    onSave: handleHeaderSave,
+                    onCancel: handleHeaderCancel,
+                    isSaving: isMetaSaving,
+                  }
+                : undefined
+            }
+          />
             <QboSyncBanner invoice={invoice} />
-
-              {/* 2026-04-27 — Identity card (per Studio reference). 2026-04-29:
-                  Status pill + lifecycle dropdown moved to the new top action
-                  header above. The card retains only the inline meta-edit
-                  pencil. */}
-              <InvoiceMetaCard
-                // 2026-05-02 (Phase 5): live PATCH-driven edit lifecycle.
-                // The future /invoices/new page passes mode="draft".
-                mode="live"
-                customerName={clientName || ""}
-                customerCompanyId={customerCompany?.id ?? null}
-                summary={(invoice as any).summary ?? null}
-                billLine1={billLine1}
-                billLine2={billLine2}
-                serviceAddress={serviceAddress ?? null}
-                // 2026-05-06 RALPH: pass the RAW `clients.location`
-                // column (not the COALESCE display name carried by
-                // `location.companyName`) and run the dedupe resolver
-                // so the row collapses when the value is empty OR
-                // matches the customer name. Replaces the prior
-                // `location.companyName || location.location || ""`
-                // chain that fell back to the COALESCE display name
-                // first and was the source of the duplicated label.
-                locationName={resolveServiceLocationName(location.location, clientName)}
-                invoiceNumber={invoice.invoiceNumber}
-                issueDate={invoice.issueDate}
-                dueDate={invoice.dueDate}
-                isPastDue={isPastDue}
-                paymentTermsDays={invoice.paymentTermsDays ?? null}
-                jobNumber={job?.jobNumber != null ? String(job.jobNumber) : null}
-                jobId={jobId ?? null}
-                headerActions={headerActions}
-                isEditing={editingHeader}
-                draft={metaDraft}
-                onDraftChange={(patch) => setMetaDraft((prev) => prev ? { ...prev, ...patch } : prev)}
-                referenceFields={referenceFields}
-                referenceDraft={referenceDraft}
-                onReferenceDraftChange={(definitionId, value) =>
-                  setReferenceDraft((prev) => ({ ...prev, [definitionId]: value }))
-                }
-                onCancel={() => {
-                  // 2026-04-29 (header cleanup): unified Cancel discards
-                  // every draft this card owns — meta canonical fields,
-                  // reference fields, AND the job description — then
-                  // exits edit mode. The job description used to have
-                  // its own restore handler; that flow was removed.
-                  setMetaDraft(null);
-                  setReferenceDraft({});
-                  setWorkDescDraft(invoice.workDescription || job?.description || "");
-                  setEditingHeader(false);
-                }}
-                onSave={async () => {
-                  if (!metaDraft) return;
-                  // Canonical-fields delta: send only changed fields through
-                  // the canonical PATCH path to avoid no-op writes.
-                  const payload: Record<string, unknown> = {};
-                  const trimmedNum = metaDraft.invoiceNumber.trim();
-                  if (trimmedNum && trimmedNum !== (invoice.invoiceNumber ?? "")) {
-                    payload.invoiceNumber = trimmedNum;
-                  }
-                  if (metaDraft.issueDate && metaDraft.issueDate !== toDateInputValue(invoice.issueDate)) {
-                    payload.issueDate = metaDraft.issueDate;
-                  }
-                  if (metaDraft.dueDate !== toDateInputValue(invoice.dueDate)) {
-                    payload.dueDate = metaDraft.dueDate || null;
-                  }
-                  const termsRaw = metaDraft.paymentTermsDays.trim();
-                  const termsNum = termsRaw === "" ? null : Number(termsRaw);
-                  const currentTerms = invoice.paymentTermsDays ?? null;
-                  if (termsNum !== currentTerms && (termsRaw === "" || Number.isFinite(termsNum))) {
-                    payload.paymentTermsDays = termsNum;
-                  }
-                  // 2026-05-03: canonical short invoice title delta.
-                  // Empty string normalizes to null on the wire so the
-                  // server clears the column rather than storing "".
-                  const draftSummary = (metaDraft.summary ?? "").trim();
-                  const serverSummary = ((invoice as any).summary ?? "").trim();
-                  if (draftSummary !== serverSummary) {
-                    payload.summary = draftSummary || null;
-                  }
-
-                  // 2026-04-29 (header cleanup): job description is now
-                  // part of this same save delta. It rides the existing
-                  // `updateInvoiceFieldsMutation` route (which already
-                  // accepts workDescription), so no new request is added.
-                  const serverDescription = invoice.workDescription || job?.description || "";
-                  if (workDescDraft !== serverDescription) {
-                    payload.workDescription = workDescDraft;
-                  }
-
-                  // Reference-fields delta: only fire the PUT if any active
-                  // field changed against its server value. PUT replaces all
-                  // active values atomically (canonical contract).
-                  const refChanged = referenceFields.some((f) => {
-                    if (!f.active) return false;
-                    const draftVal = (referenceDraft[f.definitionId] ?? "").trim() || null;
-                    const serverVal = (f.textValue ?? "").trim() || null;
-                    return draftVal !== serverVal;
-                  });
-
-                  const tasks: Promise<unknown>[] = [];
-                  if (Object.keys(payload).length > 0) {
-                    tasks.push(updateInvoiceFieldsMutation.mutateAsync(payload));
-                  }
-                  if (refChanged) {
-                    tasks.push(saveReferenceFieldsMutation.mutateAsync(referenceDraft));
-                  }
-                  if (tasks.length === 0) {
-                    setMetaDraft(null);
-                    setReferenceDraft({});
-                    setEditingHeader(false);
-                    return;
-                  }
-                  try {
-                    await Promise.all(tasks);
-                    setMetaDraft(null);
-                    setReferenceDraft({});
-                    setEditingHeader(false);
-                  } catch {
-                    // Per-mutation onError toasts already fired; stay in edit
-                    // mode so the user can retry or cancel.
-                  }
-                }}
-                isSaving={updateInvoiceFieldsMutation.isPending || saveReferenceFieldsMutation.isPending}
-                jobDescription={invoice.workDescription || job?.description || ""}
-                jobDescriptionDraft={workDescDraft}
-                onChangeJobDescriptionDraft={setWorkDescDraft}
-              />
 
               {/* ─── Line items card — canonical 2026-04-29 (Phase 1).
                   The card chrome / header metrics / column header / row

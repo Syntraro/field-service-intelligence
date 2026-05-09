@@ -38,7 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   DollarSign, AlertCircle, ChevronDown, ChevronRight,
   TrendingUp, Users, Receipt, Calendar as CalendarIcon, Plus,
-  FileEdit, LayoutGrid,
+  FileEdit, LayoutGrid, Columns,
 } from "lucide-react";
 import {
   Popover,
@@ -655,7 +655,6 @@ export default function FinancialDashboard() {
                 isLoading={isLoading}
                 onOpenInvoice={(id) => setLocation(`/invoices/${id}`)}
                 onOpenCustomer={(id) => setLocation(`/clients/${id}`)}
-                onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
               />
             ),
             scheduled_revenue: (
@@ -663,7 +662,6 @@ export default function FinancialDashboard() {
                 data={data}
                 isLoading={isLoading}
                 onOpenJob={(id) => setLocation(`/jobs/${id}`)}
-                onViewAll={() => setLocation("/jobs?filter=scheduled")}
               />
             ),
             // 2026-05-07: needs_attention renderer entry intentionally
@@ -894,7 +892,6 @@ interface CollectionsOverviewCardProps {
   isLoading: boolean;
   onOpenInvoice: (invoiceId: string) => void;
   onOpenCustomer: (customerCompanyId: string) => void;
-  onViewAll: () => void;
 }
 
 function CollectionsOverviewCard({
@@ -902,7 +899,6 @@ function CollectionsOverviewCard({
   isLoading,
   onOpenInvoice,
   onOpenCustomer,
-  onViewAll,
 }: CollectionsOverviewCardProps) {
   const ar = data?.ar;
   const outstandingTotal = ar?.outstandingTotal ?? 0;
@@ -923,16 +919,6 @@ function CollectionsOverviewCard({
         icon={Receipt}
         color="text-amber-600"
         title="Collections"
-        action={
-          <button
-            type="button"
-            onClick={onViewAll}
-            className="text-xs text-[#76B054] hover:underline"
-            data-testid="link-view-all-collections"
-          >
-            View all
-          </button>
-        }
       />
       {/* Compact summary strip — sits at the top of the 1/3-width card.
           2026-05-06: simplified from 3 cols → 2 cols. The third metric
@@ -1057,14 +1043,12 @@ interface ScheduledRevenueCardProps {
   data?: FinancialSummary;
   isLoading: boolean;
   onOpenJob: (jobId: string) => void;
-  onViewAll: () => void;
 }
 
 function ScheduledRevenueCard({
   data,
   isLoading,
   onOpenJob,
-  onViewAll,
 }: ScheduledRevenueCardProps) {
   const sr = data?.scheduledRevenue;
   return (
@@ -1073,16 +1057,6 @@ function ScheduledRevenueCard({
         icon={CalendarIcon}
         color="text-emerald-600"
         title="Scheduled Revenue"
-        action={
-          <button
-            type="button"
-            onClick={onViewAll}
-            className="text-xs text-[#76B054] hover:underline"
-            data-testid="link-view-all-scheduled"
-          >
-            View all
-          </button>
-        }
       />
       <div data-testid="scheduled-revenue">
         {isLoading ? (
@@ -1672,23 +1646,14 @@ function TodaysScheduleCard({
       }
       data-testid="schedule-display-mode-toggle"
       data-display-mode={scheduleDisplayMode}
-      aria-label={`Switch to ${scheduleDisplayMode === "column" ? "stacked" : "column"} view (currently ${scheduleDisplayMode})`}
-      title={`Switch to ${scheduleDisplayMode === "column" ? "stacked" : "column"} view`}
-      className={
-        // Stacked layout uses an icon-only square trigger to fit the
-        // narrow row alongside the title. Default layout keeps the
-        // labelled chip pattern of the other header controls.
-        isStackedMode
-          ? "inline-flex items-center justify-center h-8 w-8 rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
-          : "inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
-      }
+      aria-label="Column display"
+      title="Column display"
+      className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
     >
       {isStackedMode ? (
         <LayoutGrid className="h-3.5 w-3.5" />
       ) : (
-        <span>
-          {scheduleDisplayMode === "column" ? "Column" : "Stacked"}
-        </span>
+        <Columns className="h-3.5 w-3.5" />
       )}
     </button>
   ) : null;

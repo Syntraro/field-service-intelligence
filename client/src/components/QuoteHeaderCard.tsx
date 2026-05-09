@@ -1,92 +1,65 @@
 /**
- * QuoteHeaderCard (Phase 3B, 2026-04-14)
+ * QuoteHeaderCard (Phase 3B, 2026-04-14; structured props API 2026-05-08 Task 3,
+ * ownership consolidation 2026-05-08 Task 4, CDH descriptor refactor 2026-05-09)
  *
- * Canonical quote detail header — mirrors the Invoice Detail
- * `InvoiceMetaCard` structure so Quote Detail belongs to the same
- * visual/system family as Invoice Detail and Job Detail:
+ * Thin adapter: transforms quote + location + customerCompany data into
+ * CanonicalDetailHeader's typed descriptor props. Owns NO business logic —
+ * mutations, modal state, and team-member queries stay on QuoteDetailPage.
  *
- *   Section A — card shell (`bg-white rounded-md border ...`):
- *     Left:   quote title + status badge + total
- *             company name (linked if customer company) + service address
- *     Right:  fixed-width metadata table (quote #, issued, expiry, sent,
- *             approved, declined dates)
- *   Section B — action bar (`border-t`, same density as Invoice/Job):
- *     Primary actions (Send / Approve / Decline / Convert to Job)
- *     Secondary: Preview / Download / Apply Template
- *     Overflow: Email / Delete (where applicable)
+ * Post-2026-05-09: all ReactNode slots replaced with typed descriptors.
+ *   status   → StatusDescriptor (CDH renders <StatusChip>)
+ *   alert    → AlertDescriptor (CDH renders icon + text with canonical tone)
+ *   workflow → WorkflowDescriptor (CDH renders canonical <Select> + Assessment)
  *
- * No business logic lives here — mutations + modal state stay on the
- * page. This component is a pure structural/visual shell that receives
- * already-computed flags (`isDraft`, `isSent`, `isApproved`, `isExpired`)
- * and bound callback handlers.
+ * Address fix (2026-05-09): full city/province/postalCode passed — no silent drops.
  */
 
-import { Link } from "wouter";
 import { format } from "date-fns";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  ArrowLeft,
   Check,
   ClipboardList,
   Download,
-  Edit,
   Eye,
   FileText,
-  Mail,
-  MapPin,
-  MoreHorizontal,
-  Phone,
   Send,
   Trash2,
   X,
-  AlertTriangle,
 } from "lucide-react";
 import type { Quote, Client, CustomerCompany } from "@shared/schema";
 import { formatCurrency } from "@/lib/formatters";
 import { isValid, parseISO } from "date-fns";
+import {
+  CanonicalDetailHeader,
+  type HeaderAction,
+  type HeaderOverflowItem,
+  type WorkflowDescriptor,
+  type AlertDescriptor,
+  type HeaderEditControls,
+} from "@/components/detail/CanonicalDetailHeader";
+import { getQuoteStatusMeta } from "@/lib/statusBadges";
 
 function safeFormatDate(value: unknown): string | null {
   if (!value) return null;
-  const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : new Date(String(value));
+  const d =
+    value instanceof Date
+      ? value
+      : typeof value === "string"
+        ? parseISO(value)
+        : new Date(String(value));
   return isValid(d) ? format(d, "MMM d, yyyy") : null;
 }
 
-type StatusInfo = {
-  label: string;
-  variant: "default" | "secondary" | "destructive" | "outline";
-};
-
 /**
- * 2026-05-08 (Phase 3 — Quote Workflow relocation): Owner + Assessment
- * lifecycle controls moved out of the right-rail "Workflow" tab into
- * Section B of this header card. Controls are entity-level mutations
- * (sales-owner assignment + assessment-status lifecycle), so they belong
- * with Send / Approve / Decline / Convert in the header action area —
- * not a rail tab. The page (QuoteDetailPage) still owns all mutations,
- * dialog state, and team-member queries; this card receives the data
- * + handlers via the optional `workflow` prop. When `workflow` is
- * undefined (e.g. a future surface that uses this header without
- * workflow controls), Section B renders without the workflow cluster.
+ * Owner + Assessment lifecycle controls passed from QuoteDetailPage.
+ * Adapted to WorkflowDescriptor before forwarding to CDH.
  */
 export interface QuoteHeaderWorkflow {
-  /** Selected sales-owner user id. `null` = Unassigned. */
   salesOwnerUserId: string | null;
-  /** Team-member options for the owner select. */
   teamMembers: Array<{
     id: string;
     firstName: string | null;
     lastName: string | null;
   }>;
-  /** `null` = no assessment, `"required"`/`"scheduled"`/`"completed"` =
-   *  lifecycle states. Mirrors the `quotes.assessmentStatus` column. */
   assessmentStatus: "required" | "scheduled" | "completed" | null;
   isOwnerMutating?: boolean;
   isAssessmentMutating?: boolean;
@@ -102,13 +75,12 @@ interface QuoteHeaderCardProps {
   quote: Quote;
   location: Client;
   customerCompany: CustomerCompany | null;
-  statusInfo: StatusInfo;
+  /** Legacy prop — kept for API compat. Status chip derived from quote.status. */
+  statusInfo: { label: string; variant: string };
   isDraft: boolean;
   isSent: boolean;
   isApproved: boolean;
   isExpired: boolean;
-  // Callback handlers — page owns all mutations/modal state.
-  onBack: () => void;
   onPreviewPdf: () => void;
   onDownloadPdf: () => void;
   onSend: () => void;
@@ -117,22 +89,32 @@ interface QuoteHeaderCardProps {
   onDecline: () => void;
   onConvertToJob: () => void;
   onDelete: () => void;
-  onEditPlaceholder?: () => void;
-  /** 2026-05-08: optional Owner + Assessment controls; rendered in
-   *  Section B's left cluster (before the flex-1 spacer). */
+  /** Inline title edit (2026-05-09 — replaces onEditPlaceholder toast). */
+  isHeaderEditing?: boolean;
+  headerTitleDraft?: string;
+  onHeaderTitleChange?: (v: string) => void;
+  onStartHeaderEdit?: () => void;
+  onHeaderSave?: () => void;
+  onHeaderCancel?: () => void;
+  isHeaderSaving?: boolean;
+  headerError?: string | null;
+  /** Owner + Assessment workflow row. Adapted to WorkflowDescriptor for CDH. */
   workflow?: QuoteHeaderWorkflow;
+  /** Quote description text (quote.notesCustomer). Shown in CDH. */
+  description?: string | null;
+  /** Unified edit session — title + description saved together. */
+  headerDescDraft?: string;
+  onHeaderDescChange?: (v: string) => void;
 }
 
 export function QuoteHeaderCard({
   quote,
   location,
   customerCompany,
-  statusInfo,
   isDraft,
   isSent,
   isApproved,
   isExpired,
-  onBack,
   onPreviewPdf,
   onDownloadPdf,
   onSend,
@@ -141,13 +123,30 @@ export function QuoteHeaderCard({
   onDecline,
   onConvertToJob,
   onDelete,
-  onEditPlaceholder,
+  isHeaderEditing,
+  headerTitleDraft,
+  onHeaderTitleChange,
+  onStartHeaderEdit,
+  onHeaderSave,
+  onHeaderCancel,
+  isHeaderSaving,
+  headerError,
   workflow,
+  description,
+  headerDescDraft,
+  onHeaderDescChange,
 }: QuoteHeaderCardProps) {
   const clientName = customerCompany?.name ?? location.companyName ?? "Client";
-  const addressParts = [location.address, location.address2].filter(Boolean);
-  const serviceAddress = addressParts.length > 0 ? addressParts.join(", ") : null;
-  const showServiceAddress = !!serviceAddress;
+
+  // Full address — no silent data loss (2026-05-09 fix: city/province/postal now included)
+  const streetParts = [location.address, location.address2].filter(Boolean);
+  const cityProvPostal = [location.city, location.province, location.postalCode]
+    .filter(Boolean)
+    .join(", ");
+  const addressLines: string[] = [
+    ...streetParts as string[],
+    ...(cityProvPostal ? [cityProvPostal] : []),
+  ];
 
   const issueDate = safeFormatDate(quote.issueDate);
   const expiryDate = safeFormatDate(quote.expiryDate);
@@ -155,366 +154,271 @@ export function QuoteHeaderCard({
   const approvedAt = safeFormatDate(quote.approvedAt);
   const declinedAt = safeFormatDate(quote.declinedAt);
 
-  const canDeleteDraft = isDraft;
   const canShowApproveDecline = isSent && !isExpired;
   const canShowConvert = isApproved;
 
+  const statusMeta = getQuoteStatusMeta(quote.status);
+
+  // ── Primary actions ──────────────────────────────────────────────
+  const primaryActions: HeaderAction[] = [
+    {
+      id: "apply-template",
+      label: "Apply Template",
+      icon: FileText,
+      onClick: onApplyTemplate,
+      variant: "outline",
+      hidden: !isDraft,
+      testId: "button-apply-template",
+    },
+    {
+      id: "preview",
+      label: "Preview",
+      icon: Eye,
+      onClick: onPreviewPdf,
+      variant: "outline",
+      testId: "button-preview-pdf",
+    },
+    {
+      id: "send-quote",
+      label: "Send Quote",
+      icon: Send,
+      onClick: onSend,
+      variant: "primary",
+      hidden: !isDraft,
+      testId: "button-send-quote",
+    },
+    {
+      id: "approve",
+      label: "Approve",
+      icon: Check,
+      onClick: onApprove,
+      variant: "outline",
+      hidden: !canShowApproveDecline,
+      testId: "button-approve-quote",
+    },
+    {
+      id: "decline",
+      label: "Decline",
+      icon: X,
+      onClick: onDecline,
+      variant: "outline",
+      hidden: !canShowApproveDecline,
+      testId: "button-decline-quote",
+    },
+    {
+      id: "convert-to-job",
+      label: "Convert to Job",
+      icon: ClipboardList,
+      onClick: onConvertToJob,
+      variant: "primary",
+      hidden: !canShowConvert,
+      testId: "button-convert-to-job",
+    },
+  ];
+
+  // ── Overflow actions ─────────────────────────────────────────────
+  const overflowActions: HeaderOverflowItem[] = [
+    {
+      id: "preview-pdf",
+      label: "Preview PDF",
+      icon: Eye,
+      onClick: onPreviewPdf,
+    },
+    {
+      id: "download-pdf",
+      label: "Download PDF",
+      icon: Download,
+      onClick: onDownloadPdf,
+    },
+    ...(canShowConvert
+      ? [{
+          id: "convert-overflow",
+          label: "Convert to Job",
+          icon: ClipboardList,
+          onClick: onConvertToJob,
+        } as HeaderOverflowItem]
+      : []),
+    ...(isDraft
+      ? [{
+          id: "delete-quote",
+          label: "Delete Quote",
+          icon: Trash2,
+          onClick: onDelete,
+          separator: true,
+          tone: "destructive",
+        } as HeaderOverflowItem]
+      : []),
+  ];
+
+  // ── Workflow descriptor (replaces workflowSlot ReactNode) ─────────
+  // teamMembers → ownerOptions with pre-formatted label so CDH doesn't
+  // need to know about firstName/lastName.
+  const workflowDescriptor: WorkflowDescriptor | undefined = workflow
+    ? {
+        kind: "quote-owner-assessment",
+        ownerUserId: workflow.salesOwnerUserId,
+        ownerOptions: workflow.teamMembers.map((u) => ({
+          id: u.id,
+          label: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.id,
+        })),
+        isOwnerMutating: workflow.isOwnerMutating,
+        assessmentStatus: workflow.assessmentStatus,
+        isAssessmentMutating: workflow.isAssessmentMutating,
+        onOwnerChange: workflow.onOwnerChange,
+        onMarkAssessmentNeeded: workflow.onMarkAssessmentNeeded,
+        onClearAssessmentNeeded: workflow.onClearAssessmentNeeded,
+        onScheduleAssessment: workflow.onScheduleAssessment,
+        onCompleteAssessment: workflow.onCompleteAssessment,
+        onCancelAssessment: workflow.onCancelAssessment,
+      }
+    : undefined;
+
+  // ── Alert descriptor (replaces headerAlert ReactNode) ─────────────
+  // Preserves data-testid="quote-expiry-warning" via testId field.
+  const alertDescriptor: AlertDescriptor | undefined =
+    isExpired && isSent
+      ? {
+          text: `Expired${expiryDate ? ` (${expiryDate})` : ""}`,
+          tone: "warning",
+          icon: "alert",
+          testId: "quote-expiry-warning",
+        }
+      : undefined;
+
+  // ── Edit controls footer (replaces onEditPlaceholder toast) ─────────
+  const editControls: HeaderEditControls | undefined =
+    isHeaderEditing
+      ? {
+          onSave: onHeaderSave ?? (() => {}),
+          onCancel: onHeaderCancel ?? (() => {}),
+          isSaving: isHeaderSaving,
+          error: headerError,
+          saveLabel: "Save",
+          cancelLabel: "Cancel",
+        }
+      : undefined;
+
   return (
-    <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="quote-header-area">
-      {/* Section A — identity + addresses / metadata table */}
-      <div className="px-4 py-3">
-        <div className="flex items-start justify-between gap-6">
-          {/* Left: title + status, company link + addresses */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              {/* Back button inline with title — mirrors Job Detail pattern where
-                  back nav sits at card top-left rather than as a floating icon above. */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 -ml-1 shrink-0"
-                onClick={onBack}
-                data-testid="button-back"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              <h1
-                className="text-2xl font-bold text-slate-900 leading-snug truncate"
-                data-testid="text-quote-number"
-              >
-                Quote {quote.quoteNumber || `#${quote.id.slice(0, 8)}`}
-              </h1>
-              <Badge variant={statusInfo.variant}>{statusInfo.label}</Badge>
-              <span className="text-sm text-muted-foreground">{formatCurrency(quote.total)}</span>
-            </div>
-
-            {/* Title subtitle — quote name if present */}
-            {quote.title && (
-              <p className="text-sm text-slate-600 mt-1 pl-8 truncate">{quote.title}</p>
-            )}
-
-            {/* Separator + company/addresses block — matches InvoiceMetaCard */}
-            <div className="border-t border-slate-100 mt-3 pt-2 pl-8">
-              {customerCompany?.id ? (
-                <Link href={`/clients/${customerCompany.id}`}>
-                  <span className="text-xs font-medium text-slate-600 hover:text-[#76B054] transition-colors cursor-pointer block truncate">
-                    {clientName}
-                  </span>
-                </Link>
-              ) : (
-                <span className="text-xs font-medium text-slate-600 block truncate">{clientName}</span>
-              )}
-
-              {showServiceAddress && (
-                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
-                  <MapPin className="h-2.5 w-2.5 shrink-0" />
-                  {serviceAddress}
-                </span>
-              )}
-
-              {location.phone && (
-                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
-                  <Phone className="h-2.5 w-2.5 shrink-0" />
-                  {location.phone}
-                </span>
-              )}
-
-              {location.email && (
-                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
-                  <Mail className="h-2.5 w-2.5 shrink-0" />
-                  <a href={`mailto:${location.email}`} className="hover:text-primary truncate">
-                    {location.email}
-                  </a>
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Right: metadata table — mirrors InvoiceMetaCard */}
-          <div className="shrink-0 w-48">
-            <table className="text-left text-xs w-full">
-              <tbody>
-                <tr>
-                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Quote #</td>
-                  <td className="font-semibold text-slate-700 py-0.5">
-                    {quote.quoteNumber || "—"}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Issued</td>
-                  <td className="text-slate-600 py-0.5">{issueDate ?? "—"}</td>
-                </tr>
-                <tr>
-                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Expiry</td>
-                  <td className={`py-0.5 ${isExpired ? "text-destructive font-medium" : "text-slate-600"}`}>
-                    {expiryDate ?? "—"}
-                    {isExpired && <span className="text-xs ml-1">(Expired)</span>}
-                  </td>
-                </tr>
-                {sentAt && (
-                  <tr>
-                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Sent</td>
-                    <td className="text-slate-600 py-0.5">{sentAt}</td>
-                  </tr>
-                )}
-                {approvedAt && (
-                  <tr>
-                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Approved</td>
-                    <td className="text-slate-600 py-0.5">{approvedAt}</td>
-                  </tr>
-                )}
-                {declinedAt && (
-                  <tr>
-                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Declined</td>
-                    <td className="text-slate-600 py-0.5">{declinedAt}</td>
-                  </tr>
-                )}
-                {/* 2026-05-05: Originating-lead backlink. Only renders when
-                    `quote.leadId` is set (quotes created via Lead → Quote
-                    conversion). Click navigates to the source lead. */}
-                {quote.leadId && (
-                  <tr data-testid="row-quote-originating-lead">
-                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">From Lead</td>
-                    <td className="py-0.5">
-                      <Link href={`/leads/${quote.leadId}`}>
-                        <span
-                          className="text-slate-600 hover:text-[#76B054] transition-colors cursor-pointer"
-                          data-testid="link-quote-originating-lead"
-                        >
-                          View lead →
-                        </span>
-                      </Link>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Expiry warning banner — inline inside the card when expired + sent */}
-        {isExpired && isSent && (
-          <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-amber-800">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <p className="text-xs">
-              <span className="font-medium">This quote has expired.</span> The expiry date ({expiryDate}) has passed and it can no longer be approved.
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Section B — action bar. Matches Invoice/Job density (h-7 buttons, px-4 py-1.5).
-          2026-05-08: workflow cluster (Owner + Assessment) lives on the
-          LEFT, before the flex-1 spacer. Primary entity actions (Send /
-          Approve / Decline / Convert / PDF / overflow) stay on the RIGHT. */}
-      <div
-        className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap"
-        data-testid="quote-header-action-bar"
-      >
-        {isDraft && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1 text-xs h-7"
-            onClick={onApplyTemplate}
-            data-testid="button-apply-template"
-          >
-            <FileText className="h-3.5 w-3.5" />Apply Template
-          </Button>
-        )}
-
-        {/* 2026-05-08 (Phase 3 — Workflow relocation): Owner +
-            Assessment lifecycle controls. Page owns mutations + dialog
-            state; the card just renders the controls. */}
-        {workflow && (
-          <div
-            className="flex items-center gap-1.5 flex-wrap"
-            data-testid="quote-header-workflow-cluster"
-          >
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>Owner</span>
-              <select
-                className="text-xs h-7 border rounded px-2 py-0.5 max-w-[140px] bg-white"
-                value={workflow.salesOwnerUserId || ""}
-                onChange={(e) =>
-                  workflow.onOwnerChange(e.target.value || null)
-                }
-                disabled={workflow.isOwnerMutating}
-                data-testid="quote-header-owner-select"
-              >
-                <option value="">Unassigned</option>
-                {workflow.teamMembers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {[u.firstName, u.lastName].filter(Boolean).join(" ")}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <span className="text-xs text-muted-foreground" data-testid="quote-header-assessment-label">Assessment</span>
-            {!workflow.assessmentStatus && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1 text-xs h-7"
-                onClick={workflow.onMarkAssessmentNeeded}
-                disabled={workflow.isAssessmentMutating}
-                data-testid="quote-header-assessment-mark-needed"
-              >
-                Mark needed
-              </Button>
-            )}
-            {workflow.assessmentStatus === "required" && (
-              <>
-                <Badge variant="outline" className="text-xs border-amber-300 text-amber-700">Needed</Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1 text-xs h-7"
-                  onClick={workflow.onScheduleAssessment}
-                  disabled={workflow.isAssessmentMutating}
-                  data-testid="quote-header-assessment-schedule"
-                >
-                  Schedule
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1 text-xs h-7 text-muted-foreground"
-                  onClick={workflow.onClearAssessmentNeeded}
-                  disabled={workflow.isAssessmentMutating}
-                  data-testid="quote-header-assessment-clear"
-                >
-                  Clear
-                </Button>
-              </>
-            )}
-            {workflow.assessmentStatus === "scheduled" && (
-              <>
-                <Badge variant="outline" className="text-xs border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1 text-xs h-7"
-                  onClick={workflow.onCompleteAssessment}
-                  disabled={workflow.isAssessmentMutating}
-                  data-testid="quote-header-assessment-complete"
-                >
-                  Complete
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1 text-xs h-7 text-muted-foreground"
-                  onClick={workflow.onCancelAssessment}
-                  disabled={workflow.isAssessmentMutating}
-                  data-testid="quote-header-assessment-cancel"
-                >
-                  Cancel
-                </Button>
-              </>
-            )}
-            {workflow.assessmentStatus === "completed" && (
-              <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700">Completed</Badge>
-            )}
-          </div>
-        )}
-
-        <div className="flex-1" />
-
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1 text-xs h-7"
-          onClick={onPreviewPdf}
-          data-testid="button-preview-pdf"
-        >
-          <Eye className="h-3.5 w-3.5" />Preview
-        </Button>
-
-        {isDraft && (
-          <Button
-            size="sm"
-            className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
-            onClick={onSend}
-            data-testid="button-send-quote"
-          >
-            <Send className="h-3.5 w-3.5" />Send Quote
-          </Button>
-        )}
-
-        {canShowApproveDecline && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1 text-xs h-7"
-              onClick={onApprove}
-              data-testid="button-approve-quote"
+    <CanonicalDetailHeader
+      testId="quote-detail-header"
+      isEditing={isHeaderEditing}
+      // 2026-05-09 parity fix: project name as primary editable title (H1).
+      // No entityLabel/subtitle — Job uses neither, so Quote must not either.
+      // Quote number lives solely in the items metadata grid (key "quote-number").
+      title={quote.title || `Quote ${quote.quoteNumber || `#${quote.id.slice(0, 8)}`}`}
+      // onBack intentionally omitted — Job does not pass onBack to CDH; Quote must match.
+      titleEdit={
+        isHeaderEditing && onHeaderTitleChange
+          ? {
+              value: headerTitleDraft ?? "",
+              onChange: onHeaderTitleChange,
+              placeholder: "Project name or title…",
+              maxLength: 200,
+            }
+          : undefined
+      }
+      editCapability={{
+        enabled: isDraft,
+        ariaLabel: "Edit quote title",
+        onStartEdit: onStartHeaderEdit,
+      }}
+      status={{ label: statusMeta.label, tone: statusMeta.tone }}
+      clientName={clientName}
+      clientHref={
+        customerCompany?.id ? `/clients/${customerCompany.id}` : undefined
+      }
+      addressLines={addressLines.length > 0 ? addressLines : undefined}
+      phone={location.phone ?? undefined}
+      email={location.email ?? undefined}
+      primaryActions={primaryActions}
+      overflowActions={overflowActions}
+      workflow={workflowDescriptor}
+      alert={alertDescriptor}
+      description={description ?? null}
+      descriptionEdit={
+        isHeaderEditing && onHeaderDescChange
+          ? {
+              value: headerDescDraft ?? "",
+              onChange: onHeaderDescChange,
+              maxLength: 2000,
+            }
+          : undefined
+      }
+      items={[
+        {
+          key: "quote-number",
+          label: "Quote #",
+          value: (
+            <span className="tabular-nums" data-testid="header-quote-number">
+              {quote.quoteNumber || "—"}
+            </span>
+          ),
+        },
+        {
+          key: "issued",
+          label: "Issued",
+          value: <span className="tabular-nums">{issueDate ?? "—"}</span>,
+        },
+        {
+          key: "expiry",
+          label: "Expiry",
+          value: (
+            <span
+              className={
+                isExpired
+                  ? "text-destructive font-medium tabular-nums"
+                  : "tabular-nums"
+              }
+              data-testid="header-quote-expiry"
             >
-              <Check className="h-3.5 w-3.5" />Approve
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1 text-xs h-7"
-              onClick={onDecline}
-              data-testid="button-decline-quote"
+              {expiryDate ?? "—"}
+              {isExpired && <span className="text-xs ml-1">(Expired)</span>}
+            </span>
+          ),
+        },
+        {
+          key: "total",
+          label: "Total",
+          value: (
+            <span className="tabular-nums" data-testid="header-quote-total">
+              {formatCurrency(quote.total)}
+            </span>
+          ),
+        },
+        {
+          key: "sent-at",
+          label: "Sent",
+          value: <span className="tabular-nums">{sentAt}</span>,
+          hidden: !sentAt,
+        },
+        {
+          key: "approved-at",
+          label: "Approved",
+          value: <span className="tabular-nums">{approvedAt}</span>,
+          hidden: !approvedAt,
+        },
+        {
+          key: "declined-at",
+          label: "Declined",
+          value: <span className="tabular-nums">{declinedAt}</span>,
+          hidden: !declinedAt,
+        },
+        {
+          key: "from-lead",
+          label: "From Lead",
+          value: (
+            <a
+              href={`/leads/${quote.leadId}`}
+              className="text-brand hover:underline cursor-pointer"
+              data-testid="link-quote-originating-lead"
             >
-              <X className="h-3.5 w-3.5" />Decline
-            </Button>
-          </>
-        )}
-
-        {canShowConvert && (
-          <Button
-            size="sm"
-            className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
-            onClick={onConvertToJob}
-            data-testid="button-convert-to-job"
-          >
-            <ClipboardList className="h-3.5 w-3.5" />Convert to Job
-          </Button>
-        )}
-
-        {/* Overflow menu */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" data-testid="button-quote-menu">
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onPreviewPdf}>
-              <Eye className="h-4 w-4 mr-2" />Preview PDF
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDownloadPdf}>
-              <Download className="h-4 w-4 mr-2" />Download PDF
-            </DropdownMenuItem>
-            {onEditPlaceholder && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={onEditPlaceholder}>
-                  <Edit className="h-4 w-4 mr-2" />Edit Quote
-                </DropdownMenuItem>
-              </>
-            )}
-            {canShowConvert && (
-              <DropdownMenuItem onClick={onConvertToJob}>
-                <ClipboardList className="h-4 w-4 mr-2" />Convert to Job
-              </DropdownMenuItem>
-            )}
-            {canDeleteDraft && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
-                  <Trash2 className="h-4 w-4 mr-2" />Delete Quote
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </div>
+              View lead →
+            </a>
+          ),
+          hidden: !quote.leadId,
+        },
+      ]}
+      editControls={editControls}
+    />
   );
 }

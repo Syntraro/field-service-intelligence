@@ -10,7 +10,6 @@ import {
   Archive,
   ArrowLeft,
   CheckCircle2,
-  Pencil,
   Trash2,
   Loader2,
   Clock,
@@ -19,7 +18,6 @@ import {
   Pause,
   Copy,
   Printer,
-  MoreHorizontal,
   RotateCcw,
   Send,
   Wrench,
@@ -82,23 +80,17 @@ import { TimeEntryModal } from "@/components/time";
 import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
+import { statusToChipTone } from "@/lib/chipVariants";
 import {
   CardShell,
   CardShellHeader,
   CardShellTitle,
 } from "@/components/ui/card";
-// 2026-05-08: CanonicalDetailHeader re-introduced with layout="card".
-// The 2026-05-07 merge unified the standalone strip + the CardShell into
-// one card. This pass extracts that card's content layout into the
-// canonical component so Quote/Lead can reuse the same shell pattern.
-// The outer CardShell + description section + edit footer remain on this
-// page as CardShell siblings (not inside the canonical component).
-import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
-// Job summary, status, Job # / Scheduled / Invoice # meta blocks
-// and all action buttons now live inside the existing client/location
-// CardShell below — one unified detail card instead of two stacked
-// regions. CanonicalDetailHeader is still mounted by InvoiceDetailPage.
+// 2026-05-08 (full-card consolidation): CanonicalDetailHeader layout="card"
+// now owns the full header card chrome + description + edit footer.
+// CardShell is removed from around the job header; description and
+// editFooter pass as props so the entire header lives in one component.
+import { CanonicalDetailHeader, type HeaderAction, type HeaderOverflowItem } from "@/components/detail/CanonicalDetailHeader";
 // 2026-05-07: canonical right-rail primitive — mounts the Notes +
 // Labour tabs in the right column. Same primitive ClientDetailPage
 // uses; per-page tab content + active state wiring stay here.
@@ -136,23 +128,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import type { User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
-// 2026-05-02 (Audit #2 follow-up): shared "Service Address" primitive.
-// Same JSX previously inlined here at line ~1763; the "job" variant
-// preserves the page's heavier typography + truncate + hide-when-empty
-// behavior byte-for-byte.
-import { AddressBlock } from "@/components/common/AddressBlock";
 // 2026-05-08 — Inventory Phase 3: capability-gated section that
 // auto-hides when the tenant doesn't have inventory_core. Mounts
 // between Line Items and Billing Summary in the main column.
@@ -1838,194 +1818,152 @@ export default function JobDetailPage() {
                   `clientName`, `job.location`, `nextVisit`, `job.jobNumber`,
                   `job.status`, and `jobInvoice` / `firstJobInvoice` /
                   `jobInvoiceCount` are all reused as-is. */}
-              <CardShell data-testid="card-job-context">
-                {/* 2026-05-08: replaced inline 2-column layout with the
-                    canonical CanonicalDetailHeader layout="card". Card
-                    chrome stays on the outer CardShell; description +
-                    edit footer are CardShell siblings below. */}
-                <CanonicalDetailHeader
-                  layout="card"
+              {/* 2026-05-08 Task 3: CanonicalDetailHeader with structured props.
+                  No arbitrary styled JSX slots — title, client, address,
+                  and actions all pass as typed data. The component owns
+                  typography, icon placement, and layout. */}
+              <CanonicalDetailHeader
                   testId="job-detail-header"
                   isEditing={editingHeader}
-                  title={
-                    editingHeader ? (
-                      <textarea
-                        ref={summaryInputRef}
-                        value={headerDraft.summary}
-                        onChange={(e) => {
-                          setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
-                          setHeaderError(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                            e.preventDefault();
-                            handleHeaderSave();
-                          } else if (e.key === "Escape") {
-                            e.preventDefault();
-                            handleHeaderCancel();
-                          }
-                        }}
-                        rows={1}
-                        maxLength={500}
-                        placeholder="Job summary"
-                        className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                        data-testid="input-job-summary-header"
-                      />
-                    ) : (
-                      <h1
-                        className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
-                        data-testid="job-detail-header-title"
-                      >
-                        {job.summary || (clientName ?? "Job")}
-                      </h1>
-                    )
-                  }
-                  statusBadge={
-                    <StatusPill
-                      variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
-                      className="shrink-0 mt-1"
-                      data-testid="header-status-pill"
-                    >
-                      {getJobStatusDisplay(job).label}
-                    </StatusPill>
-                  }
-                  clientSlot={
-                    clientName ? (
-                      <button
-                        type="button"
-                        onClick={() => setLocation(`/clients/${job.locationId}`)}
-                        className="block text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate max-w-full min-w-0"
-                        data-testid="link-client-context"
-                      >
-                        {clientName}
-                      </button>
-                    ) : undefined
-                  }
-                  addressSlot={
-                    // 2026-05-06 RALPH: pass the RAW `location.location`
-                    // column (the user-entered location name), NOT the
-                    // COALESCE `companyName` which duplicates the H1.
-                    <AddressBlock
-                      variant="job"
-                      label="Service Address"
-                      locationName={resolveServiceLocationName(job.location?.location, clientName)}
-                      street={streetLine}
-                      cityLine={cityLine}
-                      testId="block-service-address"
-                    />
-                  }
-                  actions={<>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={enterHeaderEdit}
-                      className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
-                      aria-label="Edit job header"
-                      data-testid="button-edit-job-card"
-                      disabled={editingHeader}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    {/* 2026-05-07: Add Equipment combo button (Wrench
-                        + Plus) removed from the top header actions.
-                        Equipment is now a canonical right-rail tab
-                        and the Equipment tab's panel-header `+ Add
-                        Equipment` button is the sole canonical
-                        affordance for opening AddEquipmentDialog. */}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-52">
-                        {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
-                          <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
-                            <Pause className="h-4 w-4 mr-2" />Hold Job
-                          </DropdownMenuItem>
-                        )}
-                        {job.status === "open" && isOfficeUser && (
-                          <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
-                            <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
-                          </DropdownMenuItem>
-                        )}
-                        {job.status === "completed" && isOfficeUser && (
-                          <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
-                            <Archive className="h-4 w-4 mr-2" />Archive Job
-                          </DropdownMenuItem>
-                        )}
-                        {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
-                          <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
-                            <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuSeparator />
-                        {isOfficeUser && (
-                          <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
-                            <Send className="h-4 w-4 mr-2" />Send Email
-                          </DropdownMenuItem>
-                        )}
-                        {/* 2026-05-02: Create Similar Job opens canonical
-                            CreateNewDialog with `jobInitialCloneFromJobId`. */}
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setCreateSimilarFromId(job.id);
-                            setCreateSimilarOpen(true);
-                          }}
-                          data-testid="menu-create-similar"
-                        >
-                          <Copy className="h-4 w-4 mr-2" />Create Similar Job
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
-                          <Printer className="h-4 w-4 mr-2" />Print
-                        </DropdownMenuItem>
-                        {isOfficeUser && (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
-                                <Trash2 className="h-4 w-4 mr-2" />Delete Job
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                      {job.status === "open" && (
-                        <Button size="sm" onClick={handleScheduleVisit} data-testid="button-schedule-visit-action">
-                          Schedule Visit
-                        </Button>
-                      )}
-                      {job.status === "completed" && isOfficeUser && (
-                        <Button
-                          size="sm"
-                          onClick={() => {
-                            if (jobInvoice) {
-                              setLocation(`/invoices/${jobInvoice.id}`);
-                            } else if (jobInvoiceCount > 0 && firstJobInvoice) {
-                              setLocation(`/invoices/${firstJobInvoice.id}`);
-                            } else {
-                              createInvoiceFromJobMutation.mutate();
+                  title={job.summary || clientName || "Job"}
+                  titleEdit={
+                    editingHeader
+                      ? {
+                          value: headerDraft.summary,
+                          onChange: (v) => {
+                            setHeaderDraft((d) => ({ ...d, summary: v }));
+                            setHeaderError(null);
+                          },
+                          onKeyDown: (e) => {
+                            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                              e.preventDefault();
+                              handleHeaderSave();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              handleHeaderCancel();
                             }
-                          }}
-                          disabled={createInvoiceFromJobMutation.isPending}
-                          data-testid="button-invoice-action"
-                        >
-                          {jobInvoice
-                            ? "View Invoice"
-                            : jobInvoiceCount > 0
-                              ? jobInvoiceCount === 1
-                                ? "View Invoice"
-                                : "View Invoices"
-                              : createInvoiceFromJobMutation.isPending
-                                ? "Creating…"
-                                : "Create Invoice"}
-                        </Button>
-                      )}
-                      {job.status === "archived" && isOfficeUser && (
-                        <Button size="sm" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-restore-job">
-                          Restore Job
-                        </Button>
-                      )}
-                  </>}
+                          },
+                          placeholder: "Job summary",
+                          maxLength: 500,
+                        }
+                      : undefined
+                  }
+                  status={{
+                    label: getJobStatusDisplay(job).label,
+                    tone: statusToChipTone(job.openSubStatus === "on_hold" ? "on_hold" : job.status),
+                  }}
+                  clientName={clientName ?? undefined}
+                  clientHref={job.locationId ? `/clients/${job.locationId}` : undefined}
+                  addressLines={[
+                    // 2026-05-06 RALPH: pass the RAW `location.location`
+                    // column, NOT the COALESCE `companyName` which duplicates the H1.
+                    resolveServiceLocationName(job.location?.location, clientName),
+                    streetLine,
+                    cityLine,
+                  ].filter(Boolean) as string[]}
+                  phone={job.location?.phone ?? undefined}
+                  email={job.location?.email ?? undefined}
+                  editCapability={{ enabled: true, ariaLabel: "Edit job header", onStartEdit: enterHeaderEdit }}
+                  primaryActions={[
+                    ...(job.status === "open" ? [{
+                      id: "schedule-visit",
+                      label: "Schedule Visit",
+                      onClick: handleScheduleVisit,
+                      testId: "button-schedule-visit-action",
+                    } satisfies HeaderAction] : []),
+                    ...(job.status === "completed" && isOfficeUser ? [{
+                      id: "invoice-action",
+                      label: jobInvoice
+                        ? "View Invoice"
+                        : jobInvoiceCount > 0
+                          ? (jobInvoiceCount === 1 ? "View Invoice" : "View Invoices")
+                          : createInvoiceFromJobMutation.isPending
+                            ? "Creating…"
+                            : "Create Invoice",
+                      onClick: () => {
+                        if (jobInvoice) {
+                          setLocation(`/invoices/${jobInvoice.id}`);
+                        } else if (jobInvoiceCount > 0 && firstJobInvoice) {
+                          setLocation(`/invoices/${firstJobInvoice.id}`);
+                        } else {
+                          createInvoiceFromJobMutation.mutate();
+                        }
+                      },
+                      disabled: createInvoiceFromJobMutation.isPending,
+                      testId: "button-invoice-action",
+                    } satisfies HeaderAction] : []),
+                    ...(job.status === "archived" && isOfficeUser ? [{
+                      id: "restore-job",
+                      label: "Restore Job",
+                      onClick: () => headerCardRef.current?.triggerReopenJob(),
+                      testId: "button-restore-job",
+                    } satisfies HeaderAction] : []),
+                  ]}
+                  overflowActions={[
+                    ...(job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser ? [{
+                      id: "hold-job",
+                      label: "Hold Job",
+                      icon: Pause,
+                      onClick: () => setShowActionRequiredModal(true),
+                      testId: "menu-hold-job",
+                    } satisfies HeaderOverflowItem] : []),
+                    ...(job.status === "open" && isOfficeUser ? [{
+                      id: "complete-job",
+                      label: "Complete Job",
+                      icon: CheckCircle2,
+                      onClick: () => setShowCompleteJobConfirm(true),
+                      tone: "success",
+                      testId: "menu-complete-job",
+                    } satisfies HeaderOverflowItem] : []),
+                    ...(job.status === "completed" && isOfficeUser ? [{
+                      id: "archive-job",
+                      label: "Archive Job",
+                      icon: Archive,
+                      onClick: () => headerCardRef.current?.openCloseJobDialog(),
+                      testId: "menu-archive-job",
+                    } satisfies HeaderOverflowItem] : []),
+                    ...((job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser ? [{
+                      id: "reopen-job",
+                      label: "Reopen Job",
+                      icon: RotateCcw,
+                      onClick: () => headerCardRef.current?.triggerReopenJob(),
+                      testId: "menu-reopen-job",
+                    } satisfies HeaderOverflowItem] : []),
+                    ...(isOfficeUser ? [{
+                      id: "send-email",
+                      label: "Send Email",
+                      icon: Send,
+                      onClick: () => setShowSendJobEmail(true),
+                      separator: true,
+                      testId: "menu-send-job-email",
+                    } satisfies HeaderOverflowItem] : []),
+                    {
+                      id: "create-similar",
+                      label: "Create Similar Job",
+                      icon: Copy,
+                      onClick: () => {
+                        setCreateSimilarFromId(job.id);
+                        setCreateSimilarOpen(true);
+                      },
+                      testId: "menu-create-similar",
+                    },
+                    {
+                      id: "print",
+                      label: "Print",
+                      icon: Printer,
+                      onClick: () => window.print(),
+                      testId: "menu-print",
+                    },
+                    ...(isOfficeUser ? [{
+                      id: "delete-job",
+                      label: "Delete Job",
+                      icon: Trash2,
+                      onClick: () => setShowDeleteConfirm(true),
+                      separator: true,
+                      tone: "destructive",
+                      testId: "menu-delete-job",
+                    } satisfies HeaderOverflowItem] : []),
+                  ]}
                   items={[
                     {
                       key: "job-number",
@@ -2096,100 +2034,42 @@ export default function JobDetailPage() {
                       })(),
                     },
                   ]}
-                />
-
-                {/* JOB DESCRIPTION (OPTIONAL) — appended at the bottom of
-                    the header card, mirroring InvoiceMetaCard's bottom
-                    description section. Hidden in read-only mode when
-                    the job has no description set, so an empty job
-                    doesn't reserve dead vertical space. Always visible
-                    when editing so the user has a place to type.
-                    Field source: `job.description` (text column on the
-                    `jobs` table — see schema). PATCH path: same
-                    canonical /api/jobs/:id endpoint as Job # / Summary;
-                    payload bundled with Summary in
-                    `updateHeaderMutation` so a single round-trip
-                    persists both. */}
-                {(editingHeader || (job.description ?? "").trim().length > 0) && (
-                  <div
-                    className="border-t border-card-border px-5 py-3"
-                    data-testid="job-description-section"
-                  >
-                    <h3 className="m-0 text-xs uppercase tracking-wide text-slate-500">
-                      Job description (optional)
-                    </h3>
-                    {editingHeader ? (
-                      <textarea
-                        value={headerDraft.description}
-                        maxLength={600}
-                        onChange={(e) => {
-                          setHeaderDraft((d) => ({ ...d, description: e.target.value }));
-                          setHeaderError(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                            e.preventDefault();
-                            handleHeaderSave();
-                          } else if (e.key === "Escape") {
-                            e.preventDefault();
-                            handleHeaderCancel();
-                          }
-                        }}
-                        placeholder="Describe the work for this job. Visible only to your team."
-                        className="mt-2 min-h-[88px] w-full text-sm text-slate-900 bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                        data-testid="textarea-job-description"
-                      />
-                    ) : (
-                      <p
-                        className="mt-2 text-sm text-text-primary whitespace-pre-line"
-                        data-testid="text-job-description"
-                      >
-                        {job.description}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* SAVE / CANCEL FOOTER — only when editing. Mirrors the
-                    InvoiceMetaCard footer (border-t, px-5 py-3,
-                    justify-end gap-2). Save uses the default Button
-                    variant (canonical primary / brand green); Cancel
-                    uses `variant="outline"`. The header pencil is
-                    disabled while editing so the user can't double-
-                    enter the flow. */}
-                {editingHeader && (
-                  <div
-                    className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3"
-                    data-testid="job-header-edit-footer"
-                  >
-                    {headerError && (
-                      <span
-                        className="mr-auto text-xs text-destructive truncate"
-                        data-testid="text-header-edit-error"
-                      >
-                        {headerError}
-                      </span>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleHeaderCancel}
-                      disabled={updateHeaderMutation.isPending}
-                      data-testid="button-header-cancel"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={handleHeaderSave}
-                      disabled={updateHeaderMutation.isPending}
-                      data-testid="button-header-save"
-                    >
-                      {updateHeaderMutation.isPending ? "Saving…" : "Save"}
-                    </Button>
-                  </div>
-                )}
-              </CardShell>
+                  description={job.description ?? null}
+                  descriptionEdit={
+                    editingHeader
+                      ? {
+                          value: headerDraft.description,
+                          onChange: (v) => {
+                            setHeaderDraft((d) => ({ ...d, description: v }));
+                            setHeaderError(null);
+                          },
+                          onKeyDown: (e) => {
+                            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                              e.preventDefault();
+                              handleHeaderSave();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              handleHeaderCancel();
+                            }
+                          },
+                          maxLength: 600,
+                          testId: "textarea-job-description",
+                        }
+                      : undefined
+                  }
+                  editControls={
+                    editingHeader
+                      ? {
+                          onSave: handleHeaderSave,
+                          onCancel: handleHeaderCancel,
+                          isSaving: updateHeaderMutation.isPending,
+                          error: headerError,
+                          saveTestId: "button-header-save",
+                          cancelTestId: "button-header-cancel",
+                        }
+                      : undefined
+                  }
+              />
 
               {/* LINE ITEMS — canonical LineItemsCard mount. 2026-04-29
                   (Phase 3): replaces the prior inline LineItemsTable grid

@@ -157,6 +157,8 @@ export interface JobHeaderDetail extends JobFeedItem {
     province: string | null;
     postalCode: string | null;
     parentCompanyId: string | null;
+    phone: string | null;
+    email: string | null;
   } | null;
   // Parent company (for detail page link)
   parentCompany: {
@@ -274,6 +276,8 @@ const detailSelectFields = {
     province: clients.province,
     postalCode: clients.postalCode,
     parentCompanyId: clients.parentCompanyId,
+    phone: clients.phone,
+    email: clients.email,
   },
   // Parent company
   parentCompanyId: customerCompanies.id,
@@ -368,6 +372,8 @@ function mapDetailRow(row: any): JobHeaderDetail {
           province: row.location.province ?? null,
           postalCode: row.location.postalCode ?? null,
           parentCompanyId: row.location.parentCompanyId ?? null,
+          phone: row.location.phone ?? null,
+          email: row.location.email ?? null,
         }
       : null,
     parentCompany:

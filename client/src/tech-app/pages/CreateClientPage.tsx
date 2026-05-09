@@ -17,7 +17,7 @@ import { apiRequest } from "@/lib/queryClient";
 // raw `text-sm border-slate-200` styling is replaced by the
 // primitive's canonical `text-input` typography + border.
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { FormField, FormLabel } from "@/components/ui/form-field";
 
 // Navigation uses query params (no sessionStorage)
 
@@ -115,70 +115,70 @@ export function CreateClientPage() {
         )}
 
         {/* Company Name */}
-        <div>
-          <Label htmlFor="tech-cc-company" className="block mb-1">Company Name</Label>
+        <FormField>
+          <FormLabel htmlFor="tech-cc-company">Company Name</FormLabel>
           <Input id="tech-cc-company" value={companyName} onChange={e => setCompanyName(e.target.value)}
             placeholder="Business name (or leave blank for personal)"
             autoComplete="organization" />
-        </div>
+        </FormField>
 
         {/* Name */}
         <div className="flex gap-2">
-          <div className="flex-1">
-            <Label htmlFor="tech-cc-first" className="block mb-1">First Name</Label>
+          <FormField className="flex-1">
+            <FormLabel htmlFor="tech-cc-first">First Name</FormLabel>
             <Input id="tech-cc-first" value={firstName} onChange={e => setFirstName(e.target.value)}
               placeholder="First"
               autoComplete="given-name" />
-          </div>
-          <div className="flex-1">
-            <Label htmlFor="tech-cc-last" className="block mb-1">Last Name</Label>
+          </FormField>
+          <FormField className="flex-1">
+            <FormLabel htmlFor="tech-cc-last">Last Name</FormLabel>
             <Input id="tech-cc-last" value={lastName} onChange={e => setLastName(e.target.value)}
               placeholder="Last"
               autoComplete="family-name" />
-          </div>
+          </FormField>
         </div>
 
         {/* Contact */}
-        <div>
-          <Label htmlFor="tech-cc-phone" className="block mb-1">Phone</Label>
+        <FormField>
+          <FormLabel htmlFor="tech-cc-phone">Phone</FormLabel>
           <Input id="tech-cc-phone" value={phone} onChange={e => setPhone(e.target.value)}
             type="tel" placeholder="(555) 123-4567"
             inputMode="tel" autoComplete="tel" />
-        </div>
-        <div>
-          <Label htmlFor="tech-cc-email" className="block mb-1">Email</Label>
+        </FormField>
+        <FormField>
+          <FormLabel htmlFor="tech-cc-email">Email</FormLabel>
           <Input id="tech-cc-email" value={email} onChange={e => setEmail(e.target.value)}
             type="email" placeholder="contact@example.com"
             inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false} />
-        </div>
+        </FormField>
 
         {/* Address */}
-        <div>
-          <Label htmlFor="tech-cc-address" className="block mb-1">Address</Label>
+        <FormField>
+          <FormLabel htmlFor="tech-cc-address">Address</FormLabel>
           <Input id="tech-cc-address" value={address} onChange={e => setAddress(e.target.value)}
             placeholder="Street address"
             autoComplete="street-address" />
-        </div>
+        </FormField>
         <div className="flex gap-2">
-          <div className="flex-1">
-            <Label htmlFor="tech-cc-city" className="block mb-1">City</Label>
+          <FormField className="flex-1">
+            <FormLabel htmlFor="tech-cc-city">City</FormLabel>
             <Input id="tech-cc-city" value={city} onChange={e => setCity(e.target.value)}
               placeholder="City"
               autoComplete="address-level2" />
-          </div>
-          <div className="w-24">
-            <Label htmlFor="tech-cc-province" className="block mb-1">Province</Label>
+          </FormField>
+          <FormField className="w-24">
+            <FormLabel htmlFor="tech-cc-province">Province</FormLabel>
             <Input id="tech-cc-province" value={province} onChange={e => setProvince(e.target.value)}
               placeholder="ON"
               autoComplete="address-level1" />
-          </div>
+          </FormField>
         </div>
-        <div className="w-32">
-          <Label htmlFor="tech-cc-postal" className="block mb-1">Postal Code</Label>
+        <FormField className="w-32">
+          <FormLabel htmlFor="tech-cc-postal">Postal Code</FormLabel>
           <Input id="tech-cc-postal" value={postalCode} onChange={e => setPostalCode(e.target.value)}
             placeholder="A1A 1A1"
             autoComplete="postal-code" autoCapitalize="characters" />
-        </div>
+        </FormField>
 
         {/* Submit */}
         <button onClick={handleSubmit} disabled={!canSubmit}

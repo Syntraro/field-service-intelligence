@@ -44,7 +44,7 @@ Every key in `tailwind.config.ts > theme.extend.fontSize`. "Resolved" values ref
 | `text-helper` | 13px | 16px | (400) | — | — | Tooltip body, hint text, footnotes; rail/panel dense-secondary | Per CLAUDE.md > Phase H1: `text-helper` is the canonical dense-secondary token for rails / panels. |
 | `text-modal-title` | 1.125rem (≈21.4px) | 1.6rem | 600 | — | — | DialogTitle | Pixel-matches the legacy `text-lg font-semibold`. |
 | `text-table-header` | 13px | 16px | 500 | 0.04em | UPPERCASE (via `@layer` in `client/src/index.css:387-389`) | Table column headers | **Alias of `text-label`** (same pixel output). |
-| `text-table-cell` | 15px | 22px | (400) | — | — | Table cells | Alias of `text-row` (pre-recalibration row size). **NOTE:** `text-row` now bakes weight 500; `text-table-cell` does NOT — they no longer pixel-match. |
+| `text-table-cell` | 14px | 20px | (400) | — | — | Table cells | Alias of `text-row`. Synced to 14/20/400 (2026-05-08) — pixel-identical to current text-row. |
 | `text-input` | 15px | 22px | (400) | — | — | Form input/textarea | Alias of `text-body`. |
 | `text-email-body` | 15px | 22px | (400) | — | — | Email composition | Alias of `text-body`. |
 | `text-error` | 0.8rem (≈15.2px) | 1.2rem | 500 | — | — | Form validation error text (pair with `text-destructive`) | Pixel-matches the legacy `text-xs font-medium` FormMessage uses. |
@@ -251,7 +251,7 @@ These are not Tailwind tokens — they're exported strings that bundle utilities
 | Conflict | Where | What |
 |---|---|---|
 | `text-row-emphasis` and `text-section-title` are pixel-identical | `tailwind.config.ts:76, 92` | Both 17/24/600 after the 2026-05-08 recalibration. Roles overlap visually. |
-| `text-row` (15/22/500) ≠ `text-table-cell` (15/22/400) | `tailwind.config.ts:86, 143` | Aliased name suggests parity but `text-row` now bakes weight 500 and `text-table-cell` does not. Migrating one to the other is no longer a no-op. |
+| `text-row` / `text-table-cell` divergence | resolved 2026-05-08 | Both now 14/20/400. `text-table-cell` synced to match current `text-row`. |
 | `text-text-muted` and `text-muted-foreground` | `client/src/index.css:52, 147` | Two muted-foreground tokens with different HSL values, both live, both used (`text-text-muted` ~290 hits, `text-muted-foreground` ~650 hits). CLAUDE.md > Phase H1 mandates `text-muted-foreground` for new code; `list-surface.tsx > listSecondaryClass` keeps `text-text-muted` for visual back-compat. |
 | `--primary` and `--brand` | `client/src/index.css:142, 92` | Same HSL value (`98 37% 51%`); `--primary` is the shadcn alias kept for back-compat. Comment at `:84-91` flags the duplicate for Phase 6 cleanup. |
 | `--primary-green` legacy hex | `client/src/index.css:95` | Deprecated alias slated for removal. |
@@ -314,7 +314,7 @@ These changes have no visual delta or a tiny, intentional one. Sweep them in a s
 10. **`--primary` vs. `--brand`.** Same HSL value (`98 37% 51%`). `--primary` is the shadcn alias kept for back-compat. Decision: complete the Phase 6 cleanup (delete `--primary` and migrate shadcn primitives to `--brand`) OR accept the permanent alias. Currently 700+ hits on `bg-primary` / `text-primary-foreground` indirectly through shadcn primitives.
 11. **Operational modal hex pinning vs. semantic variables.** `client/src/index.css:430-469` intentionally pins `#e5e7eb` / `#f8fafc` / `#4b5563` / `#f1f5f9` / `#111827` to "default Tailwind grays, NOT this project's custom `gray-*`". Decision: define dedicated `--operational-*` semantic tokens, OR keep the literal pinning permanent and document it as a design intent.
 12. **Token contradiction between `text-row-emphasis` and `text-section-title` (both 17/24/600).** The 2026-05-08 recalibration intentionally pixel-aligned them. Decision: live with the shared scale (and let the role names drive intent), OR re-separate by 1px. Affects rail group headings and emphasized row values stacking together.
-13. **Token contradiction between `text-row` (15/22/500) and `text-table-cell` (15/22/400).** Same px / different weight. Decision: realias `text-table-cell` to `text-row` (table cells inherit weight 500 — heavier reading text), OR keep them separate (table cells stay 400).
+13. ~~**Token contradiction between `text-row` and `text-table-cell`.**~~ **Resolved 2026-05-08.** Both now 14/20/400. `text-table-cell` synced to current `text-row` — alias is pixel-identical again.
 14. **Documentation drift in `docs/UI_TYPOGRAPHY.md`.** The canonical doc still cites `text-section-title: 18/24/600` and `text-row-emphasis: 15/22/500` (pre-2026-05-08 values). Decision: update the doc OR roll back the recalibration.
 15. **Legacy ramp removal timing.** `tailwind.config.ts:191-196` keeps `text-xs/-sm/-base/-lg/-xl/-2xl` for back-compat. ~2,300 hits across 200 files. Decision: page-by-page migration cadence vs. flag-day removal vs. tighter lint enforcement before next major version.
 

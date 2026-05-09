@@ -59,19 +59,17 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
-import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ListSurface, tableRowClass, listPrimaryClass, listSecondaryClass, listResultsClass } from "@/components/ui/list-surface";
+import { listResultsClass } from "@/components/ui/list-surface";
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { MetaRow } from "@/components/ui/meta-row";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 
 import {
   Plus, Loader2, AlertCircle, AlertTriangle, Wrench, Clock, CheckCircle2,
-  FileBox, Search, ChevronDown, ChevronUp, ChevronsUpDown,
+  FileBox, Search, ChevronDown,
   Zap, Repeat, CircleDot,
 } from "lucide-react";
 
@@ -134,7 +132,10 @@ interface UpcomingQueueItem {
   schedulingState: "not_generated" | "generated_unscheduled" | "scheduled" | "completed" | "canceled" | "skipped";
   locationId: string | null;
   locationName: string | null;
+  locationAddress: string | null;
   locationCity: string | null;
+  locationProvince: string | null;
+  locationPostal: string | null;
   clientId: string | null;
   customerName: string | null;
 }
@@ -196,31 +197,6 @@ function formatUpdatedAt(iso: string | null | undefined): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(d);
 }
 
-/** "Apr 24, 2026" / "Overdue" / "Inactive" / "—". Local-time parse so the
- *  result doesn't drift across the date boundary. */
-function formatNextDue(
-  nextOccurrence: string | null | undefined,
-  isActive: boolean,
-  todayLocal: Date,
-): { display: string; isOverdue: boolean; muted: boolean } {
-  if (!isActive) return { display: "Inactive", isOverdue: false, muted: true };
-  if (!nextOccurrence) return { display: "—", isOverdue: false, muted: true };
-  const parts = nextOccurrence.split("-").map((n) => parseInt(n, 10));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
-    return { display: nextOccurrence, isOverdue: false, muted: false };
-  }
-  const [y, m, d] = parts;
-  const date = new Date(y, m - 1, d);
-  if (date.getTime() < todayLocal.getTime()) {
-    return { display: "Overdue", isOverdue: true, muted: false };
-  }
-  return {
-    display: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date),
-    isOverdue: false,
-    muted: false,
-  };
-}
-
 // 2026-04-26 v2: removed `formatRecurrence`, `formatGenerationDay`, and
 // `formatTplSchedule`. The first two were tied to the old single-line
 // "Quarterly (Jan, Apr, Jul, Oct)" cell; `formatFrequencyStacked` is the
@@ -246,22 +222,6 @@ function isUpcomingThisWeek(item: UpcomingQueueItem, today: Date): boolean {
   return diffDays >= 0 && diffDays <= 7;
 }
 
-// ============================================================================
-// Badges
-// ============================================================================
-
-function StatusBadge({ isActive }: { isActive: boolean }) {
-  return isActive ? (
-    <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700">Active</Badge>
-  ) : (
-    <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700">Paused</Badge>
-  );
-}
-
-/**
- * Friendlier 3-state status badge for the Work Due table per the IA refactor:
- * collapses 8 raw `complianceStatus` values into Due Now / Upcoming / Overdue.
- */
 /** Format a YYYY-MM-DD string as "Mon DD" (e.g. "Mar 25"). Local-time
  *  parse so we don't drift across the date boundary. Used by the Work Due
  *  table's stacked Due Date column. */
@@ -302,55 +262,20 @@ function statusPriority(s: UpcomingQueueItem["complianceStatus"]): number {
   return 0;
 }
 
-/** Compact sortable header. Click cycles asc → desc → reset to the
- *  table's default sort. Generic over the table's sort-key union so
- *  Work Due / Plans / Templates each get type-checked usage. */
-function SortableHeader<K extends string>({
-  label,
-  sortKey,
-  state,
-  onChange,
-  defaultSort,
-  className,
-  testIdPrefix = "sort",
-}: {
-  label: string;
-  sortKey: K;
-  state: SortStateOf<K>;
-  onChange: (next: SortStateOf<K>) => void;
-  defaultSort: SortStateOf<K>;
-  className?: string;
-  testIdPrefix?: string;
-}) {
-  const active = state.key === sortKey;
-  const Icon =
-    !active ? ChevronsUpDown : state.dir === "asc" ? ChevronUp : ChevronDown;
-  function handleClick() {
-    if (!active) {
-      onChange({ key: sortKey, dir: "asc" });
-      return;
-    }
-    if (state.dir === "asc") {
-      onChange({ key: sortKey, dir: "desc" });
-      return;
-    }
-    onChange(defaultSort); // third click → reset
-  }
-  return (
-    <TableHead className={className}>
-      <button
-        type="button"
-        onClick={handleClick}
-        className={`inline-flex items-center gap-1 select-none uppercase tracking-wide ${
-          active ? "text-slate-900" : "text-slate-500"
-        } hover:text-slate-900 transition-colors`}
-        data-testid={`${testIdPrefix}-${sortKey}`}
-      >
-        {label}
-        <Icon className={`h-3 w-3 ${active ? "opacity-100" : "opacity-50"}`} />
-      </button>
-    </TableHead>
-  );
+/** Sort handler factory. Click cycles: new column → asc, active+asc → desc,
+ *  active+desc → reset to defaultSort. Feeds EntityListTable's onSort prop. */
+function makeSortHandler<K extends string>(
+  setSort: React.Dispatch<React.SetStateAction<SortStateOf<K>>>,
+  defaultSort: SortStateOf<K>,
+): (key: string) => void {
+  return (key: string) => {
+    setSort((prev) => {
+      const k = key as K;
+      if (prev.key !== k) return { key: k, dir: "asc" };
+      if (prev.dir === "asc") return { key: k, dir: "desc" };
+      return defaultSort;
+    });
+  };
 }
 
 function WorkDueStatusBadge({ status }: { status: UpcomingQueueItem["complianceStatus"] }) {
@@ -522,11 +447,12 @@ interface WorkDueTabProps {
   pendingRowId: string | null;
   onGenerateOne: (instanceId: string) => void;
   onOpenBulkConfirm: () => void;
+  onRetry: () => void;
 }
 
 function WorkDueTab({
   items, isLoading, isError, templatesById, initialFilter,
-  isGenerating, pendingRowId, onGenerateOne, onOpenBulkConfirm,
+  isGenerating, pendingRowId, onGenerateOne, onOpenBulkConfirm, onRetry,
 }: WorkDueTabProps) {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
@@ -625,6 +551,149 @@ function WorkDueTab({
     return arr;
   }, [filtered, sort, templatesById]);
 
+  const handleSort = useMemo(() => makeSortHandler(setSort, DEFAULT_WORK_DUE_SORT), []);
+
+  const workDueColumns = useMemo<EntityListColumn<UpcomingQueueItem>[]>(() => [
+    {
+      id: "client",
+      kind: "primary",
+      ratio: 1.4,
+      header: "Client",
+      sortKey: "client",
+      cell: {
+        type: "entity-primary",
+        value: (item) => item.customerName,
+      },
+    },
+    {
+      id: "plan",
+      kind: "primary",
+      ratio: 1.4,
+      header: "Plan",
+      sortKey: "plan",
+      cell: {
+        type: "customRender",
+        reason: "text-list-body (400 weight) — entity-primary bakes text-list-primary/500 which would bold the plan name",
+        render: (item) => (
+          <div className="text-list-body truncate min-w-0">
+            {item.templateTitle ?? "—"}
+          </div>
+        ),
+      },
+    },
+    {
+      id: "serviceAddress",
+      kind: "body",
+      ratio: 1.4,
+      header: "Service Address",
+      cell: {
+        type: "customRender",
+        reason: "two-line address: street (text-list-body) + city/province/postal (text-helper); entity-primary does not support this layout",
+        render: (item) => {
+          const cityLine = [item.locationCity, item.locationProvince, item.locationPostal]
+            .filter(Boolean)
+            .join(", ");
+          return (
+            <div className="min-w-0">
+              <div className="text-list-body truncate">
+                {item.locationAddress ?? "—"}
+              </div>
+              {cityLine && (
+                <div className="text-helper text-muted-foreground truncate">
+                  {cityLine}
+                </div>
+              )}
+            </div>
+          );
+        },
+      },
+    },
+    {
+      id: "frequency",
+      kind: "primary",
+      ratio: 1.1,
+      header: "Frequency",
+      sortKey: "frequency",
+      cell: {
+        type: "entity-primary",
+        value: (item) => {
+          const tpl = templatesById.get(item.templateId);
+          return tpl
+            ? formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear).headline
+            : "—";
+        },
+        secondary: (item) => {
+          const tpl = templatesById.get(item.templateId);
+          return tpl
+            ? formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear).sub
+            : null;
+        },
+      },
+    },
+    {
+      id: "dueDate",
+      kind: "date",
+      ratio: 0.8,
+      header: "Due Date",
+      sortKey: "dueDate",
+      cell: {
+        type: "customRender",
+        reason: "two-line date range: windowStart to windowEnd",
+        render: (item) => (
+          <div className="leading-tight whitespace-nowrap text-helper text-slate-700">
+            <div>{formatShortDate(item.windowStart)}</div>
+            <div className="text-muted-foreground/80">to {formatShortDate(item.windowEnd)}</div>
+          </div>
+        ),
+      },
+    },
+    {
+      id: "status",
+      kind: "status",
+      ratio: 0.7,
+      header: "Status",
+      sortKey: "status",
+      cell: {
+        type: "customRender",
+        reason: "domain badge: WorkDueStatusBadge",
+        render: (item) => <WorkDueStatusBadge status={item.complianceStatus} />,
+      },
+    },
+    {
+      id: "action",
+      kind: "badge",
+      ratio: 0.6,
+      header: "Action",
+      cell: {
+        type: "customRender",
+        reason: "Generate button with per-row loading state and mutation",
+        render: (item) => {
+          const eligible = isGenerationEligible(item);
+          const rowPending = pendingRowId === item.instanceId;
+          return (
+            <div onClick={(e) => e.stopPropagation()} className="inline-block">
+              <Button
+                size="sm"
+                className="h-7 px-2 text-caption gap-1"
+                disabled={!eligible || isGenerating}
+                onClick={() => onGenerateOne(item.instanceId)}
+                title="Generate work order"
+                data-testid={`work-due-generate-${item.instanceId}`}
+              >
+                {rowPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Zap className="h-3 w-3" />
+                )}
+                <span>Generate</span>
+              </Button>
+            </div>
+          );
+        },
+      },
+    },
+  ], [templatesById, pendingRowId, isGenerating, onGenerateOne]);
+
   return (
     <div className="space-y-3">
       {/* 2026-05-06 layout pass: 3 KPI cards collapsed into one
@@ -694,124 +763,39 @@ function WorkDueTab({
         )}
       </h2>
 
-      {/* Table */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <span className="ml-2 text-muted-foreground">Loading plans...</span>
-        </div>
-      ) : isError ? (
-        <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load plans.</span></CardContent></Card>
-      ) : filtered.length === 0 ? (
-        <Card className="border-slate-200 shadow-sm">
-          <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-            <div className="flex items-center justify-center h-14 w-14 rounded-full bg-emerald-100">
-              <CheckCircle2 className="h-7 w-7 text-emerald-600" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-body font-semibold text-slate-900">Nothing due right now</p>
-              <p className="text-row text-slate-500 max-w-sm">When a plan enters its service window, it will appear here automatically.</p>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <ListSurface>
-          {/* 2026-04-26: dropped `overflow-x-auto` and gave the table fixed
-              column widths so the row fits standard desktop widths without
-              sideways scrolling. The previous wrapper was the source of the
-              persistent horizontal scrollbar. */}
-          <Table className="table-fixed w-full">
-            <TableHeader>
-              <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
-                <SortableHeader label="Client"    sortKey="client"    state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[24%]" />
-                <SortableHeader label="Plan"      sortKey="plan"      state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[26%]" />
-                <SortableHeader label="Frequency" sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[18%]" />
-                <SortableHeader label="Due Date"  sortKey="dueDate"   state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[12%]" />
-                <SortableHeader label="Status"    sortKey="status"    state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[10%]" />
-                <TableHead className="w-[10%] text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedFiltered.map((item) => {
-                const tpl = templatesById.get(item.templateId);
-                const freq = tpl
-                  ? formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear)
-                  : { headline: "—", sub: null };
-                const eligible = isGenerationEligible(item);
-                const rowPending = pendingRowId === item.instanceId;
-                return (
-                  <TableRow
-                    key={item.instanceId}
-                    className={tableRowClass}
-                    onClick={() => setLocation(`/pm/${item.templateId}`)}
-                    data-testid={`work-due-row-${item.instanceId}`}
-                  >
-                    <TableCell>
-                      <div className={`${listPrimaryClass} truncate`} title={item.customerName ?? undefined}>
-                        {item.customerName ?? "—"}
-                      </div>
-                      {item.locationCity && (
-                        <div className={`${listSecondaryClass} truncate`} title={item.locationCity}>
-                          {item.locationCity}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className={`${listPrimaryClass} truncate`} title={item.templateTitle}>
-                        {item.templateTitle}
-                      </div>
-                      {item.locationName && (
-                        <div className={`${listSecondaryClass} truncate`} title={item.locationName}>
-                          {item.locationName}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="leading-tight">
-                      {/* Stacked frequency — saves horizontal width vs the
-                          previous "Quarterly (Jan, Apr, Jul, Oct)" single line. */}
-                      <div className={`${listPrimaryClass} truncate`}>{freq.headline}</div>
-                      {freq.sub && (
-                        <div className={`${listSecondaryClass} truncate`} title={freq.sub}>
-                          {freq.sub}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className={`${listSecondaryClass} whitespace-nowrap leading-tight`}>
-                      <div>{formatShortDate(item.windowStart)}</div>
-                      <div className="text-muted-foreground/80">to {formatShortDate(item.windowEnd)}</div>
-                    </TableCell>
-                    <TableCell>
-                      <WorkDueStatusBadge status={item.complianceStatus} />
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {/* Compact Generate button. Icon + text fit the 10%
-                          column without clipping. Title attribute provides
-                          a tooltip when columns are very narrow. */}
-                      <div onClick={(e) => e.stopPropagation()} className="inline-block">
-                        <Button
-                          size="sm"
-                          className="h-7 px-2 text-caption gap-1"
-                          disabled={!eligible || isGenerating}
-                          onClick={() => onGenerateOne(item.instanceId)}
-                          title="Generate work order"
-                          data-testid={`work-due-generate-${item.instanceId}`}
-                        >
-                          {rowPending ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <Zap className="h-3 w-3" />
-                          )}
-                          <span>Generate</span>
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </ListSurface>
-      )}
+      {/* Table — loadingState/errorState use typed descriptors.
+          legacyEmptyStateNode is intentional: "Nothing due right now" is a
+          success/all-clear state (green ring + CheckCircle2) that doesn't map
+          to any StateBlock kind/tone. Keep until a "success" kind is added to
+          StateBlock or the PM team adopts neutral styling for this state. */}
+      <EntityListTable<UpcomingQueueItem>
+        rows={sortedFiltered}
+        rowKey={(item) => item.instanceId}
+        onRowClick={(item) => setLocation(`/pm/${item.templateId}`)}
+        columns={workDueColumns}
+        sortField={sort.key ?? undefined}
+        sortDirection={sort.dir ?? undefined}
+        onSort={handleSort}
+        loadingState={isLoading ? { kind: "loading", title: "Loading plans..." } : undefined}
+        errorState={
+          isError
+            ? { kind: "error", title: "Failed to load plans.", primaryAction: { label: "Retry", onClick: onRetry, variant: "outline" } }
+            : undefined
+        }
+        legacyEmptyStateNode={
+          <Card className="border-slate-200 shadow-sm">
+            <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
+              <div className="flex items-center justify-center h-14 w-14 rounded-full bg-emerald-100">
+                <CheckCircle2 className="h-7 w-7 text-emerald-600" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-body font-semibold text-slate-900">Nothing due right now</p>
+                <p className="text-row text-slate-500 max-w-sm">When a plan enters its service window, it will appear here automatically.</p>
+              </div>
+            </CardContent>
+          </Card>
+        }
+      />
 
       {!isLoading && filtered.length > 0 && (
         <p className={listResultsClass}>
@@ -860,6 +844,92 @@ function PlansTab({
     d.setHours(0, 0, 0, 0);
     return d;
   }, []);
+
+  const handleSort = useMemo(() => makeSortHandler(setSort, DEFAULT_PLANS_SORT), []);
+
+  const plansColumns = useMemo<EntityListColumn<RecurringTemplate>[]>(() => [
+    {
+      id: "client",
+      kind: "primary",
+      ratio: 1.4,
+      header: "Client",
+      sortKey: "client",
+      cell: {
+        type: "entity-primary",
+        value: (tpl) => tpl.clientName ?? null,
+        secondary: (tpl) => tpl.locationName || undefined,
+      },
+    },
+    {
+      id: "plan",
+      kind: "primary",
+      ratio: 1.9,
+      header: "Plan",
+      sortKey: "plan",
+      cell: {
+        type: "customRender",
+        reason: "title + conditional 'Recurring' badge for non-PM types",
+        render: (tpl) => {
+          const isPm = tpl.jobType === "maintenance";
+          return (
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="truncate">{tpl.title}</span>
+              {!isPm && (
+                <Badge variant="outline" className="text-label px-1.5 py-0 border-slate-300 text-slate-600 shrink-0">
+                  Recurring
+                </Badge>
+              )}
+            </div>
+          );
+        },
+      },
+    },
+    {
+      id: "frequency",
+      kind: "primary",
+      ratio: 1.1,
+      header: "Frequency",
+      sortKey: "frequency",
+      cell: {
+        type: "entity-primary",
+        value: (tpl) => formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear).headline,
+        secondary: (tpl) => formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear).sub || undefined,
+      },
+    },
+    {
+      id: "nextDue",
+      kind: "date",
+      ratio: 1.0,
+      header: "Next Due",
+      sortKey: "nextDue",
+      cell: {
+        type: "entity-date",
+        value: (tpl) => tpl.nextOccurrence ?? null,
+        isActive: (tpl) => tpl.isActive,
+        overdueWhen: (tpl) => {
+          if (!tpl.isActive || !tpl.nextOccurrence) return false;
+          const parts = tpl.nextOccurrence.split("-").map((n) => parseInt(n, 10));
+          if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return false;
+          const [y, m, d] = parts;
+          return new Date(y, m - 1, d).getTime() < todayLocal.getTime();
+        },
+      },
+    },
+    {
+      id: "status",
+      kind: "status",
+      ratio: 0.9,
+      header: "Status",
+      sortKey: "status",
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (tpl) => ({
+          label: tpl.isActive ? "Active" : "Paused",
+          tone: tpl.isActive ? "success" : "warning",
+        }),
+      },
+    },
+  ], [todayLocal]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -1007,94 +1077,16 @@ function PlansTab({
         </Card>
       ) : (
         <>
-          <ListSurface>
-            {/* 2026-04-26 v2: dropped overflow-x-auto + actions column. Row
-                click navigates to plan detail (Edit / Pause / Delete /
-                Duplicate live there). table-fixed + percent widths fit the
-                row to the container — no horizontal scroll. */}
-            <Table className="table-fixed w-full">
-              <TableHeader>
-                <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
-                  <SortableHeader label="Client"    sortKey="client"    state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[22%]" />
-                  <SortableHeader label="Plan"      sortKey="plan"      state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[30%]" />
-                  <SortableHeader label="Frequency" sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[18%]" />
-                  <SortableHeader label="Next Due"  sortKey="nextDue"   state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[16%]" />
-                  <SortableHeader label="Status"    sortKey="status"    state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[14%]" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sortedFiltered.map((tpl) => {
-                  const isPm = tpl.jobType === "maintenance";
-                  const freq = formatFrequencyStacked(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear);
-                  // Next Due — driven by the canonical recurrence engine on
-                  // the server (templatesWithNext map in
-                  // server/routes/recurringJobs.ts). No client-side recurrence
-                  // calc, so there is no parallel calculator to drift from.
-                  const nextDue = formatNextDue(tpl.nextOccurrence ?? null, tpl.isActive, todayLocal);
-                  return (
-                    <TableRow
-                      key={tpl.id}
-                      className={tableRowClass}
-                      onClick={() => setLocation(`/pm/${tpl.id}`)}
-                      data-testid={`plan-row-${tpl.id}`}
-                    >
-                      <TableCell>
-                        <div className={`${listPrimaryClass} truncate`} title={tpl.clientName ?? undefined}>
-                          {tpl.clientName ?? "—"}
-                        </div>
-                        {tpl.locationName && (
-                          <div className={`${listSecondaryClass} truncate`} title={tpl.locationName}>
-                            {tpl.locationName}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className={`${listPrimaryClass} truncate`} title={tpl.title}>
-                            {tpl.title}
-                          </span>
-                          {!isPm && (
-                            <Badge variant="outline" className="text-label px-1.5 py-0 border-slate-300 text-slate-600 shrink-0">
-                              Recurring
-                            </Badge>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="leading-tight">
-                        <div className={`${listPrimaryClass} truncate`}>{freq.headline}</div>
-                        {freq.sub && (
-                          <div className={`${listSecondaryClass} truncate`} title={freq.sub}>
-                            {freq.sub}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <span
-                          className={`text-row ${
-                            nextDue.isOverdue
-                              ? "text-red-700 font-semibold"
-                              : nextDue.muted
-                                ? "text-muted-foreground"
-                                : "text-slate-900"
-                          }`}
-                        >
-                          {nextDue.display}
-                        </span>
-                      </TableCell>
-                      <TableCell><StatusBadge isActive={tpl.isActive} /></TableCell>
-                    </TableRow>
-                  );
-                })}
-                {sortedFiltered.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-row text-muted-foreground">
-                      No plans match your filters.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </ListSurface>
+          <EntityListTable<RecurringTemplate>
+            rows={sortedFiltered}
+            rowKey={(tpl) => tpl.id}
+            onRowClick={(tpl) => setLocation(`/pm/${tpl.id}`)}
+            columns={plansColumns}
+            sortField={sort.key ?? undefined}
+            sortDirection={sort.dir ?? undefined}
+            onSort={handleSort}
+            emptyState={{ kind: "no-results", title: "No plans match your filters." }}
+          />
           <p className={listResultsClass}>
             Showing {sortedFiltered.length} plan{sortedFiltered.length !== 1 ? "s" : ""}.
           </p>
@@ -1114,7 +1106,89 @@ function TemplatesTab() {
   // 2026-04-26 v2: column sort, default Updated descending (newest first).
   const [sort, setSort] = useState<SortStateOf<TemplatesSortKey>>(DEFAULT_TEMPLATES_SORT);
 
-  const { data: templates = [], isLoading } = useQuery<PmTemplateItem[]>({
+  const handleSort = useMemo(() => makeSortHandler(setSort, DEFAULT_TEMPLATES_SORT), []);
+
+  const templatesColumns = useMemo<EntityListColumn<PmTemplateItem>[]>(() => [
+    {
+      id: "name",
+      kind: "primary",
+      ratio: 1.5,
+      header: "Template Name",
+      sortKey: "name",
+      cell: {
+        type: "entity-primary",
+        value: (tpl) => tpl.name,
+      },
+    },
+    {
+      id: "summary",
+      kind: "text",
+      ratio: 1.9,
+      header: "Summary",
+      sortKey: "summary",
+      cell: {
+        type: "entity-text",
+        value: (tpl) => tpl.summary || null,
+      },
+    },
+    {
+      id: "frequency",
+      kind: "primary",
+      ratio: 1.1,
+      header: "Frequency",
+      sortKey: "frequency",
+      cell: {
+        type: "entity-primary",
+        value: (tpl) => formatFrequencyStacked("monthly", 1, tpl.defaultMonthsOfYear).headline,
+        secondary: (tpl) => formatFrequencyStacked("monthly", 1, tpl.defaultMonthsOfYear).sub || undefined,
+      },
+    },
+    {
+      id: "pricing",
+      kind: "primary",
+      ratio: 1.0,
+      header: "Pricing Default",
+      sortKey: "pricing",
+      cell: {
+        type: "customRender",
+        reason: "multi-branch price/billing display with 4 states",
+        render: (tpl) => {
+          const billingLabel =
+            tpl.billingMode === "per_visit" ? "Per visit" :
+            tpl.billingMode === "monthly" ? "Monthly" :
+            tpl.billingMode === "annually" ? "Annual" :
+            tpl.billingMode === "none" ? "No charge" :
+            null;
+          const priceNum = tpl.defaultPrice ? parseFloat(tpl.defaultPrice) : NaN;
+          const priceDisplay = !Number.isNaN(priceNum) && priceNum > 0
+            ? `$${priceNum.toFixed(2)}`
+            : null;
+          if (!billingLabel && !priceDisplay) return <span className="text-helper text-muted-foreground">—</span>;
+          return (
+            <div className="min-w-0">
+              <div className="truncate">{priceDisplay ?? billingLabel}</div>
+              {priceDisplay && billingLabel && (
+                <div className="text-helper text-muted-foreground truncate">{billingLabel}</div>
+              )}
+            </div>
+          );
+        },
+      },
+    },
+    {
+      id: "updated",
+      kind: "text",
+      ratio: 0.9,
+      header: "Updated",
+      sortKey: "updated",
+      cell: {
+        type: "entity-text",
+        value: (tpl) => formatUpdatedAt(tpl.updatedAt ?? tpl.createdAt ?? null),
+      },
+    },
+  ], []);
+
+  const { data: templates = [], isLoading, isError, refetch: refetchTemplates } = useQuery<PmTemplateItem[]>({
     queryKey: ["/api/pm/templates"],
   });
 
@@ -1188,12 +1262,11 @@ function TemplatesTab() {
         Reusable presets for maintenance plans. Templates prefill the new-plan wizard with default content.
       </p>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <span className="ml-2 text-muted-foreground">Loading templates...</span>
-        </div>
-      ) : templates.length === 0 ? (
+      {/* Zero-templates first-use state: branded violet ring Card with CTA.
+          Rendered outside EntityListTable — this "nothing created yet" state
+          is distinct from the search-filtered-empty case below and uses
+          intentional branded styling not expressible via StateBlock. */}
+      {!isLoading && !isError && templates.length === 0 ? (
         <Card className="border-slate-200 shadow-sm">
           <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
             <div className="flex items-center justify-center h-14 w-14 rounded-full bg-violet-50 ring-1 ring-violet-100">
@@ -1209,86 +1282,22 @@ function TemplatesTab() {
           </CardContent>
         </Card>
       ) : (
-        <ListSurface>
-          {/* 2026-04-26 v2: dropped overflow-x-auto + actions column. Row
-              click navigates to the template editor (which owns Save +
-              Delete). Same width contract as the other two tables. */}
-          <Table className="table-fixed w-full">
-            <TableHeader>
-              <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
-                <SortableHeader label="Template Name"   sortKey="name"      state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[22%]" />
-                <SortableHeader label="Summary"         sortKey="summary"   state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[30%]" />
-                <SortableHeader label="Frequency"       sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[18%]" />
-                <SortableHeader label="Pricing Default" sortKey="pricing"   state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[15%]" />
-                <SortableHeader label="Updated"         sortKey="updated"   state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[15%]" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedFiltered.map((tpl) => {
-                const freq = formatFrequencyStacked("monthly", 1, tpl.defaultMonthsOfYear);
-                const billingLabel =
-                  tpl.billingMode === "per_visit" ? "Per visit" :
-                  tpl.billingMode === "monthly" ? "Monthly" :
-                  tpl.billingMode === "annually" ? "Annual" :
-                  tpl.billingMode === "none" ? "No charge" :
-                  null;
-                const priceNum = tpl.defaultPrice ? parseFloat(tpl.defaultPrice) : NaN;
-                const priceDisplay = !Number.isNaN(priceNum) && priceNum > 0
-                  ? `$${priceNum.toFixed(2)}`
-                  : null;
-                return (
-                  <TableRow
-                    key={tpl.id}
-                    className={tableRowClass}
-                    onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}
-                    data-testid={`template-row-${tpl.id}`}
-                  >
-                    <TableCell>
-                      <div className={`${listPrimaryClass} truncate`} title={tpl.name}>{tpl.name}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className={`${listSecondaryClass} truncate`} title={tpl.summary ?? undefined}>
-                        {tpl.summary || "—"}
-                      </div>
-                    </TableCell>
-                    <TableCell className="leading-tight">
-                      <div className={`${listPrimaryClass} truncate`}>{freq.headline}</div>
-                      {freq.sub && (
-                        <div className={`${listSecondaryClass} truncate`} title={freq.sub}>
-                          {freq.sub}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="leading-tight">
-                      {billingLabel || priceDisplay ? (
-                        <>
-                          <div className={`${listPrimaryClass} truncate`}>
-                            {priceDisplay ?? billingLabel}
-                          </div>
-                          {priceDisplay && billingLabel && (
-                            <div className={`${listSecondaryClass} truncate`}>{billingLabel}</div>
-                          )}
-                        </>
-                      ) : (
-                        <span className={listSecondaryClass}>—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className={`${listSecondaryClass} whitespace-nowrap`}>
-                      {formatUpdatedAt(tpl.updatedAt ?? tpl.createdAt ?? null)}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {sortedFiltered.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-row text-muted-foreground">
-                    No templates match your search.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </ListSurface>
+        <EntityListTable<PmTemplateItem>
+          rows={sortedFiltered}
+          rowKey={(tpl) => tpl.id}
+          onRowClick={(tpl) => setLocation(`/pm/templates/${tpl.id}/edit`)}
+          columns={templatesColumns}
+          sortField={sort.key ?? undefined}
+          sortDirection={sort.dir ?? undefined}
+          onSort={handleSort}
+          loadingState={isLoading}
+          errorState={
+            isError
+              ? { kind: "error", title: "Failed to load templates", primaryAction: { label: "Retry", onClick: () => refetchTemplates(), variant: "outline" } }
+              : undefined
+          }
+          emptyState={{ kind: "no-results", title: "No templates match your search." }}
+        />
       )}
     </div>
   );
@@ -1362,7 +1371,12 @@ export default function PMWorkspacePage() {
   }, [templates]);
 
   // Due-queue items — same canonical endpoint the prior UpcomingTab used.
-  const { data: upcomingItems = [], isLoading: upcomingLoading, isError: upcomingError } = useQuery<UpcomingQueueItem[]>({
+  const {
+    data: upcomingItems = [],
+    isLoading: upcomingLoading,
+    isError: upcomingError,
+    refetch: refetchUpcoming,
+  } = useQuery<UpcomingQueueItem[]>({
     queryKey: ["/api/recurring-templates/upcoming"],
     queryFn: () => apiRequest("/api/recurring-templates/upcoming"),
   });
@@ -1508,6 +1522,7 @@ export default function PMWorkspacePage() {
               pendingRowId={pendingRowId}
               onGenerateOne={handleGenerateOne}
               onOpenBulkConfirm={() => setBulkConfirmOpen(true)}
+              onRetry={() => refetchUpcoming()}
             />
           </TabsContent>
 

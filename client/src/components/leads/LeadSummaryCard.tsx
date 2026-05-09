@@ -2,28 +2,28 @@
  * LeadSummaryCard — top-of-page lead summary panel.
  *
  * Two modes:
- *   - "saved": renders the saved lead's title, status pill, priority/source,
- *     and client/location identity block. This is the chrome the existing
- *     LeadDetailPage rendered inline; visual output is unchanged.
- *   - "draft": renders the same chrome with the title as an editable input,
- *     a "Draft" pill in place of the status pill, an inline priority Select,
- *     and a slot for the client/location selector (the create page passes
- *     CreateOrSelectField + inline create-client form here).
+ *   - "saved": uses CanonicalDetailHeader layout="card" with structured props
+ *     (2026-05-08 Task 3). entityLabel="Lead" + onBack + title string +
+ *     clientName/contactName/addressLines/phone/email +
+ *     primaryActions/overflowActions from the LeadSummaryActions shape.
+ *     descriptionEditNode slot (always visible; handles own read/edit state).
+ *     No bottom action bar — actions live in the right-column cluster.
+ *
+ *   - "draft": renders the same card chrome with the title as an editable
+ *     input, a "Draft" pill in place of the status pill, an inline
+ *     priority Select, and a slot for the client/location selector (the
+ *     create page passes CreateOrSelectField + inline create-client form).
+ *     Draft mode is intentionally NOT migrated to CanonicalDetailHeader —
+ *     the editable affordances (Input label + required marker, priority
+ *     Select, clientLocationSlot) don't fit the slot API without forcing
+ *     an artificial separation that buys nothing. (2026-05-08 audit note)
  *
  * Sharing this card is the entire reason we extracted it — both pages
  * source the same DOM/CSS, so they cannot drift. Don't redesign in either
  * caller; if a chrome change is needed, change it here.
  */
 import type { ReactNode } from "react";
-import {
-  ArrowLeft, MapPin, User,
-  // 2026-05-08 (Phase 3 — Lead Actions relocation): icons for the
-  // canonical Section B action bar, mirroring the Quote / Invoice
-  // header action-bar pattern (h-7 text-xs gap-1).
-  FileText, Send, Trash2, AlertTriangle, ChevronRight,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ArrowLeft } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -33,7 +33,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getClientDisplayName } from "@shared/clientDisplayName";
-import { getLeadStatusColors } from "./shared/leadBadges";
+import {
+  CanonicalDetailHeader,
+  type HeaderAction,
+  type HeaderOverflowItem,
+  type HeaderEditControls,
+} from "@/components/detail/CanonicalDetailHeader";
+import { getLeadStatusMeta } from "@/lib/statusBadges";
 
 // ── Types ──
 
@@ -67,27 +73,15 @@ export interface LeadSummaryShape {
 }
 
 /**
- * 2026-05-08 (Phase 3 — Lead Actions relocation): the prior right-rail
- * "Actions" tab was retired. Convert / Mark Contacted / Mark Lost /
- * Archive / Delete / View-Linked-Quote moved into a Section B action
- * bar at the bottom of this card, mirroring the QuoteHeaderCard /
- * InvoiceHeaderCard pattern (border-t divider, h-7 text-xs buttons,
- * flex-wrap gap-1.5). Gating flags (`canConvert`, `canContact`,
- * `canMarkLost`) and the destructive AlertDialogs stay on
- * LeadDetailPage; this card only renders the buttons + forwards clicks
- * via callbacks. All optional — when omitted (or in draft mode), the
- * action bar is not rendered.
+ * 2026-05-08 Task 3: actions expressed as structured data, not JSX.
+ * primaryActions / overflowActions built inline in LeadSummaryCard below.
+ * No bottom action bar — all controls live in the right-column cluster.
  */
 export interface LeadSummaryActions {
-  /** Show the primary `Convert to Quote` button. */
   canConvert: boolean;
-  /** Show the `Mark Contacted` button. */
   canContact: boolean;
-  /** Show the `Mark Lost` button. */
   canMarkLost: boolean;
-  /** Pre-existing converted-quote id; when set, surfaces a `View Quote` button. */
   convertedQuoteId: string | null;
-  /** Disabled state mirror of `statusMutation.isPending`. */
   isStatusMutating?: boolean;
   onConvertToQuote: () => void;
   onMarkContacted: () => void;
@@ -100,11 +94,22 @@ export interface LeadSummaryActions {
 type SavedProps = {
   mode: "saved";
   lead: LeadSummaryShape;
-  onBack: () => void;
-  /** Optional action handlers — when provided, the card renders a
-   *  Section B action bar at the bottom (border-t separator). When
-   *  omitted, the card renders identity-only chrome. */
   actions?: LeadSummaryActions;
+  /** Lead description text shown in CDH. */
+  description?: string | null;
+  /** When true, lead is won/lost — pencil and title/description editing are hidden. */
+  isTerminal?: boolean;
+  /** Inline title + description edit — unified edit session matching Job/Quote. */
+  isHeaderEditing?: boolean;
+  headerTitleDraft?: string;
+  onHeaderTitleChange?: (v: string) => void;
+  headerDescDraft?: string;
+  onHeaderDescChange?: (v: string) => void;
+  onStartHeaderEdit?: () => void;
+  onHeaderSave?: () => void;
+  onHeaderCancel?: () => void;
+  isHeaderSaving?: boolean;
+  headerError?: string | null;
 };
 
 type DraftProps = {
@@ -128,6 +133,172 @@ export type LeadSummaryCardProps = SavedProps | DraftProps;
 // ── Component ──
 
 export function LeadSummaryCard(props: LeadSummaryCardProps) {
+  // ── Saved mode — CanonicalDetailHeader (structured props) ──────────────
+  if (props.mode === "saved") {
+    const {
+      lead, actions, description,
+      isTerminal,
+      isHeaderEditing, headerTitleDraft, onHeaderTitleChange,
+      headerDescDraft, onHeaderDescChange,
+      onStartHeaderEdit, onHeaderSave, onHeaderCancel, isHeaderSaving, headerError,
+    } = props;
+
+    const statusMeta = getLeadStatusMeta(lead.status);
+
+    const companyDisplay = lead.customerCompany
+      ? getClientDisplayName(lead.customerCompany)
+      : lead.customerCompanyName || lead.location?.companyName;
+
+    const addressLine = [
+      lead.location?.address,
+      lead.location?.city,
+      lead.location?.province,
+      lead.location?.postalCode,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    // ── Build structured action arrays ──────────────────────────────
+    const primaryActions: HeaderAction[] = actions
+      ? [
+          {
+            id: "convert-to-quote",
+            label: "Convert to Quote",
+            onClick: actions.onConvertToQuote,
+            variant: "primary",
+            hidden: !actions.canConvert || !!actions.convertedQuoteId,
+            testId: "button-convert-to-quote",
+          },
+          {
+            id: "mark-contacted",
+            label: "Mark Contacted",
+            onClick: actions.onMarkContacted,
+            variant: "outline",
+            disabled: actions.isStatusMutating,
+            hidden: !actions.canContact,
+            testId: "button-mark-contacted",
+          },
+          {
+            id: "mark-lost",
+            label: "Mark Lost",
+            onClick: actions.onMarkLost,
+            variant: "danger",
+            disabled: actions.isStatusMutating,
+            hidden: !actions.canMarkLost,
+            testId: "button-mark-lost",
+          },
+          {
+            id: "view-quote",
+            label: "View Quote",
+            onClick: actions.onViewQuote,
+            variant: "outline",
+            hidden: !actions.convertedQuoteId,
+            testId: "button-view-quote",
+          },
+        ]
+      : [];
+
+    const overflowActions: HeaderOverflowItem[] = actions
+      ? [
+          {
+            id: "archive",
+            label: "Archive lead",
+            onClick: actions.onArchive,
+            testId: "button-archive-lead",
+          },
+          {
+            id: "hard-delete",
+            label: "Delete permanently",
+            onClick: actions.onHardDelete,
+            separator: true,
+            tone: "destructive",
+            testId: "button-hard-delete-lead",
+          },
+        ]
+      : [];
+
+    // Terminal leads (won/lost) are immutable: no pencil, no title edit, no description edit.
+    const canEdit = !isTerminal;
+
+    const leadEditControls: HeaderEditControls | undefined =
+      canEdit && isHeaderEditing
+        ? {
+            onSave: onHeaderSave ?? (() => {}),
+            onCancel: onHeaderCancel ?? (() => {}),
+            isSaving: isHeaderSaving,
+            error: headerError,
+          }
+        : undefined;
+
+    return (
+      <CanonicalDetailHeader
+        testId="lead-detail-header"
+        isEditing={canEdit && isHeaderEditing}
+        title={lead.title}
+        titleEdit={
+          canEdit && isHeaderEditing && onHeaderTitleChange
+            ? {
+                value: headerTitleDraft ?? "",
+                onChange: onHeaderTitleChange,
+                placeholder: "Lead title…",
+                maxLength: 500,
+              }
+            : undefined
+        }
+        status={{ label: statusMeta.label, tone: statusMeta.tone }}
+        clientName={companyDisplay ?? undefined}
+        contactName={lead.location?.contactName ?? undefined}
+        addressLines={addressLine ? [addressLine] : undefined}
+        phone={lead.location?.phone ?? undefined}
+        email={lead.location?.email ?? undefined}
+        editCapability={{
+          enabled: canEdit,
+          ariaLabel: "Edit lead title",
+          onStartEdit: onStartHeaderEdit,
+        }}
+        primaryActions={primaryActions}
+        overflowActions={overflowActions}
+        description={description ?? null}
+        descriptionEdit={
+          canEdit && isHeaderEditing && onHeaderDescChange
+            ? {
+                value: headerDescDraft ?? "",
+                onChange: onHeaderDescChange,
+                maxLength: 600,
+              }
+            : undefined
+        }
+        editControls={leadEditControls}
+        items={[
+          {
+            key: "source",
+            label: "Source",
+            value: (
+              <span className="capitalize" data-testid="header-lead-source">
+                {lead.sourceType}
+              </span>
+            ),
+          },
+          {
+            key: "priority",
+            label: "Priority",
+            value: (
+              <span className="capitalize" data-testid="header-lead-priority">
+                {lead.priority}
+              </span>
+            ),
+            hidden: !lead.priority,
+          },
+        ]}
+      />
+    );
+  }
+
+  // ── Draft mode — unchanged (shared with CreateLeadPage) ──────────────
+  // Intentionally not migrated to CanonicalDetailHeader. The editable
+  // affordances (Input with label + required marker, priority Select,
+  // clientLocationSlot) don't compose cleanly through the slot API.
+  // (2026-05-08 audit note — see file docstring above)
   return (
     <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-4 py-3">
@@ -144,178 +315,13 @@ export function LeadSummaryCard(props: LeadSummaryCardProps) {
             Lead
           </span>
         </div>
-
-        {props.mode === "saved"
-          ? renderSaved(props.lead)
-          : renderDraft(props)}
+        {renderDraft(props)}
       </div>
-
-      {/* Section B — action bar (saved mode + actions present).
-          Mirrors QuoteHeaderCard's border-t + px-4 py-1.5 + h-7 text-xs
-          density so Lead belongs to the same header-action visual
-          family as Quote / Invoice / Job. */}
-      {props.mode === "saved" && props.actions
-        ? renderActionBar(props.actions)
-        : null}
     </div>
   );
 }
 
-// ── Action bar — mirrors QuoteHeaderCard "Section B" ──────────────
-
-function renderActionBar(actions: LeadSummaryActions) {
-  const {
-    canConvert, canContact, canMarkLost, convertedQuoteId, isStatusMutating,
-    onConvertToQuote, onMarkContacted, onMarkLost, onArchive, onHardDelete, onViewQuote,
-  } = actions;
-  // Hide the bar entirely when no action is currently applicable. Archive
-  // + Delete are always allowed, so this guard never trips in practice
-  // — left in place as a defensive zero-state.
-  const hasAnyAction =
-    canConvert || canContact || canMarkLost || !!convertedQuoteId || true;
-  if (!hasAnyAction) return null;
-  return (
-    <div
-      className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap"
-      data-testid="lead-header-action-bar"
-    >
-      {canConvert && !convertedQuoteId && (
-        <Button
-          size="sm"
-          className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
-          onClick={onConvertToQuote}
-          data-testid="button-convert-to-quote"
-        >
-          <FileText className="h-3.5 w-3.5" />Convert to Quote
-        </Button>
-      )}
-      {canContact && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1 text-xs h-7"
-          onClick={onMarkContacted}
-          disabled={isStatusMutating}
-          data-testid="button-mark-contacted"
-        >
-          <Send className="h-3.5 w-3.5" />Mark Contacted
-        </Button>
-      )}
-      {canMarkLost && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1 text-xs h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
-          onClick={onMarkLost}
-          disabled={isStatusMutating}
-          data-testid="button-mark-lost"
-        >
-          Mark Lost
-        </Button>
-      )}
-      {convertedQuoteId && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1 text-xs h-7"
-          onClick={onViewQuote}
-          data-testid="button-view-quote"
-        >
-          <ChevronRight className="h-3.5 w-3.5" />View Quote
-        </Button>
-      )}
-
-      <div className="flex-1" />
-
-      <Button
-        variant="ghost"
-        size="sm"
-        className="gap-1 text-xs h-7 text-slate-500 hover:text-amber-700 hover:bg-amber-50"
-        onClick={onArchive}
-        data-testid="button-archive-lead"
-      >
-        <Trash2 className="h-3.5 w-3.5" />Archive
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="gap-1 text-xs h-7 text-slate-500 hover:text-red-700 hover:bg-red-50"
-        onClick={onHardDelete}
-        data-testid="button-hard-delete-lead"
-      >
-        <AlertTriangle className="h-3.5 w-3.5" />Delete
-      </Button>
-    </div>
-  );
-}
-
-// ── Saved-mode body — must match the prior LeadDetailPage DOM exactly ──
-
-function renderSaved(lead: LeadSummaryShape) {
-  const statusColor = getLeadStatusColors(lead.status);
-  const addressLine = [
-    lead.location?.address,
-    lead.location?.city,
-    lead.location?.province,
-    lead.location?.postalCode,
-  ]
-    .filter(Boolean)
-    .join(", ");
-  const contactLine = [lead.location?.phone, lead.location?.email]
-    .filter(Boolean)
-    .join(" • ");
-  const hasCompanyDisplay =
-    lead.customerCompany || lead.customerCompanyName || lead.location?.companyName;
-  const companyDisplay = lead.customerCompany
-    ? getClientDisplayName(lead.customerCompany)
-    : lead.customerCompanyName || lead.location?.companyName;
-
-  return (
-    <>
-      <h1 className="text-lg font-bold text-slate-900 leading-tight truncate">
-        {lead.title}
-      </h1>
-      <div className="flex items-center gap-2 mt-1 flex-wrap">
-        <span
-          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide ${statusColor.bg} ${statusColor.text}`}
-        >
-          {lead.status}
-        </span>
-        {lead.priority && (
-          <Badge variant="outline" className="text-xs px-1.5 py-0 capitalize">
-            {lead.priority}
-          </Badge>
-        )}
-        <span className="text-xs text-slate-400 uppercase tracking-wide">
-          {lead.sourceType}
-        </span>
-      </div>
-      {/* Client / Location */}
-      <div className="mt-2 pt-1.5 border-t border-slate-100">
-        {hasCompanyDisplay && (
-          <p className="text-sm font-semibold text-slate-800">{companyDisplay}</p>
-        )}
-        {lead.location?.contactName && (
-          <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-            <User className="h-3 w-3 text-slate-400" />
-            {lead.location.contactName}
-          </p>
-        )}
-        {addressLine && (
-          <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-            <MapPin className="h-3 w-3 shrink-0" />
-            {addressLine}
-          </p>
-        )}
-        {contactLine && (
-          <p className="text-xs text-slate-400 mt-0.5">{contactLine}</p>
-        )}
-      </div>
-    </>
-  );
-}
-
-// ── Draft-mode body — same chrome, editable affordances ──
+// ── Draft-mode body — same chrome, editable affordances ──────────────
 //
 // 2026-05-07 affordance fix: the title used to render with `border-0
 // px-0 py-0 shadow-none focus-visible:ring-0 placeholder:text-slate-300

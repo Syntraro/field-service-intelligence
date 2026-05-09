@@ -58,10 +58,10 @@ describe("Default-financial widgets share heightPreset summary", () => {
     const noComments = registry
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
-    // Six widgets in the default financial registry; each must
+    // Five widgets in the default financial registry; each must
     // declare heightPreset: "summary".
     const matches = noComments.match(/heightPreset:\s*"([a-z]+)"/g) ?? [];
-    expect(matches.length).toBe(6);
+    expect(matches.length).toBe(5);
     for (const m of matches) {
       expect(m).toBe(`heightPreset: "summary"`);
     }
@@ -224,10 +224,81 @@ describe("Sidebar — collapse control", () => {
   });
 
   it("the Create New button collapses to an icon when the sidebar is collapsed", () => {
-    // When state === "collapsed", className becomes the icon-only
-    // form; pin both branches.
+    // When state === "collapsed", className becomes the icon-only square;
+    // when expanded, the compact self-centered pill. Pin both branches.
     expect(code).toMatch(/isCollapsed/);
-    expect(code).toMatch(/h-8 w-8 p-0 inline-flex items-center justify-center/);
-    expect(code).toMatch(/h-8 px-3 gap-1\.5/);
+    expect(code).toMatch(/h-8 w-8 p-0 self-center inline-flex items-center justify-center/);
+    expect(code).toMatch(/h-8 self-center inline-flex items-center px-3/);
+  });
+});
+
+// ─── 6b. Create New button compact styling guardrails ──────────────
+
+describe("Sidebar — Create New button compact styling", () => {
+  const code = read(SIDEBAR_PATH);
+
+  it("expanded button uses h-8 height (not oversized)", () => {
+    // h-8 = 32px — compact action height in the sidebar.
+    expect(code).toMatch(/h-8 self-center inline-flex/);
+  });
+
+  it("expanded button uses self-center (overrides flex-col stretch, not w-full)", () => {
+    // SidebarHeader is flex-col; default align-items: stretch would make the
+    // button fill the full sidebar width. self-center overrides that.
+    expect(code).toMatch(/self-center inline-flex/);
+  });
+
+  it("expanded button uses inline-flex (content-based width)", () => {
+    expect(code).toMatch(/inline-flex items-center px-3/);
+  });
+
+  it("expanded button uses rounded-lg radius", () => {
+    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
+    expect(expandedClass).toMatch(/rounded-lg/);
+  });
+
+  it("expanded button uses canonical text-nav-compact token (not raw text-sm)", () => {
+    // text-nav-compact = 12px — purpose-built for constrained sidebar strips.
+    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
+    expect(expandedClass).toMatch(/\btext-nav-compact\b/);
+    expect(expandedClass).not.toMatch(/\btext-sm\b/);
+    expect(expandedClass).not.toMatch(/\btext-row\b/);
+  });
+
+  it("Plus icon is h-4 w-4 (not oversized)", () => {
+    expect(code).toMatch(/<Plus className="h-4 w-4"/);
+  });
+
+  it("expanded button does NOT use w-full (no full-bleed)", () => {
+    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
+    expect(expandedClass).not.toMatch(/\bw-full\b/);
+  });
+
+  it("expanded button does NOT use w-[90%] or mx-auto (content-width, not fractional)", () => {
+    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
+    expect(expandedClass).not.toMatch(/w-\[90%\]/);
+    expect(expandedClass).not.toMatch(/\bmx-auto\b/);
+  });
+
+  it("expanded button does NOT use oversized padding (no px-4 or px-6)", () => {
+    const expandedClass = code.match(/h-8 self-center[^"']*/)?.[0] ?? "";
+    expect(expandedClass).not.toMatch(/\bpx-4\b/);
+    expect(expandedClass).not.toMatch(/\bpx-6\b/);
+  });
+
+  it("collapsed button also uses h-8 (consistent height)", () => {
+    const collapsedClass = code.match(/h-8 w-8 p-0 self-center[^"']*/)?.[0] ?? "";
+    expect(collapsedClass).toBeTruthy();
+  });
+
+  it("collapsed button does NOT grow beyond w-8 (icon-only square)", () => {
+    const collapsedClass = code.match(/h-8 w-8 p-0 self-center[^"']*/)?.[0] ?? "";
+    expect(collapsedClass).not.toMatch(/\bw-9\b/);
+    expect(collapsedClass).not.toMatch(/\bw-10\b/);
+  });
+
+  it("DropdownMenuTrigger asChild and data-testid remain wired (behavior preserved)", () => {
+    expect(code).toMatch(/<DropdownMenuTrigger asChild>/);
+    expect(code).toMatch(/data-testid="button-create-new"/);
   });
 });

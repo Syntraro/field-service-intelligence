@@ -46,10 +46,7 @@ import {
   // above for other surfaces; reused unchanged.
   Users, StickyNote, Wallet, CalendarClock, Activity, X,
 } from "lucide-react";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 // 2026-05-08 chip canonicalization: the local FilterChips generic
 // below now composes the canonical <FilterChip> from chip.tsx.
@@ -1504,45 +1501,70 @@ export default function ClientDetailPage() {
               <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
                 <Plus className="mr-1 h-3 w-3" />Create Invoice
               </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+              <ActionMenu
+                items={[
+                  {
+                    id: "add-location",
+                    label: "Add Location",
+                    icon: Plus,
+                    onSelect: () => setAddLocationDialogOpen(true),
+                  },
+                  {
+                    id: "edit-client",
+                    label: "Edit Client",
+                    icon: Pencil,
+                    onSelect: () => setEditClientDialogOpen(true),
+                  },
+                  {
+                    id: "edit-client-tags",
+                    label: "Edit Client Tags",
+                    icon: Tag,
+                    onSelect: () => setEditClientTagsOpen(true),
+                    hidden: !(scopeType === "company" && Boolean(companyId)),
+                  },
+                  {
+                    id: "edit-location",
+                    label: "Edit Location",
+                    icon: Pencil,
+                    onSelect: () => setEditLocationModalOpen(true),
+                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                  },
+                  {
+                    id: "edit-location-tags",
+                    label: "Edit Location Tags",
+                    icon: Tag,
+                    onSelect: () => setEditLocationTagsOpen(true),
+                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                  },
+                  {
+                    id: "delete-location",
+                    label: "Delete Location",
+                    icon: Trash2,
+                    onSelect: () => openDeleteDialog("location"),
+                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                    // separator always before the destructive group;
+                    // when this item is hidden, delete-client owns the separator instead.
+                    separator: true,
+                    tone: "destructive",
+                  },
+                  {
+                    id: "delete-client",
+                    label: "Delete Client",
+                    icon: Trash2,
+                    onSelect: () => openDeleteDialog("company"),
+                    // separator only when delete-location is hidden (company scope),
+                    // avoiding a double-separator when both destructive items are visible.
+                    separator: !(scopeType === "location" && Boolean(selectedLoc)),
+                    tone: "destructive",
+                  },
+                ] satisfies ActionMenuItemDescriptor[]}
+                trigger={
                   <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="header-overflow">
                     <MoreHorizontal className="h-4 w-4" />
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuItem onClick={() => setAddLocationDialogOpen(true)}>
-                    <Plus className="h-3.5 w-3.5 mr-2" /> Add Location
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
-                    <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
-                  </DropdownMenuItem>
-                  {scopeType === "company" && companyId && (
-                    <DropdownMenuItem onClick={() => setEditClientTagsOpen(true)}>
-                      <Tag className="h-3.5 w-3.5 mr-2" /> Edit Client Tags
-                    </DropdownMenuItem>
-                  )}
-                  {scopeType === "location" && selectedLoc && (
-                    <>
-                      <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
-                        <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
-                        <Tag className="h-3.5 w-3.5 mr-2" /> Edit Location Tags
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                  <DropdownMenuSeparator />
-                  {scopeType === "location" && selectedLoc && (
-                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("location")}>
-                      <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("company")}>
-                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                }
+                align="start"
+              />
             </div>
           </div>
 

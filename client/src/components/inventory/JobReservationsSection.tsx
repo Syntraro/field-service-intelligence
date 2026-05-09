@@ -21,12 +21,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { Plus, MoreHorizontal, Package, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -182,8 +177,24 @@ export function JobReservationsSection({ jobId }: JobReservationsSectionProps) {
                     {row.reservedByUserName ? ` · by ${row.reservedByUserName}` : ""}
                   </div>
                 </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                <ActionMenu
+                  items={[
+                    {
+                      id: `release-${row.id}`,
+                      label: "Release",
+                      icon: X,
+                      onSelect: () => releaseMutation.mutate(row),
+                      testId: `job-reservation-release-${row.id}`,
+                    },
+                    {
+                      id: `cancel-${row.id}`,
+                      label: "Cancel",
+                      icon: X,
+                      onSelect: () => cancelMutation.mutate(row),
+                      testId: `job-reservation-cancel-${row.id}`,
+                    },
+                  ]}
+                  trigger={
                     <Button
                       variant="ghost"
                       size="icon"
@@ -191,24 +202,9 @@ export function JobReservationsSection({ jobId }: JobReservationsSectionProps) {
                     >
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={() => releaseMutation.mutate(row)}
-                      data-testid={`job-reservation-release-${row.id}`}
-                    >
-                      <X className="h-4 w-4 mr-2" />
-                      Release
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => cancelMutation.mutate(row)}
-                      data-testid={`job-reservation-cancel-${row.id}`}
-                    >
-                      <X className="h-4 w-4 mr-2" />
-                      Cancel
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  }
+                  align="end"
+                />
               </li>
             ))}
           </ul>

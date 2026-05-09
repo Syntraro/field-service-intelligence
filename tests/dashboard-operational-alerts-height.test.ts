@@ -92,10 +92,29 @@ describe("OperationalAlertsCard — fills its grid cell", () => {
   });
 });
 
-// ─── 3. Click + collapse behaviour preserved ───────────────────────
+// ─── 3. Always-expanded — no collapse button (2026-05-08 header cleanup) ──
 
-describe("OperationalAlertsCard — click + collapse behaviour preserved", () => {
+describe("OperationalAlertsCard — always expanded, no collapse/minimize button", () => {
   const code = read(CARD_PATH);
+
+  it("the collapse toggle button is NOT rendered (header is a static div)", () => {
+    // The prior <button> header (with data-testid="operational-alerts-toggle")
+    // was replaced by a non-interactive <div> so there is no longer any
+    // minimize/collapse affordance on the card.
+    expect(code).not.toMatch(/data-testid="operational-alerts-toggle"/);
+    expect(code).not.toMatch(/handleToggle/);
+    expect(code).not.toMatch(/isCollapsed/);
+  });
+
+  it("the ChevronDown icon is not rendered in the header", () => {
+    expect(code).not.toMatch(/ChevronDown/);
+  });
+
+  it("the alert body renders unconditionally (no collapse guard)", () => {
+    // id must be present, and must not be inside a conditional `{!isCollapsed &&`
+    expect(code).toMatch(/id="operational-alerts-body"/);
+    expect(code).not.toMatch(/isCollapsed[\s\S]{0,80}?"operational-alerts-body"/);
+  });
 
   it("each alert row still routes through onOpenActionModal", () => {
     expect(code).toMatch(/onClick=\{\(\)\s*=>\s*onOpenActionModal\(row\.mode\)\}/);
@@ -105,15 +124,8 @@ describe("OperationalAlertsCard — click + collapse behaviour preserved", () =>
     expect(code).toMatch(/data-testid=\{?`?alert-row-/);
   });
 
-  it("the user-toggle path is preserved (handleToggle + isCollapsed)", () => {
-    expect(code).toMatch(/const handleToggle/);
-    expect(code).toMatch(/isCollapsed/);
-    expect(code).toMatch(/data-testid="operational-alerts-toggle"/);
-  });
-
-  it("auto-collapse-on-zero is preserved", () => {
-    expect(code).toMatch(/autoCollapsed/);
-    expect(code).toMatch(/!isLoading\s*&&\s*!hasAlerts/);
+  it("the count badge still renders with its canonical testid", () => {
+    expect(code).toMatch(/data-testid="operational-alerts-count-badge"/);
   });
 });
 

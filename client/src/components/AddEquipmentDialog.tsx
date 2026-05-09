@@ -19,8 +19,8 @@ import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple modal). ModalShell stays width-
@@ -204,59 +204,59 @@ export function AddEquipmentDialog({
         <ModalDescription>{dialogDescription}</ModalDescription>
       </ModalHeader>
       <ModalBody className="grid gap-3">
-        <div className="grid gap-1.5">
-          <Label htmlFor="eq-name" className="text-xs">Equipment Name *</Label>
+        <FormField>
+          <FormLabel htmlFor="eq-name" srOnly>Equipment Name</FormLabel>
           <Input
             id="eq-name"
             value={form.name}
             onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
-            placeholder="RTU #1, Walk-in Cooler, etc."
+            placeholder="Equipment Name *"
             className="h-8 text-sm"
             autoFocus
           />
-        </div>
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Type</Label>
+        </FormField>
+        <FormField>
+          <FormLabel srOnly>Type</FormLabel>
           <EquipmentTypeCombobox
             value={form.equipmentType}
             onChange={(name) => setForm(prev => ({ ...prev, equipmentType: name }))}
             placeholder="Select or create type..."
           />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="eq-manufacturer" className="text-xs">Manufacturer</Label>
+        </FormField>
+        <FormRow className="grid-cols-2">
+          <FormField>
+            <FormLabel htmlFor="eq-manufacturer" srOnly>Manufacturer</FormLabel>
             <Input
               id="eq-manufacturer"
               value={form.manufacturer}
               onChange={(e) => setForm(prev => ({ ...prev, manufacturer: e.target.value }))}
-              placeholder="Carrier, Lennox..."
+              placeholder="Manufacturer"
               className="h-8 text-sm"
             />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="eq-model" className="text-xs">Model Number</Label>
+          </FormField>
+          <FormField>
+            <FormLabel htmlFor="eq-model" srOnly>Model Number</FormLabel>
             <Input
               id="eq-model"
               value={form.modelNumber}
               onChange={(e) => setForm(prev => ({ ...prev, modelNumber: e.target.value }))}
-              placeholder="Model #"
+              placeholder="Model Number"
               className="h-8 text-sm"
             />
-          </div>
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="eq-serial" className="text-xs">Serial Number</Label>
+          </FormField>
+        </FormRow>
+        <FormField>
+          <FormLabel htmlFor="eq-serial" srOnly>Serial Number</FormLabel>
           <Input
             id="eq-serial"
             value={form.serialNumber}
             onChange={(e) => setForm(prev => ({ ...prev, serialNumber: e.target.value }))}
-            placeholder="S/N"
+            placeholder="Serial Number"
             className="h-8 text-sm"
           />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="eq-notes" className="text-xs">Notes</Label>
+        </FormField>
+        <FormField>
+          <FormLabel htmlFor="eq-notes" srOnly>Notes</FormLabel>
           <Textarea
             id="eq-notes"
             value={form.notes}
@@ -265,7 +265,7 @@ export function AddEquipmentDialog({
             rows={2}
             className="text-sm resize-none"
           />
-        </div>
+        </FormField>
       </ModalBody>
       <ModalFooter>
         <Button type="button" variant="outline" size="sm" onClick={resetAndClose}>

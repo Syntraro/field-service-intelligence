@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple form modal). Mirrors the
@@ -129,144 +130,142 @@ export function EditLocationDialog({
 
       <form onSubmit={handleSubmit}>
         <ModalBody className="space-y-4">
-          <div>
-              <Label htmlFor="edit-location-name">Name *</Label>
+          <FormField>
+            <FormLabel htmlFor="edit-location-name" srOnly>Location Name</FormLabel>
+            <Input
+              id="edit-location-name"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="Location Name *"
+              required
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="edit-address" srOnly>Address</FormLabel>
+            <AddressAutocomplete
+              id="edit-address"
+              value={formData.address}
+              onChange={(val) => {
+                // Always clear stale coordinates on manual address edit
+                setFormData((prev) => ({
+                  ...prev,
+                  address: val,
+                  lat: null, lng: null, placeId: null,
+                }));
+              }}
+              onPlaceSelect={(p: PlaceSelectPayload) => {
+                setFormData((prev) => ({
+                  ...prev,
+                  address: p.street,
+                  ...(p.city ? { city: p.city } : {}),
+                  ...(p.province ? { province: p.province } : {}),
+                  ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                  ...(p.country ? { country: p.country } : {}),
+                  lat: p.lat != null ? String(p.lat) : null,
+                  lng: p.lng != null ? String(p.lng) : null,
+                  placeId: p.placeId || null,
+                }));
+              }}
+              placeholder="Street address"
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="edit-address2" srOnly>Address Line 2</FormLabel>
+            <Input
+              id="edit-address2"
+              value={formData.address2}
+              onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
+              placeholder="Suite, Unit, Floor (optional)"
+            />
+          </FormField>
+
+          <FormRow className="md:grid-cols-3">
+            <FormField>
+              <FormLabel htmlFor="edit-city" srOnly>City</FormLabel>
               <Input
-                id="edit-location-name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="e.g., Newmarket Branch"
-                required
+                id="edit-city"
+                value={formData.city}
+                onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="City"
               />
-            </div>
-
-            <div>
-              <Label htmlFor="edit-address">Address</Label>
-              <AddressAutocomplete
-                id="edit-address"
-                value={formData.address}
-                onChange={(val) => {
-                  // Always clear stale coordinates on manual address edit
-                  setFormData((prev) => ({
-                    ...prev,
-                    address: val,
-                    lat: null, lng: null, placeId: null,
-                  }));
-                }}
-                onPlaceSelect={(p: PlaceSelectPayload) => {
-                  setFormData((prev) => ({
-                    ...prev,
-                    address: p.street,
-                    ...(p.city ? { city: p.city } : {}),
-                    ...(p.province ? { province: p.province } : {}),
-                    ...(p.postalCode ? { postalCode: p.postalCode } : {}),
-                    ...(p.country ? { country: p.country } : {}),
-                    lat: p.lat != null ? String(p.lat) : null,
-                    lng: p.lng != null ? String(p.lng) : null,
-                    placeId: p.placeId || null,
-                  }));
-                }}
-                placeholder="Street address"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="edit-address2">Address Line 2</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="edit-province" srOnly>Province</FormLabel>
               <Input
-                id="edit-address2"
-                value={formData.address2}
-                onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
-                placeholder="Suite, Unit, Floor (optional)"
+                id="edit-province"
+                value={formData.province}
+                onChange={(e) => setFormData(prev => ({ ...prev, province: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="Province"
               />
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <Label htmlFor="edit-city">City</Label>
-                <Input
-                  id="edit-city"
-                  value={formData.city}
-                  onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="City"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-province">Province</Label>
-                <Input
-                  id="edit-province"
-                  value={formData.province}
-                  onChange={(e) => setFormData(prev => ({ ...prev, province: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="ON"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-postalCode">Postal Code</Label>
-                <Input
-                  id="edit-postalCode"
-                  value={formData.postalCode}
-                  onChange={(e) => setFormData(prev => ({ ...prev, postalCode: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="A1A 1A1"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="edit-country">Country</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="edit-postalCode" srOnly>Postal Code</FormLabel>
               <Input
-                id="edit-country"
-                value={formData.country}
-                onChange={(e) => setFormData(prev => ({ ...prev, country: e.target.value, lat: null, lng: null, placeId: null }))}
-                placeholder="Canada"
+                id="edit-postalCode"
+                value={formData.postalCode}
+                onChange={(e) => setFormData(prev => ({ ...prev, postalCode: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="Postal Code"
               />
-            </div>
+            </FormField>
+          </FormRow>
 
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="edit-contactName">Contact Name</Label>
-                <Input
-                  id="edit-contactName"
-                  value={formData.contactName}
-                  onChange={(e) => setFormData({ ...formData, contactName: e.target.value })}
-                  placeholder="Contact person"
-                />
-              </div>
+          <FormField>
+            <FormLabel htmlFor="edit-country" srOnly>Country</FormLabel>
+            <Input
+              id="edit-country"
+              value={formData.country}
+              onChange={(e) => setFormData(prev => ({ ...prev, country: e.target.value, lat: null, lng: null, placeId: null }))}
+              placeholder="Country"
+            />
+          </FormField>
 
-              <div>
-                <Label htmlFor="edit-phone">Phone</Label>
-                <Input
-                  id="edit-phone"
-                  type="tel"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="(555) 123-4567"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="edit-email">Email</Label>
+          <FormRow className="md:grid-cols-2">
+            <FormField>
+              <FormLabel htmlFor="edit-contactName" srOnly>Contact Name</FormLabel>
               <Input
-                id="edit-email"
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                placeholder="email@example.com"
+                id="edit-contactName"
+                value={formData.contactName}
+                onChange={(e) => setFormData({ ...formData, contactName: e.target.value })}
+                placeholder="Contact Name"
               />
-            </div>
-
-            <div>
-              <Label htmlFor="edit-notes">Notes</Label>
-              <Textarea
-                id="edit-notes"
-                value={formData.notes}
-                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                placeholder="Account number, branch-specific info, etc."
-                rows={3}
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="edit-phone" srOnly>Phone</FormLabel>
+              <Input
+                id="edit-phone"
+                type="tel"
+                value={formData.phone}
+                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                placeholder="Phone"
               />
-            </div>
+            </FormField>
+          </FormRow>
 
+          <FormField>
+            <FormLabel htmlFor="edit-email" srOnly>Email</FormLabel>
+            <Input
+              id="edit-email"
+              type="email"
+              value={formData.email}
+              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              placeholder="Email"
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="edit-notes" srOnly>Notes</FormLabel>
+            <Textarea
+              id="edit-notes"
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              placeholder="Account number, branch-specific info, etc."
+              rows={3}
+            />
+          </FormField>
+
+          {/* Switch keeps visible Label per canonical rule for switches/toggles */}
           <div className="flex items-center justify-between py-2">
             <Label htmlFor="edit-isActive">Active</Label>
             <Switch

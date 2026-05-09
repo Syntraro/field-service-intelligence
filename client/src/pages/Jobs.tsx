@@ -19,16 +19,15 @@ import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-f
 import { apiRequest } from "@/lib/queryClient";
 import { useLocation, useSearch } from "wouter";
 import {
-  ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus,
-  Calendar as CalendarIcon, Wrench,
+  Plus,
+  Calendar as CalendarIcon,
   Search, ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 2026-05-08 chip Phase 2: lifecycle + workflow filter buttons → FilterChip.
 import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
-import { StatusPill } from "@/components/ui/status-pill";
-import { getJobStatusMeta, toneToStatusPillVariant } from "@/lib/statusBadges";
+import { getJobStatusMeta } from "@/lib/statusBadges";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 // 2026-04-26: Routed through the canonical CreateNewDialog (Job / Task /
 // Supplier Visit tabs). Same defaults — opens on the Job tab.
@@ -103,40 +102,8 @@ function SummaryCard({ label, value, note }: { label: string; value: string; not
   );
 }
 
-// =============================================================================
-// Sortable header cell — page-local replacement for the prior shadcn-Table
-// `<TableHead>`-based component. EntityListTable's `header` slot accepts any
-// ReactNode, so we render this as a button. The button supplies its own
-// `px-4` padding and the column config sets `headerClassName: ""` to opt
-// out of EntityListTable's default header padding.
-// =============================================================================
-
-function SortableHeaderCell({ field, sortField, sortDirection, onSort, children, testId }: {
-  field: SortField; sortField: SortField; sortDirection: SortDirection;
-  onSort: (field: SortField) => void; children: React.ReactNode; testId: string;
-}) {
-  // Typography (`text-label text-muted-foreground` — uppercase, 11/14,
-  // weight 500, 0.04em tracking) is inherited from `listHeaderRowClass`
-  // on the EntityListTable header row. Don't override font-size or
-  // weight here; only layout + interaction utilities. This keeps Jobs'
-  // sortable headers visually identical to the plain-string headers
-  // used by the other six migrated lists.
-  return (
-    <button
-      type="button"
-      className="flex items-center gap-1 px-4 w-full text-left hover:text-foreground select-none cursor-pointer"
-      onClick={() => onSort(field)}
-      data-testid={testId}
-    >
-      {children}
-      {sortField === field ? (
-        sortDirection === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-      ) : (
-        <ArrowUpDown className="h-3 w-3 opacity-30" />
-      )}
-    </button>
-  );
-}
+// 2026-05-08 canonical refactor: SortableHeaderCell removed. Sort is now
+// handled by EntityListTable via sortKey + sortField + sortDirection + onSort.
 
 // =============================================================================
 // 2026-05-06 RALPH polish (post-blank-location-name): Jobs list column
@@ -248,7 +215,7 @@ export default function Jobs() {
     includeCounts: true,
     ...(readyToInvoiceParam ? { readyToInvoiceOnly: true } : {}),
   }), [sortField, readyToInvoiceParam]);
-  const { jobs, isLoading, counts: serverCounts } = useJobsFeed(feedParams);
+  const { jobs, isLoading, error: jobsError, refetch: refetchJobs, counts: serverCounts } = useJobsFeed(feedParams);
 
   // =========================================================================
   // Summary card data — canonical /api/visits endpoint with correct filters
@@ -393,212 +360,172 @@ export default function Jobs() {
   // Column configs for EntityListTable
   // =========================================================================
 
-  /**
-   * Live mode columns (sortable headers). Defined inside the component
-   * because four headers close over `sortField` / `sortDirection` /
-   * `handleSort`. Each sortable column sets `headerClassName: ""` so its
-   * SortableHeaderCell button supplies its own `px-4` padding without
-   * doubling up on the kind's default header padding.
-   *
-   * Column kinds:
-   *   - location → primary (two-line: company + sub-location)
-   *   - jobNumber → badge (EntityNumber pill + jobType secondary text)
-   *   - summary → text (single-line, truncates via the kind's wrapper)
-   *   - schedule → date (nowrap, 100 px floor; renders icon + formatted
-   *     date or "Not scheduled" placeholder)
-   *   - status → status (StatusPill; the cell's flex-wrap container is a
-   *     no-op for the single-pill render but leaves room for future
-   *     overlay badges, matching the Quotes/Invoices pattern)
-   */
+  // 2026-05-08 canonical refactor: SortableHeaderCell removed. Sort is now
+  // driven by sortKey + sortField + sortDirection + onSort on EntityListTable.
+  // liveJobColumns no longer closes over sortField/sortDirection (stable identity).
+  // 2026-05-09: column order — Client/Location · Summary · Property Address · Schedule · Status · Job #
   const liveJobColumns = useMemo<EntityListColumn<EnrichedJob>[]>(() => [
     {
       id: "location",
       kind: "primary",
       ratio: 1.5,
-      headerClassName: "",
-      header: (
-        <SortableHeaderCell
-          field="location"
-          sortField={sortField}
-          sortDirection={sortDirection}
-          onSort={handleSort}
-          testId="header-location"
-        >
-          Client / Location
-        </SortableHeaderCell>
-      ),
-      render: (job) => {
-        const secondary = secondaryLocationLine(job);
-        return (
-          <div className="min-w-0" data-testid={`text-location-${job.id}`}>
-            <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
-            {secondary && (
-              <div className="text-caption text-slate-500 font-normal truncate">{secondary}</div>
-            )}
-          </div>
-        );
+      header: "Client / Location",
+      sortKey: "location",
+      cell: {
+        type: "entity-primary",
+        value: (job) => job.locationDisplayName || "Unknown Company",
+        secondary: (job) => secondaryLocationLine(job) ?? undefined,
       },
-      cellClassName: "px-4 py-2.5 min-w-0",
+    },
+    {
+      id: "summary",
+      kind: "body",
+      ratio: 1.5,
+      header: "Summary",
+      cell: {
+        type: "entity-text",
+        value: (job) => job.summary,
+      },
+    },
+    {
+      id: "address",
+      kind: "body",
+      ratio: 1,
+      header: "Property Address",
+      cell: {
+        type: "entity-text",
+        value: (job) =>
+          [job.locationAddress, job.locationCity].filter(Boolean).join(", ") || "—",
+      },
+    },
+    {
+      id: "schedule",
+      kind: "body",
+      header: "Schedule",
+      sortKey: "schedule",
+      cell: {
+        type: "customRender",
+        reason: "icon + formatted date; conditional 'Not scheduled' branch",
+        render: (job) =>
+          job.scheduledStart ? (
+            <div className="flex items-center gap-1" data-testid={`text-schedule-${job.id}`}>
+              <CalendarIcon className="h-3 w-3 text-slate-400" />
+              {format(new Date(job.scheduledStart), "MMM d, yyyy")}
+            </div>
+          ) : (
+            <span className="text-slate-400" data-testid={`text-schedule-${job.id}`}>Not scheduled</span>
+          ),
+      },
+    },
+    {
+      id: "status",
+      kind: "status",
+      header: "Status",
+      sortKey: "status",
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (job) => getJobStatusMeta(job),
+      },
     },
     {
       id: "jobNumber",
       kind: "badge",
       ratio: 0.7,
       minWidthPx: 88,
-      headerClassName: "",
-      header: (
-        <SortableHeaderCell
-          field="jobNumber"
-          sortField={sortField}
-          sortDirection={sortDirection}
-          onSort={handleSort}
-          testId="header-jobnumber"
-        >
-          Job
-        </SortableHeaderCell>
-      ),
-      render: (job) => (
-        <div data-testid={`text-jobnumber-${job.id}`}>
-          {/* 2026-05-02 entity-number system: row IS a job → primary
-              blue pill. Pill chrome makes the legacy `#` prefix
-              redundant. */}
-          <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
-          <div className="text-caption text-slate-500 capitalize mt-0.5">{job.jobType}</div>
-        </div>
-      ),
-    },
-    {
-      id: "summary",
-      kind: "text",
-      ratio: 1.5,
-      // Plain-string headers inherit `text-label text-muted-foreground`
-      // (uppercase) from `listHeaderRowClass` on the EntityListTable
-      // header row. Don't restate font-size / weight / color here.
-      header: "Summary",
-      render: (job) => <span data-testid={`text-summary-${job.id}`}>{job.summary}</span>,
-    },
-    {
-      id: "schedule",
-      kind: "date",
-      headerClassName: "",
-      header: (
-        <SortableHeaderCell
-          field="schedule"
-          sortField={sortField}
-          sortDirection={sortDirection}
-          onSort={handleSort}
-          testId="header-schedule"
-        >
-          Schedule
-        </SortableHeaderCell>
-      ),
-      render: (job) =>
-        job.scheduledStart ? (
-          <div className="flex items-center gap-1" data-testid={`text-schedule-${job.id}`}>
-            <CalendarIcon className="h-3 w-3 text-slate-400" />
-            {format(new Date(job.scheduledStart), "MMM d, yyyy")}
+      header: "Job #",
+      sortKey: "jobNumber",
+      cell: {
+        type: "customRender",
+        reason: "entity-number chip with per-row data-testid",
+        render: (job) => (
+          <div data-testid={`text-jobnumber-${job.id}`}>
+            <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
           </div>
-        ) : (
-          <span className="text-slate-400" data-testid={`text-schedule-${job.id}`}>Not scheduled</span>
         ),
-    },
-    {
-      id: "status",
-      kind: "status",
-      headerClassName: "",
-      header: (
-        <SortableHeaderCell
-          field="status"
-          sortField={sortField}
-          sortDirection={sortDirection}
-          onSort={handleSort}
-          testId="header-status"
-        >
-          Status
-        </SortableHeaderCell>
-      ),
-      render: (job) => {
-        const meta = getJobStatusMeta(job);
-        return (
-          <span data-testid={`badge-status-${job.id}`}>
-            <StatusPill variant={toneToStatusPillVariant(meta.tone)}>{meta.label}</StatusPill>
-          </span>
-        );
       },
     },
-  ], [sortField, sortDirection]);
+  ], []);
 
-  /**
-   * History mode columns — same five fields as live mode, but plain
-   * (non-sortable) headers because the history feed is a separate
-   * server query that doesn't honor the page-local sort state.
-   */
+  // History mode columns — plain (non-sortable) headers since the history
+  // feed is a separate server query that doesn't honor the page sort state.
+  // 2026-05-09: column order mirrors liveJobColumns — Client/Location · Summary · Property Address · Schedule · Status · Job #
   const historyJobColumns = useMemo<EntityListColumn<JobFeedItem>[]>(() => [
     {
       id: "location",
       kind: "primary",
       ratio: 1.5,
       header: "Client / Location",
-      render: (job) => {
-        const secondary = secondaryLocationLine(job);
-        return (
-          <div className="min-w-0">
-            <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
-            {secondary && (
-              <div className="text-caption text-slate-500 font-normal truncate">{secondary}</div>
-            )}
-          </div>
-        );
+      cell: {
+        type: "entity-primary",
+        value: (job) => job.locationDisplayName || "Unknown Company",
+        secondary: (job) => secondaryLocationLine(job) ?? undefined,
       },
-      cellClassName: "px-4 py-2.5 min-w-0",
+    },
+    {
+      id: "summary",
+      kind: "body",
+      ratio: 1.5,
+      header: "Summary",
+      cell: { type: "entity-text", value: (job) => job.summary },
+    },
+    {
+      id: "address",
+      kind: "body",
+      ratio: 1,
+      header: "Property Address",
+      cell: {
+        type: "entity-text",
+        value: (job) =>
+          [job.locationAddress, job.locationCity].filter(Boolean).join(", ") || "—",
+      },
+    },
+    {
+      id: "schedule",
+      kind: "body",
+      header: "Schedule",
+      cell: {
+        type: "customRender",
+        reason: "icon + formatted date; conditional 'Not scheduled' branch",
+        render: (job) =>
+          job.scheduledStart ? (
+            <div className="flex items-center gap-1">
+              <CalendarIcon className="h-3 w-3 text-slate-400" />
+              {format(new Date(job.scheduledStart), "MMM d, yyyy")}
+            </div>
+          ) : (
+            <span className="text-slate-400">Not scheduled</span>
+          ),
+      },
+    },
+    {
+      id: "status",
+      kind: "status",
+      header: "Status",
+      // History rows: pass _overdue:false — history mode never showed "Overdue".
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (job) =>
+          getJobStatusMeta({ status: job.status, openSubStatus: job.openSubStatus, _overdue: false }),
+      },
     },
     {
       id: "jobNumber",
       kind: "badge",
       ratio: 0.7,
       minWidthPx: 88,
-      header: "Job",
-      render: (job) => (
-        <div>
-          <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
-          <div className="text-caption text-slate-500 capitalize mt-0.5">{job.jobType}</div>
-        </div>
-      ),
-    },
-    {
-      id: "summary",
-      kind: "text",
-      ratio: 1.5,
-      header: "Summary",
-      render: (job) => job.summary,
-    },
-    {
-      id: "schedule",
-      kind: "date",
-      header: "Schedule",
-      render: (job) =>
-        job.scheduledStart ? (
-          <div className="flex items-center gap-1">
-            <CalendarIcon className="h-3 w-3 text-slate-400" />
-            {format(new Date(job.scheduledStart), "MMM d, yyyy")}
+      header: "Job #",
+      cell: {
+        type: "customRender",
+        reason: "entity-number chip (history, no data-testid)",
+        render: (job) => (
+          <div>
+            <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
           </div>
-        ) : (
-          <span className="text-slate-400">Not scheduled</span>
         ),
-    },
-    {
-      id: "status",
-      kind: "status",
-      header: "Status",
-      // History rows don't carry the live `_overdue` enrichment; we pass
-      // false to preserve the prior behavior (history mode never showed
-      // an "Overdue" pill).
-      render: (job) => {
-        const meta = getJobStatusMeta({ status: job.status, openSubStatus: job.openSubStatus, _overdue: false });
-        return <StatusPill variant={toneToStatusPillVariant(meta.tone)}>{meta.label}</StatusPill>;
       },
     },
   ], []);
+
 
   // =========================================================================
   // Render
@@ -740,23 +667,14 @@ export default function Jobs() {
             rowKey={(job) => job.id}
             onRowClick={handleRowClick}
             loadingState={
-              isHistoryLoading && debouncedHistoryQuery.length >= 2 ? (
-                <div className="text-center py-12">
-                  <Loader2 className="h-6 w-6 animate-spin text-slate-400 mx-auto" />
-                </div>
-              ) : undefined
+              isHistoryLoading && debouncedHistoryQuery.length >= 2
+                ? { kind: "loading", title: "Searching…" }
+                : undefined
             }
             emptyState={
-              <div className="text-center py-12 text-slate-500">
-                {debouncedHistoryQuery.length < 2 ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <Search className="h-8 w-8 opacity-40" />
-                    <p>Type at least 2 characters to search all job history</p>
-                  </div>
-                ) : (
-                  <p>No jobs found matching &ldquo;{debouncedHistoryQuery}&rdquo; in full history</p>
-                )}
-              </div>
+              debouncedHistoryQuery.length < 2
+                ? { kind: "empty", icon: "search", title: "Type at least 2 characters to search all job history" }
+                : { kind: "no-results", icon: "search", title: `No jobs found matching "${debouncedHistoryQuery}" in full history` }
             }
             columns={historyJobColumns}
           />
@@ -766,31 +684,27 @@ export default function Jobs() {
               rows={filteredAndSortedJobs.slice(0, visibleCount)}
               rowKey={(job) => job.id}
               onRowClick={handleRowClick}
-              loadingState={
-                isLoading ? (
-                  <div className="text-center py-8" data-testid="jobs-loading">
-                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-slate-500" />
-                    <span className="text-slate-600">Loading jobs...</span>
-                  </div>
-                ) : undefined
-              }
+              loadingState={isLoading ? { kind: "loading", title: "Loading jobs…", testId: "jobs-loading" } : undefined}
               emptyState={
-                <div className="text-center py-8 text-slate-500" data-testid="text-no-jobs">
-                  {jobs.length === 0 ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <Wrench className="h-8 w-8 opacity-50" />
-                      <p>No jobs yet</p>
-                      <Button variant="outline" size="sm" className="rounded-md" onClick={() => setShowCreateDialog(true)} data-testid="button-create-first-job">
-                        <Plus className="h-4 w-4 mr-2" />
-                        Create your first job
-                      </Button>
-                    </div>
-                  ) : (
-                    "No jobs match your filters"
-                  )}
-                </div>
+                jobs.length === 0
+                  ? {
+                      kind: "empty",
+                      icon: "wrench",
+                      title: "No jobs yet",
+                      testId: "text-no-jobs",
+                      primaryAction: { label: "Create your first job", onClick: () => setShowCreateDialog(true) },
+                    }
+                  : { kind: "no-results", title: "No jobs match your filters", testId: "text-no-jobs" }
+              }
+              errorState={
+                jobsError
+                  ? { kind: "error", title: "Failed to load jobs", primaryAction: { label: "Retry", onClick: () => refetchJobs(), variant: "outline" } }
+                  : undefined
               }
               columns={liveJobColumns}
+              sortField={sortField}
+              sortDirection={sortDirection}
+              onSort={(key) => handleSort(key as SortField)}
             />
 
             <ListLoadMoreFooter

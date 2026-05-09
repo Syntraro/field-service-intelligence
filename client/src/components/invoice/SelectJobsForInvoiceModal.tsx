@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Loader2 } from "lucide-react";
+import { ModalStateBody } from "@/components/ui/modal";
 import { formatCurrency } from "@/lib/formatters";
 
 export interface SelectableJob {
@@ -128,15 +128,19 @@ export function SelectJobsForInvoiceModal({
         </DialogHeader>
 
         <div className="max-h-[480px] overflow-y-auto overflow-x-auto rounded-md border border-card-border bg-card">
+          {/* 2026-05-09: loading/empty replaced with canonical ModalStateBody */}
           {isLoading ? (
-            <div className="flex items-center justify-center py-10 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Loading jobs…
-            </div>
+            <ModalStateBody
+              variant="loading"
+              message="Loading jobs…"
+              data-testid="select-jobs-loading"
+            />
           ) : jobs.length === 0 ? (
-            <div className="py-8 text-center text-sm text-slate-500">
-              No open jobs found.
-            </div>
+            <ModalStateBody
+              variant="empty"
+              message="No open jobs found."
+              data-testid="select-jobs-empty"
+            />
           ) : (
             <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-card-border">

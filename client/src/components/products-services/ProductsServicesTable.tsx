@@ -2,12 +2,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { ChevronUp, ChevronDown, MoreHorizontal, Pencil, Archive, Trash2, Loader2 } from "lucide-react";
 import { ListSurface } from "@/components/ui/list-surface";
 import { Part, SortField, SortDirection, formatCurrency, formatDuration } from "./types";
@@ -248,24 +243,35 @@ export function ProductsServicesTable({
                     )}
                   </td>
                   <td className="px-3 py-2">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
+                    <ActionMenu
+                      items={[
+                        {
+                          id: "edit",
+                          label: "Edit",
+                          icon: Pencil,
+                          onSelect: () => onEditClick(part),
+                        },
+                        {
+                          id: "archive",
+                          label: part.isActive === false ? "Restore" : "Archive",
+                          icon: Archive,
+                          onSelect: () => onArchiveClick(part),
+                        },
+                        {
+                          id: "delete",
+                          label: "Delete",
+                          icon: Trash2,
+                          onSelect: () => onDeleteClick(part),
+                          tone: "destructive",
+                        },
+                      ]}
+                      trigger={
                         <Button size="icon" variant="ghost" className="h-7 w-7" data-testid={`menu-${part.id}`}>
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => onEditClick(part)}>
-                          <Pencil className="h-4 w-4 mr-2" /> Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => onArchiveClick(part)}>
-                          <Archive className="h-4 w-4 mr-2" /> {part.isActive === false ? "Restore" : "Archive"}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => onDeleteClick(part)} className="text-destructive">
-                          <Trash2 className="h-4 w-4 mr-2" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      }
+                      align="end"
+                    />
                   </td>
                 </tr>
               ))

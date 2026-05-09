@@ -84,7 +84,7 @@ export default {
         //   text-header     18/24/600  — card / panel / modal title (h2)
         //   text-subheader  16/22/500  — sub-grouping (h3)
         //   text-body       15/22/400  — default reading text
-        //   text-row        15/22/400  — default list/table row content
+        //   text-row        14/20/400  — default list/table row content (2026-05-08: 15→14, LH 22→20)
         //   text-emphasis   15/22/500  — emphasized row value / entity name
         //   text-caption    14/20/400  — secondary text alongside rows
         //   text-label      13/16/500/0.04em UPPERCASE — labels, eyebrows
@@ -110,12 +110,19 @@ export default {
         subhead:         ["16px", { lineHeight: "22px", fontWeight: "500" }],
         // Body
         body:            ["15px", { lineHeight: "22px" }],
-        row:             ["15px", { lineHeight: "22px" }],
+        row:             ["14px", { lineHeight: "20px" }],
         emphasis:        ["15px", { lineHeight: "22px", fontWeight: "500" }],
         // Deprecated alias.
         "row-emphasis":  ["15px", { lineHeight: "22px", fontWeight: "500" }],
         // Small
         caption:         ["14px", { lineHeight: "20px" }],
+        // EntityListTable primary cell identifier (entity names, client names, job titles).
+        // 15px / 20px / 500 — readable at dense row height; weight 500 differentiates from the
+        // helper-weight (400) secondary sub-line at 13px.
+        "list-primary":  ["15px", { lineHeight: "20px", fontWeight: "500" }],
+        // EntityListTable body-content cells (summary, schedule, descriptive fields).
+        // Same size/LH as list-primary; no baked weight so font-weight defaults to 400.
+        "list-body":     ["15px", { lineHeight: "20px" }],
         label:           ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
         helper:          ["13px", { lineHeight: "16px" }],
         // Specialized compact-navigation semantic (2026-05-08). Purpose-built for
@@ -188,7 +195,7 @@ export default {
         // text-error remains canonical (kept in the preferred set above).
         "modal-title":  ["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }],
         "table-header": ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
-        "table-cell":   ["15px", { lineHeight: "22px" }],
+        "table-cell":   ["14px", { lineHeight: "20px" }],  // 2026-05-08: synced to text-row (was 15/22)
         input:          ["15px", { lineHeight: "22px" }],
         "email-body":   ["15px", { lineHeight: "22px" }],
         error:          ["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }],

@@ -60,7 +60,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 // 2026-05-08 (create-page rail canonicalization): Eye icon for the
 // Visibility tab, mirrors the saved Invoice detail page rail.
-import { Loader2, Eye } from "lucide-react";
+import { Eye } from "lucide-react";
 // 2026-05-08 (create-page rail canonicalization): mount the same canonical
 // `<DetailRightRail>` the saved Invoice detail page uses. Create mode
 // hosts only the Visibility tab — Notes and Payments both need a saved
@@ -75,14 +75,12 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 import { Button } from "@/components/ui/button";
-import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+import { Input } from "@/components/ui/input";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
+import { CanonicalCreateHeader } from "@/components/create/CanonicalCreateHeader";
 
-import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import {
   useLocationSearch,
-  getLocationKey,
-  getLocationLabel,
-  getLocationDescription,
   type LocationOption,
 } from "@/lib/entities/locationEntity";
 import { CreateClientModal } from "@/components/CreateClientModal";
@@ -113,21 +111,9 @@ import {
   type SelectableJob,
 } from "@/components/invoice/SelectJobsForInvoiceModal";
 
-// 2026-05-02: InvoiceMetaCard now lives in its own module; supporting
-// types/helpers are in the small `invoiceMetaCommon` shared module.
-import { InvoiceMetaCard } from "@/components/invoice/InvoiceMetaCard";
-import {
-  formatDateOnlyDisplay,
-  type StructuredAddress,
-  type ReferenceFieldDTO,
-} from "@/components/invoice/invoiceMetaCommon";
-// 2026-05-02 strict-replication pass: reuse the canonical entity-number
-// pill, the canonical status pill, the canonical card-section header,
-// and the canonical mono number class so /invoices/new looks identical
-// to /invoices/:id everywhere they appear.
+
 import { EntityNumber } from "@/components/common/EntityNumber";
 import {
-  StatusPill,
   ClientVisibilityCardV2,
   MONO,
 } from "./InvoiceDetailPage";
@@ -768,26 +754,6 @@ export default function NewInvoicePage() {
     !saveMutation.isPending &&
     !!metaDraft.issueDate;
 
-  // ── Address blocks for the meta card ────────────────────────────────
-  const billLine1 = selectedLocation?.companyName ?? null;
-  const billLine2 = useMemo(() => {
-    if (!selectedLocation) return null;
-    const bits = [selectedLocation.address, selectedLocation.city]
-      .filter(Boolean)
-      .join(", ");
-    return bits || null;
-  }, [selectedLocation]);
-  const serviceAddressForCard: StructuredAddress | null = selectedLocation
-    ? {
-        street: selectedLocation.address ?? "",
-        city: selectedLocation.city ?? "",
-        province: "",
-        postalCode: "",
-        country: undefined,
-        locationName: selectedLocation.location ?? selectedLocation.companyName,
-      }
-    : null;
-
   const handleClientCreated = (
     createdCustomerCompanyId: string,
     primaryLocationId: string,
@@ -867,34 +833,86 @@ export default function NewInvoicePage() {
           className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
           data-testid="new-invoice-left-column-shell"
         >
-          <div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">
-          <CanonicalDetailHeader
-            testId="new-invoice-header"
-            // 2026-05-03: header title resolves from the canonical
-            // invoice `summary` only. Falls back to "New Invoice"
-            // when the user hasn't typed one yet. Never falls through
-            // to the customer/company name — that's an identity field,
-            // not an invoice title.
-            title={metaDraft.summary.trim() || "New Invoice"}
-            statusBadge={<StatusPill status="draft" isPastDue={false} />}
-            items={[
-              {
-                key: "invoice-number",
-                label: "Invoice #",
-                value: <EntityNumber variant="missing" data-testid="header-invoice-number-pill" />,
-              },
-              {
-                key: "due-date",
-                label: "Due",
-                value: metaDraft.dueDate
-                  ? <span className="tabular-nums">{formatDateOnlyDisplay(metaDraft.dueDate, "—")}</span>
-                  : <span className="text-text-disabled">—</span>,
-              },
-              {
-                key: "job-number",
-                label: "Job #",
-                value: selectedJobIds.length === 1
-                  ? (
+          <div className="px-4 lg:px-6 pt-4 pb-4 space-y-2.5">
+            <CanonicalCreateHeader
+              testId="new-invoice-header"
+              entityLabel="New Invoice"
+              status={{ label: "Draft", tone: "neutral" }}
+              onBack={() => setLocationRoute("/invoices")}
+              clientSearchText={locationSearch}
+              onClientSearchTextChange={setLocationSearch}
+              clientSearchResults={searchResults}
+              clientSearchLoading={searchLoading}
+              selectedLocation={selectedLocation}
+              onLocationChange={setSelectedLocation}
+              onCreateNewClient={() => setCreateClientOpen(true)}
+              clientCreateLabel="New Client"
+              clientPlaceholder="Search clients..."
+              clientDisabled={saveMutation.isPending}
+              afterClientSlot={selectedLocation && eligibleJobs.length > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setJobPickerOpen(true)}
+                  disabled={saveMutation.isPending}
+                  data-testid="button-reopen-job-picker"
+                >
+                  {selectedJobIds.length === 0 ? "Add jobs…" : "Change jobs"}
+                </Button>
+              ) : undefined}
+              titleValue={metaDraft.summary}
+              onTitleChange={(v) => setMetaDraft((p) => ({ ...p, summary: v }))}
+              titlePlaceholder="Invoice summary (optional)"
+              titleMaxLength={500}
+              metaItems={[
+                {
+                  key: "invoice-number",
+                  label: "Invoice #",
+                  node: <EntityNumber variant="missing" data-testid="header-invoice-number-pill" />,
+                },
+                {
+                  key: "issued",
+                  label: "Issued",
+                  node: (
+                    <CanonicalDatePicker
+                      value={metaDraft.issueDate || null}
+                      onChange={(v) => setMetaDraft((p) => ({ ...p, issueDate: v ?? "" }))}
+                      disabled={saveMutation.isPending}
+                    />
+                  ),
+                },
+                {
+                  key: "due",
+                  label: "Due",
+                  node: (
+                    <CanonicalDatePicker
+                      value={metaDraft.dueDate || null}
+                      onChange={(v) => setMetaDraft((p) => ({ ...p, dueDate: v ?? "" }))}
+                      disabled={saveMutation.isPending}
+                    />
+                  ),
+                },
+                {
+                  key: "terms",
+                  label: "Terms",
+                  node: (
+                    <Input
+                      type="number"
+                      min={0}
+                      value={metaDraft.paymentTermsDays}
+                      onChange={(e) => setMetaDraft((p) => ({ ...p, paymentTermsDays: e.target.value }))}
+                      disabled={saveMutation.isPending}
+                      className="h-6 text-xs w-20"
+                      placeholder="days"
+                      data-testid="input-payment-terms"
+                    />
+                  ),
+                },
+                {
+                  key: "job-number",
+                  label: "Job #",
+                  node: selectedJobIds.length === 1 ? (
                     <EntityNumber
                       variant="linked"
                       onClick={() => setLocationRoute(`/jobs/${selectedJobIds[0]}`)}
@@ -902,138 +920,25 @@ export default function NewInvoicePage() {
                     >
                       +1
                     </EntityNumber>
-                  )
-                  : <EntityNumber variant="missing" />,
-              },
-            ]}
-            actions={(
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs"
-                  onClick={() => setLocationRoute("/invoices")}
-                  disabled={saveMutation.isPending}
-                  data-testid="button-new-invoice-cancel"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-8 text-xs"
-                  onClick={() => saveMutation.mutate()}
-                  disabled={!canSave}
-                  data-testid="button-new-invoice-save"
-                >
-                  {saveMutation.isPending && (
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  )}
-                  Save Invoice
-                </Button>
-              </>
-            )}
-          />
-          {/* ── Body content (was the prior `leftColumn` slot) ── */}
-            <InvoiceMetaCard
-              mode="draft"
-              // Identity column is replaced by the selector pre-location;
-              // the canonical H1 + addresses block renders once a location
-              // is picked.
-              customerIdentitySlot={
-                !selectedLocation ? (
-                  <CreateOrSelectField<LocationOption>
-                    label="Client / Location *"
-                    value={selectedLocation}
-                    onChange={setSelectedLocation}
-                    searchResults={searchResults}
-                    searchLoading={searchLoading}
-                    searchText={locationSearch}
-                    onSearchTextChange={setLocationSearch}
-                    getKey={getLocationKey}
-                    getLabel={getLocationLabel}
-                    getDescription={getLocationDescription}
-                    createLabel="New Client"
-                    onCreateNew={() => setCreateClientOpen(true)}
-                    placeholder="Search clients..."
-                    disabled={saveMutation.isPending}
-                  />
-                ) : undefined
-              }
-              customerName={selectedLocation?.companyName || ""}
-              customerCompanyId={customerCompanyId}
-              summary={metaDraft.summary}
-              billLine1={billLine1}
-              billLine2={billLine2}
-              serviceAddress={serviceAddressForCard}
-              locationName={
-                selectedLocation
-                  ? selectedLocation.location || selectedLocation.companyName || ""
-                  : ""
-              }
-              invoiceNumber={null}
-              issueDate={metaDraft.issueDate}
-              dueDate={metaDraft.dueDate}
-              isPastDue={false}
-              paymentTermsDays={
-                metaDraft.paymentTermsDays ? Number(metaDraft.paymentTermsDays) : null
-              }
-              jobNumber={null}
-              jobId={null}
-              // Pre-location: no chrome actions (no client to change yet,
-              // no jobs to add). Post-location: Change client / Change
-              // jobs ghost buttons in the canonical chrome slot.
-              headerActions={
-                !selectedLocation ? null : (
-                  <>
-                    {eligibleJobs.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => setJobPickerOpen(true)}
-                        disabled={saveMutation.isPending}
-                        data-testid="button-reopen-job-picker"
-                      >
-                        {selectedJobIds.length === 0 ? "Add jobs…" : "Change jobs"}
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() => setSelectedLocation(null)}
-                      disabled={saveMutation.isPending}
-                      data-testid="button-change-location"
-                    >
-                      Change client
-                    </Button>
-                  </>
-                )
-              }
-              // Pre-location: read-mode (right-column rows show display
-              // values from the metaDraft defaults — Issued/Terms — but
-              // are not editable). Post-location: full edit mode so the
-              // user can adjust dates / terms / job description.
-              isEditing={!!selectedLocation}
-              draft={selectedLocation ? metaDraft : null}
-              onDraftChange={(patch) =>
-                setMetaDraft((prev) => ({ ...prev, ...patch }))
-              }
-              onSave={() => {
-                /* no-op in draft mode — footer is hidden by mode prop */
+                  ) : (
+                    <EntityNumber variant="missing" />
+                  ),
+                },
+              ]}
+              descriptionValue={workDescDraft}
+              onDescriptionChange={setWorkDescDraft}
+              descriptionMaxLength={600}
+              descriptionLabel="Work description"
+              primaryAction={{
+                label: saveMutation.isPending ? "Saving…" : "Save Invoice",
+                onClick: () => saveMutation.mutate(),
+                disabled: !canSave,
+                isPending: saveMutation.isPending,
+                testId: "button-new-invoice-save",
               }}
-              onCancel={() => {
-                /* no-op in draft mode */
-              }}
-              isSaving={false}
-              referenceFields={[] as ReferenceFieldDTO[]}
-              referenceDraft={{}}
-              onReferenceDraftChange={() => {
-                /* no-op — reference fields require a saved invoiceId */
-              }}
-              jobDescription={workDescDraft}
-              jobDescriptionDraft={workDescDraft}
-              onChangeJobDescriptionDraft={setWorkDescDraft}
+              onCancel={() => setLocationRoute("/invoices")}
+              cancelDisabled={saveMutation.isPending}
+              cancelTestId="button-new-invoice-cancel"
             />
 
             <LineItemsCard

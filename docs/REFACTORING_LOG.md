@@ -4,6 +4,92 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-09: CLAUDE.md Context Reduction (Documentation Refactor)
+
+### Status
+**Completed.** No code changes — documentation and project instruction refactor only.
+
+### Goal
+Reduce the token load of `CLAUDE.md` loaded on every Claude Code session. At 41,751 chars (~10,440 tokens), the file consumed a significant share of context before any task began, degrading autonomous loop quality.
+
+### Outcome
+- **Before:** 41,751 chars / ~10,440 tokens / 624 lines
+- **After:** 12,850 chars / ~3,213 tokens / 208 lines
+- **Reduction:** 28,901 chars / 7,227 tokens / **69%**
+
+### What Was Removed from CLAUDE.md
+
+**Migration archaeology:**
+- Phase 2A/2B/2C form field migration plan ("this PR", "next PR" language)
+- Phase H1 background and "why we built this" explanation
+- Chip Phase 1/2/3 migration plan
+- All "What stays as-is" back-compat lists (Form Field, Typography, Chip sections)
+
+**Implementation details moved to docs:**
+- All large TSX/TS code examples (standard form body, API route pattern, typography usage, chip usage)
+- Monorepo directory structure
+- Frontend/backend technology stack
+- Key domain models
+- QBO and route optimization integration detail
+- Entitlement resolver precedence chain and endpoint names
+- Dashboard widget DnD implementation details
+
+**Noise eliminated:**
+- Change attribution notes ("RALPH", "2026-05-08 RALPH", dated parentheticals)
+- One-time migration counts ("12 modals", "14+ call-sites", "47+ spans")
+- Duplicated rules (companyId mandate, CHANGELOG reminder, hidden-widget fetch gate each appeared in 2+ places)
+
+### Contradiction Fixed
+`Database Schema Management` step 2 said `npm run db:push` — directly contradicting the Development Commands block which says "never use `drizzle-kit push`". The contradictory step was deleted.
+
+### Docs Created (17 new files)
+
+```
+docs/canonical/
+  form-fields.md          Full form field primitive reference + TSX examples
+  typography.md           Constants, primitives, token roles, allowlist policy
+  chips.md                Tone palette, status→tone mapping, usage examples
+  dashboard-widgets.md    Widget architecture + DnD implementation detail
+  entitlements.md         Resolver, subscription writer, permission model
+
+docs/workflows/
+  api.md                  Route handler pattern, query pattern, CSRF, error handling
+  database.md             Schema change process, table recipe, query pattern
+  forms.md                Modal form pattern, validation, input→label mapping
+  pages.md                New page creation steps, protected route options
+
+docs/architecture/
+  structure.md            Monorepo directory map, key files
+  stack.md                Frontend + backend technology table
+  domain.md               Domain models, entity relationships, numeric type rules
+  integrations.md         QBO sync, route optimization, impersonation
+  design.md               Design principles, typography, spacing, color
+
+docs/archive/
+  form-field-migration.md Phase 2A/2B/2C history, back-compat notes
+  chip-migration.md       Phase 1/2/3 history, back-compat surfaces
+  typography-migration.md Phase H1 background, allowlist policy, Phase H2 plan
+```
+
+### What Was Preserved in CLAUDE.md
+
+All permanent invariants are kept:
+- Change tracking mandate (CHANGELOG + migration + comment rules)
+- Multi-tenancy companyId isolation
+- Two-layer auth gate (requireRole + requirePermission)
+- Entitlement resolver rules + subscription single-writer rule
+- Invoice computed-overdue rule
+- Modal taxonomy (5 classification rules)
+- Form field forbidden patterns + placeholder-first rule
+- Typography required/forbidden lists
+- Chip use-case table + forbidden patterns
+- Dashboard widget invariants + how-to recipe
+- All 3 performance guardrails (verbatim)
+- Coding standards (DRY, thin controller, dead code, early returns)
+- Special considerations (numeric types, dates, job numbers, QBO locking)
+
+---
+
 ## 2026-05-03: Platform Admin Identity — Recorded Debt (Documentation Only)
 
 ### Status

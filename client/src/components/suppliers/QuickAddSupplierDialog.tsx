@@ -8,8 +8,8 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple form modal). Completes the supplier
@@ -123,53 +123,53 @@ export function QuickAddSupplierDialog({
 
       <form onSubmit={handleSubmit}>
         <ModalBody className="space-y-3">
-          <div>
-              <Label htmlFor="supplier-name">Supplier Name *</Label>
+          <FormField>
+            <FormLabel htmlFor="supplier-name" srOnly>Supplier Name</FormLabel>
+            <Input
+              id="supplier-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Supplier Name *"
+              required
+              autoFocus
+            />
+          </FormField>
+
+          <FormRow className="grid-cols-2">
+            <FormField>
+              <FormLabel htmlFor="supplier-email" srOnly>Email</FormLabel>
               <Input
-                id="supplier-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., ABC Supply Co."
-                required
-                autoFocus
+                id="supplier-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Email"
               />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label htmlFor="supplier-email">Email</Label>
-                <Input
-                  id="supplier-email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="orders@supplier.com"
-                />
-              </div>
-              <div>
-                <Label htmlFor="supplier-phone">Phone</Label>
-                <Input
-                  id="supplier-phone"
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="(555) 123-4567"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="supplier-account">Account Number</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="supplier-phone" srOnly>Phone</FormLabel>
               <Input
-                id="supplier-account"
-                value={accountNumber}
-                onChange={(e) => setAccountNumber(e.target.value)}
-                placeholder="Optional"
+                id="supplier-phone"
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="Phone"
               />
-            </div>
+            </FormField>
+          </FormRow>
 
-          <div>
-            <Label htmlFor="supplier-notes">Notes</Label>
+          <FormField>
+            <FormLabel htmlFor="supplier-account" srOnly>Account Number</FormLabel>
+            <Input
+              id="supplier-account"
+              value={accountNumber}
+              onChange={(e) => setAccountNumber(e.target.value)}
+              placeholder="Account Number (optional)"
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="supplier-notes" srOnly>Notes</FormLabel>
             <Textarea
               id="supplier-notes"
               value={notes}
@@ -177,7 +177,7 @@ export function QuickAddSupplierDialog({
               placeholder="Payment terms, contact preferences, etc."
               rows={2}
             />
-          </div>
+          </FormField>
         </ModalBody>
 
         <ModalFooter>

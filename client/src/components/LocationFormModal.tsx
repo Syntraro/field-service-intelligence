@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
-// Taxonomy rule #2 (generic / simple form modal). The body is a standard
-// space-y form layout — fits cleanly inside <ModalBody>; no body-shape
-// override needed (unlike ContactFormDialog's 2-section flex layout).
-// Width (`max-w-lg`) passed at the call-site per Modal Taxonomy rule #5.
+// Taxonomy rule #2. Width (`max-w-lg`) passed at the call-site per rule #5.
+// 2026-05-09 Phase 2C: migrated body from raw Label/div stacks to canonical
+// FormField / FormLabel / FormHelperText / FormRow. No behavior changes.
 import {
   ModalShell,
   ModalHeader,
@@ -13,9 +12,14 @@ import {
   ModalBody,
   ModalFooter,
 } from "@/components/ui/modal";
+import {
+  FormField,
+  FormLabel,
+  FormHelperText,
+  FormRow,
+} from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Loader2 } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
@@ -28,15 +32,10 @@ import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 interface LocationFormModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-
-  // Can be temporarily null depending on parent load timing
   location: Client | null;
-
-  // Always pass the route param so we can fetch reliably
   locationId?: string;
-
   companyId: string;
-  parentCompanyId?: string; // customerCompanies.id (Model A)
+  parentCompanyId?: string;
   onSuccess: () => void;
 }
 
@@ -55,48 +54,34 @@ export default function LocationFormModal({
   const [isResolving, setIsResolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Treat as edit if we have a locationId from route
   const isEditIntent = Boolean(locationId);
   const activeLocation = useMemo(() => location ?? resolvedLocation, [location, resolvedLocation]);
 
-  // Form state
   const [name, setName] = useState("");
   const [siteCode, setSiteCode] = useState("");
   const [street, setStreet] = useState("");
-  const [street2, setStreet2] = useState(""); // Address line 2
+  const [street2, setStreet2] = useState("");
   const [city, setCity] = useState("");
   const [province, setProvince] = useState("");
   const [postalCode, setPostalCode] = useState("");
   const [country, setCountry] = useState("Canada");
-  // Geocoding fields — persisted from Google Places autocomplete
   const [lat, setLat] = useState<string | null>(null);
   const [lng, setLng] = useState<string | null>(null);
   const [placeId, setPlaceId] = useState<string | null>(null);
-  // Part A: Contact fields removed — contacts managed via dedicated Contacts surface
   const [billWithParent, setBillWithParent] = useState(true);
   const [isActive, setIsActive] = useState(true);
 
-  // Resolve record on open if needed (EDIT mode)
   useEffect(() => {
     if (!open) return;
-
     setError(null);
-
-    // If parent already has the record, use it
-    if (location) {
-      setResolvedLocation(location);
-      return;
-    }
-
-    // If edit intent and we don't have location yet, fetch it by id
+    if (location) { setResolvedLocation(location); return; }
     if (isEditIntent && locationId) {
       setIsResolving(true);
       (async () => {
         try {
           const res = await fetch(`/api/clients/${locationId}`, { credentials: "include" });
           if (!res.ok) throw new Error("Failed to load location");
-          const data = (await res.json()) as Client;
-          setResolvedLocation(data);
+          setResolvedLocation((await res.json()) as Client);
         } catch (e: any) {
           setError(e?.message || "Failed to load location details.");
         } finally {
@@ -104,16 +89,13 @@ export default function LocationFormModal({
         }
       })();
     } else {
-      // Create mode
       setResolvedLocation(null);
     }
   }, [open, location, isEditIntent, locationId]);
 
-  // Prefill whenever modal opens OR activeLocation changes
   useEffect(() => {
     if (!open) return;
     setError(null);
-
     if (activeLocation) {
       setName(activeLocation.location || "");
       setSiteCode(activeLocation.roofLadderCode || "");
@@ -129,31 +111,17 @@ export default function LocationFormModal({
       setBillWithParent(activeLocation.billWithParent ?? true);
       setIsActive(!activeLocation.inactive);
     } else {
-      // Create defaults
-      setName("");
-      setSiteCode("");
-      setStreet("");
-      setStreet2("");
-      setCity("");
-      setProvince("");
-      setPostalCode("");
-      setCountry("Canada");
-      setLat(null);
-      setLng(null);
-      setPlaceId(null);
-      setBillWithParent(true);
-      setIsActive(true);
+      setName(""); setSiteCode(""); setStreet(""); setStreet2(""); setCity("");
+      setProvince(""); setPostalCode(""); setCountry("Canada");
+      setLat(null); setLng(null); setPlaceId(null);
+      setBillWithParent(true); setIsActive(true);
     }
   }, [open, activeLocation]);
 
-  // Model A create: create a location under customerCompanies parent
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
       if (!parentCompanyId) throw new Error("Missing parentCompanyId for create.");
-      return await apiRequest(`/api/customer-companies/${parentCompanyId}/locations`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
+      return await apiRequest(`/api/customer-companies/${parentCompanyId}/locations`, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -165,20 +133,14 @@ export default function LocationFormModal({
       toast({ title: "Location created" });
       onSuccess();
     },
-    onError: (err: any) => {
-      setError(err?.message || "Failed to create location.");
-    },
+    onError: (err: any) => { setError(err?.message || "Failed to create location."); },
   });
 
-  // Update location
   const updateMutation = useMutation({
     mutationFn: async (data: any) => {
       const targetId = activeLocation?.id || locationId;
       if (!targetId) throw new Error("Missing location id.");
-      return await apiRequest(`/api/clients/${targetId}`, {
-        method: "PATCH",
-        body: JSON.stringify(data),
-      });
+      return await apiRequest(`/api/clients/${targetId}`, { method: "PATCH", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       const targetId = activeLocation?.id || locationId;
@@ -192,12 +154,9 @@ export default function LocationFormModal({
       toast({ title: "Location updated" });
       onSuccess();
     },
-    onError: (err: any) => {
-      setError(err?.message || "Failed to update location.");
-    },
+    onError: (err: any) => { setError(err?.message || "Failed to update location."); },
   });
 
-  // Valid when: (name) OR (street AND city). See canonical rule.
   const hasName = !!name.trim();
   const hasStreet = !!street.trim();
   const hasCity = !!city.trim();
@@ -207,39 +166,24 @@ export default function LocationFormModal({
   const handleSubmit = () => {
     setError(null);
     if (!isValid) {
-      if (!hasName && !hasStreet && !hasCity) {
-        setError("Provide a location name, or a street address and city.");
-      } else if (hasStreet && !hasCity) {
-        setError("City is required when providing a street address.");
-      } else if (hasCity && !hasStreet) {
-        setError("Street address is required when providing a city.");
-      } else {
-        setError("Provide a location name, or both street address and city.");
-      }
+      if (!hasName && !hasStreet && !hasCity) setError("Provide a location name, or a street address and city.");
+      else if (hasStreet && !hasCity) setError("City is required when providing a street address.");
+      else if (hasCity && !hasStreet) setError("Street address is required when providing a city.");
+      else setError("Provide a location name, or both street address and city.");
       return;
     }
-
-    const payload: Record<string, any> = {
-      location: name.trim() || null,
-      billWithParent,
-      inactive: !isActive,
-    };
-
+    const payload: Record<string, any> = { location: name.trim() || null, billWithParent, inactive: !isActive };
     if (siteCode.trim()) payload.roofLadderCode = siteCode.trim();
     if (street.trim()) payload.address = street.trim();
-    // Address line 2: always include (even empty string) to allow clearing
     payload.address2 = street2.trim() || null;
     if (city.trim()) payload.city = city.trim();
     if (province.trim()) payload.province = province.trim();
     if (postalCode.trim()) payload.postalCode = postalCode.trim();
     if (country.trim()) payload.country = country.trim();
-    // Include geocoding fields when available (from Google Places)
     if (lat) payload.lat = lat;
     if (lng) payload.lng = lng;
     if (placeId) payload.placeId = placeId;
-    // keep linkage consistent
     if (parentCompanyId) payload.parentCompanyId = parentCompanyId;
-
     if (isEditIntent) updateMutation.mutate(payload);
     else createMutation.mutate(payload);
   };
@@ -247,14 +191,7 @@ export default function LocationFormModal({
   const isPending = isResolving || createMutation.isPending || updateMutation.isPending;
 
   return (
-    // 2026-05-06: width passed at the call-site per Modal Taxonomy
-    // rule #5 (ModalShell stays width-neutral). The `max-w-lg` width
-    // matches the prior DialogContent target.
-    <ModalShell
-      open={open}
-      onOpenChange={onOpenChange}
-      className="max-w-lg"
-    >
+    <ModalShell open={open} onOpenChange={onOpenChange} className="max-w-lg">
       <ModalHeader>
         <ModalTitle>{isEditIntent ? "Edit Location" : "Add Location"}</ModalTitle>
         <ModalDescription>
@@ -266,91 +203,91 @@ export default function LocationFormModal({
 
       <ModalBody className="space-y-3">
         {error && (
-            <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
-              {error}
-            </div>
-          )}
+          <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
+            {error}
+          </div>
+        )}
 
-          <div className="space-y-2">
-            <Label htmlFor="location-name">Location Name</Label>
-            <Input
-              id="location-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+        <FormField>
+          <FormLabel htmlFor="location-name">Location Name</FormLabel>
+          <Input
+            id="location-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={isResolving}
+          />
+          <FormHelperText>Enter a location name, or provide street address and city.</FormHelperText>
+        </FormField>
+
+        <FormField>
+          <FormLabel htmlFor="site-code">Site Code</FormLabel>
+          <Input
+            id="site-code"
+            value={siteCode}
+            onChange={(e) => setSiteCode(e.target.value)}
+            disabled={isResolving}
+          />
+        </FormField>
+
+        <FormField>
+          <FormLabel>Service Address</FormLabel>
+          <div className="space-y-3">
+            <AddressAutocomplete
+              value={street}
+              onChange={(val) => { setStreet(val); setLat(null); setLng(null); setPlaceId(null); }}
+              onPlaceSelect={(place: PlaceSelectPayload) => {
+                setStreet(place.street);
+                setCity(place.city);
+                setProvince(place.province);
+                setPostalCode(place.postalCode);
+                setCountry(place.country || "Canada");
+                setLat(place.lat != null ? String(place.lat) : null);
+                setLng(place.lng != null ? String(place.lng) : null);
+                setPlaceId(place.placeId || null);
+              }}
+              placeholder="Street address"
               disabled={isResolving}
             />
-            <p className="text-xs text-muted-foreground">Enter a location name, or provide street address and city.</p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="site-code">Site Code</Label>
             <Input
-              id="site-code"
-              value={siteCode}
-              onChange={(e) => setSiteCode(e.target.value)}
+              value={street2}
+              onChange={(e) => setStreet2(e.target.value)}
+              placeholder="Suite, Unit, Floor (optional)"
               disabled={isResolving}
             />
+            <FormRow className="grid-cols-2">
+              <Input value={city} onChange={(e) => { setCity(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="City" disabled={isResolving} />
+              <Input value={province} onChange={(e) => { setProvince(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Province/State" disabled={isResolving} />
+            </FormRow>
+            <FormRow className="grid-cols-2">
+              <Input value={postalCode} onChange={(e) => { setPostalCode(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Postal/ZIP Code" disabled={isResolving} />
+              <Input value={country} onChange={(e) => { setCountry(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Country" disabled={isResolving} />
+            </FormRow>
           </div>
+        </FormField>
 
-          <div className="space-y-2">
-            <Label>Service Address</Label>
-            <div className="space-y-3">
-              <AddressAutocomplete
-                value={street}
-                onChange={(val) => { setStreet(val); setLat(null); setLng(null); setPlaceId(null); }}
-                onPlaceSelect={(place: PlaceSelectPayload) => {
-                  setStreet(place.street);
-                  setCity(place.city);
-                  setProvince(place.province);
-                  setPostalCode(place.postalCode);
-                  setCountry(place.country || "Canada");
-                  setLat(place.lat != null ? String(place.lat) : null);
-                  setLng(place.lng != null ? String(place.lng) : null);
-                  setPlaceId(place.placeId || null);
-                }}
-                placeholder="Street address"
-                disabled={isResolving}
-              />
-              <Input
-                value={street2}
-                onChange={(e) => setStreet2(e.target.value)}
-                placeholder="Suite, Unit, Floor (optional)"
-                disabled={isResolving}
-              />
-              <div className="grid grid-cols-2 gap-3">
-                <Input value={city} onChange={(e) => { setCity(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="City" disabled={isResolving} />
-                <Input value={province} onChange={(e) => { setProvince(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Province/State" disabled={isResolving} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Input value={postalCode} onChange={(e) => { setPostalCode(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Postal/ZIP Code" disabled={isResolving} />
-                <Input value={country} onChange={(e) => { setCountry(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Country" disabled={isResolving} />
-              </div>
-            </div>
+        <div className="flex items-center justify-between p-3 border rounded-md bg-muted/30">
+          <FormField>
+            <FormLabel htmlFor="bill-with-parent">Bill this location with the parent company</FormLabel>
+            <FormHelperText>
+              {billWithParent
+                ? "Invoices for this location will be billed to the parent company."
+                : "This location will be billed directly to this location."}
+            </FormHelperText>
+          </FormField>
+          <Switch id="bill-with-parent" checked={billWithParent} onCheckedChange={setBillWithParent} disabled={isResolving} />
+        </div>
+
+        {isEditIntent && (
+          <div className="flex items-center justify-between p-3 border rounded-md">
+            <FormField>
+              <FormLabel htmlFor="is-active">Active</FormLabel>
+              <FormHelperText>
+                Inactive locations are hidden from schedules and reports.
+              </FormHelperText>
+            </FormField>
+            <Switch id="is-active" checked={isActive} onCheckedChange={setIsActive} disabled={isResolving} />
           </div>
-
-          <div className="flex items-center justify-between p-3 border rounded-md bg-muted/30">
-            <div className="space-y-1">
-              <Label className="text-sm font-medium">Bill this location with the parent company</Label>
-              <p className="text-xs text-muted-foreground">
-                {billWithParent
-                  ? "Invoices for this location will be billed to the parent company."
-                  : "This location will be billed directly to this location."}
-              </p>
-            </div>
-            <Switch checked={billWithParent} onCheckedChange={setBillWithParent} disabled={isResolving} />
-          </div>
-
-          {isEditIntent && (
-            <div className="flex items-center justify-between p-3 border rounded-md">
-              <div className="space-y-1">
-                <Label className="text-sm font-medium">Active</Label>
-                <p className="text-xs text-muted-foreground">
-                  Inactive locations are hidden from schedules and reports.
-                </p>
-              </div>
-              <Switch checked={isActive} onCheckedChange={setIsActive} disabled={isResolving} />
-            </div>
-          )}
+        )}
       </ModalBody>
 
       <ModalFooter>

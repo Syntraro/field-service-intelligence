@@ -31,7 +31,6 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -844,71 +843,121 @@ function StepSchedule({
         </div>
       </div>
 
-      {/* Service Plans (2026-05-07): explicit auto-generate-work toggle.
-          When ON, the system creates an UNSCHEDULED job (no visit, no
-          tech assignment, no calendar reservation) on the configured
-          generation date. When OFF, the plan only surfaces pending work
-          on the Service Plans → Work Due queue and a dispatcher
-          generates the job manually. Scheduling/dispatch are NEVER
-          automated by this toggle. */}
-      <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card px-3 py-2.5">
-        <div className="min-w-0 flex-1">
-          <Label
-            htmlFor="pm-wizard-auto-generate-jobs"
-            className="text-sm font-medium cursor-pointer"
-          >
-            Automatically generate work
-          </Label>
+      {/* Service Generation (2026-05-09): one card, two selectable rows.
+          autoGenerateJobs: true  → auto create; false → notify + window. */}
+      <div className="rounded-md border border-border bg-card overflow-hidden" data-testid="pm-wizard-service-generation">
+        <div className="px-3 pt-3 pb-2 border-b border-border">
+          <h3 className="text-sm font-semibold">Service Generation</h3>
           <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-            Automatically creates an unscheduled job when service becomes due. The job lands on the Work Due queue — a dispatcher still assigns the technician and schedules it.
+            Choose how this plan is handled when service is due.
           </p>
         </div>
-        <Switch
-          id="pm-wizard-auto-generate-jobs"
-          checked={state.autoGenerateJobs}
-          onCheckedChange={(v) => onChange({ autoGenerateJobs: Boolean(v) })}
-          data-testid="pm-wizard-auto-generate-jobs"
-        />
-      </div>
 
-      <div className="space-y-2 pt-1">
-        <div>
-          <h3 className="text-sm font-semibold">Completion Window</h3>
-          <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-            This is the date range where the service visit should be completed.
-            Example: 7 days before and 14 days after means the job can be scheduled
-            anytime in that window. For an exact service date, set both numbers to 0.
-          </p>
+        <button
+          type="button"
+          onClick={() => onChange({ autoGenerateJobs: true })}
+          className={`w-full text-left px-3 py-2.5 transition-colors ${
+            state.autoGenerateJobs ? "bg-primary/5" : "hover:bg-muted/40"
+          }`}
+          data-testid="pm-wizard-service-gen-auto"
+        >
+          <div className="flex items-start gap-2.5">
+            <div className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+              state.autoGenerateJobs ? "border-primary" : "border-muted-foreground/40"
+            }`}>
+              {state.autoGenerateJobs && <div className="h-2 w-2 rounded-full bg-primary" />}
+            </div>
+            <div className="min-w-0">
+              <div className="font-medium text-sm">Automatically create work orders</div>
+              <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                An unscheduled work order will be created automatically on the job creation date.
+              </div>
+              {state.autoGenerateJobs && (
+                <div className="text-xs text-primary mt-1 leading-snug">
+                  Dispatch can then schedule and assign the work.
+                </div>
+              )}
+            </div>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-2 px-3 py-1">
+          <div className="flex-1 h-px bg-border" />
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">OR</span>
+          <div className="flex-1 h-px bg-border" />
         </div>
-        <div className="flex items-end gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Days before</Label>
-            <Input
-              type="number"
-              min={0}
-              max={90}
-              className="w-20 h-8 text-sm"
-              value={state.serviceWindowDaysBefore}
-              onChange={(e) =>
-                onChange({ serviceWindowDaysBefore: Math.max(0, parseInt(e.target.value, 10) || 0) })
-              }
-              data-testid="pm-wizard-window-before"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Days after</Label>
-            <Input
-              type="number"
-              min={0}
-              max={90}
-              className="w-20 h-8 text-sm"
-              value={state.serviceWindowDaysAfter}
-              onChange={(e) =>
-                onChange({ serviceWindowDaysAfter: Math.max(0, parseInt(e.target.value, 10) || 0) })
-              }
-              data-testid="pm-wizard-window-after"
-            />
-          </div>
+
+        <div className={!state.autoGenerateJobs ? "bg-primary/5" : ""}>
+          <button
+            type="button"
+            onClick={() => onChange({ autoGenerateJobs: false })}
+            className={`w-full text-left px-3 py-2.5 transition-colors ${
+              !state.autoGenerateJobs ? "" : "hover:bg-muted/40"
+            }`}
+            data-testid="pm-wizard-service-gen-manual"
+          >
+            <div className="flex items-start gap-2.5">
+              <div className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                !state.autoGenerateJobs ? "border-primary" : "border-muted-foreground/40"
+              }`}>
+                {!state.autoGenerateJobs && <div className="h-2 w-2 rounded-full bg-primary" />}
+              </div>
+              <div className="min-w-0">
+                <div className="font-medium text-sm">Notify me to create the work order</div>
+                <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  You'll be notified so you can manually create the work order.
+                </div>
+              </div>
+            </div>
+          </button>
+
+          {!state.autoGenerateJobs && (
+            <div className="px-3 pb-3 ml-6 space-y-2.5">
+              <div>
+                <div className="text-xs font-semibold">Notification window</div>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  You'll be notified this many days before the work order is created. The work order should be completed within the specified days of creation or it will be marked overdue.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={90}
+                    className="w-16 h-8 text-sm"
+                    value={state.serviceWindowDaysBefore}
+                    onChange={(e) =>
+                      onChange({ serviceWindowDaysBefore: Math.max(0, parseInt(e.target.value, 10) || 0) })
+                    }
+                    data-testid="pm-wizard-window-before"
+                  />
+                  <Label className="text-xs text-muted-foreground">days before job creation</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={90}
+                    className="w-16 h-8 text-sm"
+                    value={state.serviceWindowDaysAfter}
+                    onChange={(e) =>
+                      onChange({ serviceWindowDaysAfter: Math.max(0, parseInt(e.target.value, 10) || 0) })
+                    }
+                    data-testid="pm-wizard-window-after"
+                  />
+                  <Label className="text-xs text-muted-foreground">days after job creation</Label>
+                </div>
+              </div>
+              <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+                Example: You'll be notified{" "}
+                <span className="font-medium text-foreground">{state.serviceWindowDaysBefore}</span>{" "}
+                days before the work order is created. The work order should be completed within{" "}
+                <span className="font-medium text-foreground">{state.serviceWindowDaysAfter}</span>{" "}
+                days of creation or it will be marked overdue.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1048,7 +1097,7 @@ function StepPricing({
               onChange={(e) =>
                 onChange({ customDurationUnit: e.target.value as "months" | "years" })
               }
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              className="h-8 rounded-md border border-input bg-background px-2 text-body"
             >
               <option value="months">months</option>
               <option value="years">years</option>
@@ -1156,8 +1205,10 @@ function StepReview({ state }: { state: WizardState }) {
             { label: "Months", value: monthsLabel(state.months) },
             { label: "Work Orders", value: generationRuleLabel(state) },
             {
-              label: "Completion Window",
-              value: `${state.serviceWindowDaysBefore}d before — ${state.serviceWindowDaysAfter}d after`,
+              label: "Service Generation",
+              value: state.autoGenerateJobs
+                ? "Auto"
+                : `Manual — ${state.serviceWindowDaysBefore}d before / ${state.serviceWindowDaysAfter}d after`,
             },
           ]}
         />
@@ -1215,8 +1266,10 @@ function PlanPreviewCard({ state }: { state: WizardState }) {
           : `Day ${state.generationDayOfMonth}`,
     },
     {
-      label: "Completion Window",
-      value: `${state.serviceWindowDaysBefore}d / ${state.serviceWindowDaysAfter}d`,
+      label: "Service Generation",
+      value: state.autoGenerateJobs
+        ? "Auto"
+        : `Manual — notify ${state.serviceWindowDaysBefore}d before`,
     },
     { label: "Charge", value: charge },
     { label: "Duration", value: durationLabel(state) },

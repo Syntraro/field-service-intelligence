@@ -341,8 +341,8 @@ export function AppSidebar({
                 aria-label="Create New"
                 className={
                   isCollapsed
-                    ? "h-8 w-8 p-0 inline-flex items-center justify-center bg-brand hover:bg-brand-hover text-white"
-                    : "h-8 px-3 gap-1.5 text-sm text-white font-medium bg-brand hover:bg-brand-hover justify-center"
+                    ? "h-8 w-8 p-0 self-center inline-flex items-center justify-center rounded-lg bg-brand hover:bg-brand-hover text-white"
+                    : "h-8 self-center inline-flex items-center px-3 gap-1.5 rounded-lg text-nav-compact text-white font-medium bg-brand hover:bg-brand-hover"
                 }
               >
                 <Plus className="h-4 w-4" />

@@ -18,8 +18,8 @@ import { useTechLocationSearch, type LocationResult } from "../hooks/useTechLoca
 // the primitive defaults; raw `text-sm border-slate-200` styling
 // replaced by canonical `text-input` typography.
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel } from "@/components/ui/form-field";
 
 function getQueryParam(key: string): string {
   return new URLSearchParams(window.location.search).get(key) || "";
@@ -154,8 +154,8 @@ export function CreateLeadPage() {
         )}
 
         {/* Location — locked if prefilled */}
-        <div>
-          <Label className="block mb-1">Client / Location *</Label>
+        <FormField>
+          <FormLabel>Client / Location *</FormLabel>
           {locationId ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
               <p className="text-sm font-medium text-slate-800">{locationLabel || "Loading..."}</p>
@@ -181,22 +181,22 @@ export function CreateLeadPage() {
               )}
             </>
           )}
-        </div>
+        </FormField>
 
         {/* Title */}
-        <div>
-          <Label className="block mb-1">What did you find? *</Label>
+        <FormField>
+          <FormLabel>What did you find? *</FormLabel>
           <Input value={title} onChange={e => setTitle(e.target.value)}
             placeholder="e.g. Compressor needs replacement, water heater leaking..." />
-        </div>
+        </FormField>
 
         {/* Description */}
-        <div>
-          <Label className="block mb-1">Details</Label>
+        <FormField>
+          <FormLabel>Details</FormLabel>
           <Textarea ref={descRef} value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Additional details for the office..."
             className="resize-none h-24" />
-        </div>
+        </FormField>
 
         {/* Submit */}
         <button onClick={handleSubmit} disabled={!canSubmit}

@@ -56,7 +56,7 @@ applies `text-transform: uppercase` via a `@layer components` rule in
 | Utility | Size / line-height / weight | Use for |
 |---|---|---|
 | `text-body` | 15 / 22 / 400 | Default reading text — forms, dialogs, prose, descriptions. |
-| `text-row` | 15 / 22 / 400 | Default table / list row content. |
+| `text-row` | 14 / 20 / 400 | Default table / list row content. |
 | `text-row-emphasis` | 15 / 22 / 500 | Primary identifier in a row (entity name, the "first column"). |
 
 ### Small text

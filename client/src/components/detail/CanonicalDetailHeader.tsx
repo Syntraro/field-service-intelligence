@@ -1,192 +1,762 @@
 /**
- * CanonicalDetailHeader (2026-05-01, card layout extended 2026-05-08)
+ * CanonicalDetailHeader — card-only renderer (2026-05-09 architectural refactor)
  *
- * Single canonical compact header for every detail-page surface
- * (Job Detail, Invoice Detail, future Quote Detail). Slot-based and
- * purely presentational — owns NO data fetching, NO mutations, NO
- * state. Each consumer page passes the title, status, metadata items,
- * and action buttons it owns; this component is responsible only for
- * the layout and consistent styling.
+ * Single canonical header for Job Detail, Quote Detail, and Lead Detail.
+ * Purely presentational — NO data fetching, NO mutations, NO local edit state.
  *
- * Two layout variants
- * -------------------
- * layout="strip" (default — backward-compat for InvoiceDetailPage):
- *   ┌──────────────────────────────────────────────────────────────────┐
- *   │ Title [Status]      Item₁ │ Item₂ │ … │ Itemₙ [✎]      Actions… │
- *   └──────────────────────────────────────────────────────────────────┘
- *   Full-width strip; sits directly under the dark app top bar.
- *   Three regions on one row:
- *     LEFT   = title + status (natural width, left-justified)
- *     CENTER = metadata items + optional edit pencil (mx-auto)
- *     RIGHT  = actions cluster (natural width, right-justified)
+ * Architecture (2026-05-09):
+ *   All visual decisions belong to CDH. Callers pass typed plain-data
+ *   descriptors — no ReactNode escape hatches for status, alerts,
+ *   workflow, edit controls, title edit, or description edit. CDH owns
+ *   100% of visual output for all structural concerns.
  *
- * layout="card" (2026-05-08 — content-only two-column layout):
- *   ┌─────────────────────────────────┬──────────────────────────────┐
- *   │ H1 title           [Status]     │                 Actions…     │
- *   │ Client name                     │  Label  Label  Label         │
- *   │ Service Address                 │  Value  Value  Value         │
- *   └─────────────────────────────────┴──────────────────────────────┘
- *   No card chrome — caller wraps in CardShell (or equivalent).
- *   The component renders `<div className="px-5 pt-4 pb-4">` and the
- *   two-column flex layout inside. On narrow viewports the right
- *   column drops below the left (`lg:flex-row` breakpoint).
- *   Card-mode metadata grid:
- *     - Items render right-aligned (items-end) under the actions.
- *     - Items with `hidden: true` are filtered out in read mode so
- *       optional fields don't consume space when empty.
- *     - Items with `editNode` are always shown in edit mode (lets the
- *       user fill in a field that was previously empty).
+ *   Remaining bounded ReactNode slots:
+ *     DetailHeaderItem.value/editNode — entity numbers, date pickers
  *
- * Migration state (2026-05-08)
- * ----------------------------
- *   InvoiceDetailPage — strip layout (already canonical, no change)
- *   JobDetailPage     — card layout (migrated 2026-05-08)
- *   QuoteDetailPage   — next (QuoteHeaderCard identity section)
- *   LeadDetailPage    — next (LeadSummaryCard, draft-mode complexity)
+ *   All pages (Job/Quote/Lead/Invoice + creation pages) use CDH directly.
+ *
+ * Layout (card — full header card with structured props):
+ *   Identity area (left column):
+ *     entityLabel / onBack / title (or titleEdit textarea) / subtitle (or subtitleEdit)
+ *     status chip / clientName / contactName / addressLines / phone / email
+ *
+ *   Action area (right column):
+ *     editCapability / primaryActions / overflowActions
+ *     workflow — typed "quote-owner-assessment" row (canonical Select)
+ *     alert    — typed banner (text + tone + icon)
+ *     items    — label/value meta pairs
+ *
+ *   Below-identity chrome:
+ *     description section (descriptionEdit descriptor or read-only text) / editControls footer
+ *
+ * Migration history:
+ *   2026-05-01 — initial strip/card dual layout
+ *   2026-05-08 — Task 3: typed action arrays; Task 4: card chrome owned by CDH
+ *   2026-05-08 — description visibility fix
+ *   2026-05-09 — strip removed; all ReactNode escape hatches replaced with typed descriptors
+ *   2026-05-09 — editCapability replaces onEdit/editAriaLabel; descriptionEdit replaces
+ *                descriptionEditContent; subtitleEdit added for Quote inline title edit
  */
 
-import { Fragment, type ReactNode } from "react";
-import { Pencil } from "lucide-react";
+import { Fragment, useState, type ReactNode } from "react";
+import { Link } from "wouter";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  Info,
+  Mail,
+  MapPin,
+  MoreHorizontal,
+  Pencil,
+  Phone,
+  User,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ActionMenu, type ActionMenuTone } from "@/components/ui/action-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { StatusChip, type ChipTone } from "@/components/ui/chip";
+import { cn } from "@/lib/utils";
+
+// ── Shared types ──────────────────────────────────────────────────────
 
 export interface DetailHeaderItem {
-  /** Stable key — used as React key + appended to data-testid */
+  /** Stable key — used as React key + appended to data-testid. */
   key: string;
-  /** Top label, e.g. "Job #", "Scheduled" */
+  /** Top label, e.g. "Job #", "Scheduled". */
   label: string;
-  /** Read-mode value. ReactNode so callers can pass links / formatted
-   *  dates / em-dash placeholders. The strip layout does not hide items
-   *  with empty/null values — pass an explicit `<span>—</span>` for
-   *  the muted-dash placeholder per the canonical layout contract. */
+  /** Read-mode value. Pass `<span>—</span>` for empty. */
   value: ReactNode;
-  /** Edit-mode override. When the parent's `isEditing` is true AND
-   *  this item supplies an `editNode`, the header renders the
-   *  editNode in place of `value`. Pages own all state; this slot
-   *  receives whatever input/picker the page already wires elsewhere
-   *  in its edit form. Items without an `editNode` stay read-only
-   *  even in edit mode. */
+  /** Edit-mode override. Shown in place of `value` when `isEditing=true`. */
   editNode?: ReactNode;
-  /** Card mode only: when true and NOT editing, this item is not
-   *  rendered. When editing AND `editNode` is set, always shown so the
-   *  user can fill in a field that was previously empty. Use for
-   *  optional metadata that should not consume space when empty. */
+  /** Hide in read mode when true. Edit mode with editNode always shows. */
   hidden?: boolean;
 }
 
-export interface CanonicalDetailHeaderProps {
-  /** Primary title. Strip mode wraps in `<h1>`; card mode renders as-is
-   *  (callers provide the H1 or textarea element directly, allowing the
-   *  edit-mode textarea swap without a wrapper mutation). */
-  title: ReactNode;
-  /** Status badge — already-styled element (e.g. `<StatusChip>`). */
-  statusBadge?: ReactNode;
-  /** Metadata items. Strip: rendered with vertical dividers in center.
-   *  Card: rendered as right-aligned label/value pairs under actions;
-   *  items with `hidden: true` are filtered in read mode. */
-  items: DetailHeaderItem[];
-  /** Strip mode only: edit pencil click handler. Pencil hidden when
-   *  undefined. Must dispatch the consumer's existing edit flow. */
-  onEdit?: () => void;
-  /** Optional aria-label for the strip-mode edit pencil. Default: "Edit". */
-  editAriaLabel?: string;
-  /** Right-side actions cluster. Strip: after a vertical divider.
-   *  Card: top of the right column above the meta grid. */
-  actions?: ReactNode;
-  /** Page-level edit-mode flag. Strip: items with editNode swap their
-   *  value. Card: additionally, hidden items with editNode are shown. */
-  isEditing?: boolean;
-  /** Test ID prefix. Strip/card outer div gets `${testId}`;
-   *  items wrapper gets `${testId}-items`; each item gets
-   *  `${testId}-item-${item.key}`; actions get `${testId}-actions`;
-   *  card right column gets `${testId}-right`. Defaults to "detail-header". */
+/** Structured descriptor for a CTA button in the actions cluster. */
+export interface HeaderAction {
+  id: string;
+  label: string;
+  /** Lucide icon component (h-3.5 w-3.5 applied internally). */
+  icon?: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+  /** "primary" → green fill; "outline" → outline; "ghost" → ghost; "danger" → red outline */
+  variant?: "primary" | "outline" | "ghost" | "danger";
+  disabled?: boolean;
+  /** When true, action is not rendered. */
+  hidden?: boolean;
   testId?: string;
-
-  /** Layout variant.
-   *  - "strip" (default): compact single-row. Backward-compat surface.
-   *  - "card": two-column content layout (no card chrome). Caller wraps
-   *    in CardShell. Adds `clientSlot` and `addressSlot` support. */
-  layout?: "strip" | "card";
-  /** Card layout only: client entity link / name rendered under the
-   *  title+status row (left column, row 2). */
-  clientSlot?: ReactNode;
-  /** Card layout only: address block rendered under the client name
-   *  (left column, row 2, below clientSlot). */
-  addressSlot?: ReactNode;
 }
 
-export function CanonicalDetailHeader({
-  title,
-  statusBadge,
-  items,
-  onEdit,
-  editAriaLabel = "Edit",
-  actions,
-  isEditing = false,
-  testId = "detail-header",
-  layout = "strip",
-  clientSlot,
-  addressSlot,
-}: CanonicalDetailHeaderProps) {
-  // ─── Card layout ─────────────────────────────────────────────────
-  if (layout === "card") {
-    // Filter hidden items: in read mode, skip hidden; in edit mode,
-    // always show items that have an editNode (so user can fill them in).
-    const visibleItems = items.filter(
-      (it) => !it.hidden || (isEditing && it.editNode !== undefined),
-    );
+/** Structured descriptor for an item in the overflow dropdown.
+ *  Rendering is delegated to ActionMenu — no raw DropdownMenuItem JSX at callsites.
+ *  Use `tone` for visual emphasis; do not pass className. */
+export interface HeaderOverflowItem {
+  id: string;
+  label: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+  separator?: boolean;
+  /** Visual tone for the item. "destructive" applies text-destructive. */
+  tone?: ActionMenuTone;
+  disabled?: boolean;
+  hidden?: boolean;
+  testId?: string;
+}
+
+// ── Typed descriptor types ─────────────────────────────────────────────
+
+/** Status descriptor — CDH renders <StatusChip> internally. */
+export interface StatusDescriptor {
+  label: string;
+  tone: ChipTone;
+}
+
+export type AlertTone = "warning" | "info" | "error" | "success";
+export type AlertIcon = "alert" | "info" | "check";
+
+/** Alert descriptor — CDH renders icon + text with canonical tone class. */
+export interface AlertDescriptor {
+  text: string;
+  tone: AlertTone;
+  icon?: AlertIcon;
+  /** data-testid on the alert text span. */
+  testId?: string;
+}
+
+export interface WorkflowOwnerOption {
+  id: string;
+  label: string;
+}
+
+export type WorkflowAssessmentStatus = "required" | "scheduled" | "completed" | null;
+
+/** Typed workflow descriptor — CDH renders canonical UI for each kind. */
+export interface WorkflowDescriptor {
+  kind: "quote-owner-assessment";
+  ownerUserId: string | null;
+  ownerOptions: WorkflowOwnerOption[];
+  isOwnerMutating?: boolean;
+  assessmentStatus: WorkflowAssessmentStatus;
+  isAssessmentMutating?: boolean;
+  onOwnerChange: (userId: string | null) => void;
+  onMarkAssessmentNeeded: () => void;
+  onClearAssessmentNeeded: () => void;
+  onScheduleAssessment: () => void;
+  onCompleteAssessment: () => void;
+  onCancelAssessment: () => void;
+}
+
+/** Typed save/cancel footer — CDH owns border-t chrome. Pass undefined in read mode. */
+export interface HeaderEditControls {
+  onSave: () => void;
+  onCancel: () => void;
+  isSaving?: boolean;
+  saveLabel?: string;
+  cancelLabel?: string;
+  error?: string | null;
+  saveTestId?: string;
+  cancelTestId?: string;
+}
+
+/** Title edit descriptor — CDH renders an auto-focused single-line input. Pass undefined in read mode. */
+export interface HeaderTitleEdit {
+  value: string;
+  onChange: (value: string) => void;
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+  placeholder?: string;
+  maxLength?: number;
+}
+
+/** Description edit descriptor — CDH renders textarea internally. Pass undefined in read mode.
+ *  Replaces the former descriptionEditContent ReactNode escape hatch. */
+/** Canonical label and placeholder for the description field across Job, Quote, and Lead. */
+export const DESCRIPTION_LABEL = "Scope of work";
+export const DESCRIPTION_PLACEHOLDER = "Describe the scope of work…";
+
+export interface HeaderDescriptionEdit {
+  value: string;
+  onChange: (value: string) => void;
+  onKeyDown?: React.KeyboardEventHandler<HTMLTextAreaElement>;
+  maxLength?: number;
+  /** Defaults to DESCRIPTION_PLACEHOLDER when omitted. */
+  placeholder?: string;
+  testId?: string;
+}
+
+/** Edit capability descriptor — drives the pencil button visibility and callback.
+ *  enabled: permission/state gate (pencil hidden when false).
+ *  onStartEdit: called when the pencil is clicked. */
+export interface HeaderEditCapability {
+  enabled: boolean;
+  ariaLabel?: string;
+  onStartEdit?: () => void;
+}
+
+// ── Props ─────────────────────────────────────────────────────────────
+
+export interface CanonicalDetailHeaderProps {
+  /** Test ID prefix for the outer card and sub-elements. */
+  testId?: string;
+  /** Page-level edit flag. Swaps items' editNode for value. */
+  isEditing?: boolean;
+
+  // ── Title ────────────────────────────────────────────────────────
+  /** Primary title string (shown in <h1> or as titleEdit textarea fallback). */
+  title: string;
+  /** Small-caps entity badge rendered above title ("LEAD", "QUOTE"). */
+  entityLabel?: string;
+  /** Renders a back-arrow button. */
+  onBack?: () => void;
+  /** Secondary line below title. Shown as a muted <p> in read mode, or a single-line input when subtitleEdit is defined. */
+  subtitle?: string;
+  /** When defined, CDH renders an auto-focused textarea instead of <h1>.
+   *  Pass `undefined` in read mode. */
+  titleEdit?: HeaderTitleEdit;
+  /** When defined, CDH renders an input in place of the subtitle text.
+   *  Used by Quote to allow inline editing of quote.title (the subtitle). */
+  subtitleEdit?: HeaderTitleEdit;
+
+  // ── Status ───────────────────────────────────────────────────────
+  /** Status descriptor — CDH renders <StatusChip tone={status.tone}>. */
+  status?: StatusDescriptor;
+
+  // ── Client identity ──────────────────────────────────────────────
+  clientName?: string;
+  /** When set, clientName renders as a wouter <Link>. */
+  clientHref?: string;
+  /** Secondary contact name line (User icon). */
+  contactName?: string;
+
+  // ── Address ──────────────────────────────────────────────────────
+  /** Physical address lines. MapPin on first; indent on subsequent. */
+  addressLines?: string[];
+  /** Optional label above address block. */
+  addressLabel?: string;
+  phone?: string;
+  email?: string;
+
+  // ── Actions ──────────────────────────────────────────────────────
+  /** Edit capability descriptor — controls pencil button visibility and callback.
+   *  enabled: false hides the pencil (permission gate).
+   *  onStartEdit: called when pencil is clicked. */
+  editCapability?: HeaderEditCapability;
+  primaryActions?: HeaderAction[];
+  overflowActions?: HeaderOverflowItem[];
+
+  // ── Typed workflow (replaces workflowSlot ReactNode) ─────────────
+  workflow?: WorkflowDescriptor;
+
+  // ── Typed alert (replaces headerAlert ReactNode) ──────────────────
+  alert?: AlertDescriptor;
+
+  // ── Meta items ───────────────────────────────────────────────────
+  items: DetailHeaderItem[];
+
+  // ── Description ──────────────────────────────────────────────────
+  /** Read-mode description text. */
+  description?: string | null;
+  descriptionLabel?: string;
+  /** Typed description edit descriptor — CDH renders textarea internally.
+   *  Pass only when editing is active; omit in read mode so section hides when empty.
+   *  placeholder defaults to DESCRIPTION_PLACEHOLDER when omitted. */
+  descriptionEdit?: HeaderDescriptionEdit;
+
+  // ── Edit controls (replaces editFooter ReactNode) ─────────────────
+  /** Typed save/cancel footer. CDH renders border-t chrome + buttons.
+   *  Pass `undefined` in read mode. */
+  editControls?: HeaderEditControls;
+}
+
+// ── Alert tone → CSS class map ─────────────────────────────────────────
+
+const ALERT_TONE_CLASS: Record<AlertTone, string> = {
+  warning: "text-amber-700",
+  info: "text-blue-600",
+  error: "text-destructive",
+  success: "text-emerald-700",
+};
+
+// ── Card-mode render helpers ───────────────────────────────────────────
+
+function renderHeaderAction(action: HeaderAction) {
+  if (action.hidden) return null;
+  const Icon = action.icon;
+  const iconEl = Icon ? <Icon className="h-3.5 w-3.5" /> : null;
+  if (action.variant === "primary") {
     return (
-      // 2026-05-08: content-only wrapper. Card chrome (bg-white border
-      // rounded-md shadow-sm) lives on the caller's CardShell so the
-      // description section and edit footer (CardShell siblings) share
-      // the same card boundary without extra nesting.
-      <div className="px-5 pt-4 pb-4" data-testid={testId}>
-        {/* 2-column responsive flex: column on mobile, row on lg.
-            `lg:items-start` keeps both columns top-aligned even when
-            the title or meta grid grows taller than the other side. */}
+      <Button
+        size="sm"
+        className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
+        onClick={action.onClick}
+        disabled={action.disabled}
+        data-testid={action.testId}
+      >
+        {iconEl}{action.label}
+      </Button>
+    );
+  }
+  if (action.variant === "danger") {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1 text-xs h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
+        onClick={action.onClick}
+        disabled={action.disabled}
+        data-testid={action.testId}
+      >
+        {iconEl}{action.label}
+      </Button>
+    );
+  }
+  if (action.variant === "ghost") {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="gap-1 text-xs h-7"
+        onClick={action.onClick}
+        disabled={action.disabled}
+        data-testid={action.testId}
+      >
+        {iconEl}{action.label}
+      </Button>
+    );
+  }
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="gap-1 text-xs h-7"
+      onClick={action.onClick}
+      disabled={action.disabled}
+      data-testid={action.testId}
+    >
+      {iconEl}{action.label}
+    </Button>
+  );
+}
+
+function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
+  if (workflow.kind !== "quote-owner-assessment") return null;
+  return (
+    <div
+      className="flex items-center gap-1.5 flex-wrap justify-end"
+      data-testid={`${testId}-workflow`}
+    >
+      <label className="flex items-center gap-1 text-helper text-muted-foreground">
+        <span>Owner</span>
+        <Select
+          value={workflow.ownerUserId ?? "unassigned"}
+          onValueChange={(v) => workflow.onOwnerChange(v === "unassigned" ? null : v)}
+          disabled={workflow.isOwnerMutating}
+        >
+          <SelectTrigger
+            className="h-7 text-helper px-2 max-w-[140px]"
+            data-testid="quote-header-owner-select"
+          >
+            <SelectValue placeholder="Unassigned" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {workflow.ownerOptions.map((opt) => (
+              <SelectItem key={opt.id} value={opt.id}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+
+      <span
+        className="text-helper text-muted-foreground"
+        data-testid="quote-header-assessment-label"
+      >
+        Assessment
+      </span>
+
+      {!workflow.assessmentStatus && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1 text-xs h-7"
+          onClick={workflow.onMarkAssessmentNeeded}
+          disabled={workflow.isAssessmentMutating}
+          data-testid="quote-header-assessment-mark-needed"
+        >
+          Mark needed
+        </Button>
+      )}
+
+      {workflow.assessmentStatus === "required" && (
+        <>
+          <StatusChip tone="warning" data-testid="quote-header-assessment-needed-chip">
+            Needed
+          </StatusChip>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1 text-xs h-7"
+            onClick={workflow.onScheduleAssessment}
+            disabled={workflow.isAssessmentMutating}
+            data-testid="quote-header-assessment-schedule"
+          >
+            Schedule
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 text-xs h-7 text-muted-foreground"
+            onClick={workflow.onClearAssessmentNeeded}
+            disabled={workflow.isAssessmentMutating}
+            data-testid="quote-header-assessment-clear"
+          >
+            Clear
+          </Button>
+        </>
+      )}
+
+      {workflow.assessmentStatus === "scheduled" && (
+        <>
+          <StatusChip tone="info" data-testid="quote-header-assessment-scheduled-chip">
+            Scheduled
+          </StatusChip>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1 text-xs h-7"
+            onClick={workflow.onCompleteAssessment}
+            disabled={workflow.isAssessmentMutating}
+            data-testid="quote-header-assessment-complete"
+          >
+            Complete
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 text-xs h-7 text-muted-foreground"
+            onClick={workflow.onCancelAssessment}
+            disabled={workflow.isAssessmentMutating}
+            data-testid="quote-header-assessment-cancel"
+          >
+            Cancel
+          </Button>
+        </>
+      )}
+
+      {workflow.assessmentStatus === "completed" && (
+        <StatusChip tone="success" data-testid="quote-header-assessment-completed-chip">
+          Completed
+        </StatusChip>
+      )}
+    </div>
+  );
+}
+
+// ── Component ─────────────────────────────────────────────────────────
+
+export function CanonicalDetailHeader({
+  testId = "detail-header",
+  isEditing = false,
+  title,
+  entityLabel,
+  onBack,
+  subtitle,
+  titleEdit,
+  subtitleEdit,
+  status,
+  clientName,
+  clientHref,
+  contactName,
+  addressLines,
+  addressLabel,
+  phone,
+  email,
+  editCapability,
+  primaryActions,
+  overflowActions,
+  workflow,
+  alert,
+  items,
+  description,
+  descriptionLabel,
+  descriptionEdit,
+  editControls,
+}: CanonicalDetailHeaderProps) {
+  // Visible meta items (filter hidden in read mode; always show editNode in edit mode)
+  const visibleItems = items.filter(
+    (it) => !it.hidden || (isEditing && it.editNode !== undefined),
+  );
+
+  // Visible actions (filter hidden)
+  const visiblePrimary = primaryActions?.filter((a) => !a.hidden) ?? [];
+  const visibleOverflow = overflowActions?.filter((a) => !a.hidden) ?? [];
+
+  const hasDescription = description != null && description.trim().length > 0;
+
+  // Description section: show when content exists or edit descriptor present.
+  const showDescription = hasDescription || descriptionEdit !== undefined;
+
+  // Render description content area (CDH owns all chrome)
+  let descriptionContent: ReactNode;
+  if (descriptionEdit !== undefined) {
+    descriptionContent = (
+      <textarea
+        value={descriptionEdit.value}
+        onChange={(e) => descriptionEdit.onChange(e.target.value)}
+        onKeyDown={descriptionEdit.onKeyDown}
+        maxLength={descriptionEdit.maxLength ?? 600}
+        placeholder={descriptionEdit.placeholder ?? DESCRIPTION_PLACEHOLDER}
+        className="mt-2 min-h-[88px] w-full text-body text-slate-900 bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand resize-none"
+        data-testid={descriptionEdit.testId}
+      />
+    );
+  } else {
+    descriptionContent = (
+      <p className="text-sm text-text-primary whitespace-pre-line">
+        {description}
+      </p>
+    );
+  }
+
+  const hasActionsCluster =
+    (editCapability?.enabled ?? false) ||
+    visiblePrimary.length > 0 ||
+    visibleOverflow.length > 0;
+
+  return (
+    <div
+      className="rounded-md border bg-card border-card-border shadow-card overflow-hidden"
+      data-testid={testId}
+    >
+      {/* ── Alert (expiry warnings, info banners) ────────────────── */}
+      {alert && (
+        <div
+          className="px-5 pt-3 pb-0 flex justify-end"
+          data-testid={`${testId}-alert`}
+        >
+          <span
+            className={cn("flex items-center gap-1 text-helper", ALERT_TONE_CLASS[alert.tone])}
+            data-testid={alert.testId ?? `${testId}-alert-text`}
+          >
+            {alert.icon === "alert" && <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+            {alert.icon === "info" && <Info className="h-3.5 w-3.5 shrink-0" />}
+            {alert.icon === "check" && <Check className="h-3.5 w-3.5 shrink-0" />}
+            {alert.text}
+          </span>
+        </div>
+      )}
+
+      {/* ── Identity section ───────────────────────────────────────── */}
+      <div className="px-5 pt-4 pb-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 
-          {/* ── LEFT: title + status (row 1), client + address (row 2) */}
-          {/* `flex-1 min-w-0 max-w-2xl`: grows to fill available space
-              but caps at 2xl so the title doesn't run wall-to-wall on
-              ultra-wide viewports; `min-w-0` enables text truncation. */}
+          {/* ── LEFT: title area + client + address ────────────────── */}
           <div className="flex-1 min-w-0 max-w-2xl">
-            {/* Row 1: title element + status badge */}
+            {/* Row 1: optional entity label + back button */}
+            {(onBack || entityLabel) && (
+              <div className="flex items-center gap-2 mb-1">
+                {onBack && (
+                  <button
+                    onClick={onBack}
+                    className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+                    aria-label="Back"
+                    data-testid={`${testId}-back`}
+                  >
+                    <ArrowLeft className="h-3 w-3" />
+                  </button>
+                )}
+                {entityLabel && (
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    {entityLabel}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Row 2: title H1 (or textarea) + status chip */}
             <div className="flex items-start gap-3 flex-wrap">
-              {title}
-              {statusBadge && (
+              <div className="min-w-0">
+                {titleEdit !== undefined ? (
+                  <input
+                    type="text"
+                    value={titleEdit.value}
+                    onChange={(e) => titleEdit.onChange(e.target.value)}
+                    onKeyDown={titleEdit.onKeyDown}
+                    maxLength={titleEdit.maxLength ?? 500}
+                    placeholder={titleEdit.placeholder ?? ""}
+                    autoFocus
+                    className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                    data-testid={`${testId}-title-input`}
+                  />
+                ) : (
+                  <h1
+                    className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
+                    data-testid={`${testId}-title`}
+                  >
+                    {title}
+                  </h1>
+                )}
+                {subtitleEdit !== undefined ? (
+                  <input
+                    type="text"
+                    value={subtitleEdit.value}
+                    onChange={(e) => subtitleEdit.onChange(e.target.value)}
+                    onKeyDown={subtitleEdit.onKeyDown}
+                    maxLength={subtitleEdit.maxLength ?? 200}
+                    placeholder={subtitleEdit.placeholder ?? ""}
+                    autoFocus
+                    className="w-full max-w-[520px] text-helper text-muted-foreground bg-white border border-border-default rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                    data-testid={`${testId}-subtitle-input`}
+                  />
+                ) : subtitle ? (
+                  <p className="text-helper text-muted-foreground mt-0.5 truncate">
+                    {subtitle}
+                  </p>
+                ) : null}
+              </div>
+              {status && (
                 <div className="shrink-0 mt-1" data-testid={`${testId}-status`}>
-                  {statusBadge}
+                  <StatusChip tone={status.tone}>{status.label}</StatusChip>
                 </div>
               )}
             </div>
-            {/* Row 2: client name link + address (both optional) */}
-            {(clientSlot || addressSlot) && (
+
+            {/* Row 3: client name + contact name + address block */}
+            {(clientName || (addressLines && addressLines.length > 0) || phone || email) && (
               <div className="mt-2 space-y-2">
-                {clientSlot}
-                {addressSlot && <div>{addressSlot}</div>}
+                {clientName && (
+                  <div className="space-y-0.5">
+                    {clientHref ? (
+                      <Link href={clientHref}>
+                        <span
+                          className="text-section-title text-text-primary hover:text-brand transition-colors cursor-pointer truncate block"
+                          data-testid={`${testId}-client`}
+                        >
+                          {clientName}
+                        </span>
+                      </Link>
+                    ) : (
+                      <span
+                        className="text-section-title text-text-primary truncate block"
+                        data-testid={`${testId}-client`}
+                      >
+                        {clientName}
+                      </span>
+                    )}
+                    {contactName && (
+                      <p className="text-helper text-muted-foreground flex items-center gap-1">
+                        <User className="h-3 w-3 text-slate-400 shrink-0" />
+                        {contactName}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {((addressLines && addressLines.length > 0) || phone || email) && (
+                  <div className="space-y-0.5 text-list-body text-muted-foreground">
+                    {addressLabel && (
+                      <p className="text-label uppercase text-muted-foreground">
+                        {addressLabel}
+                      </p>
+                    )}
+                    {addressLines?.map((line, i) => (
+                      <p key={i} className="flex items-center gap-1">
+                        {i === 0
+                          ? <MapPin className="h-3 w-3 shrink-0" />
+                          : <span className="w-3 shrink-0" />}
+                        {line}
+                      </p>
+                    ))}
+                    {phone && (
+                      <p className="flex items-center gap-1">
+                        <Phone className="h-3 w-3 shrink-0" />
+                        {phone}
+                      </p>
+                    )}
+                    {email && (
+                      <p className="flex items-center gap-1">
+                        <Mail className="h-3 w-3 shrink-0" />
+                        <a href={`mailto:${email}`} className="hover:text-brand truncate">
+                          {email}
+                        </a>
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* ── RIGHT: actions (top) + meta grid (below) ─────────── */}
-          {/* `shrink-0`: right column never shrinks — it keeps its
-              natural width determined by the widest action/meta row. */}
+          {/* ── RIGHT: actions + workflow + meta grid ──────────────── */}
           <div
             className="shrink-0 flex flex-col items-end gap-3"
             data-testid={`${testId}-right`}
           >
-            {/* Actions cluster — edit pencil, overflow menu, primary CTA */}
-            {actions && (
+            {/* Actions cluster row */}
+            {hasActionsCluster && (
               <div
-                className="flex items-center gap-2"
+                className="flex items-center gap-1.5 flex-wrap justify-end"
                 data-testid={`${testId}-actions`}
               >
-                {actions}
+                {editCapability?.enabled && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={editCapability.onStartEdit}
+                    className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                    aria-label={editCapability.ariaLabel ?? "Edit"}
+                    data-testid={`${testId}-edit`}
+                    disabled={isEditing}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+                {visiblePrimary.map((action) => (
+                  <Fragment key={action.id}>
+                    {renderHeaderAction(action)}
+                  </Fragment>
+                ))}
+                {visibleOverflow.length > 0 && (
+                  <ActionMenu
+                    items={visibleOverflow.map((item) => ({
+                      id: item.id,
+                      label: item.label,
+                      icon: item.icon,
+                      tone: item.tone,
+                      disabled: item.disabled,
+                      hidden: item.hidden,
+                      separator: item.separator,
+                      onSelect: item.onClick,
+                      testId: item.testId,
+                    }))}
+                    trigger={
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary"
+                        data-testid={`${testId}-overflow`}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    }
+                    align="end"
+                    contentClassName="w-52"
+                  />
+                )}
               </div>
             )}
-            {/* Meta grid — right-aligned label/value pairs. Wraps on
-                narrow widths via flex-wrap; justify-end keeps the
-                right-edge alignment even when items wrap to two rows. */}
+
+            {/* Workflow row — CDH owns all chrome and renders canonical UI */}
+            {workflow && renderWorkflow(workflow, testId)}
+
+            {/* Meta grid */}
             {visibleItems.length > 0 && (
               <div
                 className="flex items-start gap-x-6 gap-y-3 flex-wrap justify-end"
@@ -212,126 +782,55 @@ export function CanonicalDetailHeader({
               </div>
             )}
           </div>
-
         </div>
       </div>
-    );
-  }
 
-  // ─── Strip layout (default — backward-compat for InvoiceDetailPage) ─
-  return (
-    // 2026-05-02 spacing rhythm:
-    //   - Outer row uses gap-4 + flex-wrap so narrow viewports wrap the
-    //     items cluster + actions onto a second line cleanly without
-    //     overflow. gap-y-2 keeps wrapped rows readable.
-    //   - Items cluster also uses gap-4. Dividers are siblings of the
-    //     items via Fragment, so the gap-4 applies symmetrically on
-    //     both sides of every divider — no mixed one-off spacing.
-    // 2026-05-03 surface change: header background flipped from
-    //   `bg-card` (white surface) to `bg-app-bg` so the canonical
-    //   detail header blends into the page background rather than
-    //   reading as a separate card. The bottom border was a card-edge
-    //   cue that no longer applies — removed. White cards BELOW the
-    //   header keep their own `bg-card` and don't change.
-    //   Single source of truth: every page that mounts
-    //   `CanonicalDetailHeader` (InvoiceDetailPage) inherits this
-    //   surface flip without per-page overrides.
-    <div
-      className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 bg-app-bg"
-      data-testid={testId}
-    >
-      {/* ── LEFT region: title + status ───────────────────────── */}
-      {/* 2026-05-03 wrap-not-push fix: cap the LEFT region's width and
-          let the title wrap onto multiple lines instead of truncating
-          to a single line that would otherwise allow the rest of the
-          header to be pushed sideways via the outer flex-wrap. The
-          right-side metadata + actions stay aligned at their natural
-          right-justified position. The cap (`max-w-xl` = 576px) leaves
-          comfortable space for the center metadata cluster + right
-          actions even on standard 1280-1440px desktop widths. On
-          truly narrow viewports the outer `flex-wrap` still kicks in
-          as a safety net. */}
-      <div className="flex items-start gap-3 min-w-0 max-w-xl shrink">
-        <h1
-          className="m-0 text-xl font-bold leading-tight text-text-primary break-words min-w-0"
-          data-testid={`${testId}-title`}
-        >
-          {title}
-        </h1>
-        {statusBadge && (
-          <div className="shrink-0 mt-0.5" data-testid={`${testId}-status`}>
-            {statusBadge}
-          </div>
-        )}
-      </div>
-
-      {/* ── CENTER region: metadata items (+ optional edit pencil)
-           Centered in the leftover horizontal space via `mx-auto`,
-           so the items read as their own informational group rather
-           than an extension of the right-side actions. The render
-           condition unifies the two old conditions (items.length > 0
-           OR onEdit) — when neither is set, the region is omitted
-           and the row falls back to title-vs-actions only.        */}
-      {(items.length > 0 || onEdit) && (
+      {/* ── Description section — CDH owns all chrome ──────────────── */}
+      {showDescription && (
         <div
-          className="flex flex-wrap items-center gap-x-4 gap-y-2 min-w-0 mx-auto"
-          data-testid={`${testId}-items`}
+          className="border-t border-card-border px-5 py-3"
+          data-testid={`${testId}-description`}
         >
-          {items.map((it, idx) => {
-            // Edit-mode swap: if the page is editing AND this item
-            // carries an editNode, render the editor in place of the
-            // read-mode value. Items without an editNode stay
-            // read-only even while editing (e.g. derived/linked
-            // values like Scheduled, Job # link on Invoice page).
-            const renderEdit = isEditing && it.editNode !== undefined;
-            return (
-              <Fragment key={it.key}>
-                {idx > 0 && (
-                  <span
-                    className="h-7 w-px bg-card-border shrink-0"
-                    aria-hidden="true"
-                  />
-                )}
-                <div
-                  className="flex flex-col min-w-0"
-                  data-testid={`${testId}-item-${it.key}`}
-                >
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted leading-none">
-                    {it.label}
-                  </span>
-                  <span className="mt-1 text-sm font-medium text-text-primary truncate leading-tight">
-                    {renderEdit ? it.editNode : it.value}
-                  </span>
-                </div>
-              </Fragment>
-            );
-          })}
-          {/* Edit pencil — sits adjacent to the rightmost metadata
-              item, inside the same center cluster (icon-only per
-              spec). Both detail pages currently render without this
-              prop today; kept for forward use on Quote Detail. */}
-          {onEdit && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={onEdit}
-              data-testid={`${testId}-edit`}
-              aria-label={editAriaLabel}
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
+          {(descriptionLabel || descriptionEdit !== undefined) && (
+            <h3 className="m-0 mb-1.5 text-label uppercase text-text-muted">
+              {descriptionLabel ?? DESCRIPTION_LABEL}
+            </h3>
           )}
+          {descriptionContent}
         </div>
       )}
 
-      {/* ── RIGHT region: actions cluster ──────────────────────── */}
-      {actions && (
+      {/* ── Edit controls footer — CDH owns border-t chrome ─────────── */}
+      {editControls && (
         <div
-          className="flex items-center gap-2 shrink-0"
-          data-testid={`${testId}-actions`}
+          className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3"
+          data-testid={`${testId}-footer`}
         >
-          {actions}
+          {editControls.error && (
+            <span
+              className="mr-auto text-xs text-destructive truncate"
+              data-testid={`${testId}-footer-error`}
+            >
+              {editControls.error}
+            </span>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={editControls.onCancel}
+            disabled={editControls.isSaving}
+            data-testid={editControls.cancelTestId ?? `${testId}-footer-cancel`}
+          >
+            {editControls.cancelLabel ?? "Cancel"}
+          </Button>
+          <Button
+            size="sm"
+            onClick={editControls.onSave}
+            disabled={editControls.isSaving}
+            data-testid={editControls.saveTestId ?? `${testId}-footer-save`}
+          >
+            {editControls.isSaving ? "Saving…" : (editControls.saveLabel ?? "Save")}
+          </Button>
         </div>
       )}
     </div>

@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, CheckSquare, Truck, Clock, Search, ChevronDown } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { FormField, FormLabel } from "@/components/ui/form-field";
 import { apiRequest } from "@/lib/queryClient";
 import type { TaskType, Supplier, SupplierLocation } from "@shared/schema";
 import { TECH_ALLOWED_TASK_TYPES } from "@shared/taskConstants";
@@ -258,8 +258,8 @@ export function CreateTaskPage() {
         {selectedType && !success && (
           <div className="space-y-4">
             {/* Title */}
-            <div>
-              <Label className="block mb-1">Title *</Label>
+            <FormField>
+              <FormLabel>Title *</FormLabel>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -267,14 +267,14 @@ export function CreateTaskPage() {
                 className="w-full h-10 px-3 text-sm border border-slate-200 rounded-md"
                 autoFocus
               />
-            </div>
+            </FormField>
 
             {/* ── Supplier Visit fields ── */}
             {selectedType === "SUPPLIER_VISIT" && (
               <>
                 {/* Supplier picker */}
-                <div>
-                  <Label className="block mb-1">Supplier *</Label>
+                <FormField>
+                  <FormLabel>Supplier *</FormLabel>
                   {selectedSupplier ? (
                     <div className="flex items-center justify-between px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-md">
                       <span className="text-sm font-medium text-slate-800">{selectedSupplier.name}</span>
@@ -312,12 +312,12 @@ export function CreateTaskPage() {
                       )}
                     </div>
                   )}
-                </div>
+                </FormField>
 
                 {/* Supplier location picker / freehand fallback */}
                 {supplierId && (
-                  <div>
-                    <Label className="block mb-1">Location</Label>
+                  <FormField>
+                    <FormLabel>Location</FormLabel>
                     {locations.length > 0 ? (
                       <div className="space-y-1">
                         <select
@@ -353,27 +353,27 @@ export function CreateTaskPage() {
                         className="w-full h-10 px-3 text-sm border border-slate-200 rounded-md"
                       />
                     )}
-                  </div>
+                  </FormField>
                 )}
 
                 {/* PO Number */}
                 {supplierId && (
-                  <div>
-                    <Label className="block mb-1">PO Number</Label>
+                  <FormField>
+                    <FormLabel>PO Number</FormLabel>
                     <input
                       value={poNumber}
                       onChange={(e) => setPoNumber(e.target.value)}
                       placeholder="Optional"
                       className="w-full h-10 px-3 text-sm border border-slate-200 rounded-md"
                     />
-                  </div>
+                  </FormField>
                 )}
               </>
             )}
 
             {/* Notes */}
-            <div>
-              <Label className="block mb-1">Notes</Label>
+            <FormField>
+              <FormLabel>Notes</FormLabel>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -381,7 +381,7 @@ export function CreateTaskPage() {
                 rows={3}
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md resize-none"
               />
-            </div>
+            </FormField>
 
             {/* Schedule toggle */}
             <div>

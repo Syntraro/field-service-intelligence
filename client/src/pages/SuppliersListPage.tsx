@@ -63,42 +63,34 @@ const SUPPLIER_COLUMNS: EntityListColumn<SupplierWithLocations>[] = [
     header: "Name",
     kind: "primary",
     ratio: 1.5,
-    render: (supplier) => (
-      <div className="flex items-center gap-2 min-w-0">
-        <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="truncate">{supplier.name}</span>
-      </div>
-    ),
-    // Primary kind defaults to a `min-w-0 truncate` wrapper; the icon +
-    // text need a flex layout instead, so we override the cell wrapper.
-    // Typography (text-row-emphasis text-slate-800) is inherited from
-    // the kind's baked-in classes.
-    cellClassName: "px-4 py-2.5 min-w-0",
+    cell: {
+      type: "customRender",
+      reason: "Building2 icon + name composite",
+      render: (supplier) => (
+        <div className="flex items-center gap-2 min-w-0">
+          <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+          <span className="truncate">{supplier.name}</span>
+        </div>
+      ),
+    },
   },
   {
     id: "primaryLocation",
     header: "Primary Location",
-    kind: "text",
+    kind: "primary",
     ratio: 1.4,
-    render: (supplier) => {
-      const primaryLocation = getPrimaryLocation(supplier.locations);
-      if (!primaryLocation) {
-        return <span className="text-muted-foreground">—</span>;
-      }
-      return (
-        <div className="min-w-0">
-          <div className="truncate">{primaryLocation.name}</div>
-          {primaryLocation.city && (
-            <div className="text-caption text-slate-500 font-normal truncate">
-              {primaryLocation.city}
-              {primaryLocation.province && `, ${primaryLocation.province}`}
-            </div>
-          )}
-        </div>
-      );
+    cell: {
+      type: "entity-primary",
+      value: (supplier) => {
+        const loc = getPrimaryLocation(supplier.locations);
+        return loc ? loc.name : null;
+      },
+      secondary: (supplier) => {
+        const loc = getPrimaryLocation(supplier.locations);
+        if (!loc || !loc.city) return undefined;
+        return loc.province ? `${loc.city}, ${loc.province}` : loc.city;
+      },
     },
-    // Two-line cell: override the default single-line truncate wrapper.
-    cellClassName: "px-4 py-2.5 min-w-0",
   },
   {
     id: "phone",
@@ -106,43 +98,39 @@ const SUPPLIER_COLUMNS: EntityListColumn<SupplierWithLocations>[] = [
     kind: "text",
     ratio: 0.7,
     minWidthPx: 120,
-    render: (supplier) =>
-      supplier.phone ? supplier.phone : <span className="text-muted-foreground">—</span>,
+    cell: {
+      type: "entity-text",
+      value: (supplier) => supplier.phone || null,
+    },
   },
   {
     id: "email",
     header: "Email",
     kind: "text",
     ratio: 1.4,
-    render: (supplier) =>
-      supplier.email ? supplier.email : <span className="text-muted-foreground">—</span>,
+    cell: {
+      type: "entity-text",
+      value: (supplier) => supplier.email || null,
+    },
   },
   {
     id: "active",
     header: "Active",
-    // Icon-only cell — `text` is the right kind per the EntityListTable
-    // column-kind rules (badge would imply a Badge component, status
-    // would imply a flex-wrap multi-pill composition; neither applies).
     kind: "text",
     ratio: 0.4,
     minWidthPx: 64,
-    headerClassName: "px-4 text-center",
-    cellClassName: "px-4 py-2.5 text-center",
-    // 2026-05-03 status consolidation: label/tone via
-    // `getSupplierStatusMeta`. Visual rendering preserved as an
-    // icon-only cell — the meta drives the `aria-label` so screen
-    // readers announce "Active" / "Inactive" instead of an unlabeled
-    // icon. Suppliers chooses `danger` tone for inactive (red icon)
-    // — different from Clients/Locations which use `neutral` for
-    // inactive — preserving the existing visual signal that an
-    // inactive vendor is a problem to investigate.
-    render: (supplier) => {
-      const meta = getSupplierStatusMeta(supplier);
-      return meta.tone === "success" ? (
-        <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" aria-label={meta.label} />
-      ) : (
-        <XCircle className="h-4 w-4 text-red-400 mx-auto" aria-label={meta.label} />
-      );
+    align: "center",
+    cell: {
+      type: "customRender",
+      reason: "conditional icon: CheckCircle2 vs XCircle based on status",
+      render: (supplier) => {
+        const meta = getSupplierStatusMeta(supplier);
+        return meta.tone === "success" ? (
+          <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" aria-label={meta.label} />
+        ) : (
+          <XCircle className="h-4 w-4 text-red-400 mx-auto" aria-label={meta.label} />
+        );
+      },
     },
   },
 ];
@@ -158,7 +146,7 @@ export default function SuppliersListPage() {
   // with the new `q`, so the row set fully changes.)
   useEffect(() => { setVisibleCount(SUPPLIERS_PAGE_SIZE); }, [searchQuery]);
 
-  const { data, isLoading } = useQuery<SuppliersResponse>({
+  const { data, isLoading, isError, refetch: refetchSuppliers } = useQuery<SuppliersResponse>({
     queryKey: ["/api/suppliers", searchQuery],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -199,19 +187,16 @@ export default function SuppliersListPage() {
         rows={suppliers.slice(0, visibleCount)}
         rowKey={(supplier) => supplier.id}
         onRowClick={(supplier) => setLocation(`/suppliers/${supplier.id}`)}
-        loadingState={
-          isLoading ? (
-            <div className="text-center text-sm text-muted-foreground py-8">
-              Loading suppliers...
-            </div>
-          ) : undefined
-        }
+        loadingState={isLoading}
         emptyState={
-          <div className="text-center text-sm text-muted-foreground py-8">
-            {searchQuery.trim()
-              ? `No suppliers found matching "${searchQuery}"`
-              : "No suppliers yet. Click 'New Supplier' to get started."}
-          </div>
+          searchQuery.trim()
+            ? { kind: "no-results", title: `No suppliers found matching "${searchQuery}"`, icon: "search" }
+            : { kind: "empty", title: "No suppliers yet", icon: "inbox", description: "Click 'New Supplier' to get started." }
+        }
+        errorState={
+          isError
+            ? { kind: "error", title: "Failed to load suppliers", primaryAction: { label: "Retry", onClick: () => refetchSuppliers(), variant: "outline" } }
+            : undefined
         }
         columns={SUPPLIER_COLUMNS}
       />

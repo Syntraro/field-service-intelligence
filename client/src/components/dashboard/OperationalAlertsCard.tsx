@@ -29,12 +29,10 @@
  * keeps its canonical height.
  */
 
-import { useRef, useState } from "react";
 import {
   AlertTriangle,
   Briefcase,
   Calendar,
-  ChevronDown,
   FileText,
   Receipt,
 } from "lucide-react";
@@ -164,26 +162,8 @@ export function OperationalAlertsCard({
     .map((k) => rowsByKey[k])
     .filter((r): r is AlertRow => Boolean(r));
 
-  // 2026-04-30 collapsible behavior. The card auto-collapses when there
-  // are zero alerts — empty triage is signal noise on a glance dashboard.
-  // Once the user toggles the chevron, their preference sticks for the
-  // session and the auto-rule no longer applies (no fight between user
-  // intent and incoming SSE updates).
-  // 2026-05-07: invoicesNotSentCount folded into the total so the card
-  // doesn't claim "no alerts" while billing has unsent invoices waiting.
   const totalCount =
     readyToInvoiceCount + pastDueCount + unscheduledCount + requiresAttentionCount + invoicesNotSentCount;
-  const hasAlerts = totalCount > 0;
-  const userToggledRef = useRef(false);
-  const [manualCollapsed, setManualCollapsed] = useState(false);
-  const autoCollapsed = !isLoading && !hasAlerts;
-  const isCollapsed = userToggledRef.current ? manualCollapsed : autoCollapsed;
-
-  const handleToggle = () => {
-    const next = !isCollapsed;
-    userToggledRef.current = true;
-    setManualCollapsed(next);
-  };
 
   // Badge severity → canonical StatusChip tone:
   //   • Requires attention > 0 → danger (red soft-tint).
@@ -216,45 +196,30 @@ export function OperationalAlertsCard({
       className="w-full h-full flex flex-col"
       data-testid="card-operational-alerts"
     >
-      <button
-        type="button"
-        onClick={handleToggle}
-        aria-expanded={!isCollapsed}
-        aria-controls="operational-alerts-body"
-        data-testid="operational-alerts-toggle"
-        className={`w-full px-4 py-2.5 flex items-center justify-between text-left transition-colors hover:bg-[#FAFAF7] shrink-0 ${
-          !isCollapsed ? "border-b border-card-border" : ""
-        }`}
+      <div
+        className="w-full px-4 py-2.5 flex items-center gap-2 shrink-0 border-b border-card-border"
+        data-testid="operational-alerts-header"
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
-            <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
-          </div>
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
-            Operational alerts
-          </h3>
-          {!isLoading && (
-            <StatusChip
-              tone={badgeTone}
-              className="tabular-nums shrink-0"
-              data-testid="operational-alerts-count-badge"
-            >
-              {totalCount}
-            </StatusChip>
-          )}
+        <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
+          <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
         </div>
-        {/* Chevron rotates with the collapse state — down = expand, up = collapse. */}
-        <ChevronDown
-          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${
-            isCollapsed ? "" : "rotate-180"
-          }`}
-        />
-      </button>
-      {!isCollapsed && (
-        <div
-          id="operational-alerts-body"
-          className="flex-1 min-h-0 overflow-y-auto"
-        >
+        <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
+          Operational alerts
+        </h3>
+        {!isLoading && (
+          <StatusChip
+            tone={badgeTone}
+            className="tabular-nums shrink-0"
+            data-testid="operational-alerts-count-badge"
+          >
+            {totalCount}
+          </StatusChip>
+        )}
+      </div>
+      <div
+        id="operational-alerts-body"
+        className="flex-1 min-h-0 overflow-y-auto"
+      >
           {isLoading ? (
             <div className="px-4 py-3 space-y-2">
               {/* 2026-05-07: 5 skeleton rows match the canonical row count
@@ -329,8 +294,7 @@ export function OperationalAlertsCard({
               })}
             </ul>
           )}
-        </div>
-      )}
+      </div>
     </CardShell>
   );
 }

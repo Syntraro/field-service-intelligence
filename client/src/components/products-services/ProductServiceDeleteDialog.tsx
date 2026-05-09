@@ -2,16 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+// 2026-05-09: ConfirmModal replaces AlertDialog for DeleteConfirmDialog,
+// ArchiveConfirmDialog, and BulkDeleteDialog. AlertDialog removed.
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   Dialog,
   DialogContent,
@@ -24,6 +17,7 @@ import { FileText, Loader2 } from "lucide-react";
 import { Part } from "./types";
 
 // Single Delete Confirmation
+// 2026-05-09: migrated from AlertDialog to canonical ConfirmModal.
 interface DeleteConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,22 +32,21 @@ export function DeleteConfirmDialog({
   onConfirm,
 }: DeleteConfirmDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete Item?</AlertDialogTitle>
-          <AlertDialogDescription>Delete "{product?.name}"? This cannot be undone.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Delete Item?"
+      description={`Delete "${product?.name}"? This cannot be undone.`}
+      confirmLabel="Delete"
+      variant="destructive"
+      onConfirm={onConfirm}
+      testIdPrefix="delete-item"
+    />
   );
 }
 
-// Archive Confirmation
+// Archive / Restore Confirmation
+// 2026-05-09: migrated from AlertDialog to canonical ConfirmModal variant="neutral".
 interface ArchiveConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -68,30 +61,26 @@ export function ArchiveConfirmDialog({
   onConfirm,
 }: ArchiveConfirmDialogProps) {
   const isRestoring = product?.isActive === false;
-
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{isRestoring ? "Restore" : "Archive"} Item?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {isRestoring
-              ? `Restore "${product?.name}" to active items?`
-              : `Archive "${product?.name}"? It will be hidden from active views but preserved for historical records.`}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm}>
-            {isRestoring ? "Restore" : "Archive"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`${isRestoring ? "Restore" : "Archive"} Item?`}
+      description={
+        isRestoring
+          ? `Restore "${product?.name}" to active items?`
+          : `Archive "${product?.name}"? It will be hidden from active views but preserved for historical records.`
+      }
+      confirmLabel={isRestoring ? "Restore" : "Archive"}
+      variant="neutral"
+      onConfirm={onConfirm}
+      testIdPrefix="archive-item"
+    />
   );
 }
 
 // Bulk Delete Confirmation
+// 2026-05-09: migrated from AlertDialog to canonical ConfirmModal variant="destructive".
 interface BulkDeleteDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -106,20 +95,16 @@ export function BulkDeleteDialog({
   onConfirm,
 }: BulkDeleteDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete {count} Items?</AlertDialogTitle>
-          <AlertDialogDescription>This action cannot be undone. Consider archiving instead.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm} className="bg-destructive text-destructive-foreground">
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Delete ${count} Items?`}
+      description="This action cannot be undone. Consider archiving instead."
+      confirmLabel="Delete"
+      variant="destructive"
+      onConfirm={onConfirm}
+      testIdPrefix="bulk-delete"
+    />
   );
 }
 

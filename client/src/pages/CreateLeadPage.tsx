@@ -16,7 +16,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 // 2026-05-08 (create-page rail canonicalization): icons for the rail tab.
-import { Briefcase, Loader2, Info } from "lucide-react";
+import { Loader2, Info } from "lucide-react";
 // 2026-05-08 (create-page rail canonicalization): mount the same canonical
 // `<DetailRightRail>` the saved Lead detail page uses. Create mode hosts
 // only the Details tab — Notes / Actions / linked-quote affordances need
@@ -33,7 +33,14 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { CanonicalCreateHeader } from "@/components/create/CanonicalCreateHeader";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,9 +52,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
-import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
-import { LeadSummaryCard } from "@/components/leads/LeadSummaryCard";
 import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
 
 const DEFAULT_PRIORITY = "medium";
@@ -215,64 +220,6 @@ export default function CreateLeadPage() {
     setLocation("/leads");
   };
 
-  // ── Slot for the client/location selector. The selector or the
-  // inline create-client form is rendered into LeadSummaryCard's
-  // clientLocationSlot so the search → select → "create new" flow
-  // sits exactly where the saved lead's client identity block sits. ──
-  const clientLocationSlot = !showCreateClient ? (
-    <CreateOrSelectField<LocationResult>
-      label="Client / Location"
-      value={selectedLocation}
-      onChange={setSelectedLocation}
-      searchResults={searchResults}
-      searchLoading={searchLoading}
-      searchText={locationSearch}
-      onSearchTextChange={setLocationSearch}
-      minSearchLength={2}
-      getKey={(l) => l.id}
-      getLabel={(l) => l.companyName}
-      getDescription={(l) => [l.location, l.address, l.city].filter(Boolean).join(", ") || undefined}
-      createLabel="Create new client"
-      onCreateNew={(text) => {
-        setShowCreateClient(true);
-        setNewCompanyName(text);
-        setLocationSearch("");
-      }}
-      placeholder="Search clients..."
-    />
-  ) : (
-    <div className="space-y-1.5">
-      <Label>New Client</Label>
-      <div className="border border-slate-200 rounded-md p-3 space-y-2 bg-slate-50/50">
-        <Input
-          placeholder="Company name *"
-          value={newCompanyName}
-          onChange={(e) => setNewCompanyName(e.target.value)}
-          data-testid="input-new-client-company"
-        />
-        <Input placeholder="Phone" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} />
-        <Input placeholder="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
-        <Input placeholder="Address" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
-        <Input placeholder="City" value={newCity} onChange={(e) => setNewCity(e.target.value)} />
-        <div className="flex gap-2 pt-1">
-          <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowCreateClient(false)}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            className="text-xs"
-            onClick={() => createClientMutation.mutate()}
-            disabled={!canCreateClient}
-            data-testid="button-create-client"
-          >
-            {createClientMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-            Create Client
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-
   // 2026-05-08 (create-page rail canonicalization): rail tab registry —
   // ONLY Details is valid before first save. Notes (needs leadId), Actions
   // (saved-only — Convert / Mark Contacted / Archive / Delete moved into
@@ -319,72 +266,99 @@ export default function CreateLeadPage() {
             `<main className="flex-1 overflow-auto">` is the SOLE
             canonical scroll surface. Mirrors the saved Lead detail page
             after the scroll-canonicalization fix. */}
-        <div className="px-4 lg:px-6 py-4 space-y-3">
-          <LeadSummaryCard
-            mode="draft"
+        <div className="px-4 lg:px-6 pt-4 pb-4 space-y-3">
+          <CanonicalCreateHeader
+            testId="create-lead-header"
+            entityLabel="New Lead"
+            status={{ label: "New", tone: "neutral" }}
             onBack={navigateBack}
-            title={title}
+            clientSearchText={locationSearch}
+            onClientSearchTextChange={setLocationSearch}
+            clientSearchResults={searchResults}
+            clientSearchLoading={searchLoading}
+            selectedLocation={selectedLocation}
+            onLocationChange={setSelectedLocation}
+            onCreateNewClient={(text) => {
+              setShowCreateClient(true);
+              setNewCompanyName(text);
+              setLocationSearch("");
+            }}
+            clientCreateLabel="Create new client"
+            clientPlaceholder="Search clients..."
+            clientReplaceSlot={showCreateClient ? (
+              <div className="space-y-1.5">
+                <Label>New Client</Label>
+                <div className="border border-slate-200 rounded-md p-3 space-y-2 bg-slate-50/50">
+                  <Input
+                    placeholder="Company name *"
+                    value={newCompanyName}
+                    onChange={(e) => setNewCompanyName(e.target.value)}
+                    data-testid="input-new-client-company"
+                  />
+                  <Input placeholder="Phone" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} />
+                  <Input placeholder="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+                  <Input placeholder="Address" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
+                  <Input placeholder="City" value={newCity} onChange={(e) => setNewCity(e.target.value)} />
+                  <div className="flex gap-2 pt-1">
+                    <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowCreateClient(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => createClientMutation.mutate()}
+                      disabled={!canCreateClient}
+                      data-testid="button-create-client"
+                    >
+                      {createClientMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                      Create Client
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : undefined}
+            titleValue={title}
             onTitleChange={setTitle}
-            priority={priority}
-            onPriorityChange={setPriority}
-            sourceType={SOURCE_TYPE}
-            clientLocationSlot={clientLocationSlot}
+            titlePlaceholder="What's this lead about? e.g., AC tune-up at Basil Box"
+            titleMaxLength={500}
+            metaItems={[
+              {
+                key: "priority",
+                label: "Priority",
+                node: (
+                  <Select value={priority} onValueChange={setPriority}>
+                    <SelectTrigger
+                      className="h-6 px-2 text-xs capitalize w-auto gap-1 border-slate-200"
+                      data-testid="select-priority"
+                      aria-label="Priority"
+                    >
+                      <SelectValue placeholder="Priority" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ),
+              },
+            ]}
+            descriptionValue={description}
+            onDescriptionChange={setDescription}
+            descriptionMaxLength={2000}
+            descriptionLabel="Description"
+            primaryAction={{
+              label: "Create Lead",
+              onClick: () => createLeadMutation.mutate(),
+              disabled: !canSubmit,
+              isPending: createLeadMutation.isPending,
+              testId: "button-create-lead",
+            }}
+            onCancel={navigateBack}
+            cancelDisabled={createLeadMutation.isPending}
+            cancelTestId="button-cancel-lead"
           />
-
-          {/* Description — same chrome as the saved detail page's
-              Description card. Editable on the create flow. */}
-          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
-              <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-                <Briefcase className="h-4 w-4 text-[#64748b]" />Description
-              </span>
-            </div>
-            <div className="px-5 py-3">
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Details about the opportunity..."
-                rows={4}
-                maxLength={2000}
-                className="min-h-[96px] text-sm resize-y"
-                data-testid="input-description"
-              />
-            </div>
-          </div>
-
-          {/* 2026-05-08 (create-page rail canonicalization): Save / Cancel
-              relocated from the prior right-rail Actions stacked-card to
-              an inline action row at the bottom of the left column.
-              Saved-only actions (Convert, Mark Contacted, Archive,
-              Delete) have no draft meaning, so the rail no longer hosts
-              an Actions tab — the action row stays in the page main
-              flow. */}
-          <div
-            className="flex items-center justify-end gap-2 pt-2"
-            data-testid="create-lead-action-row"
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={navigateBack}
-              disabled={createLeadMutation.isPending}
-              data-testid="button-cancel-lead"
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              className="h-8 text-xs gap-1.5"
-              onClick={() => createLeadMutation.mutate()}
-              disabled={!canSubmit}
-              aria-describedby={disabledReason ? "create-lead-disabled-reason" : undefined}
-              data-testid="button-create-lead"
-            >
-              {createLeadMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Create Lead
-            </Button>
-          </div>
           {disabledReason && (
             <p
               id="create-lead-disabled-reason"

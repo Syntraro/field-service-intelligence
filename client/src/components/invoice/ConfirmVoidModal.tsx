@@ -1,13 +1,12 @@
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+/**
+ * ConfirmVoidModal — destructive confirm for voiding an invoice.
+ * 2026-05-09: migrated from AlertDialog to canonical ConfirmModal.
+ * AlertDialog provided no behavioral benefit here (escape-key dismiss
+ * is identical to Dialog; the ARIA role="alertdialog" wasn't being
+ * leveraged by any a11y tool). ConfirmModal gives consistent button
+ * sizing, padding, and pending state with all other confirmation flows.
+ */
+import { ConfirmModal } from "@/components/ui/modal";
 
 interface ConfirmVoidModalProps {
   open: boolean;
@@ -25,30 +24,17 @@ export function ConfirmVoidModal({
   isPending,
 }: ConfirmVoidModalProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Void Invoice?</AlertDialogTitle>
-          <AlertDialogDescription className="space-y-2">
-            <span className="block">
-              Are you sure you want to void Invoice #{invoiceNumber || "Draft"}?
-            </span>
-            <span className="block font-medium text-destructive">
-              This action cannot be undone. The invoice will be marked as void and no further payments can be recorded.
-            </span>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            disabled={isPending}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-          >
-            {isPending ? "Voiding..." : "Void Invoice"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Void Invoice?"
+      description={`Are you sure you want to void Invoice #${invoiceNumber || "Draft"}?`}
+      emphasis="This action cannot be undone. The invoice will be marked as void and no further payments can be recorded."
+      confirmLabel={isPending ? "Voiding…" : "Void Invoice"}
+      variant="destructive"
+      isPending={isPending}
+      onConfirm={onConfirm}
+      testIdPrefix="void-invoice"
+    />
   );
 }

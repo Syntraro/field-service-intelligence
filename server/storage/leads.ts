@@ -4,7 +4,15 @@
  */
 import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { leads, leadNotes, type InsertLead, type UpdateLead } from "@shared/schema";
+import { leads, leadNotes, clientLocations, customerCompanies, type InsertLead, type UpdateLead } from "@shared/schema";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
+
+/** Lead row enriched with joined location display fields — returned by listLeads. */
+export type LeadListItem = typeof leads.$inferSelect & {
+  locationDisplayName: string | null;
+  locationSiteName: string | null;
+  locationCity: string | null;
+};
 
 function assertCompanyId(companyId: string) {
   if (!companyId) throw new Error("companyId is required");
@@ -29,17 +37,45 @@ export const leadRepository = {
     return lead;
   },
 
-  async listLeads(companyId: string, filters?: { status?: string }): Promise<(typeof leads.$inferSelect)[]> {
+  async listLeads(companyId: string, filters?: { status?: string }): Promise<LeadListItem[]> {
     assertCompanyId(companyId);
     const conditions = [eq(leads.companyId, companyId), eq(leads.isActive, true)];
     if (filters?.status) {
       conditions.push(eq(leads.status, filters.status));
     }
-    return db
-      .select()
+    const rows = await db
+      .select({
+        id: leads.id,
+        companyId: leads.companyId,
+        locationId: leads.locationId,
+        customerCompanyId: leads.customerCompanyId,
+        createdByUserId: leads.createdByUserId,
+        originTechnicianId: leads.originTechnicianId,
+        assignedToUserId: leads.assignedToUserId,
+        sourceType: leads.sourceType,
+        sourceRefType: leads.sourceRefType,
+        sourceRefId: leads.sourceRefId,
+        status: leads.status,
+        priority: leads.priority,
+        title: leads.title,
+        description: leads.description,
+        estimatedValue: leads.estimatedValue,
+        convertedQuoteId: leads.convertedQuoteId,
+        convertedAt: leads.convertedAt,
+        isActive: leads.isActive,
+        version: leads.version,
+        createdAt: leads.createdAt,
+        updatedAt: leads.updatedAt,
+        locationDisplayName: locationDisplayNameExpr,
+        locationSiteName: clientLocations.location,
+        locationCity: clientLocations.city,
+      })
       .from(leads)
+      .leftJoin(clientLocations, eq(leads.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(and(...conditions))
       .orderBy(desc(leads.createdAt));
+    return rows as unknown as LeadListItem[];
   },
 
   /**

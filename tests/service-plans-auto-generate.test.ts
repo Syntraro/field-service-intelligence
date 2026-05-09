@@ -1,11 +1,18 @@
 /**
- * Service Plans — "Automatically generate work" toggle (2026-05-07).
+ * Service Plans — Service Generation card (2026-05-09 redesign).
  *
  * Pins the contract for the per-template `autoGenerateJobs` flag end
- * to end. The toggle is the user-facing "Automatically generate work"
- * switch in PMWizardPage / PMDetailPage. When enabled, the system
- * promotes newly-created pending instances into UNSCHEDULED jobs via
- * the same `generateFromInstances()` path the manual UI uses.
+ * to end. The wizard/detail page now renders a unified "Service
+ * Generation" either/or card instead of a standalone Switch toggle +
+ * separate "Completion Window" section.
+ *
+ * Selected option:
+ *   autoGenerateJobs: true  → "Automatically create work orders"
+ *   autoGenerateJobs: false → "Notify me to create the work order"
+ *                             + nested notification window inputs
+ *
+ * The two options are mutually exclusive (radio-style button pair with
+ * an "OR" divider — not independent toggles).
  *
  * Critical product invariant — auto-generated jobs MUST be:
  *   - status='open' (not 'scheduled')
@@ -143,25 +150,73 @@ describe("server/domain/recurrence.ts — autoGenerateJobs is honoured", () => {
 
 // ── Client contract — PMWizardPage (create flow) ─────────────────────
 
-describe("PMWizardPage — Automatically generate work toggle", () => {
+describe("PMWizardPage — Service Generation card", () => {
   it("WizardState carries an autoGenerateJobs boolean (defaulting to false)", () => {
     expect(wizardSrc).toMatch(/autoGenerateJobs:\s*boolean/);
     expect(wizardSrc).toMatch(/autoGenerateJobs:\s*false/);
   });
 
-  it("renders the canonical 'Automatically generate work' label + helper copy", () => {
-    expect(wizardSrc).toMatch(/>\s*Automatically generate work\s*</);
-    // Helper copy is locked: dispatchers MUST keep owning scheduling.
+  it("one parent Service Generation card exists with the correct testId", () => {
+    expect(wizardSrc).toMatch(/data-testid="pm-wizard-service-generation"/);
+  });
+
+  it("no standalone Completion Window section remains", () => {
+    // Check that there is no Completion Window heading rendered in the UI.
+    expect(wizardSrc).not.toMatch(/<h[1-6][^>]*>\s*Completion Window\s*<\/h/);
+    expect(wizardSrc).not.toMatch(/label:\s*"Completion Window"/);
+  });
+
+  it("renders the 'Automatically create work orders' option card", () => {
+    expect(wizardSrc).toMatch(/data-testid="pm-wizard-service-gen-auto"/);
+    expect(wizardSrc).toMatch(/Automatically create work orders/);
     expect(wizardSrc).toMatch(
-      /Automatically creates an unscheduled job when service becomes due/,
+      /An unscheduled work order will be created automatically on the job creation date/,
+    );
+    expect(wizardSrc).toMatch(
+      /Dispatch can then schedule and assign the work/,
     );
   });
 
-  it("uses the canonical Switch primitive with the pinned testId", () => {
-    expect(wizardSrc).toMatch(/from "@\/components\/ui\/switch"/);
+  it("renders the 'Notify me to create the work order' option card", () => {
+    expect(wizardSrc).toMatch(/data-testid="pm-wizard-service-gen-manual"/);
+    expect(wizardSrc).toMatch(/Notify me to create the work order/);
     expect(wizardSrc).toMatch(
-      /<Switch\b[\s\S]+?data-testid="pm-wizard-auto-generate-jobs"/,
+      /You'll be notified so you can manually create the work order/,
     );
+  });
+
+  it("options are mutually exclusive (selecting auto sets autoGenerateJobs true, manual sets false)", () => {
+    // Each button's onClick must hardcode the opposite boolean — not toggle.
+    // onClick comes before data-testid in JSX attribute order, so match that order.
+    expect(wizardSrc).toMatch(
+      /onChange\(\s*\{\s*autoGenerateJobs:\s*true\s*\}\s*\)[\s\S]+?data-testid="pm-wizard-service-gen-auto"/,
+    );
+    expect(wizardSrc).toMatch(
+      /onChange\(\s*\{\s*autoGenerateJobs:\s*false\s*\}\s*\)[\s\S]+?data-testid="pm-wizard-service-gen-manual"/,
+    );
+    // No Switch primitive — it would imply an independent toggle.
+    expect(wizardSrc).not.toMatch(/<Switch\b[\s\S]+?data-testid="pm-wizard-auto-generate-jobs"/);
+  });
+
+  it("notification window copy references work order creation, not 'scheduled date'", () => {
+    expect(wizardSrc).toMatch(/days before the work order is created/);
+    expect(wizardSrc).not.toMatch(/scheduled date/);
+    expect(wizardSrc).not.toMatch(/due date.*notification/i);
+  });
+
+  it("days-before input is nested under the manual option with canonical testId", () => {
+    expect(wizardSrc).toMatch(/data-testid="pm-wizard-window-before"/);
+    expect(wizardSrc).toMatch(/days before job creation/);
+  });
+
+  it("days-after input is nested under the manual option with canonical testId", () => {
+    expect(wizardSrc).toMatch(/data-testid="pm-wizard-window-after"/);
+    expect(wizardSrc).toMatch(/days after job creation/);
+  });
+
+  it("sidebar summary uses 'Service Generation' label (not 'Completion Window')", () => {
+    expect(wizardSrc).toMatch(/label:\s*"Service Generation"/);
+    expect(wizardSrc).not.toMatch(/label:\s*"Completion Window"/);
   });
 
   it("forwards autoGenerateJobs in the create payload", () => {
@@ -171,7 +226,7 @@ describe("PMWizardPage — Automatically generate work toggle", () => {
 
 // ── Client contract — PMDetailPage (edit flow) ───────────────────────
 
-describe("PMDetailPage — Automatically generate work toggle is editable", () => {
+describe("PMDetailPage — Service Generation card is editable", () => {
   it("EditFormState carries an autoGenerateJobs boolean", () => {
     expect(detailSrc).toMatch(/autoGenerateJobs:\s*boolean/);
   });
@@ -182,23 +237,29 @@ describe("PMDetailPage — Automatically generate work toggle is editable", () =
     );
   });
 
-  it("renders the canonical Switch + helper copy in the Schedule edit card", () => {
-    expect(detailSrc).toMatch(/from "@\/components\/ui\/switch"/);
-    expect(detailSrc).toMatch(/>\s*Automatically generate work\s*</);
-    expect(detailSrc).toMatch(
-      /Automatically creates an unscheduled job when service becomes due/,
-    );
-    expect(detailSrc).toMatch(
-      /<Switch\b[\s\S]+?data-testid="pm-detail-auto-generate-jobs"/,
-    );
+  it("one parent Service Generation card exists with the correct testId", () => {
+    expect(detailSrc).toMatch(/data-testid="pm-detail-service-generation"/);
   });
 
-  it("the view-mode Schedule card surfaces the current auto-gen state", () => {
-    // View mode shows a row labelled "Auto-generate work" with one
-    // of two values. Pin both branches so the row never goes silent.
-    expect(detailSrc).toMatch(/label="Auto-generate work"/);
-    expect(detailSrc).toMatch(/On — creates unscheduled jobs/);
-    expect(detailSrc).toMatch(/Off — manual generation/);
+  it("no standalone Completion Window section remains", () => {
+    expect(detailSrc).not.toMatch(/Completion Window/);
+  });
+
+  it("renders 'Automatically create work orders' and 'Notify me' option cards", () => {
+    expect(detailSrc).toMatch(/data-testid="pm-detail-service-gen-auto"/);
+    expect(detailSrc).toMatch(/data-testid="pm-detail-service-gen-manual"/);
+    expect(detailSrc).toMatch(/Automatically create work orders/);
+    expect(detailSrc).toMatch(/Notify me to create the work order/);
+  });
+
+  it("options are mutually exclusive — no Switch primitive", () => {
+    expect(detailSrc).not.toMatch(/<Switch\b[\s\S]+?data-testid="pm-detail-auto-generate-jobs"/);
+  });
+
+  it("the view-mode Schedule card uses 'Service generation' label", () => {
+    expect(detailSrc).toMatch(/label="Service generation"/);
+    expect(detailSrc).toMatch(/Automatically create work orders/);
+    expect(detailSrc).toMatch(/Notify manually/);
   });
 
   it("forwards autoGenerateJobs in the PATCH payload", () => {

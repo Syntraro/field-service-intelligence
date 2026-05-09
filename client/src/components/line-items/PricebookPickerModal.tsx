@@ -32,6 +32,8 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Minus, Plus, Search } from "lucide-react";
+// 2026-05-09: group-delete AlertDialog migrated to canonical ConfirmModal.
+import { ModalStateBody, ConfirmModal } from "@/components/ui/modal";
 
 import { apiRequest } from "@/lib/queryClient";
 // 2026-05-08 Phase 4 — capability-gated stock overlay on picker rows.
@@ -71,16 +73,6 @@ import {
 } from "./pricebookHelpers";
 import { PricebookGroupsRail } from "./PricebookGroupsRail";
 import { PricebookGroupModal } from "./PricebookGroupModal";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   recordPricebookGroupUsage,
   useDeletePricebookGroup,
@@ -445,6 +437,7 @@ export function PricebookPickerModal({
           className="flex-1 min-w-0 min-h-0"
           data-testid="pricebook-items-pane"
         >
+          {/* 2026-05-09: loading/error/empty replaced with canonical ModalStateBody */}
           {isLoading ? (
             <div
               className="grid gap-2"
@@ -455,44 +448,26 @@ export function PricebookPickerModal({
               ))}
             </div>
           ) : isError ? (
-            <div
-              className="rounded-md border border-rose-200 bg-rose-50 px-4 py-6 text-center"
+            <ModalStateBody
+              variant="error"
+              message="Couldn't load pricebook items. Please try again."
+              onRetry={() => refetch()}
               data-testid="pricebook-error"
-            >
-              <p className="text-sm text-rose-700">
-                Couldn't load pricebook items. Please try again.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 h-8 text-xs"
-                onClick={() => refetch()}
-              >
-                Retry
-              </Button>
-            </div>
+            />
           ) : visibleItems.length === 0 ? (
             search.trim().length > 0 ? (
-              <div
-                className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
+              <ModalStateBody
+                variant="empty"
+                message={`No pricebook items match "${search.trim()}".`}
                 data-testid="pricebook-empty-search"
-              >
-                <p className="text-sm text-slate-600">
-                  No pricebook items match "{search.trim()}".
-                </p>
-              </div>
+              />
             ) : (
-              <div
-                className="rounded-md border border-slate-200 bg-white px-4 py-8 text-center"
+              <ModalStateBody
+                variant="empty"
+                message="You don't have any saved pricebook items yet."
+                submessage="Add items from Settings → Pricebook to use the bulk picker."
                 data-testid="pricebook-empty"
-              >
-                <p className="text-sm text-slate-600">
-                  You don't have any saved pricebook items yet.
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Add items from Settings → Pricebook to use the bulk picker.
-                </p>
-              </div>
+              />
             )
           ) : (
             <ul
@@ -555,53 +530,29 @@ export function PricebookPickerModal({
         }}
       />
 
-      <AlertDialog
+      {/* 2026-05-09: group-delete confirm migrated from AlertDialog to ConfirmModal.
+          The e.preventDefault() workaround for Radix auto-close is unnecessary here —
+          ConfirmModal does not auto-close on confirm; deleteTarget controls closure. */}
+      <ConfirmModal
         open={deleteTarget !== null}
-        onOpenChange={(next) => {
-          if (!next) cancelDelete();
-        }}
-      >
-        <AlertDialogContent data-testid="pricebook-group-delete-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete group?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {deleteTarget
-                ? `This deletes the group "${deleteTarget.name}" only. Pricebook items inside it will not be deleted.`
-                : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {deleteMutation.isError ? (
-            <p
-              className="text-xs text-rose-700 px-1"
-              role="alert"
-              data-testid="pricebook-group-delete-error"
-            >
-              {(deleteMutation.error as Error)?.message ??
-                "Could not delete the group. Please try again."}
-            </p>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={deleteMutation.isPending}
-              data-testid="pricebook-group-delete-cancel"
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                // Prevent Radix from auto-closing before the mutation
-                // resolves; we close manually on success.
-                e.preventDefault();
-                void confirmDelete();
-              }}
-              disabled={deleteMutation.isPending}
-              data-testid="pricebook-group-delete-confirm"
-            >
-              {deleteMutation.isPending ? "Deleting…" : "Delete group"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onOpenChange={(next) => { if (!next) cancelDelete(); }}
+        title="Delete group?"
+        description={
+          deleteTarget
+            ? `This deletes the group "${deleteTarget.name}" only. Pricebook items inside it will not be deleted.`
+            : ""
+        }
+        emphasis={
+          deleteMutation.isError
+            ? ((deleteMutation.error as Error)?.message ?? "Could not delete the group. Please try again.")
+            : undefined
+        }
+        confirmLabel={deleteMutation.isPending ? "Deleting…" : "Delete group"}
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => void confirmDelete()}
+        testIdPrefix="pricebook-group-delete"
+      />
 
 
       <ModalFooter className="justify-between">

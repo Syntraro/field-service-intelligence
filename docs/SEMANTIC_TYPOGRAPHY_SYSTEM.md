@@ -18,7 +18,7 @@ For the visual reference, see `/style-guide/typography` (admin-only). For the au
 | `text-header` | 18 / 24 / 600 | Card / panel / modal title (h2). `CardTitle` defaults here. |
 | `text-subheader` | 16 / 22 / 500 | Sub-grouping inside a card (h3); table sub-headers. |
 | `text-body` | 15 / 22 / 400 | Default reading text — forms, dialogs, prose, descriptions. |
-| `text-row` | 15 / 22 / 400 | Default table / list row content. Same metric as `text-body`; distinct role identity for list/row callsites. |
+| `text-row` | 14 / 20 / 400 | Default table / list row content. Distinct role identity from `text-body` (15px) — list/row callsites. |
 | `text-emphasis` | 15 / 22 / 500 | Emphasized row value / primary entity name. |
 | `text-caption` | 14 / 20 / 400 | Secondary text alongside row content (timestamps, sub-amounts). `CardDescription` defaults here. |
 | `text-label` | 13 / 16 / 500 / 0.04em / UPPERCASE (via @layer) | Form field labels, table column headers, metadata keys, eyebrows. |
@@ -62,14 +62,14 @@ These component-specific tokens are retained in `tailwind.config.ts` so existing
 | `text-modal-title` | `text-header` | imperfect | Held — modal-title is ~21.4px, text-header is 18px. Picking text-header would shrink dialog titles. Decide when modernizing the dialog system. |
 | `text-row-emphasis` | `text-emphasis` | exact | Safe rename. Identical 15/22/500 spec. |
 | `text-table-header` | `text-label` | exact | Safe rename. Identical 13/16/500/0.04em + UPPERCASE. |
-| `text-table-cell` | `text-row` | exact | Safe rename. Identical 15/22/400 spec. |
+| `text-table-cell` | `text-row` | exact | Synced to 14/20/400 (2026-05-08). Safe rename — pixel-identical. |
 | `text-input` | `text-body` | exact | Safe rename. Identical 15/22/400 spec. |
 | `text-email-body` | `text-body` | exact | Safe rename. Identical 15/22/400 spec. |
 | `text-empty-state` | `text-body` | imperfect | Held — slightly bigger (15.2 vs 15) and slightly taller line-height (≈22.8 vs 22). Visual call between text-body and text-caption. |
 | `text-form-label` | `text-label` | imperfect | Held — text-label is 13px UPPERCASE 0.04em; text-form-label is 15.2px sentence-case. Different role identity. Migrating would change both size and case. |
 | `text-form-helper` | `text-helper` | imperfect | Held — same role family but different size (15.2 vs 13). |
 | `text-select-label` | `text-label` | imperfect | Held — different size + case + weight from text-label. Migrate when modernizing the Select primitive. |
-| `text-select-item` | `text-row` | imperfect | Held — 15.2px is between text-row (15) and text-caption (14). Pick when migrating the Select primitive. |
+| `text-select-item` | `text-row` | imperfect | Held — 15.2px sits 1.2px above text-row (14) and text-caption (14), both now at 14px. Pick when migrating the Select primitive. |
 
 ## Migration rules
 

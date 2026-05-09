@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple form modal). Body is a standard
@@ -121,144 +122,142 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
 
       <form onSubmit={handleSubmit}>
         <ModalBody className="space-y-4">
-          <div>
-              <Label htmlFor="location-name">Name *</Label>
+          <FormField>
+            <FormLabel htmlFor="location-name" srOnly>Location Name</FormLabel>
+            <Input
+              id="location-name"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="Location Name *"
+              required
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="address" srOnly>Address</FormLabel>
+            <AddressAutocomplete
+              id="address"
+              value={formData.address}
+              onChange={(val) => {
+                // Always clear stale coordinates on manual address edit
+                setFormData((prev) => ({
+                  ...prev,
+                  address: val,
+                  lat: null, lng: null, placeId: null,
+                }));
+              }}
+              onPlaceSelect={(p: PlaceSelectPayload) => {
+                setFormData((prev) => ({
+                  ...prev,
+                  address: p.street,
+                  ...(p.city ? { city: p.city } : {}),
+                  ...(p.province ? { province: p.province } : {}),
+                  ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                  ...(p.country ? { country: p.country } : {}),
+                  lat: p.lat != null ? String(p.lat) : null,
+                  lng: p.lng != null ? String(p.lng) : null,
+                  placeId: p.placeId || null,
+                }));
+              }}
+              placeholder="Street address"
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="address2" srOnly>Address Line 2</FormLabel>
+            <Input
+              id="address2"
+              value={formData.address2}
+              onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
+              placeholder="Suite, Unit, Floor (optional)"
+            />
+          </FormField>
+
+          <FormRow className="md:grid-cols-3">
+            <FormField>
+              <FormLabel htmlFor="city" srOnly>City</FormLabel>
               <Input
-                id="location-name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="e.g., Newmarket Branch"
-                required
+                id="city"
+                value={formData.city}
+                onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="City"
               />
-            </div>
-
-            <div>
-              <Label htmlFor="address">Address</Label>
-              <AddressAutocomplete
-                id="address"
-                value={formData.address}
-                onChange={(val) => {
-                  // Always clear stale coordinates on manual address edit
-                  setFormData((prev) => ({
-                    ...prev,
-                    address: val,
-                    lat: null, lng: null, placeId: null,
-                  }));
-                }}
-                onPlaceSelect={(p: PlaceSelectPayload) => {
-                  setFormData((prev) => ({
-                    ...prev,
-                    address: p.street,
-                    ...(p.city ? { city: p.city } : {}),
-                    ...(p.province ? { province: p.province } : {}),
-                    ...(p.postalCode ? { postalCode: p.postalCode } : {}),
-                    ...(p.country ? { country: p.country } : {}),
-                    lat: p.lat != null ? String(p.lat) : null,
-                    lng: p.lng != null ? String(p.lng) : null,
-                    placeId: p.placeId || null,
-                  }));
-                }}
-                placeholder="Street address"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="address2">Address Line 2</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="province" srOnly>Province</FormLabel>
               <Input
-                id="address2"
-                value={formData.address2}
-                onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
-                placeholder="Suite, Unit, Floor (optional)"
+                id="province"
+                value={formData.province}
+                onChange={(e) => setFormData(prev => ({ ...prev, province: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="Province"
               />
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <Label htmlFor="city">City</Label>
-                <Input
-                  id="city"
-                  value={formData.city}
-                  onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="City"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="province">Province</Label>
-                <Input
-                  id="province"
-                  value={formData.province}
-                  onChange={(e) => setFormData(prev => ({ ...prev, province: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="ON"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="postalCode">Postal Code</Label>
-                <Input
-                  id="postalCode"
-                  value={formData.postalCode}
-                  onChange={(e) => setFormData(prev => ({ ...prev, postalCode: e.target.value, lat: null, lng: null, placeId: null }))}
-                  placeholder="A1A 1A1"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="country">Country</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="postalCode" srOnly>Postal Code</FormLabel>
               <Input
-                id="country"
-                value={formData.country}
-                onChange={(e) => setFormData(prev => ({ ...prev, country: e.target.value, lat: null, lng: null, placeId: null }))}
-                placeholder="Canada"
+                id="postalCode"
+                value={formData.postalCode}
+                onChange={(e) => setFormData(prev => ({ ...prev, postalCode: e.target.value, lat: null, lng: null, placeId: null }))}
+                placeholder="Postal Code"
               />
-            </div>
+            </FormField>
+          </FormRow>
 
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="contactName">Contact Name</Label>
-                <Input
-                  id="contactName"
-                  value={formData.contactName}
-                  onChange={(e) => setFormData({ ...formData, contactName: e.target.value })}
-                  placeholder="Contact person"
-                />
-              </div>
+          <FormField>
+            <FormLabel htmlFor="country" srOnly>Country</FormLabel>
+            <Input
+              id="country"
+              value={formData.country}
+              onChange={(e) => setFormData(prev => ({ ...prev, country: e.target.value, lat: null, lng: null, placeId: null }))}
+              placeholder="Country"
+            />
+          </FormField>
 
-              <div>
-                <Label htmlFor="phone">Phone</Label>
-                <Input
-                  id="phone"
-                  type="tel"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="(555) 123-4567"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="email">Email</Label>
+          <FormRow className="md:grid-cols-2">
+            <FormField>
+              <FormLabel htmlFor="contactName" srOnly>Contact Name</FormLabel>
               <Input
-                id="email"
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                placeholder="email@example.com"
+                id="contactName"
+                value={formData.contactName}
+                onChange={(e) => setFormData({ ...formData, contactName: e.target.value })}
+                placeholder="Contact Name"
               />
-            </div>
-
-            <div>
-              <Label htmlFor="notes">Notes</Label>
-              <Textarea
-                id="notes"
-                value={formData.notes}
-                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                placeholder="Account number, branch-specific info, etc."
-                rows={3}
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="phone" srOnly>Phone</FormLabel>
+              <Input
+                id="phone"
+                type="tel"
+                value={formData.phone}
+                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                placeholder="Phone"
               />
-            </div>
+            </FormField>
+          </FormRow>
 
+          <FormField>
+            <FormLabel htmlFor="email" srOnly>Email</FormLabel>
+            <Input
+              id="email"
+              type="email"
+              value={formData.email}
+              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              placeholder="Email"
+            />
+          </FormField>
+
+          <FormField>
+            <FormLabel htmlFor="notes" srOnly>Notes</FormLabel>
+            <Textarea
+              id="notes"
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              placeholder="Account number, branch-specific info, etc."
+              rows={3}
+            />
+          </FormField>
+
+          {/* Checkbox keeps visible Label per canonical rule for checkboxes */}
           <div className="flex items-center space-x-2">
             <Checkbox
               id="isPrimary"

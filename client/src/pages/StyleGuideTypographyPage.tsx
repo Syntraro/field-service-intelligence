@@ -67,7 +67,7 @@ const PREFERRED_TOKENS: PreferredTokenSpec[] = [
   { className: "text-header", specs: "18 / 24 / 600" },
   { className: "text-subheader", specs: "16 / 22 / 500" },
   { className: "text-body", specs: "15 / 22 / 400" },
-  { className: "text-row", specs: "15 / 22 / 400" },
+  { className: "text-row", specs: "14 / 20 / 400" },
   { className: "text-emphasis", specs: "15 / 22 / 500" },
   { className: "text-caption", specs: "14 / 20 / 400" },
   { className: "text-label", specs: "13 / 16 / 500 · 0.04em · UPPERCASE" },

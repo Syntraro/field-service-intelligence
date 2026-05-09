@@ -7,7 +7,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, X, Tag, MapPin, Users, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, X, Tag, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 2026-05-08 chip Phase 2: Active/Inactive status filter → FilterChip.
 // The tag filter below stays raw — it uses per-tag user-defined colors
@@ -21,14 +21,9 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 // Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
-import {
-  listPrimaryClass,
-  listSecondaryClass,
-  listBadgeClass,
-  listResultsClass,
-} from "@/components/ui/list-surface";
+import { listBadgeClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
-import { EmptyState } from "@/components/ui/empty-state";
+// 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
 import BulkEditTagsModal from "@/components/BulkEditTagsModal";
 // 2026-05-03: migrated from a hand-rolled CSS-Grid div table (with
 // `CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px"` + fixed
@@ -81,26 +76,6 @@ type SortDir = "asc" | "desc";
 // content per the convention established by Leads / Quotes / Invoices /
 // Suppliers / Locations migrations.
 
-/** Sortable column header — defined at module scope to maintain stable React identity across renders */
-function SortHeader({ field, sortField, sortDir, onSort, children }: {
-  field: SortField; sortField: SortField; sortDir: SortDir;
-  onSort: (field: SortField) => void; children: React.ReactNode;
-}) {
-  const active = sortField === field;
-  return (
-    <button
-      type="button"
-      className="flex items-center gap-1 px-4 text-left hover:text-foreground transition-colors select-none"
-      onClick={() => onSort(field)}
-    >
-      {children}
-      {active && (sortDir === "asc"
-        ? <ChevronUp className="h-3 w-3" />
-        : <ChevronDown className="h-3 w-3" />
-      )}
-    </button>
-  );
-}
 
 export default function Clients() {
   const [, setLocation] = useLocation();
@@ -156,7 +131,7 @@ export default function Clients() {
 
   // Fix: placeholderData keeps previous results visible while new search fetches,
   // preventing full-page "Loading clients..." flash on every keystroke
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch: refetchClients } = useQuery({
     queryKey: ["/api/clients", search],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -320,6 +295,8 @@ export default function Clients() {
    * semantic match (the cell wraps in EntityListTable's flex-wrap
    * container, harmless for a single-pill render).
    */
+  // 2026-05-08 canonical refactor: SortHeader removed. Sort is now driven
+  // by sortKey + sortField + sortDirection + onSort on EntityListTable.
   const clientColumns = useMemo<EntityListColumn<CompanyGroup>[]>(() => [
     {
       id: "select",
@@ -331,116 +308,75 @@ export default function Clients() {
           aria-label="Select all visible rows"
         />
       ),
-      // Center the checkbox in the 40 px track, matching the original
-      // `flex justify-center` layout.
-      cellClassName: "px-4 py-2.5 flex items-center justify-center",
-      headerClassName: "px-4 flex items-center justify-center",
-      render: (group) => (
-        <Checkbox
-          checked={selectedRows.has(group.companyId)}
-          onCheckedChange={() => toggleRow(group.companyId)}
-          aria-label={`Select ${group.companyName}`}
-        />
-      ),
+      cell: {
+        type: "customRender",
+        reason: "interactive checkbox with bulk-selection state machine",
+        render: (group) => (
+          <Checkbox
+            checked={selectedRows.has(group.companyId)}
+            onCheckedChange={() => toggleRow(group.companyId)}
+            aria-label={`Select ${group.companyName}`}
+          />
+        ),
+      },
     },
     {
       id: "name",
-      header: (
-        <SortHeader field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
-          Name
-        </SortHeader>
-      ),
+      header: "Name",
       kind: "primary",
       ratio: 2.0,
-      // Two-line cell (company + contact); override the default
-      // single-line truncate wrapper.
-      cellClassName: "px-4 py-2.5 min-w-0",
-      // SortHeader has its own `px-4` left padding; null out the
-      // default header padding so we don't double up.
-      headerClassName: "",
-      render: (group) => (
-        <div className="min-w-0">
-          <div className={listPrimaryClass}>{group.companyName}</div>
-          {group.primaryContact && (
-            <div className={listSecondaryClass + " mt-0.5"}>{group.primaryContact}</div>
-          )}
-        </div>
-      ),
+      sortKey: "name",
+      cell: {
+        type: "entity-primary",
+        value: (group) => group.companyName,
+        secondary: (group) => group.primaryContact || undefined,
+      },
     },
     {
       id: "address",
-      header: (
-        <SortHeader field="address" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
-          Address
-        </SortHeader>
-      ),
+      header: "Address",
       kind: "text",
       ratio: 1.5,
-      headerClassName: "",
-      render: (group) => <span className={listSecondaryClass}>{group.address}</span>,
+      sortKey: "address",
+      cell: {
+        type: "entity-text",
+        value: (group) => group.address,
+      },
     },
     {
       id: "tags",
-      header: (
-        <SortHeader field="tags" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
-          Tags
-        </SortHeader>
-      ),
-      // `badge` kind so the cell renders RAW (no truncate wrapper) and
-      // the existing `flex flex-wrap` multi-pill block stays intact.
+      header: "Tags",
       kind: "badge",
       ratio: 1.0,
-      headerClassName: "",
-      render: (group) => (
-        <div className="flex flex-wrap gap-1">
-          {(companyTagsList.get(group.companyId) ?? []).map((t) => (
-            <span
-              key={t.tagId}
-              className={listBadgeClass + " text-white"}
-              style={{ backgroundColor: t.tagColor }}
-            >
-              {t.tagName}
-            </span>
-          ))}
-        </div>
-      ),
+      sortKey: "tags",
+      cell: {
+        type: "customRender",
+        reason: "dynamic color-coded tag pills from runtime data",
+        render: (group) => (
+          <div className="flex flex-wrap gap-1">
+            {(companyTagsList.get(group.companyId) ?? []).map((t) => (
+              <span
+                key={t.tagId}
+                className={listBadgeClass + " text-white"}
+                style={{ backgroundColor: t.tagColor }}
+              >
+                {t.tagName}
+              </span>
+            ))}
+          </div>
+        ),
+      },
     },
     {
       id: "status",
-      header: (
-        <SortHeader field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
-          Status
-        </SortHeader>
-      ),
-      // `status` kind — Clients renders an inline badge-styled span
-      // (uses `listBadgeClass` + a green/gray color pair), so per the
-      // column-kind rules `status` is the right match. The cell's
-      // built-in flex-wrap container is a no-op for the single-pill
-      // render but leaves the door open for future overlay badges.
+      header: "Status",
       kind: "status",
       ratio: 0.4,
       minWidthPx: 96,
-      headerClassName: "",
-      // 2026-05-03 status consolidation: label + tone come from
-      // `getClientGroupStatusMeta`. Visual rendering preserved as the
-      // existing custom badge-styled span (`listBadgeClass` + a
-      // green/gray color pair) — it does not match a shadcn Badge
-      // variant, so we don't migrate to `<StatusBadge>`. The page
-      // still maps tone → its own color choice.
-      render: (group) => {
-        const meta = getClientGroupStatusMeta(group);
-        const isActive = meta.tone === "success";
-        return (
-          <span
-            className={`${listBadgeClass} ${
-              isActive
-                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
-            }`}
-          >
-            {meta.label}
-          </span>
-        );
+      sortKey: "status",
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (group) => getClientGroupStatusMeta(group),
       },
     },
   ], [
@@ -448,9 +384,6 @@ export default function Clients() {
     toggleSelectAll,
     selectedRows,
     toggleRow,
-    sortField,
-    sortDir,
-    handleSort,
     companyTagsList,
   ]);
 
@@ -558,21 +491,17 @@ export default function Clients() {
         rows={sortedGroups.slice(0, visibleCount)}
         rowKey={(group) => group.companyId}
         onRowClick={(group) => handleRowClick(group.primaryLocationId)}
-        loadingState={
-          isLoading ? (
-            <div className="flex items-center justify-center h-48">
-              <div className="text-muted-foreground">Loading clients...</div>
-            </div>
-          ) : undefined
+        loadingState={isLoading}
+        errorState={
+          isError
+            ? { kind: "error", title: "Failed to load clients", primaryAction: { label: "Retry", onClick: () => refetchClients(), variant: "outline" } }
+            : undefined
         }
-        emptyState={
-          <EmptyState
-            icon={Users}
-            message={`No ${activeTab} clients found`}
-            className="py-8"
-          />
-        }
+        emptyState={{ kind: "empty", icon: "users", title: `No ${activeTab} clients found` }}
         columns={clientColumns}
+        sortField={sortField}
+        sortDirection={sortDir}
+        onSort={(key) => handleSort(key as SortField)}
       />
 
       <ListLoadMoreFooter

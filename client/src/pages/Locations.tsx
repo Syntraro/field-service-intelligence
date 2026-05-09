@@ -24,6 +24,7 @@ import BulkEditTagsModal from "@/components/BulkEditTagsModal";
 // stays inside `ListToolbar` (the existing pattern), not inside the
 // table — same approach as Invoices.
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { listBadgeClass } from "@/components/ui/list-surface";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { getLocationStatusMeta } from "@/lib/statusBadges";
 
@@ -107,7 +108,7 @@ export default function Locations() {
 
   // Fetch all locations (same endpoint as Clients page)
   // List stability: keepPreviousData prevents flash on search transitions
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch: refetchLocations } = useQuery({
     queryKey: ["/api/clients", search],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -186,6 +187,7 @@ export default function Locations() {
    * so it uses `badge` kind whose cell renders raw — leaving room for
    * the existing `flex flex-wrap` pill row.
    */
+  // 2026-05-08 canonical refactor: render: → cell: typed descriptors.
   type LocationRow = Client;
   const locationColumns = useMemo<EntityListColumn<LocationRow>[]>(() => [
     {
@@ -198,82 +200,80 @@ export default function Locations() {
           aria-label="Select all visible rows"
         />
       ),
-      // The original cell wrapper used `flex justify-center` instead of
-      // EntityListTable's default `flex items-center`. Override so the
-      // checkbox stays centered horizontally in the 40px track.
-      cellClassName: "px-4 py-2.5 flex items-center justify-center",
-      headerClassName: "px-4 flex items-center justify-center",
-      render: (loc) => (
-        <Checkbox
-          checked={selectedRows.has(loc.id)}
-          onCheckedChange={() => toggleRow(loc.id)}
-          aria-label={`Select ${loc.location || loc.companyName}`}
-        />
-      ),
+      cell: {
+        type: "customRender",
+        reason: "interactive checkbox with bulk-selection state machine",
+        render: (loc) => (
+          <Checkbox
+            checked={selectedRows.has(loc.id)}
+            onCheckedChange={() => toggleRow(loc.id)}
+            aria-label={`Select ${loc.location || loc.companyName}`}
+          />
+        ),
+      },
     },
     {
       id: "company",
       header: "Company",
       kind: "primary",
       ratio: 1.0,
-      render: (loc) => loc.companyName,
+      cell: {
+        type: "entity-primary",
+        value: (loc) => loc.companyName,
+      },
     },
     {
       id: "location",
       header: "Location",
       kind: "text",
       ratio: 1.0,
-      render: (loc) => <span className="text-slate-500">{loc.location || "—"}</span>,
+      cell: {
+        type: "entity-text",
+        value: (loc) => loc.location || null,
+      },
     },
     {
       id: "tags",
       header: "Tags",
-      // `badge` kind — the cell renders RAW (no truncate wrapper) so the
-      // existing multi-pill `flex flex-wrap` block stays intact. Using
-      // `text` here would clip the pills to a single line.
       kind: "badge",
       ratio: 1.0,
-      render: (loc) => (
-        <div className="flex flex-wrap gap-1">
-          {(locationTagsList.get(loc.id) ?? []).map((t) => (
-            <span
-              key={t.tagId}
-              className="inline-flex rounded-full px-1.5 py-0.5 text-[11px] font-medium text-white"
-              style={{ backgroundColor: t.tagColor }}
-            >
-              {t.tagName}
-            </span>
-          ))}
-        </div>
-      ),
+      cell: {
+        type: "customRender",
+        reason: "dynamic color-coded tag pills from runtime data",
+        render: (loc) => (
+          <div className="flex flex-wrap gap-1">
+            {(locationTagsList.get(loc.id) ?? []).map((t) => (
+              <span
+                key={t.tagId}
+                className={`${listBadgeClass} text-white`}
+                style={{ backgroundColor: t.tagColor }}
+              >
+                {t.tagName}
+              </span>
+            ))}
+          </div>
+        ),
+      },
     },
     {
       id: "address",
       header: "Address",
       kind: "text",
       ratio: 1.0,
-      render: (loc) => <span className="text-slate-500">{loc.address || "—"}</span>,
+      cell: {
+        type: "entity-text",
+        value: (loc) => loc.address || null,
+      },
     },
     {
       id: "status",
       header: "Status",
-      // `text` kind — Active/Inactive is color-coded plain text in this
-      // page, not a Badge component, so per the column-kind rules the
-      // semantic match is `text`, not `status`. The 72 px floor protects
-      // the cell from collapsing below the longer label ("Inactive").
-      kind: "text",
+      kind: "status",
       ratio: 0.6,
       minWidthPx: 72,
-      // 2026-05-03 status consolidation: label + tone via
-      // `getLocationStatusMeta`. Visual rendering preserved (plain
-      // colored text, not a Badge — page-level visual choice).
-      render: (loc) => {
-        const meta = getLocationStatusMeta(loc);
-        return (
-          <span className={`font-medium ${meta.tone === "success" ? "text-green-600" : "text-slate-500"}`}>
-            {meta.label}
-          </span>
-        );
+      cell: {
+        type: "entity-status",
+        getStatusMeta: (loc) => getLocationStatusMeta(loc),
       },
     },
     {
@@ -281,8 +281,10 @@ export default function Locations() {
       header: "Maintenance Months",
       kind: "text",
       ratio: 1.0,
-      // Text kind provides text-row text-slate-700.
-      render: (loc) => formatMonths((loc as any).selectedMonths ?? null),
+      cell: {
+        type: "entity-text",
+        value: (loc) => formatMonths((loc as any).selectedMonths ?? null),
+      },
     },
   ], [allVisibleSelected, toggleSelectAll, selectedRows, toggleRow, locationTagsList]);
 
@@ -367,18 +369,13 @@ export default function Locations() {
         onRowClick={(loc) =>
           setLocation(loc.parentCompanyId ? `/clients/${loc.parentCompanyId}?location=${loc.id}` : `/clients`)
         }
-        loadingState={
-          isLoading ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="text-muted-foreground">Loading locations...</div>
-            </div>
-          ) : undefined
+        loadingState={isLoading}
+        errorState={
+          isError
+            ? { kind: "error", title: "Failed to load locations", primaryAction: { label: "Retry", onClick: () => refetchLocations(), variant: "outline" } }
+            : undefined
         }
-        emptyState={
-          <div className="text-center text-muted-foreground py-8">
-            No locations found
-          </div>
-        }
+        emptyState={{ kind: "no-results", icon: "search", title: "No locations found" }}
         columns={locationColumns}
       />
 

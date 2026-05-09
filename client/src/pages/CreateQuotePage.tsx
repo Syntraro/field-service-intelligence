@@ -47,7 +47,6 @@ import {
   ArrowLeft,
   ChevronsUpDown,
   FileCheck,
-  FileText,
   Loader2,
   Star,
   X,
@@ -63,7 +62,6 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import {
   Popover,
   PopoverContent,
@@ -116,8 +114,8 @@ import { parseMoney, formatMoney } from "@shared/lineItem";
 import type { Quote, QuoteLine, QuoteTemplate } from "@shared/schema";
 
 import { QuoteSummaryCard } from "@/components/quotes/QuoteSummaryCard";
-import { QuoteDescriptionCard } from "@/components/quotes/QuoteDescriptionCard";
 import { formatCurrency } from "@/lib/formatters";
+import { CanonicalCreateHeader } from "@/components/create/CanonicalCreateHeader";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers — date defaults + synthetic mirror-line construction.
@@ -701,230 +699,6 @@ export default function CreateQuotePage() {
     );
   }
 
-  // ── Header card — visual mirror of QuoteHeaderCard (saved mode).
-  // The saved page uses <QuoteHeaderCard>; on /quotes/new there is no
-  // saved quote yet, so we render the same chrome (rounded card, back
-  // button + label, status pill, summary metadata) with editable
-  // affordances and a "Draft" pill in place of the status badge.
-  const headerCard = (
-    <div
-      className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
-      data-testid="quote-header-area"
-    >
-      <div className="px-4 py-3">
-        <div className="flex items-start justify-between gap-6">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 -ml-1 shrink-0"
-                onClick={navigateBack}
-                data-testid="button-back"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              <h1
-                className="text-2xl font-bold text-slate-900 leading-snug truncate"
-                data-testid="text-quote-number"
-              >
-                New Quote
-              </h1>
-              <Badge variant="secondary" className="bg-slate-100 text-slate-600">
-                Draft
-              </Badge>
-            </div>
-
-            <div className="border-t border-slate-100 mt-3 pt-2 pl-8 space-y-2">
-              {/* Title — only shown when no template is selected. */}
-              {!selectedTemplate && (
-                <div className="space-y-1">
-                  <Label className="text-xs text-slate-500">
-                    Title <span className="font-normal">(optional)</span>
-                  </Label>
-                  <Input
-                    placeholder="e.g., HVAC Repair Proposal"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    maxLength={200}
-                    disabled={createQuoteMutation.isPending}
-                    data-testid="input-quote-title"
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Right: Issued / Expiry meta — editable inputs. */}
-          <div className="shrink-0 w-56 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-slate-500 font-normal">Issued</span>
-              <Input
-                type="date"
-                value={issueDate}
-                onChange={(e) => setIssueDate(e.target.value)}
-                disabled={createQuoteMutation.isPending}
-                className="h-7 text-xs w-36"
-                data-testid="input-issue-date"
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-slate-500 font-normal">Expiry</span>
-              <Input
-                type="date"
-                value={expiryDate}
-                onChange={(e) => setExpiryDate(e.target.value)}
-                disabled={createQuoteMutation.isPending}
-                className="h-7 text-xs w-36"
-                data-testid="input-expiry-date"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Section B — client selector + template picker. */}
-      <div className="px-4 py-3 border-t border-slate-200/60 space-y-3">
-        {/* Client / Location — required. Search returns matches; if
-            none exist, the "Create new client" affordance opens the
-            canonical CreateClientModal so the new location is
-            auto-selected on creation. */}
-        <CreateOrSelectField<LocationOption>
-          label="Client / Location *"
-          value={selectedLocation}
-          onChange={setSelectedLocation}
-          searchResults={searchResults}
-          searchLoading={searchLoading}
-          searchText={locationSearch}
-          onSearchTextChange={setLocationSearch}
-          getKey={getLocationKey}
-          getLabel={getLocationLabel}
-          getDescription={getLocationDescription}
-          createLabel="Create new client"
-          onCreateNew={() => setCreateClientOpen(true)}
-          placeholder="Search clients..."
-          disabled={createQuoteMutation.isPending}
-        />
-
-        {/* Template — optional. Same combobox the modal renders;
-            selecting a template hides Title + Description and the
-            template's scaffolding takes over server-side after the
-            quote is created. */}
-        {(hasTemplates || templatesLoading) && (
-          <div className="space-y-1.5">
-            <Label className="text-sm font-medium">
-              Template{" "}
-              <span className="text-xs font-normal text-muted-foreground">
-                (optional)
-              </span>
-            </Label>
-            <Popover open={templatePopoverOpen} onOpenChange={setTemplatePopoverOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  role="combobox"
-                  aria-expanded={templatePopoverOpen}
-                  disabled={createQuoteMutation.isPending || templatesLoading}
-                  className="w-full justify-between font-normal"
-                  data-testid="select-quote-template"
-                >
-                  <span
-                    className={cn(
-                      "flex items-center gap-2 min-w-0",
-                      !selectedTemplate && "text-muted-foreground",
-                    )}
-                  >
-                    {selectedTemplate ? (
-                      <>
-                        <FileCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{selectedTemplate.name}</span>
-                        {selectedTemplate.isDefault && (
-                          <Star className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
-                        )}
-                      </>
-                    ) : templatesLoading ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-                        <span>Loading templates...</span>
-                      </>
-                    ) : (
-                      <span>Search templates...</span>
-                    )}
-                  </span>
-                  <span className="flex items-center gap-1 shrink-0">
-                    {selectedTemplate && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label="Clear template"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedTemplateId(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setSelectedTemplateId(null);
-                          }
-                        }}
-                        className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
-                        data-testid="clear-quote-template"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </span>
-                    )}
-                    <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
-                  </span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                className="w-[var(--radix-popover-trigger-width)] p-0"
-                align="start"
-              >
-                <Command>
-                  <CommandInput placeholder="Search templates..." />
-                  <CommandList>
-                    <CommandEmpty>No matching templates</CommandEmpty>
-                    <CommandGroup>
-                      {sortedTemplates.map((t) => (
-                        <CommandItem
-                          key={t.id}
-                          value={`${t.name ?? ""} ${t.description ?? ""}`}
-                          onSelect={() => {
-                            setSelectedTemplateId(t.id);
-                            setTemplatePopoverOpen(false);
-                          }}
-                          data-testid={`template-option-${t.id}`}
-                          className="gap-2"
-                        >
-                          <FileCheck className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="truncate flex items-center gap-1.5">
-                              <span className="truncate">{t.name}</span>
-                              {t.isDefault && (
-                                <Star className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
-                              )}
-                            </div>
-                            {t.description && (
-                              <div className="text-xs text-muted-foreground truncate">
-                                {t.description}
-                              </div>
-                            )}
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 
   // 2026-05-08 (create-page rail canonicalization): rail tab registry —
   // ONLY Summary is valid before first save. Notes / References /
@@ -967,24 +741,184 @@ export default function CreateQuotePage() {
           className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
           data-testid="create-quote-left-column-shell"
         >
-          <div className="px-4 lg:px-6 py-4 space-y-4">
-            {headerCard}
+          <div className="px-4 lg:px-6 pt-4 pb-4 space-y-4">
+            <CanonicalCreateHeader
+              testId="create-quote-header"
+              entityLabel="New Quote"
+              status={{ label: "Draft", tone: "neutral" }}
+              onBack={navigateBack}
+              clientSearchText={locationSearch}
+              onClientSearchTextChange={setLocationSearch}
+              clientSearchResults={searchResults}
+              clientSearchLoading={searchLoading}
+              selectedLocation={selectedLocation}
+              onLocationChange={setSelectedLocation}
+              onCreateNewClient={() => setCreateClientOpen(true)}
+              clientCreateLabel="Create new client"
+              clientPlaceholder="Search clients..."
+              clientDisabled={createQuoteMutation.isPending}
+              afterClientSlot={(hasTemplates || templatesLoading) ? (
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">
+                    Template{" "}
+                    <span className="text-xs font-normal text-muted-foreground">
+                      (optional)
+                    </span>
+                  </Label>
+                  <Popover open={templatePopoverOpen} onOpenChange={setTemplatePopoverOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={templatePopoverOpen}
+                        disabled={createQuoteMutation.isPending || templatesLoading}
+                        className="w-full justify-between font-normal"
+                        data-testid="select-quote-template"
+                      >
+                        <span
+                          className={cn(
+                            "flex items-center gap-2 min-w-0",
+                            !selectedTemplate && "text-muted-foreground",
+                          )}
+                        >
+                          {selectedTemplate ? (
+                            <>
+                              <FileCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{selectedTemplate.name}</span>
+                              {selectedTemplate.isDefault && (
+                                <Star className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
+                              )}
+                            </>
+                          ) : templatesLoading ? (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                              <span>Loading templates...</span>
+                            </>
+                          ) : (
+                            <span>Search templates...</span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-1 shrink-0">
+                          {selectedTemplate && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              aria-label="Clear template"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedTemplateId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setSelectedTemplateId(null);
+                                }
+                              }}
+                              className="h-5 w-5 inline-flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
+                              data-testid="clear-quote-template"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                          <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
+                        </span>
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      className="w-[var(--radix-popover-trigger-width)] p-0"
+                      align="start"
+                    >
+                      <Command>
+                        <CommandInput placeholder="Search templates..." />
+                        <CommandList>
+                          <CommandEmpty>No matching templates</CommandEmpty>
+                          <CommandGroup>
+                            {sortedTemplates.map((t) => (
+                              <CommandItem
+                                key={t.id}
+                                value={`${t.name ?? ""} ${t.description ?? ""}`}
+                                onSelect={() => {
+                                  setSelectedTemplateId(t.id);
+                                  setTemplatePopoverOpen(false);
+                                }}
+                                data-testid={`template-option-${t.id}`}
+                                className="gap-2"
+                              >
+                                <FileCheck className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <div className="truncate flex items-center gap-1.5">
+                                    <span className="truncate">{t.name}</span>
+                                    {t.isDefault && (
+                                      <Star className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
+                                    )}
+                                  </div>
+                                  {t.description && (
+                                    <div className="text-xs text-muted-foreground truncate">
+                                      {t.description}
+                                    </div>
+                                  )}
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              ) : undefined}
+              titleValue={!selectedTemplate ? title : undefined}
+              onTitleChange={!selectedTemplate ? setTitle : undefined}
+              titlePlaceholder="e.g., HVAC Repair Proposal"
+              titleMaxLength={200}
+              metaItems={[
+                {
+                  key: "issued",
+                  label: "Issued",
+                  node: (
+                    <Input
+                      type="date"
+                      value={issueDate}
+                      onChange={(e) => setIssueDate(e.target.value)}
+                      disabled={createQuoteMutation.isPending}
+                      className="h-6 text-xs w-36"
+                      data-testid="input-issue-date"
+                    />
+                  ),
+                },
+                {
+                  key: "expiry",
+                  label: "Expiry",
+                  node: (
+                    <Input
+                      type="date"
+                      value={expiryDate}
+                      onChange={(e) => setExpiryDate(e.target.value)}
+                      disabled={createQuoteMutation.isPending}
+                      className="h-6 text-xs w-36"
+                      data-testid="input-expiry-date"
+                    />
+                  ),
+                },
+              ]}
+              descriptionValue={!selectedTemplate ? description : undefined}
+              onDescriptionChange={!selectedTemplate ? setDescription : undefined}
+              descriptionMaxLength={2000}
+              primaryAction={{
+                label: "Create Quote",
+                onClick: () => createQuoteMutation.mutate(),
+                disabled: !canSave,
+                isPending: createQuoteMutation.isPending,
+                testId: "button-create-quote",
+              }}
+              onCancel={navigateBack}
+              cancelDisabled={createQuoteMutation.isPending}
+              cancelTestId="button-cancel-quote"
+            />
 
-            {/* Description — extracted card in draft mode. Editable
-                textarea, controlled by local state. Hidden when a
-                template is selected (template supplies scaffolding). */}
-            {!selectedTemplate && (
-              <QuoteDescriptionCard
-                mode="draft"
-                value={description}
-                onChange={setDescription}
-                disabled={createQuoteMutation.isPending}
-              />
-            )}
-
-            {/* Line items — same canonical card the saved page renders.
-                Draft adapter mirrors the saved adapter's capability
-                flags 1:1; Save commits to local mirror only. */}
+            {/* Line items */}
             <LineItemsCard
               adapter={adapter}
               drafts={lineItemsDrafts}
@@ -1018,39 +952,6 @@ export default function CreateQuotePage() {
                 </div>
               }
             />
-
-            {/* Save / Cancel action row — relocated from the prior rail
-                Actions stacked-card. Saved-only header actions (Send /
-                Approve / Decline / Convert) have no draft meaning, so
-                this is the only entity-level affordance in create mode. */}
-            <div
-              className="flex items-center justify-end gap-2 pt-2"
-              data-testid="create-quote-action-row"
-            >
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                onClick={navigateBack}
-                disabled={createQuoteMutation.isPending}
-                data-testid="button-cancel-quote"
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                className="h-8 text-xs gap-1.5"
-                onClick={() => createQuoteMutation.mutate()}
-                disabled={!canSave}
-                data-testid="button-create-quote"
-              >
-                {createQuoteMutation.isPending && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                )}
-                <FileText className="h-3.5 w-3.5" />
-                Create Quote
-              </Button>
-            </div>
           </div>
         </div>
         {/* ═══ /LEFT COLUMN ═══ */}

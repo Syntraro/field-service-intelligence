@@ -192,12 +192,15 @@ export function getQuoteStatusBadge(status: string): {
  */
 export function getLeadStatusMeta(status: string): StatusMeta {
   switch (status) {
-    case "new":       return { label: "New", tone: "info" };
-    case "contacted": return { label: "Contacted", tone: "warning" };
-    case "quoted":    return { label: "Quoted", tone: "neutral" };
-    case "won":       return { label: "Won", tone: "success" };
-    case "lost":      return { label: "Lost", tone: "danger" };
-    default:          return { label: status, tone: "neutral" };
+    case "new":          return { label: "New", tone: "info" };
+    case "contacted":    return { label: "Contacted", tone: "warning" };
+    // 2026-05-08: set by markLeadVisitCompleted when the last open visit
+    // completes. Requires office review before conversion.
+    case "needs_review": return { label: "Needs Review", tone: "warning" };
+    case "quoted":       return { label: "Quoted", tone: "neutral" };
+    case "won":          return { label: "Won", tone: "success" };
+    case "lost":         return { label: "Lost", tone: "danger" };
+    default:             return { label: status, tone: "neutral" };
   }
 }
 

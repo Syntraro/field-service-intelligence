@@ -10,7 +10,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import {
   Plus, FileText, DollarSign, AlertTriangle, RefreshCw, Search, Send,
@@ -31,7 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { formatCurrency } from "@/lib/formatters";
-import { EmptyState } from "@/components/ui/empty-state";
+// 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
 // 2026-05-02 entity-number visual language: blue pill for current entity row.
 import { EntityNumber } from "@/components/common/EntityNumber";
 // 2026-05-03: migrated to canonical EntityListTable. The hand-rolled
@@ -45,6 +44,7 @@ import { EntityNumber } from "@/components/common/EntityNumber";
 // removed kebab item is mirrored on `/invoices/:id`. The bulk-action
 // bar (Send reminders, Send invoices, Clear selection) lives ABOVE the
 // table and is unaffected.
+import { ENTITY_SECONDARY_CLASS } from "@/components/ui/list-surface";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Invoice } from "@shared/schema";
@@ -170,7 +170,7 @@ export default function InvoicesListPage() {
     }
   }, [search]);
 
-  const { data: invoices = [], isLoading } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
+  const { data: invoices = [], isLoading, isError, refetch: refetchInvoices } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
     queryKey: ["invoices", "feed", { offset: 0, limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/invoices/list?offset=0&limit=200", { credentials: "include" });
@@ -221,12 +221,6 @@ export default function InvoicesListPage() {
   const overdueAmount = stats?.overdue?.amount ?? 0;
   const overdueCount = stats?.overdue?.count ?? 0;
   const averageInvoiceAmount = stats?.averageInvoice ?? 0;
-
-  const safeFormatDate = (value: unknown): string => {
-    if (!value) return "-";
-    const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : new Date(String(value));
-    return isValid(d) ? format(d, "MMM d, yyyy") : "-";
-  };
 
   const enrichedInvoices = useMemo(() => {
     return invoices.map(inv => ({
@@ -293,6 +287,10 @@ export default function InvoicesListPage() {
    */
   type InvoiceRow = typeof filteredInvoices[number];
   const allChecked = filteredInvoices.length > 0 && filteredInvoices.every((inv) => selectedIds.has(inv.id));
+  // Column order (2026-05-09): identity + quick-lookup left → flexible detail centre → financial right.
+  // Left:   Client · Invoice # · Due Date
+  // Centre: Description (flexible/truncating — gets the highest ratio)
+  // Right:  Status · Total · Balance
   const invoiceColumns = useMemo<EntityListColumn<InvoiceRow>[]>(() => [
     {
       id: "select",
@@ -308,112 +306,111 @@ export default function InvoicesListPage() {
           data-testid="checkbox-invoice-select-all"
         />
       ),
-      render: (invoice) => (
-        <Checkbox
-          checked={selectedIds.has(invoice.id)}
-          onCheckedChange={(v) => {
-            setSelectedIds((prev) => {
-              const next = new Set(prev);
-              if (v) next.add(invoice.id);
-              else next.delete(invoice.id);
-              return next;
-            });
-          }}
-          aria-label={`Select invoice ${invoice.invoiceNumber ?? invoice.id}`}
-          data-testid={`checkbox-invoice-${invoice.id}`}
-        />
-      ),
+      cell: {
+        type: "customRender",
+        reason: "interactive checkbox with bulk-selection state machine",
+        render: (invoice) => (
+          <Checkbox
+            checked={selectedIds.has(invoice.id)}
+            onCheckedChange={(v) => {
+              setSelectedIds((prev) => {
+                const next = new Set(prev);
+                if (v) next.add(invoice.id);
+                else next.delete(invoice.id);
+                return next;
+              });
+            }}
+            aria-label={`Select invoice ${invoice.invoiceNumber ?? invoice.id}`}
+            data-testid={`checkbox-invoice-${invoice.id}`}
+          />
+        ),
+      },
     },
     {
       id: "client",
       header: "Client",
       kind: "primary",
-      ratio: 1.8,
-      minWidthPx: 260,
-      render: (invoice) => (
-        <div className="min-w-0">
-          <p className="truncate" data-testid={`text-invoice-client-${invoice.id}`}>
-            {invoice.locationDisplayName || invoice.locationName || "Unknown"}
-          </p>
-          {invoice.locationName && invoice.locationDisplayName && (
-            <p className="text-caption text-slate-500 font-normal truncate">{invoice.locationName}</p>
-          )}
-        </div>
-      ),
-      cellClassName: "px-4 py-2.5 min-w-0",
-    },
-    {
-      id: "description",
-      header: "Description",
-      kind: "text",
-      ratio: 1.2,
-      // 2026-05-06 RALPH (entity list typography normalization):
-      // dropped the `text-caption` override so Description now inherits
-      // the canonical `text-row` baseline that EntityListTable's
-      // `kind: "text"` wrapper applies. Visual priority for the Client
-      // primary line still comes from `text-row-emphasis` + the darker
-      // `text-slate-800` color on the `kind: "primary"` cell, plus the
-      // muted `text-slate-500` we keep here. No ad-hoc font-size
-      // classes survive on the row body.
-      render: (invoice) => (
-        <p className="text-slate-500 truncate">{invoice.workDescription || "-"}</p>
-      ),
+      ratio: 1.5,
+      minWidthPx: 200,
+      cell: {
+        type: "entity-primary",
+        value: (invoice) => invoice.locationDisplayName || invoice.locationName || "Unknown",
+        secondary: (invoice) =>
+          invoice.locationName && invoice.locationDisplayName
+            ? invoice.locationName
+            : undefined,
+        testId: (invoice) => `text-invoice-client-${invoice.id}`,
+      },
     },
     {
       id: "invoiceNumber",
       header: "Invoice #",
       kind: "badge",
-      ratio: 0.8,
+      ratio: 0.7,
       minWidthPx: 88,
-      render: (invoice) => (
-        // 2026-05-02 entity-number system: row IS an invoice → primary
-        // blue pill. Empty fallback (`INV-{id.slice}`) preserved for
-        // invoices that haven't been assigned a number yet.
-        <EntityNumber variant="primary" data-testid={`text-invoice-number-${invoice.id}`}>
-          {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
-        </EntityNumber>
-      ),
+      cell: {
+        type: "customRender",
+        reason: "entity-number chip with per-row data-testid",
+        render: (invoice) => (
+          <EntityNumber variant="primary" data-testid={`text-invoice-number-${invoice.id}`}>
+            {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
+          </EntityNumber>
+        ),
+      },
     },
     {
       id: "dueDate",
       header: "Due Date",
       kind: "date",
-      // Date kind provides text-row text-slate-700 + nowrap.
-      render: (invoice) => safeFormatDate(invoice.dueDate),
+      cell: {
+        type: "entity-date",
+        value: (invoice) => invoice.dueDate,
+      },
+    },
+    {
+      id: "description",
+      header: "Description",
+      kind: "text",
+      ratio: 1.5,
+      cell: {
+        type: "entity-text",
+        value: (invoice) => invoice.workDescription || "-",
+      },
     },
     {
       id: "status",
       header: "Status",
       kind: "status",
-      // Canonical lifecycle Badge + QboSyncBadge. EntityListTable wraps
-      // these in a flex-wrap container at the cell level — no need to
-      // add it here.
-      render: (invoice) => (
-        <>
-          <StatusBadge meta={invoice.statusMeta} />
-          <QboSyncBadge invoice={invoice} />
-        </>
-      ),
+      cell: {
+        type: "customRender",
+        reason: "multi-badge: StatusBadge + QboSyncBadge",
+        render: (invoice) => (
+          <>
+            <StatusBadge meta={invoice.statusMeta} />
+            <QboSyncBadge invoice={invoice} />
+          </>
+        ),
+      },
     },
     {
       id: "total",
       header: "Total",
       kind: "money",
-      // Money kind provides text-row text-slate-700 + right + tabular + nowrap.
-      render: (invoice) => formatCurrency(invoice.total),
+      cell: { type: "entity-money", value: (invoice) => invoice.total },
     },
     {
       id: "balance",
       header: "Balance",
       kind: "money",
-      // Override base color: positive balance gets font-medium + slate-900,
-      // zero balance gets slate-400. The kind's `text-row` baseline is
-      // inherited (no need to restate).
-      render: (invoice) => (
-        <span className={parseFloat(invoice.balance) > 0 ? "font-medium text-slate-900" : "text-slate-400"}>
-          {formatCurrency(invoice.balance)}
-        </span>
-      ),
+      cell: {
+        type: "customRender",
+        reason: "conditional style: muted zero vs medium non-zero",
+        render: (invoice) => (
+          <span className={parseFloat(invoice.balance) > 0 ? "font-medium text-slate-900" : "text-slate-400"}>
+            {formatCurrency(invoice.balance)}
+          </span>
+        ),
+      },
     },
   ], [filteredInvoices, selectedIds, allChecked]);
 
@@ -634,17 +631,16 @@ export default function InvoicesListPage() {
           rows={filteredInvoices.slice(0, visibleCount)}
           rowKey={(invoice) => invoice.id}
           onRowClick={(invoice) => setLocation(`/invoices/${invoice.id}`)}
-          loadingState={
-            isLoading ? (
-              <div className="text-center py-8 text-slate-500" data-testid="invoices-loading">Loading invoices...</div>
-            ) : undefined
-          }
+          loadingState={isLoading ? { kind: "loading", title: "Loading invoices…", testId: "invoices-loading" } : undefined}
           emptyState={
-            <EmptyState
-              icon={FileText}
-              message={searchQuery || activeFilter !== "all" ? "No invoices match your filters" : "No invoices found"}
-              description={!searchQuery && activeFilter === "all" ? "Create your first invoice to get started." : undefined}
-            />
+            searchQuery || activeFilter !== "all"
+              ? { kind: "no-results", title: "No invoices match your filters", icon: "file" }
+              : { kind: "empty", title: "No invoices found", icon: "file", description: "Create your first invoice to get started." }
+          }
+          errorState={
+            isError
+              ? { kind: "error", title: "Failed to load invoices", primaryAction: { label: "Retry", onClick: () => refetchInvoices(), variant: "outline" } }
+              : undefined
           }
           columns={invoiceColumns}
         />

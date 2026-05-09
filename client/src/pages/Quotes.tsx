@@ -9,7 +9,7 @@
  */
 import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { format, isValid, parseISO, startOfMonth } from "date-fns";
+import { isValid, parseISO, startOfMonth } from "date-fns";
 import { useLocation, useSearch } from "wouter";
 import {
   Plus, FileText, Send, CheckCircle2, Briefcase, Search,
@@ -24,10 +24,11 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { getQuoteStatusMeta } from "@/lib/statusBadges";
 // 2026-05-02 entity-number visual language: blue pill for current entity row.
 import { EntityNumber } from "@/components/common/EntityNumber";
-import { EmptyState } from "@/components/ui/empty-state";
+// 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
 // 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
 // The status column relies on the component's flex-wrap status cell
 // rule so the assessment sub-badges can wrap without pushing the row.
+import { ENTITY_SECONDARY_CLASS } from "@/components/ui/list-surface";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Quote } from "@shared/schema";
@@ -35,7 +36,7 @@ import type { Quote } from "@shared/schema";
 import { formatCurrency } from "@/lib/formatters";
 
 interface EnrichedQuote extends Quote {
-  location?: { id: string; companyName: string };
+  location?: { id: string; companyName: string; address: string | null; city: string | null };
   customerCompany?: { id: string; name: string };
 }
 
@@ -91,7 +92,7 @@ export default function Quotes() {
     }
   }, [search, setLocation]);
 
-  const { data: quotes = [], isLoading } = useQuery<{ data: EnrichedQuote[]; meta: any }, Error, EnrichedQuote[]>({
+  const { data: quotes = [], isLoading, isError, refetch: refetchQuotes } = useQuery<{ data: EnrichedQuote[]; meta: any }, Error, EnrichedQuote[]>({
     queryKey: ["/api/quotes/list"],
     queryFn: async () => {
       const res = await fetch("/api/quotes/list?offset=0&limit=200", { credentials: "include" });
@@ -101,26 +102,6 @@ export default function Quotes() {
     select: (response) => response.data,
   });
 
-  // Phase 2: Fetch team for owner name display
-  const { data: teamMembers = [] } = useQuery<{ id: string; firstName: string; lastName: string }[]>({
-    queryKey: ["/api/team"],
-    queryFn: async () => {
-      const res = await fetch("/api/team", { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
-    },
-  });
-  const userNameMap = useMemo(() => {
-    const m = new Map<string, string>();
-    teamMembers.forEach(u => m.set(u.id, [u.firstName, u.lastName].filter(Boolean).join(" ") || "Unknown"));
-    return m;
-  }, [teamMembers]);
-
-  const safeFormatDate = (value: unknown): string => {
-    if (!value) return "-";
-    const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : new Date(String(value));
-    return isValid(d) ? format(d, "MMM d, yyyy") : "-";
-  };
 
   // Summary card metrics — derived from canonical quote list data
   const summaryMetrics = useMemo(() => {
@@ -173,16 +154,15 @@ export default function Quotes() {
 
   /**
    * Column config for EntityListTable. Defined inside the component
-   * because three columns close over component-local values:
-   *   - status uses each row's pre-computed `statusMeta`
-   *   - owner reads `userNameMap` (built from the team query)
-   *   - updated uses `safeFormatDate`
+   * because the status column closes over each row's pre-computed
+   * `statusMeta`.
    * The render functions otherwise mirror the prior shadcn-Table cells.
    * The status cell deliberately renders all assessment sub-badges as
    * siblings; EntityListTable's `status` kind wraps them in a
    * `flex items-center gap-2 flex-wrap` container so they wrap inside
    * the cell instead of pushing Total / Updated.
    */
+  // 2026-05-08 canonical refactor: typed cell descriptors replace open render().
   type QuoteRow = typeof filteredQuotes[number];
   const quoteColumns = useMemo<EntityListColumn<QuoteRow>[]>(() => [
     {
@@ -190,17 +170,71 @@ export default function Quotes() {
       header: "Client / Location",
       kind: "primary",
       ratio: 1.5,
-      render: (quote) => (
-        <div className="min-w-0">
-          <p className="truncate" data-testid={`text-quote-client-${quote.id}`}>
-            {quote.customerCompany?.name || quote.location?.companyName || "Unknown"}
-          </p>
-          {quote.customerCompany?.name && quote.location?.companyName && (
-            <p className="text-caption text-slate-500 font-normal truncate">{quote.location.companyName}</p>
-          )}
-        </div>
-      ),
-      cellClassName: "px-4 py-2.5 min-w-0",
+      cell: {
+        type: "entity-primary",
+        value: (quote) => quote.customerCompany?.name || quote.location?.companyName || "Unknown",
+        secondary: (quote) => quote.location?.city ?? undefined,
+        testId: (quote) => `text-quote-client-${quote.id}`,
+      },
+    },
+    {
+      id: "title",
+      header: "Summary",
+      kind: "text",
+      ratio: 1.3,
+      cell: {
+        type: "entity-text",
+        value: (quote) => quote.title || "—",
+      },
+    },
+    {
+      id: "address",
+      header: "Service Address",
+      kind: "text",
+      ratio: 1.1,
+      cell: {
+        type: "entity-text",
+        value: (quote) =>
+          [quote.location?.address, quote.location?.city].filter(Boolean).join(", ") || "—",
+      },
+    },
+    {
+      id: "status",
+      header: "Status",
+      kind: "status",
+      cell: {
+        type: "customRender",
+        reason: "multi-badge: StatusBadge + 3 conditional assessment sub-badges",
+        render: (quote) => (
+          <>
+            <StatusBadge meta={quote.statusMeta} />
+            {(quote as any).assessmentStatus === "required" && (
+              <Badge variant="outline" className="text-helper border-amber-300 text-amber-700">Assessment needed</Badge>
+            )}
+            {(quote as any).assessmentStatus === "scheduled" && (
+              <Badge variant="outline" className="text-helper border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
+            )}
+            {(quote as any).assessmentStatus === "completed" && (
+              <Badge variant="outline" className="text-helper border-emerald-300 text-emerald-700">Assessment done</Badge>
+            )}
+          </>
+        ),
+      },
+    },
+    {
+      id: "created",
+      header: "Created",
+      kind: "date",
+      cell: {
+        type: "entity-date",
+        value: (quote) => quote.createdAt,
+      },
+    },
+    {
+      id: "total",
+      header: "Total",
+      kind: "money",
+      cell: { type: "entity-money", value: (quote) => quote.total },
     },
     {
       id: "quoteNumber",
@@ -208,68 +242,17 @@ export default function Quotes() {
       kind: "badge",
       ratio: 0.7,
       minWidthPx: 96,
-      render: (quote) => (
-        // 2026-05-02 entity-number system: row IS a quote → primary
-        // blue pill. Empty fallback (`Q-{id.slice}`) preserved for
-        // quotes that haven't been assigned a number yet.
-        <EntityNumber variant="primary" data-testid={`text-quote-number-${quote.id}`}>
-          {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
-        </EntityNumber>
-      ),
+      cell: {
+        type: "customRender",
+        reason: "entity-number chip with per-row data-testid",
+        render: (quote) => (
+          <EntityNumber variant="primary" data-testid={`text-quote-number-${quote.id}`}>
+            {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
+          </EntityNumber>
+        ),
+      },
     },
-    {
-      id: "title",
-      header: "Title",
-      kind: "text",
-      ratio: 1.2,
-      render: (quote) => <span className="text-slate-500">{quote.title || "-"}</span>,
-    },
-    {
-      id: "status",
-      header: "Status",
-      kind: "status",
-      // Multi-badge composition. EntityListTable wraps these in a
-      // flex-wrap container at the cell level — no need to add it here.
-      render: (quote) => (
-        <>
-          <StatusBadge meta={quote.statusMeta} />
-          {(quote as any).assessmentStatus === "required" && (
-            <Badge variant="outline" className="text-helper border-amber-300 text-amber-700">Assessment needed</Badge>
-          )}
-          {(quote as any).assessmentStatus === "scheduled" && (
-            <Badge variant="outline" className="text-helper border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
-          )}
-          {(quote as any).assessmentStatus === "completed" && (
-            <Badge variant="outline" className="text-helper border-emerald-300 text-emerald-700">Assessment done</Badge>
-          )}
-        </>
-      ),
-    },
-    {
-      id: "owner",
-      header: "Owner",
-      kind: "text",
-      ratio: 0.8,
-      render: (quote) => (
-        <span className="text-slate-500">
-          {(quote as any).salesOwnerUserId ? userNameMap.get((quote as any).salesOwnerUserId) || "—" : "—"}
-        </span>
-      ),
-    },
-    {
-      id: "total",
-      header: "Total",
-      kind: "money",
-      // Money kind provides text-row text-slate-700 + right + tabular + nowrap.
-      render: (quote) => formatCurrency(quote.total),
-    },
-    {
-      id: "updated",
-      header: "Updated",
-      kind: "date",
-      render: (quote) => <span className="text-slate-500">{safeFormatDate(quote.updatedAt || quote.createdAt)}</span>,
-    },
-  ], [userNameMap]);
+  ], []);
 
   // List stability: single return path — loading state renders inside content area only
   return (
@@ -353,17 +336,16 @@ export default function Quotes() {
           rows={filteredQuotes.slice(0, visibleCount)}
           rowKey={(quote) => quote.id}
           onRowClick={(quote) => setLocation(`/quotes/${quote.id}`)}
-          loadingState={
-            isLoading ? (
-              <div className="text-center py-8 text-slate-500" data-testid="quotes-loading">Loading quotes...</div>
-            ) : undefined
-          }
+          loadingState={isLoading ? { kind: "loading", title: "Loading quotes…", testId: "quotes-loading" } : undefined}
           emptyState={
-            <EmptyState
-              icon={FileText}
-              message={searchQuery || activeFilter !== "all" ? "No quotes match your filters" : "No quotes found"}
-              description={!searchQuery && activeFilter === "all" ? "Create your first quote to get started." : undefined}
-            />
+            searchQuery || activeFilter !== "all"
+              ? { kind: "no-results", title: "No quotes match your filters", icon: "file" }
+              : { kind: "empty", title: "No quotes found", icon: "file", description: "Create your first quote to get started." }
+          }
+          errorState={
+            isError
+              ? { kind: "error", title: "Failed to load quotes", primaryAction: { label: "Retry", onClick: () => refetchQuotes(), variant: "outline" } }
+              : undefined
           }
           columns={quoteColumns}
         />

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { FormField, FormLabel, FormHelperText, FormErrorText } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple modal). This is a consequence-bearing
@@ -126,10 +127,8 @@ export function QboOverrideModal({
             </Label>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="reason">
-              Reason for change <span className="text-muted-foreground">(min. 10 characters)</span>
-            </Label>
+          <FormField>
+            <FormLabel htmlFor="reason">Reason for change</FormLabel>
             <Textarea
               id="reason"
               placeholder="Explain why this change is needed (e.g., 'Customer requested price adjustment', 'Correcting billing error')..."
@@ -138,12 +137,14 @@ export function QboOverrideModal({
               className="min-h-[80px]"
               data-testid="qbo-override-reason"
             />
-            {reason.length > 0 && reason.length < 10 && (
-              <p className="text-xs text-destructive">
+            {reason.length > 0 && reason.length < 10 ? (
+              <FormErrorText>
                 Please provide at least 10 characters ({10 - reason.length} more needed)
-              </p>
+              </FormErrorText>
+            ) : (
+              <FormHelperText>Minimum 10 characters</FormHelperText>
             )}
-          </div>
+          </FormField>
         </div>
       </ModalBody>
 

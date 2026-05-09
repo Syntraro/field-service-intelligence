@@ -25,12 +25,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu } from "@/components/ui/action-menu";
 import {
   Plus,
   ArrowLeftRight,
@@ -384,28 +379,30 @@ function UsageRow({ row, alreadyReturned, onReturn, onRemove, isRemoving }: Usag
             </Button>
           )}
           {row.removable && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="h-7 w-7 inline-flex items-center justify-center rounded hover:bg-slate-100"
+            <ActionMenu
+              items={[
+                {
+                  id: "remove",
+                  label: "Remove",
+                  icon: Trash2,
+                  onSelect: onRemove,
+                  disabled: isRemoving,
+                  testId: `job-inventory-usage-remove-${row.id}`,
+                },
+              ]}
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
                   aria-label="Row actions"
                   data-testid={`job-inventory-usage-actions-${row.id}`}
                 >
-                  <MoreHorizontal className="h-4 w-4 text-slate-500" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={onRemove}
-                  disabled={isRemoving}
-                  data-testid={`job-inventory-usage-remove-${row.id}`}
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-2" />
-                  Remove
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              }
+              align="end"
+            />
           )}
         </div>
       </div>

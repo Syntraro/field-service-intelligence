@@ -34,13 +34,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import {
   Plus,
   Boxes,
@@ -59,6 +53,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { FilterChip, StatusChip } from "@/components/ui/chip";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { StateBlock } from "@/components/ui/state-block";
 import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -253,32 +248,38 @@ export default function InventoryPage() {
           />
         </TabsContent>
 
-        {/* TRANSFERS — canonical empty state */}
+        {/* TRANSFERS */}
         <TabsContent value="transfers" className="mt-3">
-          <CanonicalEmpty
-            icon={ArrowRightLeft}
-            message="No transfers yet"
-            hint="Move stock between locations from an item's right rail or a location's Inventory tab."
+          <StateBlock
+            kind="empty"
+            icon="box"
+            title="No transfers yet"
+            description="Move stock between locations from an item's right rail or a location's Inventory tab."
+            layout="card"
             testId="inventory-transfers-empty"
           />
         </TabsContent>
 
-        {/* ADJUSTMENTS — canonical empty state */}
+        {/* ADJUSTMENTS */}
         <TabsContent value="adjustments" className="mt-3">
-          <CanonicalEmpty
-            icon={Layers}
-            message="No adjustments yet"
-            hint="Adjust stock at a location from an item's right rail or a location's Inventory tab."
+          <StateBlock
+            kind="empty"
+            icon="box"
+            title="No adjustments yet"
+            description="Adjust stock at a location from an item's right rail or a location's Inventory tab."
+            layout="card"
             testId="inventory-adjustments-empty"
           />
         </TabsContent>
 
         {/* COUNTS — deferred for v1 */}
         <TabsContent value="counts" className="mt-3">
-          <CanonicalEmpty
-            icon={ClipboardList}
-            message="Stock counts coming soon"
-            hint="Periodic count + reconcile workflow ships in a follow-up release."
+          <StateBlock
+            kind="empty"
+            icon="box"
+            title="Stock counts coming soon"
+            description="Periodic count + reconcile workflow ships in a follow-up release."
+            layout="card"
             testId="inventory-counts-empty"
           />
         </TabsContent>
@@ -404,70 +405,80 @@ function ItemsTabBody({
         kind: "primary",
         ratio: 1.6,
         header: "Item",
-        render: (it) => it.name ?? "—",
+        cell: { type: "entity-primary", value: (it) => it.name },
       },
       {
         id: "sku",
         kind: "text",
         ratio: 0.9,
         header: "SKU / Model",
-        render: (it) => (
-          <span>
-            {it.sku ?? "—"}
-            {it.model ? <span className="text-slate-500"> · {it.model}</span> : null}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "SKU + optional model sub-text composite",
+          render: (it) => (
+            <span>
+              {it.sku ?? "—"}
+              {it.model ? <span className="text-slate-500"> · {it.model}</span> : null}
+            </span>
+          ),
+        },
       },
       {
         id: "category",
         kind: "text",
         ratio: 0.9,
         header: "Category",
-        render: (it) => it.category ?? "—",
+        cell: { type: "entity-text", value: (it) => it.category },
       },
       {
         id: "type",
         kind: "badge",
         ratio: 0.7,
         header: "Type",
-        render: (it) => (
-          <ItemStockBadge itemType={it.type} trackInventory={it.trackInventory} />
-        ),
+        cell: {
+          type: "customRender",
+          reason: "domain badge: ItemStockBadge",
+          render: (it) => <ItemStockBadge itemType={it.type} trackInventory={it.trackInventory} />,
+        },
       },
       {
         id: "on_hand",
         kind: "money",
         ratio: 0.5,
         header: <span>On Hand</span>,
-        render: (it) => renderQuantity(it),
+        cell: { type: "customRender", reason: "renderQuantity helper with tracking-aware display", render: (it) => renderQuantity(it) },
       },
       {
         id: "available",
         kind: "money",
         ratio: 0.5,
         header: <span>Available</span>,
-        render: (it) => renderAvailable(it),
+        cell: { type: "customRender", reason: "renderAvailable helper with tracking-aware display", render: (it) => renderAvailable(it) },
       },
       {
         id: "unit_cost",
         kind: "money",
         ratio: 0.5,
         header: <span>Unit Cost</span>,
-        render: (it) => formatMoney(it.cost),
+        cell: { type: "entity-money", value: (it) => it.cost },
       },
       {
         id: "unit_price",
         kind: "money",
         ratio: 0.5,
         header: <span>Unit Price</span>,
-        render: (it) => formatMoney(it.unitPrice),
+        cell: { type: "entity-money", value: (it) => it.unitPrice },
       },
       {
         id: "status",
         kind: "status",
         ratio: 0.6,
         header: "Status",
-        render: (it) => <ItemActiveBadge active={it.isActive ?? true} />,
+        cell: {
+          type: "customRender",
+          reason: "domain badge: ItemActiveBadge",
+          render: (it) => <ItemActiveBadge active={it.isActive ?? true} />,
+        },
       },
     ],
     [],
@@ -497,7 +508,7 @@ function ItemsTabBody({
               it.id === selectedItemId ? onCloseItemRail() : onSelectItem(it.id)
             }
             selectedRowKey={selectedItemId ?? undefined}
-            loadingState={
+            legacyLoadingStateNode={
               itemsQuery.isLoading ? (
                 <div className="px-4 py-3 space-y-2">
                   <Skeleton className="h-7 w-full" />
@@ -506,17 +517,15 @@ function ItemsTabBody({
                 </div>
               ) : undefined
             }
+            errorState={
+              itemsQuery.isError
+                ? { kind: "error", title: "Failed to load inventory items", description: "Check your connection and try again.", primaryAction: { label: "Retry", onClick: () => itemsQuery.refetch(), variant: "outline" } }
+                : undefined
+            }
             emptyState={
-              <CanonicalEmpty
-                icon={Boxes}
-                message={items.length === 0 ? "No items yet" : "No items match these filters"}
-                hint={
-                  items.length === 0
-                    ? "Click + New Item to add the first product or service to your catalog."
-                    : "Try clearing the search or widening the filters."
-                }
-                testId="inventory-items-empty"
-              />
+              items.length === 0
+                ? { kind: "empty", icon: "box", title: "No items yet", description: "Click + New Item to add the first product or service to your catalog.", layout: "card", testId: "inventory-items-empty" }
+                : { kind: "no-results", icon: "search", title: "No items match these filters", description: "Try clearing the search or widening the filters.", layout: "card", testId: "inventory-items-empty" }
             }
           />
         </div>
@@ -750,121 +759,133 @@ function LocationsTabBody({
         kind: "primary",
         ratio: 1.4,
         header: "Name",
-        render: (loc) => loc.name,
+        cell: { type: "entity-primary", value: (loc) => loc.name },
       },
       {
         id: "type",
         kind: "badge",
         ratio: 0.7,
         header: "Type",
-        render: (loc) => <LocationTypeBadge type={loc.type} />,
+        cell: {
+          type: "customRender",
+          reason: "domain badge: LocationTypeBadge",
+          render: (loc) => <LocationTypeBadge type={loc.type} />,
+        },
       },
       {
         id: "assigned",
         kind: "text",
         ratio: 1.0,
         header: "Assigned User",
-        render: (loc) => loc.assignedUserName ?? "—",
+        cell: { type: "entity-text", value: (loc) => loc.assignedUserName },
       },
       {
         id: "address",
         kind: "text",
         ratio: 1.5,
         header: "Address",
-        render: (loc) => formatAddress(loc),
+        cell: { type: "entity-text", value: (loc) => formatAddress(loc) },
       },
       {
         id: "items",
         kind: "money",
         ratio: 0.45,
         header: <span>Items</span>,
-        render: (loc) => (
-          <span data-testid={`inventory-location-itemcount-${loc.id}`}>
-            {loc.itemCount}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "item count with per-row data-testid",
+          render: (loc) => (
+            <span data-testid={`inventory-location-itemcount-${loc.id}`}>
+              {loc.itemCount}
+            </span>
+          ),
+        },
       },
       {
         id: "qty",
         kind: "money",
         ratio: 0.5,
         header: <span>Total Qty</span>,
-        render: (loc) => (
-          <span data-testid={`inventory-location-totalqty-${loc.id}`}>
-            {formatQty(loc.totalQuantity)}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "formatted quantity with per-row data-testid",
+          render: (loc) => (
+            <span data-testid={`inventory-location-totalqty-${loc.id}`}>
+              {formatQty(loc.totalQuantity)}
+            </span>
+          ),
+        },
       },
       {
         id: "status",
         kind: "status",
         ratio: 0.7,
         header: "Status",
-        render: (loc) => (
-          <span className="flex items-center gap-1">
-            <ItemActiveBadge active={loc.isActive} />
-            {loc.lowStockCount > 0 && (
-              <StatusChip
-                tone="warning"
-                data-testid={`inventory-location-low-stock-${loc.id}`}
-              >
-                {loc.lowStockCount} low
-              </StatusChip>
-            )}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "multi-badge: ItemActiveBadge + conditional low-stock chip",
+          render: (loc) => (
+            <>
+              <ItemActiveBadge active={loc.isActive} />
+              {loc.lowStockCount > 0 && (
+                <StatusChip
+                  tone="warning"
+                  data-testid={`inventory-location-low-stock-${loc.id}`}
+                >
+                  {loc.lowStockCount} low
+                </StatusChip>
+              )}
+            </>
+          ),
+        },
       },
       {
         id: "actions",
         kind: "badge",
         ratio: 0.4,
         header: "",
-        render: (loc) => (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="h-7 w-7 inline-flex items-center justify-center rounded hover:bg-slate-100"
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Actions for ${loc.name}`}
-                data-testid={`inventory-location-actions-${loc.id}`}
-              >
-                <MoreHorizontal className="h-4 w-4 text-slate-500" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectLocation(loc.id);
-                }}
-              >
-                View details
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onEditLocation(loc);
-                }}
-              >
-                <Pencil className="h-3.5 w-3.5 mr-2" />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {loc.isActive && (
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    archiveLocation(loc.id);
-                  }}
+        cell: {
+          type: "customRender",
+          reason: "row action menu with edit / archive mutations",
+          render: (loc) => (
+            <ActionMenu
+              items={[
+                {
+                  id: "view-details",
+                  label: "View details",
+                  onSelect: () => onSelectLocation(loc.id),
+                },
+                {
+                  id: "edit",
+                  label: "Edit",
+                  icon: Pencil,
+                  onSelect: () => onEditLocation(loc),
+                },
+                {
+                  id: "archive",
+                  label: "Archive",
+                  icon: Archive,
+                  onSelect: () => archiveLocation(loc.id),
+                  hidden: !loc.isActive,
+                  separator: true,
+                },
+              ] satisfies ActionMenuItemDescriptor[]}
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`Actions for ${loc.name}`}
+                  data-testid={`inventory-location-actions-${loc.id}`}
                 >
-                  <Archive className="h-3.5 w-3.5 mr-2" />
-                  Archive
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ),
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              }
+              align="end"
+            />
+          ),
+        },
       },
     ],
     [onSelectLocation, onEditLocation],
@@ -951,7 +972,7 @@ function LocationsTabBody({
                 : onSelectLocation(loc.id)
             }
             selectedRowKey={selectedLocationId ?? undefined}
-            loadingState={
+            legacyLoadingStateNode={
               locationsQuery.isLoading ? (
                 <div className="px-4 py-3 space-y-2">
                   <Skeleton className="h-7 w-full" />
@@ -959,21 +980,15 @@ function LocationsTabBody({
                 </div>
               ) : undefined
             }
+            errorState={
+              locationsQuery.isError
+                ? { kind: "error", title: "Failed to load inventory locations", description: "Check your connection and try again.", primaryAction: { label: "Retry", onClick: () => locationsQuery.refetch(), variant: "outline" } }
+                : undefined
+            }
             emptyState={
-              <CanonicalEmpty
-                icon={MapPin}
-                message={
-                  rows.length === 0
-                    ? "No locations yet"
-                    : "No locations match these filters"
-                }
-                hint={
-                  rows.length === 0
-                    ? "Add warehouses, vehicles, and other places stock lives."
-                    : "Try clearing the search or widening the filters."
-                }
-                testId="inventory-locations-empty"
-              />
+              rows.length === 0
+                ? { kind: "empty", icon: "box", title: "No locations yet", description: "Add warehouses, vehicles, and other places stock lives.", layout: "card", testId: "inventory-locations-empty" }
+                : { kind: "no-results", icon: "search", title: "No locations match these filters", description: "Try clearing the search or widening the filters.", layout: "card", testId: "inventory-locations-empty" }
             }
           />
         </div>
@@ -1120,51 +1135,65 @@ function LowStockTabBody() {
         kind: "primary",
         ratio: 1.3,
         header: "Item",
-        render: (r) => (
-          <span>
-            {r.itemName ?? "—"}
-            {r.itemSku ? <span className="text-slate-500"> · {r.itemSku}</span> : null}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "item name + SKU sub-text composite",
+          render: (r) => (
+            <span>
+              {r.itemName ?? "—"}
+              {r.itemSku ? <span className="text-slate-500"> · {r.itemSku}</span> : null}
+            </span>
+          ),
+        },
       },
       {
         id: "location",
         kind: "text",
         ratio: 1.0,
         header: "Location",
-        render: (r) => r.locationName,
+        cell: { type: "entity-text", value: (r) => r.locationName },
       },
       {
         id: "available",
         kind: "money",
         ratio: 0.5,
         header: <span>Available</span>,
-        render: (r) => formatQty(r.availableQuantity),
+        cell: { type: "customRender", reason: "plain quantity via formatQty helper", render: (r) => formatQty(r.availableQuantity) },
       },
       {
         id: "minimum",
         kind: "money",
         ratio: 0.5,
         header: <span>Minimum</span>,
-        render: (r) => (r.minimumQuantity != null ? formatQty(r.minimumQuantity) : "—"),
+        cell: {
+          type: "entity-text",
+          value: (r) => r.minimumQuantity != null ? formatQty(r.minimumQuantity) : null,
+        },
       },
       {
         id: "reorder",
         kind: "money",
         ratio: 0.5,
         header: <span>Reorder At</span>,
-        render: (r) => (r.reorderPoint != null ? formatQty(r.reorderPoint) : "—"),
+        cell: {
+          type: "entity-text",
+          value: (r) => r.reorderPoint != null ? formatQty(r.reorderPoint) : null,
+        },
       },
       {
         id: "suggested",
         kind: "money",
         ratio: 0.6,
         header: <span>Suggested</span>,
-        render: (r) => (
-          <span data-testid={`inventory-low-stock-suggested-${r.id}`}>
-            {formatQty(r.suggestedReplenishment)}
-          </span>
-        ),
+        cell: {
+          type: "customRender",
+          reason: "replenishment quantity with per-row data-testid",
+          render: (r) => (
+            <span data-testid={`inventory-low-stock-suggested-${r.id}`}>
+              {formatQty(r.suggestedReplenishment)}
+            </span>
+          ),
+        },
       },
     ],
     [],
@@ -1175,7 +1204,7 @@ function LowStockTabBody() {
       rows={rows}
       columns={columns}
       rowKey={(r) => r.id}
-      loadingState={
+      legacyLoadingStateNode={
         lowStockQuery.isLoading ? (
           <div className="px-4 py-3 space-y-2">
             <Skeleton className="h-7 w-full" />
@@ -1183,42 +1212,24 @@ function LowStockTabBody() {
           </div>
         ) : undefined
       }
-      emptyState={
-        <CanonicalEmpty
-          icon={AlertTriangle}
-          message="Nothing is low on stock"
-          hint="Items appear here when their available quantity (on-hand minus reserved) drops to or below the configured minimum."
-          testId="inventory-low-stock-empty"
-        />
+      errorState={
+        lowStockQuery.isError
+          ? { kind: "error", title: "Failed to load low-stock list", description: "Check your connection and try again.", primaryAction: { label: "Retry", onClick: () => lowStockQuery.refetch(), variant: "outline" } }
+          : undefined
       }
+      emptyState={{
+        kind: "empty",
+        icon: "box",
+        title: "Nothing is low on stock",
+        description: "Items appear here when their available quantity (on-hand minus reserved) drops to or below the configured minimum.",
+        layout: "card",
+        testId: "inventory-low-stock-empty",
+      }}
     />
   );
 }
 
-// ─── Helpers + shared canonical primitives ──────────────────────────
-
-function CanonicalEmpty({
-  icon: Icon,
-  message,
-  hint,
-  testId,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  message: string;
-  hint?: string;
-  testId: string;
-}) {
-  return (
-    <div
-      className="text-center py-12 px-4 space-y-2 rounded-md border border-slate-200 bg-white"
-      data-testid={testId}
-    >
-      <Icon className="h-6 w-6 mx-auto text-slate-400" />
-      <p className="text-row text-slate-700">{message}</p>
-      {hint && <p className="text-helper text-slate-500">{hint}</p>}
-    </div>
-  );
-}
+// ─── Helpers ─────────────────────────────────────────────────────────
 
 interface SummaryCardProps {
   label: string;
@@ -1271,13 +1282,6 @@ function renderAvailable(it: InventoryItemRow): React.ReactNode {
       {formatQty(it.stock.totalAvailable)}
     </span>
   );
-}
-
-function formatMoney(value: string | null | undefined): React.ReactNode {
-  if (value == null || value === "") return <span className="text-slate-400">—</span>;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return <span className="text-slate-400">—</span>;
-  return `$${n.toFixed(2)}`;
 }
 
 function formatQty(value: string | null | undefined): string {

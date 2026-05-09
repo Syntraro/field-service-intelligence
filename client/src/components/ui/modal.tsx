@@ -1,5 +1,7 @@
 /**
  * Canonical Modal primitives (2026-05-06).
+ * Updated 2026-05-09: added ModalStateBody (loading/empty/error) and
+ * ConfirmModal (destructive/neutral confirm wrapper).
  *
  * ┌─────────────────────────────────────────────────────────────────┐
  * │ READ THIS BEFORE BUILDING A MODAL.                              │
@@ -60,6 +62,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button, type ButtonProps } from "@/components/ui/button";
+import { Loader2, AlertTriangle, PackageSearch } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Shell ───────────────────────────────────────────────────────────
@@ -285,3 +288,227 @@ export const ModalSecondaryAction = React.forwardRef<
   />
 ));
 ModalSecondaryAction.displayName = "ModalSecondaryAction";
+
+// ── ModalStateBody ───────────────────────────────────────────────────
+//
+// Canonical loading / empty / error state block for modal body areas
+// that contain a list, table, or async content. Eliminates per-modal
+// hand-rolled three-state layouts with their divergent inline tokens.
+//
+// Usage:
+//   {isLoading ? (
+//     <ModalStateBody variant="loading" message="Loading items…" />
+//   ) : items.length === 0 ? (
+//     <ModalStateBody variant="empty" message="No items found." />
+//   ) : isError ? (
+//     <ModalStateBody variant="error" message="Couldn't load items." onRetry={refetch} />
+//   ) : (
+//     /* normal content */
+//   )}
+
+export interface ModalStateBodyProps {
+  variant: "loading" | "empty" | "error";
+  /** Primary message rendered below the icon. Required. */
+  message: string;
+  /** Optional secondary hint line rendered below the message. */
+  submessage?: string;
+  /** Only used when variant="error". Renders a "Retry" button. */
+  onRetry?: () => void;
+  /** testId passed to the root div. */
+  "data-testid"?: string;
+  className?: string;
+}
+
+/**
+ * `ModalStateBody` locks the loading / empty / error body state layout
+ * so every async-content modal produces the same visual rhythm.
+ *
+ * Typography contract:
+ *   message       text-row text-text-secondary
+ *   submessage    text-helper text-muted-foreground
+ *   retry button  size="sm" variant="outline" (mt-3)
+ *
+ * Icon contract:
+ *   loading  Loader2 animate-spin, muted-foreground
+ *   empty    PackageSearch, muted-foreground
+ *   error    AlertTriangle, rose-500
+ */
+export function ModalStateBody({
+  variant,
+  message,
+  submessage,
+  onRetry,
+  className,
+  "data-testid": testId,
+}: ModalStateBodyProps) {
+  const icon =
+    variant === "loading" ? (
+      <Loader2
+        className="h-5 w-5 text-muted-foreground animate-spin"
+        aria-hidden="true"
+      />
+    ) : variant === "error" ? (
+      <AlertTriangle className="h-5 w-5 text-rose-500" aria-hidden="true" />
+    ) : (
+      <PackageSearch className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+    );
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center gap-2 py-8 px-4 text-center",
+        variant === "error" &&
+          "rounded-md border border-rose-200 bg-rose-50/60",
+        className,
+      )}
+      data-testid={testId}
+      role={variant === "error" ? "alert" : undefined}
+    >
+      {icon}
+      <p className="text-row text-text-secondary">{message}</p>
+      {submessage && (
+        <p className="text-helper text-muted-foreground">{submessage}</p>
+      )}
+      {variant === "error" && onRetry && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-1"
+          onClick={onRetry}
+        >
+          Retry
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// ── ConfirmModal ─────────────────────────────────────────────────────
+//
+// Canonical confirmation wrapper for destructive and neutral confirms.
+// Replaces hand-rolled AlertDialog usages and raw Dialog confirms so
+// all confirmation flows have a single consistent layout, button order,
+// and pending state.
+//
+// Usage:
+//   <ConfirmModal
+//     open={voidOpen}
+//     onOpenChange={setVoidOpen}
+//     title="Void Invoice?"
+//     description="This action cannot be undone."
+//     emphasis="The invoice will be marked void and no further payments can be recorded."
+//     confirmLabel="Void Invoice"
+//     variant="destructive"
+//     isPending={voidMutation.isPending}
+//     onConfirm={() => voidMutation.mutate()}
+//   />
+
+export interface ConfirmModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Modal title. */
+  title: string;
+  /** Sentence-form description rendered below the title. */
+  description: string;
+  /**
+   * Optional secondary line rendered below description in a heavier
+   * weight. For destructive modals: displayed in `text-destructive`.
+   * For neutral modals: displayed in `text-text-secondary`.
+   */
+  emphasis?: string;
+  /** Label for the confirm button. Defaults to "Confirm". */
+  confirmLabel?: string;
+  /** Label for the cancel button. Defaults to "Cancel". */
+  cancelLabel?: string;
+  /**
+   * "destructive" — confirm button renders with `bg-destructive`
+   * styling. Use for irreversible actions (delete, void, cancel).
+   * "neutral" — confirm button uses the default primary (green) style.
+   */
+  variant?: "destructive" | "neutral";
+  /** When true the confirm button shows a pending label and is disabled. */
+  isPending?: boolean;
+  /** Called when the user clicks the confirm button. */
+  onConfirm: () => void;
+  /** Optional testId prefix. Produces `{prefix}-confirm-modal`. */
+  testIdPrefix?: string;
+  className?: string;
+}
+
+/**
+ * `ConfirmModal` is the single canonical confirmation dialog for both
+ * destructive ("Void", "Delete", "Cancel job") and neutral
+ * ("Archive", "Apply template") confirms.
+ *
+ * Typography contract:
+ *   title         ModalTitle (text-section-title font-semibold)
+ *   description   ModalDescription (text-row text-slate-600)
+ *   emphasis      text-row font-medium + destructive/secondary color
+ *   cancel        ModalSecondaryAction (outline sm)
+ *   confirm       ModalPrimaryAction (sm) + destructive className when variant="destructive"
+ *
+ * Button order: Cancel LEFT, Confirm RIGHT (matches ModalFooter canonical order).
+ */
+export function ConfirmModal({
+  open,
+  onOpenChange,
+  title,
+  description,
+  emphasis,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  variant = "neutral",
+  isPending = false,
+  onConfirm,
+  testIdPrefix,
+  className,
+}: ConfirmModalProps) {
+  const prefix = testIdPrefix ?? "confirm";
+  return (
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className={cn("max-w-md", className)}
+      data-testid={`${prefix}-modal`}
+    >
+      <ModalHeader>
+        <ModalTitle>{title}</ModalTitle>
+        <ModalDescription>{description}</ModalDescription>
+      </ModalHeader>
+      {emphasis && (
+        <ModalBody className="pt-0 pb-0">
+          <p
+            className={cn(
+              "text-row font-medium",
+              variant === "destructive"
+                ? "text-destructive"
+                : "text-text-secondary",
+            )}
+          >
+            {emphasis}
+          </p>
+        </ModalBody>
+      )}
+      <ModalFooter>
+        <ModalSecondaryAction
+          onClick={() => onOpenChange(false)}
+          disabled={isPending}
+          data-testid={`${prefix}-cancel`}
+        >
+          {cancelLabel}
+        </ModalSecondaryAction>
+        <ModalPrimaryAction
+          onClick={onConfirm}
+          disabled={isPending}
+          className={cn(
+            variant === "destructive" &&
+              "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          )}
+          data-testid={`${prefix}-confirm`}
+        >
+          {confirmLabel}
+        </ModalPrimaryAction>
+      </ModalFooter>
+    </ModalShell>
+  );
+}

@@ -51,16 +51,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+// 2026-05-09: nested AlertDialogs (confirmDeleteNote, confirmRemoveAll)
+// migrated to canonical ConfirmModal. AlertDialog import removed.
+import { ConfirmModal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -746,42 +739,32 @@ export function EntityNoteDialog({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={confirmDeleteNote} onOpenChange={setConfirmDeleteNote}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this note?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The note and any attachments will be removed. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteNote}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={confirmDeleteNote}
+        onOpenChange={setConfirmDeleteNote}
+        title="Delete this note?"
+        description="The note and any attachments will be removed. This cannot be undone."
+        confirmLabel="Delete"
+        variant="destructive"
+        isPending={busy}
+        onConfirm={handleDeleteNote}
+        testIdPrefix="delete-note"
+      />
 
-      <AlertDialog open={confirmRemoveAll} onOpenChange={setConfirmRemoveAll}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove all saved attachments?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This detaches every saved attachment on this note. The note itself stays. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setConfirmRemoveAll(false);
-                void detachAllExisting();
-              }}
-            >
-              Remove all
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={confirmRemoveAll}
+        onOpenChange={setConfirmRemoveAll}
+        title="Remove all saved attachments?"
+        description="This detaches every saved attachment on this note. The note itself stays. This cannot be undone."
+        confirmLabel="Remove all"
+        variant="destructive"
+        isPending={busy}
+        onConfirm={() => {
+          setConfirmRemoveAll(false);
+          void detachAllExisting();
+        }}
+        testIdPrefix="remove-all-attachments"
+      />
     </>
   );
 }

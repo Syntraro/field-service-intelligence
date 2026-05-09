@@ -21,12 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Plus, MoreHorizontal, Pencil, Star, Power, Loader2, ArrowLeft, FileText, Copy, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -154,8 +149,7 @@ export default function JobTemplatesPage() {
     },
   });
 
-  const handleDeleteClick = (template: JobTemplate, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDeleteClick = (template: JobTemplate) => {
     setTemplateToDelete(template);
     setDeleteConfirmOpen(true);
   };
@@ -290,71 +284,66 @@ export default function JobTemplatesPage() {
                         : format(new Date(template.createdAt), "MMM d, yyyy")}
                     </TableCell>
                     <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                          <Button variant="ghost" size="icon" data-testid={`button-actions-${template.id}`}>
+                      <ActionMenu
+                        items={[
+                          {
+                            id: `edit-${template.id}`,
+                            label: "Edit",
+                            icon: Pencil,
+                            onSelect: () => handleEdit(template),
+                            testId: `action-edit-${template.id}`,
+                          },
+                          {
+                            id: `set-default-${template.id}`,
+                            label: "Set as Default",
+                            icon: Star,
+                            onSelect: () => setDefaultMutation.mutate({
+                              id: template.id,
+                              jobType: template.jobType!,
+                            }),
+                            hidden: !(template.jobType && template.isActive && !template.isDefaultForJobType),
+                            testId: `action-set-default-${template.id}`,
+                          },
+                          {
+                            id: `toggle-active-${template.id}`,
+                            label: template.isActive ? "Deactivate" : "Activate",
+                            icon: Power,
+                            onSelect: () => toggleActiveMutation.mutate({
+                              id: template.id,
+                              isActive: !template.isActive,
+                            }),
+                            testId: `action-toggle-active-${template.id}`,
+                          },
+                          {
+                            id: `duplicate-${template.id}`,
+                            label: "Duplicate",
+                            icon: Copy,
+                            onSelect: () => cloneMutation.mutate(template.id),
+                            testId: `action-duplicate-${template.id}`,
+                          },
+                          {
+                            id: `delete-${template.id}`,
+                            label: "Delete",
+                            icon: Trash2,
+                            onSelect: () => handleDeleteClick(template),
+                            tone: "destructive",
+                            testId: `action-delete-${template.id}`,
+                          },
+                        ] satisfies ActionMenuItemDescriptor[]}
+                        trigger={
+                          // stopPropagation on trigger only — items render in a Radix portal
+                          // outside the TableRow, so their onSelect never bubbles to row click.
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            data-testid={`button-actions-${template.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEdit(template);
-                            }}
-                            data-testid={`action-edit-${template.id}`}
-                          >
-                            <Pencil className="h-4 w-4 mr-2" />
-                            Edit
-                          </DropdownMenuItem>
-                          {template.jobType && template.isActive && !template.isDefaultForJobType && (
-                            <DropdownMenuItem
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDefaultMutation.mutate({
-                                  id: template.id,
-                                  jobType: template.jobType!,
-                                });
-                              }}
-                              data-testid={`action-set-default-${template.id}`}
-                            >
-                              <Star className="h-4 w-4 mr-2" />
-                              Set as Default
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleActiveMutation.mutate({
-                                id: template.id,
-                                isActive: !template.isActive,
-                              });
-                            }}
-                            data-testid={`action-toggle-active-${template.id}`}
-                          >
-                            <Power className="h-4 w-4 mr-2" />
-                            {template.isActive ? "Deactivate" : "Activate"}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              cloneMutation.mutate(template.id);
-                            }}
-                            data-testid={`action-duplicate-${template.id}`}
-                          >
-                            <Copy className="h-4 w-4 mr-2" />
-                            Duplicate
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => handleDeleteClick(template, e)}
-                            className="text-destructive focus:text-destructive"
-                            data-testid={`action-delete-${template.id}`}
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                        }
+                        align="end"
+                      />
                     </TableCell>
                   </TableRow>
                 ))}

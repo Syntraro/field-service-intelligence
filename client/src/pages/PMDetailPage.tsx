@@ -46,7 +46,6 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -59,7 +58,6 @@ import {
 
 import { PmMonthPicker } from "@/components/pm/PmMonthPicker";
 import { PmGenerationModeSelector } from "@/components/pm/PmGenerationModeSelector";
-import { PmServiceWindowInputs } from "@/components/pm/PmServiceWindowInputs";
 import { PmBillingFields } from "@/components/pm/PmBillingFields";
 
 import type { RecurringJobTemplate, Client } from "@shared/schema";
@@ -372,34 +370,122 @@ function ScheduleCard({
             onDayChange={(generationDayOfMonth) => onChange({ generationDayOfMonth })}
             testIdPrefix="pm-detail"
           />
-          <PmServiceWindowInputs
-            daysBefore={form.serviceWindowDaysBefore}
-            daysAfter={form.serviceWindowDaysAfter}
-            onDaysBeforeChange={(serviceWindowDaysBefore) => onChange({ serviceWindowDaysBefore })}
-            onDaysAfterChange={(serviceWindowDaysAfter) => onChange({ serviceWindowDaysAfter })}
-            testIdPrefix="pm-detail"
-          />
-          {/* Service Plans (2026-05-07): per-plan auto-generate toggle. Same
-              copy + behavior contract as the create wizard — see PMWizardPage
-              and the auto-promote logic in server/domain/recurrence.ts. */}
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card px-3 py-2.5">
-            <div className="min-w-0 flex-1">
-              <Label
-                htmlFor="pm-detail-auto-generate-jobs"
-                className="text-sm font-medium cursor-pointer"
-              >
-                Automatically generate work
-              </Label>
+          {/* Service Generation (2026-05-09): one card, two selectable rows.
+              autoGenerateJobs: true → auto create; false → notify + window. */}
+          <div className="rounded-md border border-border bg-card overflow-hidden" data-testid="pm-detail-service-generation">
+            <div className="px-3 pt-3 pb-2 border-b border-border">
+              <h3 className="text-sm font-semibold">Service Generation</h3>
               <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-                Automatically creates an unscheduled job when service becomes due. The job lands on the Work Due queue — a dispatcher still assigns the technician and schedules it.
+                Choose how this plan is handled when service is due.
               </p>
             </div>
-            <Switch
-              id="pm-detail-auto-generate-jobs"
-              checked={form.autoGenerateJobs}
-              onCheckedChange={(v) => onChange({ autoGenerateJobs: Boolean(v) })}
-              data-testid="pm-detail-auto-generate-jobs"
-            />
+
+            <button
+              type="button"
+              onClick={() => onChange({ autoGenerateJobs: true })}
+              className={`w-full text-left px-3 py-2.5 transition-colors ${
+                form.autoGenerateJobs ? "bg-primary/5" : "hover:bg-muted/40"
+              }`}
+              data-testid="pm-detail-service-gen-auto"
+            >
+              <div className="flex items-start gap-2.5">
+                <div className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                  form.autoGenerateJobs ? "border-primary" : "border-muted-foreground/40"
+                }`}>
+                  {form.autoGenerateJobs && <div className="h-2 w-2 rounded-full bg-primary" />}
+                </div>
+                <div className="min-w-0">
+                  <div className="font-medium text-sm">Automatically create work orders</div>
+                  <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                    An unscheduled work order will be created automatically on the job creation date.
+                  </div>
+                  {form.autoGenerateJobs && (
+                    <div className="text-xs text-primary mt-1 leading-snug">
+                      Dispatch can then schedule and assign the work.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </button>
+
+            <div className="flex items-center gap-2 px-3 py-1">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">OR</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+
+            <div className={!form.autoGenerateJobs ? "bg-primary/5" : ""}>
+              <button
+                type="button"
+                onClick={() => onChange({ autoGenerateJobs: false })}
+                className={`w-full text-left px-3 py-2.5 transition-colors ${
+                  !form.autoGenerateJobs ? "" : "hover:bg-muted/40"
+                }`}
+                data-testid="pm-detail-service-gen-manual"
+              >
+                <div className="flex items-start gap-2.5">
+                  <div className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                    !form.autoGenerateJobs ? "border-primary" : "border-muted-foreground/40"
+                  }`}>
+                    {!form.autoGenerateJobs && <div className="h-2 w-2 rounded-full bg-primary" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm">Notify me to create the work order</div>
+                    <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                      You'll be notified so you can manually create the work order.
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              {!form.autoGenerateJobs && (
+                <div className="px-3 pb-3 ml-6 space-y-2.5">
+                  <div>
+                    <div className="text-xs font-semibold">Notification window</div>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                      You'll be notified this many days before the work order is created. The work order should be completed within the specified days of creation or it will be marked overdue.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={90}
+                        className="w-16 h-8 text-sm"
+                        value={form.serviceWindowDaysBefore}
+                        onChange={(e) =>
+                          onChange({ serviceWindowDaysBefore: Math.max(0, parseInt(e.target.value, 10) || 0) })
+                        }
+                        data-testid="pm-detail-window-before"
+                      />
+                      <Label className="text-xs text-muted-foreground">days before job creation</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={90}
+                        className="w-16 h-8 text-sm"
+                        value={form.serviceWindowDaysAfter}
+                        onChange={(e) =>
+                          onChange({ serviceWindowDaysAfter: Math.max(0, parseInt(e.target.value, 10) || 0) })
+                        }
+                        data-testid="pm-detail-window-after"
+                      />
+                      <Label className="text-xs text-muted-foreground">days after job creation</Label>
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+                    Example: You'll be notified{" "}
+                    <span className="font-medium text-foreground">{form.serviceWindowDaysBefore}</span>{" "}
+                    days before the work order is created. The work order should be completed within{" "}
+                    <span className="font-medium text-foreground">{form.serviceWindowDaysAfter}</span>{" "}
+                    days of creation or it will be marked overdue.
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -436,12 +522,10 @@ function ScheduleCard({
         <DetailRow label="Start date" value={template.startDate ?? "—"} />
         {template.endDate && <DetailRow label="End date" value={template.endDate} />}
         <DetailRow
-          label="Service window"
-          value={`${template.serviceWindowDaysBefore ?? 7} days before — ${template.serviceWindowDaysAfter ?? 14} days after`}
-        />
-        <DetailRow
-          label="Auto-generate work"
-          value={(template as { autoGenerateJobs?: boolean | null }).autoGenerateJobs ? "On — creates unscheduled jobs" : "Off — manual generation"}
+          label="Service generation"
+          value={(template as { autoGenerateJobs?: boolean | null }).autoGenerateJobs
+            ? "Automatically create work orders"
+            : `Notify manually — ${template.serviceWindowDaysBefore ?? 7}d before / ${template.serviceWindowDaysAfter ?? 14}d after`}
         />
       </div>
     </SectionCard>

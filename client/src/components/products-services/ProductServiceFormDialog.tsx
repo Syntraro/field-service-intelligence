@@ -4,6 +4,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  FormField,
+  FormLabel,
+  FormRow,
+  FormSection,
+  FormErrorText,
+} from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple form modal). Body is a standard
@@ -12,6 +19,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 // <ModalBody>. Width (`sm:max-w-[550px]`) + `overflow-visible` (lets the
 // Type and Category Select dropdowns extend outside the modal) passed at
 // the call-site per Modal Taxonomy rule #5.
+// 2026-05-09 Phase 2C: migrated body from raw Label/div stacks to canonical
+// FormField / FormLabel / FormRow / FormSection / FormErrorText. No behavior changes.
 import {
   ModalShell,
   ModalHeader,
@@ -49,7 +58,7 @@ export function ProductServiceFormDialog({
   checkDuplicate,
   uniqueCategories = [],
 }: ProductServiceFormDialogProps) {
-  const setFormField = <K extends keyof ProductFormData>(field: K, value: ProductFormData[K]) => {
+  const setField = <K extends keyof ProductFormData>(field: K, value: ProductFormData[K]) => {
     onFormDataChange({ ...formData, [field]: value });
   };
 
@@ -57,22 +66,14 @@ export function ProductServiceFormDialog({
     const cost = parseFloat(e.target.value) || 0;
     const markup = parseFloat(formData.markupPercent) || 0;
     const calculatedPrice = markup > 0 ? (cost * (1 + markup / 100)).toFixed(2) : "";
-    onFormDataChange({
-      ...formData,
-      cost: e.target.value,
-      unitPrice: calculatedPrice
-    });
+    onFormDataChange({ ...formData, cost: e.target.value, unitPrice: calculatedPrice });
   };
 
   const handleMarkupChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const markup = parseFloat(e.target.value) || 0;
     const cost = parseFloat(formData.cost) || 0;
     const calculatedPrice = cost > 0 ? (cost * (1 + markup / 100)).toFixed(2) : "";
-    onFormDataChange({
-      ...formData,
-      markupPercent: e.target.value,
-      unitPrice: calculatedPrice
-    });
+    onFormDataChange({ ...formData, markupPercent: e.target.value, unitPrice: calculatedPrice });
   };
 
   return (
@@ -94,105 +95,156 @@ export function ProductServiceFormDialog({
       </ModalHeader>
 
       <ModalBody className="space-y-3">
-        {/* Row A: Type | SKU */}
-        <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Type *</Label>
-              <Select value={formData.type} onValueChange={(v: "service" | "product") => setFormField("type", v)}>
-                <SelectTrigger data-testid="select-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="product">Product</SelectItem>
-                  <SelectItem value="service">Service</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>SKU</Label>
-              <Input value={formData.sku} onChange={(e) => setFormField("sku", e.target.value)} placeholder="e.g. HVAC-001" data-testid="input-sku" />
-            </div>
-          </div>
-
-          {/* Row B: Name (full width) */}
-          <div className="space-y-1.5">
-            <Label>Name *</Label>
+        {/* Row A: Type | SKU — Type is a Select so keeps visible label */}
+        <FormRow className="grid-cols-2">
+          <FormField>
+            <FormLabel>Type *</FormLabel>
+            <Select value={formData.type} onValueChange={(v: "service" | "product") => setField("type", v)}>
+              <SelectTrigger data-testid="select-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="product">Product</SelectItem>
+                <SelectItem value="service">Service</SelectItem>
+              </SelectContent>
+            </Select>
+          </FormField>
+          <FormField>
+            <FormLabel htmlFor="ps-sku" srOnly>SKU</FormLabel>
             <Input
-              value={formData.name}
-              onChange={(e) => setFormField("name", e.target.value)}
-              placeholder="Enter name"
-              data-testid="input-name"
-              className={checkDuplicate ? "border-destructive" : ""}
+              id="ps-sku"
+              value={formData.sku}
+              onChange={(e) => setField("sku", e.target.value)}
+              placeholder="SKU (e.g. HVAC-001)"
+              data-testid="input-sku"
             />
-            {checkDuplicate && (
-              <p className="text-xs text-destructive">An item named "{checkDuplicate.name}" already exists</p>
-            )}
-          </div>
+          </FormField>
+        </FormRow>
 
-          {/* Row C: Description (full width) */}
-          <div className="space-y-1.5">
-            <Label>Description</Label>
-            <Textarea value={formData.description} onChange={(e) => setFormField("description", e.target.value)} rows={2} data-testid="input-description" />
-          </div>
+        {/* Row B: Name (full width) */}
+        <FormField>
+          <FormLabel htmlFor="ps-name" srOnly>Name</FormLabel>
+          <Input
+            id="ps-name"
+            value={formData.name}
+            onChange={(e) => setField("name", e.target.value)}
+            placeholder="Name *"
+            data-testid="input-name"
+            className={checkDuplicate ? "border-destructive" : ""}
+          />
+          {checkDuplicate && (
+            <FormErrorText>An item named "{checkDuplicate.name}" already exists</FormErrorText>
+          )}
+        </FormField>
 
-          {/* Row D: Pricing (3 columns) */}
-          <div className="border-t pt-2">
-            <p className="text-sm font-medium mb-2">Pricing</p>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1.5">
-                <Label>Cost</Label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                  <Input type="number" step="0.01" min="0" value={formData.cost} onChange={handleCostChange} placeholder="0.00" className="pl-7" data-testid="input-cost" />
-                </div>
+        {/* Row C: Description (full width) */}
+        <FormField>
+          <FormLabel htmlFor="ps-description" srOnly>Description</FormLabel>
+          <Textarea
+            id="ps-description"
+            value={formData.description}
+            onChange={(e) => setField("description", e.target.value)}
+            rows={2}
+            data-testid="input-description"
+          />
+        </FormField>
+
+        {/* Row D: Pricing section */}
+        <FormSection title="Pricing" className="border-t pt-2">
+          <FormRow className="grid-cols-3">
+            <FormField>
+              <FormLabel htmlFor="ps-cost" srOnly>Cost</FormLabel>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                <Input
+                  id="ps-cost"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={formData.cost}
+                  onChange={handleCostChange}
+                  placeholder="0.00"
+                  className="pl-7"
+                  data-testid="input-cost"
+                />
               </div>
-              <div className="space-y-1.5">
-                <Label>Markup</Label>
-                <div className="relative">
-                  <Input type="number" step="1" min="0" value={formData.markupPercent} onChange={handleMarkupChange} placeholder="50" className="pr-7" data-testid="input-markup" />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
-                </div>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="ps-markup" srOnly>Markup</FormLabel>
+              <div className="relative">
+                <Input
+                  id="ps-markup"
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={formData.markupPercent}
+                  onChange={handleMarkupChange}
+                  placeholder="50"
+                  className="pr-7"
+                  data-testid="input-markup"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
               </div>
-              <div className="space-y-1.5">
-                <Label>Price</Label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                  <Input type="number" step="0.01" min="0" value={formData.unitPrice} onChange={(e) => setFormField("unitPrice", e.target.value)} placeholder="0.00" className="pl-7" data-testid="input-price" />
-                </div>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="ps-price" srOnly>Price</FormLabel>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                <Input
+                  id="ps-price"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={formData.unitPrice}
+                  onChange={(e) => setField("unitPrice", e.target.value)}
+                  placeholder="0.00"
+                  className="pl-7"
+                  data-testid="input-price"
+                />
               </div>
-            </div>
-          </div>
+            </FormField>
+          </FormRow>
+        </FormSection>
 
-          {/* Row E: Duration | Category */}
-          <div className="grid grid-cols-2 gap-3 border-t pt-2">
-            <div className="space-y-1.5">
-              <Label>Duration (minutes)</Label>
-              <Input type="number" step="1" min="0" value={formData.estimatedDurationMinutes} onChange={(e) => setFormField("estimatedDurationMinutes", e.target.value)} placeholder="e.g. 60" data-testid="input-duration" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Category</Label>
-              <Select value={formData.category || "__none__"} onValueChange={(v) => setFormField("category", v === "__none__" ? "" : v)}>
-                <SelectTrigger data-testid="select-category">
-                  <SelectValue placeholder="Uncategorized" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">Uncategorized</SelectItem>
-                  {uniqueCategories.map((cat) => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+        {/* Row E: Duration | Category — Category is a Select so keeps visible label */}
+        <FormRow className="grid-cols-2 border-t pt-2">
+          <FormField>
+            <FormLabel htmlFor="ps-duration" srOnly>Duration (minutes)</FormLabel>
+            <Input
+              id="ps-duration"
+              type="number"
+              step="1"
+              min="0"
+              value={formData.estimatedDurationMinutes}
+              onChange={(e) => setField("estimatedDurationMinutes", e.target.value)}
+              placeholder="Duration (minutes)"
+              data-testid="input-duration"
+            />
+          </FormField>
+          <FormField>
+            <FormLabel>Category</FormLabel>
+            <Select value={formData.category || "__none__"} onValueChange={(v) => setField("category", v === "__none__" ? "" : v)}>
+              <SelectTrigger data-testid="select-category">
+                <SelectValue placeholder="Uncategorized" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Uncategorized</SelectItem>
+                {uniqueCategories.map((cat) => (
+                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
+        </FormRow>
 
-        {/* Row F: Checkboxes */}
+        {/* Row F: Checkboxes — keep visible Label per canonical rule for checkboxes */}
         <div className="flex items-center gap-4 border-t pt-2">
           <div className="flex items-center gap-2">
-            <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setFormField("isTaxable", c as boolean)} />
+            <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setField("isTaxable", c as boolean)} />
             <Label htmlFor="taxable" className="font-normal cursor-pointer">Taxable</Label>
           </div>
           <div className="flex items-center gap-2">
-            <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setFormField("isActive", c as boolean)} />
+            <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setField("isActive", c as boolean)} />
             <Label htmlFor="active" className="font-normal cursor-pointer">Active</Label>
           </div>
         </div>

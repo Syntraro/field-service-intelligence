@@ -628,6 +628,8 @@ export class RecurringJobsRepository extends BaseRepository {
         locationLng: clientLocations.lng,
         locationAddress: clientLocations.address,
         locationCity: clientLocations.city,
+        locationProvince: clientLocations.province,
+        locationPostal: clientLocations.postalCode,
       })
       .from(recurringJobInstances)
       .innerJoin(recurringJobTemplates, eq(recurringJobInstances.templateId, recurringJobTemplates.id))
@@ -776,6 +778,8 @@ export class RecurringJobsRepository extends BaseRepository {
         locationLng: r.locationLng ? parseFloat(r.locationLng) : null,
         locationAddress: r.locationAddress ?? null,
         locationCity: r.locationCity ?? null,
+        locationProvince: r.locationProvince ?? null,
+        locationPostal: r.locationPostal ?? null,
         clientId: r.clientId,
         customerName: r.customerName ?? null,
         technicianName: techName,
@@ -828,6 +832,8 @@ export interface UpcomingQueueItem {
   locationLng: number | null;
   locationAddress: string | null;
   locationCity: string | null;
+  locationProvince: string | null;
+  locationPostal: string | null;
   clientId: string | null;
   customerName: string | null;
   technicianName: string | null;

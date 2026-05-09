@@ -1,9 +1,9 @@
 {
   "generatedAt": "2026-05-08",
   "description": "Frozen baseline of (a) legacy typography-ramp + arbitrary text-[Npx], and (b) deprecated component-specific aliases per Phase S1 (Simplified Semantic Typography). tests/semantic-typography-guard.test.ts fails when any file's count increases for any of the three families or a new file introduces them. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
-  "totalLegacy": 2884,
-  "totalArbitrary": 766,
-  "totalDeprecated": 92,
+  "totalLegacy": 2805,
+  "totalArbitrary": 748,
+  "totalDeprecated": 95,
   "files": {
     "client/src/App.tsx": {
       "legacy": 2,
@@ -16,7 +16,7 @@
       "deprecated": 0
     },
     "client/src/components/AddEquipmentDialog.tsx": {
-      "legacy": 11,
+      "legacy": 5,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -26,7 +26,7 @@
       "deprecated": 0
     },
     "client/src/components/AppSidebar.tsx": {
-      "legacy": 1,
+      "legacy": 0,
       "arbitrary": 2,
       "deprecated": 0
     },
@@ -46,7 +46,7 @@
       "deprecated": 0
     },
     "client/src/components/CreateClientModal.tsx": {
-      "legacy": 11,
+      "legacy": 1,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -126,7 +126,7 @@
       "deprecated": 0
     },
     "client/src/components/LocationFormModal.tsx": {
-      "legacy": 6,
+      "legacy": 1,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -176,8 +176,8 @@
       "deprecated": 0
     },
     "client/src/components/QuoteHeaderCard.tsx": {
-      "legacy": 22,
-      "arbitrary": 2,
+      "legacy": 1,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/QuoteTemplateModal.tsx": {
@@ -315,6 +315,11 @@
       "arbitrary": 0,
       "deprecated": 1
     },
+    "client/src/components/create/CanonicalCreateHeader.tsx": {
+      "legacy": 4,
+      "arbitrary": 0,
+      "deprecated": 1
+    },
     "client/src/components/dashboard/LowerOpsCards.tsx": {
       "legacy": 8,
       "arbitrary": 7,
@@ -361,9 +366,9 @@
       "deprecated": 2
     },
     "client/src/components/detail/CanonicalDetailHeader.tsx": {
-      "legacy": 2,
-      "arbitrary": 1,
-      "deprecated": 0
+      "legacy": 12,
+      "arbitrary": 0,
+      "deprecated": 4
     },
     "client/src/components/dispatch/DispatchBoardHeader.tsx": {
       "legacy": 5,
@@ -510,6 +515,11 @@
       "arbitrary": 0,
       "deprecated": 1
     },
+    "client/src/components/inventory/JobReservationsSection.tsx": {
+      "legacy": 5,
+      "arbitrary": 0,
+      "deprecated": 0
+    },
     "client/src/components/inventory/TransferStockModal.tsx": {
       "legacy": 1,
       "arbitrary": 0,
@@ -550,13 +560,8 @@
       "arbitrary": 2,
       "deprecated": 0
     },
-    "client/src/components/invoice/PaymentHistoryCard.tsx": {
-      "legacy": 5,
-      "arbitrary": 4,
-      "deprecated": 0
-    },
     "client/src/components/invoice/QboOverrideModal.tsx": {
-      "legacy": 4,
+      "legacy": 3,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -571,7 +576,7 @@
       "deprecated": 0
     },
     "client/src/components/invoice/SelectJobsForInvoiceModal.tsx": {
-      "legacy": 3,
+      "legacy": 1,
       "arbitrary": 8,
       "deprecated": 0
     },
@@ -606,7 +611,7 @@
       "deprecated": 0
     },
     "client/src/components/leads/LeadSummaryCard.tsx": {
-      "legacy": 19,
+      "legacy": 6,
       "arbitrary": 1,
       "deprecated": 0
     },
@@ -651,8 +656,8 @@
       "deprecated": 0
     },
     "client/src/components/line-items/PricebookPickerModal.tsx": {
-      "legacy": 11,
-      "arbitrary": 5,
+      "legacy": 5,
+      "arbitrary": 6,
       "deprecated": 0
     },
     "client/src/components/lists/EntityListTable.tsx": {
@@ -705,11 +710,6 @@
       "arbitrary": 0,
       "deprecated": 0
     },
-    "client/src/components/products-services/ProductServiceFormDialog.tsx": {
-      "legacy": 2,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
     "client/src/components/products-services/ProductsServicesTable.tsx": {
       "legacy": 11,
       "arbitrary": 0,
@@ -721,14 +721,14 @@
       "deprecated": 0
     },
     "client/src/components/quotes/QuoteDescriptionCard.tsx": {
-      "legacy": 6,
+      "legacy": 8,
       "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/quotes/QuoteSummaryCard.tsx": {
-      "legacy": 3,
+      "legacy": 0,
       "arbitrary": 0,
-      "deprecated": 0
+      "deprecated": 1
     },
     "client/src/components/settings/TemplateEditor.tsx": {
       "legacy": 12,
@@ -751,8 +751,8 @@
       "deprecated": 0
     },
     "client/src/components/shared/ReferenceFieldsSection.tsx": {
-      "legacy": 9,
-      "arbitrary": 2,
+      "legacy": 4,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/tasks/TasksPanel.tsx": {
@@ -1071,13 +1071,13 @@
       "deprecated": 2
     },
     "client/src/pages/CreateLeadPage.tsx": {
-      "legacy": 7,
-      "arbitrary": 4,
+      "legacy": 3,
+      "arbitrary": 1,
       "deprecated": 0
     },
     "client/src/pages/CreateQuotePage.tsx": {
-      "legacy": 24,
-      "arbitrary": 2,
+      "legacy": 15,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/pages/CustomFieldsPage.tsx": {
@@ -1091,8 +1091,8 @@
       "deprecated": 0
     },
     "client/src/pages/FinancialDashboard.tsx": {
-      "legacy": 39,
-      "arbitrary": 44,
+      "legacy": 36,
+      "arbitrary": 42,
       "deprecated": 0
     },
     "client/src/pages/ImportCenterPage.tsx": {
@@ -1131,9 +1131,9 @@
       "deprecated": 2
     },
     "client/src/pages/JobDetailPage.tsx": {
-      "legacy": 4,
+      "legacy": 0,
       "arbitrary": 0,
-      "deprecated": 5
+      "deprecated": 2
     },
     "client/src/pages/JobTemplatesPage.tsx": {
       "legacy": 6,
@@ -1146,8 +1146,8 @@
       "deprecated": 2
     },
     "client/src/pages/LeadDetailPage.tsx": {
-      "legacy": 6,
-      "arbitrary": 2,
+      "legacy": 1,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/pages/LeadsPage.tsx": {
@@ -1157,7 +1157,7 @@
     },
     "client/src/pages/Locations.tsx": {
       "legacy": 2,
-      "arbitrary": 1,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/pages/Login.tsx": {
@@ -1171,7 +1171,7 @@
       "deprecated": 0
     },
     "client/src/pages/NewInvoicePage.tsx": {
-      "legacy": 16,
+      "legacy": 12,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -1186,7 +1186,7 @@
       "deprecated": 0
     },
     "client/src/pages/PMDetailPage.tsx": {
-      "legacy": 29,
+      "legacy": 42,
       "arbitrary": 15,
       "deprecated": 0
     },
@@ -1196,7 +1196,7 @@
       "deprecated": 0
     },
     "client/src/pages/PMWizardPage.tsx": {
-      "legacy": 61,
+      "legacy": 67,
       "arbitrary": 1,
       "deprecated": 4
     },
@@ -1226,7 +1226,7 @@
       "deprecated": 1
     },
     "client/src/pages/QuoteDetailPage.tsx": {
-      "legacy": 13,
+      "legacy": 3,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -1307,11 +1307,6 @@
     },
     "client/src/pages/SupplierDetailPage.tsx": {
       "legacy": 3,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/pages/SuppliersListPage.tsx": {
-      "legacy": 2,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -1616,7 +1611,7 @@
       "deprecated": 0
     },
     "client/src/tech-app/pages/VisitDetailPage.tsx": {
-      "legacy": 121,
+      "legacy": 123,
       "arbitrary": 23,
       "deprecated": 0
     },

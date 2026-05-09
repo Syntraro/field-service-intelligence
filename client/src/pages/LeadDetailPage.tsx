@@ -10,8 +10,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import {
-  ArrowLeft, Loader2, Briefcase,
-  Pencil, AlertTriangle, Plus,
+  ArrowLeft, Loader2,
+  AlertTriangle, Plus,
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
   Info, StickyNote,
 } from "lucide-react";
@@ -27,7 +27,6 @@ import {
 } from "@/components/detail-rail/DetailRightRail";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 // 2026-05-06 modal taxonomy alignment: destructive confirms (archive,
 // hard delete, convert) route through canonical <AlertDialog> per
 // CLAUDE.md Modal Taxonomy rule #1. Radix AlertDialog gives stricter
@@ -104,9 +103,12 @@ export default function LeadDetailPage() {
   // EntityNotesSection owns add/edit/delete + author + attachments.
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [showHardDeleteConfirm, setShowHardDeleteConfirm] = useState(false);
-  // Description edit state
-  const [editingDescription, setEditingDescription] = useState(false);
-  const [descriptionDraft, setDescriptionDraft] = useState("");
+
+  // ── Lead header inline title + description edit (2026-05-09) ────────────
+  const [editingHeader, setEditingHeader] = useState(false);
+  const [headerTitleDraft, setHeaderTitleDraft] = useState("");
+  const [headerDescDraft, setHeaderDescDraft] = useState("");
+  const [headerError, setHeaderError] = useState<string | null>(null);
 
   // 2026-05-08 RALPH (rail migration): canonical right-rail tab state.
   // `null` = no panel open (icon strip only). Default open: "details"
@@ -198,15 +200,16 @@ export default function LeadDetailPage() {
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
-  const updateDescriptionMutation = useMutation({
-    mutationFn: (description: string | null) =>
-      apiRequest(`/api/leads/${leadId}`, { method: "PATCH", body: JSON.stringify({ description }) }),
+  const updateHeaderMutation = useMutation({
+    mutationFn: ({ title, description }: { title: string; description: string }) =>
+      apiRequest(`/api/leads/${leadId}`, { method: "PATCH", body: JSON.stringify({ title, description }) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["leads"] });
-      setEditingDescription(false);
-      toast({ title: "Description updated" });
+      setEditingHeader(false);
+      setHeaderError(null);
+      toast({ title: "Lead updated" });
     },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: any) => setHeaderError(err.message ?? "Failed to save"),
   });
 
   const archiveMutation = useMutation({
@@ -233,9 +236,9 @@ export default function LeadDetailPage() {
   };
 
   // ── Loading / Error ──
-  if (isLoading) return <div className="bg-[#f1f5f9] h-full flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>;
+  if (isLoading) return <div className="bg-app-bg h-full flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>;
   if (isError || !lead) return (
-    <div className="bg-[#f1f5f9] h-full flex items-center justify-center">
+    <div className="bg-app-bg h-full flex items-center justify-center">
       <div className="text-center">
         <p className="text-sm text-slate-500">Lead not found</p>
         <Button variant="outline" className="mt-3" size="sm" onClick={() => setLocation("/leads")}><ArrowLeft className="h-3.5 w-3.5 mr-1" />Back to Leads</Button>
@@ -317,7 +320,7 @@ export default function LeadDetailPage() {
 
   return (
     <div
-      className="flex h-full flex-col lg:flex-row bg-[#f1f5f9]"
+      className="flex h-full flex-col lg:flex-row bg-app-bg"
       data-testid="lead-detail-page"
     >
       {/* ═════════ LEFT COLUMN: header + body ═════════ */}
@@ -333,7 +336,7 @@ export default function LeadDetailPage() {
             THE SOLE canonical vertical scroll surface. Mirror Job
             Detail exactly: padding + space-y on the body, scrolling
             delegated to <main>. */}
-        <div className="px-4 lg:px-6 py-4 space-y-3">
+        <div className="px-4 lg:px-6 py-4 space-y-4">
 
           {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard.
               2026-05-08 (Phase 3 — Lead Actions relocation): the prior
@@ -341,10 +344,32 @@ export default function LeadDetailPage() {
               Mark Lost / Archive / Delete / View-Linked-Quote now live on
               the card's Section B action bar. Gating flags + AlertDialog
               wiring stay on this page; the card just renders the buttons. */}
+          {/* 2026-05-08 (full-card consolidation): description is now rendered
+              inside the LeadSummaryCard canonical header via the description
+              prop — matching the JobDetailPage pattern. No standalone card. */}
           <LeadSummaryCard
             mode="saved"
             lead={lead}
-            onBack={() => setLocation("/leads")}
+            isTerminal={isTerminal}
+            isHeaderEditing={editingHeader}
+            headerTitleDraft={headerTitleDraft}
+            onHeaderTitleChange={setHeaderTitleDraft}
+            headerDescDraft={headerDescDraft}
+            onHeaderDescChange={setHeaderDescDraft}
+            onStartHeaderEdit={() => {
+              setHeaderTitleDraft(lead.title);
+              setHeaderDescDraft(lead.description ?? "");
+              setHeaderError(null);
+              setEditingHeader(true);
+            }}
+            onHeaderSave={() => {
+              const trimmed = headerTitleDraft.trim();
+              if (!trimmed) { setHeaderError("Title cannot be empty"); return; }
+              updateHeaderMutation.mutate({ title: trimmed, description: headerDescDraft });
+            }}
+            onHeaderCancel={() => { setEditingHeader(false); setHeaderError(null); }}
+            isHeaderSaving={updateHeaderMutation.isPending}
+            headerError={headerError}
             actions={{
               canConvert,
               canContact,
@@ -361,61 +386,8 @@ export default function LeadDetailPage() {
                   ? setLocation(`/quotes/${lead.convertedQuoteId}`)
                   : undefined,
             }}
+            description={lead.description ?? null}
           />
-
-          {/* Description */}
-          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
-              <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-                <Briefcase className="h-4 w-4 text-[#64748b]" />Description
-              </span>
-              {!editingDescription && !isTerminal && (
-                <button
-                  onClick={() => { setDescriptionDraft(lead.description ?? ""); setEditingDescription(true); }}
-                  className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
-                  aria-label="Edit description"
-                >
-                  <Pencil className="h-3 w-3" />Edit
-                </button>
-              )}
-            </div>
-            <div className="px-5 py-3">
-              {editingDescription ? (
-                <div className="space-y-2">
-                  <Textarea
-                    value={descriptionDraft}
-                    onChange={(e) => setDescriptionDraft(e.target.value)}
-                    placeholder="Add a description..."
-                    className="min-h-[96px] text-sm resize-y"
-                    rows={4}
-                    autoFocus
-                  />
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => { setEditingDescription(false); setDescriptionDraft(""); }}
-                      disabled={updateDescriptionMutation.isPending}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => updateDescriptionMutation.mutate(descriptionDraft.trim() || null)}
-                      disabled={updateDescriptionMutation.isPending}
-                    >
-                      {updateDescriptionMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                      Save
-                    </Button>
-                  </div>
-                </div>
-              ) : lead.description ? (
-                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{lead.description}</p>
-              ) : (
-                <p className="text-xs text-slate-400 italic">No description</p>
-              )}
-            </div>
-          </div>
 
           {/* 2026-05-05 Lead Visits: pre-sales onsite scheduling card.
               Stays in left column as primary content (rail hosts metadata

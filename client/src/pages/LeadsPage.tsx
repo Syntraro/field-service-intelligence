@@ -6,7 +6,6 @@
  */
 import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { format, isValid, parseISO } from "date-fns";
 import { useLocation } from "wouter";
 import {
   Plus, Search, FileText, Users, Briefcase, TrendingUp,
@@ -15,19 +14,24 @@ import { Button } from "@/components/ui/button";
 // 2026-05-08 chip Phase 2: status filter buttons → FilterChip.
 import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
-import { StatusBadge } from "@/components/StatusBadge";
-import { getLeadStatusMeta } from "@/lib/statusBadges";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { EmptyState } from "@/components/ui/empty-state";
+// 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
 // 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
 // See `client/src/components/lists/EntityListTable.tsx` for the rationale
 // and the per-kind sizing rules baked into the component.
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { getLeadStatusMeta } from "@/lib/statusBadges";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { apiRequest } from "@/lib/queryClient";
 // 2026-05-06: lead creation moved to /leads/new (full-page CreateLeadPage).
 // The button below navigates via wouter instead of opening a modal.
 import type { Lead } from "@shared/schema";
+
+interface EnrichedLead extends Lead {
+  locationDisplayName: string | null;
+  locationSiteName: string | null;
+  locationCity: string | null;
+}
 
 type LeadFilterStatus = "all" | "needs_action" | "quoted" | "won" | "lost";
 
@@ -41,73 +45,83 @@ const LEADS_PAGE_SIZE = 50;
 // migrated to `getLeadStatusMeta` in `lib/statusBadges.ts`. The status
 // cell now renders via the canonical `<StatusBadge>` component.
 
-/**
- * Column config for the Leads list. Module-scoped so the array identity
- * is stable across renders — passes through `EntityListTable`'s
- * `useMemo` on `gridTemplateColumns` cleanly. The factory closes over
- * the page's `safeFormatDate` so the date renderer keeps the same
- * `parseISO + isValid + format` semantics as before.
- */
-const LEAD_COLUMNS = (safeFormatDate: (v: unknown) => string): EntityListColumn<Lead>[] => [
+// Column order (2026-05-09): Client · Title · Source · Priority · Status · Est. Value · Created
+// Client is the entity identity (company + location helper text).
+// Title is the flexible/truncating description column.
+// Module-scoped (stable identity across renders — no closures on render-state).
+const LEAD_COLUMNS: EntityListColumn<EnrichedLead>[] = [
+  {
+    id: "client",
+    header: "Client",
+    kind: "primary",
+    ratio: 1.4,
+    minWidthPx: 160,
+    cell: {
+      type: "entity-primary",
+      value: (lead) => lead.locationDisplayName || "Unknown Client",
+      secondary: (lead) => lead.locationSiteName || lead.locationCity || undefined,
+    },
+  },
   {
     id: "title",
     header: "Title",
-    kind: "primary",
-    // Two-line cell: title + optional description. We render the
-    // wrapper ourselves so the description gets its own truncation.
-    // Primary line inherits the kind's `text-row-emphasis text-slate-800`;
-    // secondary line breaks the cascade with explicit
-    // `text-caption text-slate-500 font-normal`.
-    render: (lead) => (
-      <div className="min-w-0">
-        <div className="truncate">{lead.title}</div>
-        {lead.description && (
-          <div className="text-caption text-slate-500 font-normal truncate">{lead.description}</div>
-        )}
-      </div>
-    ),
-    // EntityListTable's `primary` kind wraps in `<div className="min-w-0
-    // truncate">` by default; that single-line truncate would clip the
-    // optional description. Override the cell wrapper so our own
-    // two-line block can render unmangled.
-    cellClassName: "px-4 py-2.5 min-w-0",
+    kind: "text",
+    ratio: 1.5,
+    cell: {
+      type: "entity-text",
+      value: (lead) => lead.title,
+    },
   },
   {
     id: "source",
     header: "Source",
     kind: "text",
     ratio: 0.7,
-    render: (lead) => <span className="capitalize">{lead.sourceType}</span>,
+    cell: {
+      type: "entity-text",
+      value: (lead) => lead.sourceType
+        ? lead.sourceType.charAt(0).toUpperCase() + lead.sourceType.slice(1)
+        : null,
+    },
   },
   {
     id: "priority",
     header: "Priority",
     kind: "text",
     ratio: 0.6,
-    render: (lead) => <span className="capitalize">{lead.priority || "-"}</span>,
+    cell: {
+      type: "entity-text",
+      value: (lead) => lead.priority
+        ? lead.priority.charAt(0).toUpperCase() + lead.priority.slice(1)
+        : null,
+    },
   },
   {
     id: "status",
     header: "Status",
     kind: "status",
-    render: (lead) => <StatusBadge meta={getLeadStatusMeta(lead.status)} />,
+    cell: {
+      type: "entity-status",
+      getStatusMeta: (lead) => getLeadStatusMeta(lead.status),
+    },
   },
   {
     id: "estValue",
     header: "Est. Value",
     kind: "money",
-    // Money kind provides text-row text-slate-700, right-align, tabular,
-    // nowrap. Render returns the raw string.
-    render: (lead) =>
-      lead.estimatedValue ? `$${parseFloat(lead.estimatedValue).toLocaleString()}` : "-",
+    cell: {
+      type: "entity-money",
+      value: (lead) => lead.estimatedValue,
+    },
   },
   {
     id: "createdAt",
     header: "Created",
     kind: "date",
-    // Date kind provides text-row text-slate-700; date strings are
-    // typically shown a touch lighter, so we override with text-slate-500.
-    render: (lead) => <span className="text-slate-500">{safeFormatDate(lead.createdAt)}</span>,
+    cell: {
+      type: "entity-date",
+      value: (lead) => lead.createdAt,
+    },
   },
 ];
 
@@ -139,12 +153,12 @@ export default function LeadsPage() {
   // first page of the new result set.
   useEffect(() => { setVisibleCount(LEADS_PAGE_SIZE); }, [activeFilter, searchQuery]);
 
-  const { data: leadsResponse, isLoading } = useQuery<{ data: Lead[] }>({
+  const { data: leadsResponse, isLoading, isError, refetch: refetchLeads } = useQuery<{ data: EnrichedLead[] }>({
     queryKey: ["leads"],
     queryFn: () => apiRequest("/api/leads"),
   });
 
-  const leads = leadsResponse?.data ?? [];
+  const leads: EnrichedLead[] = leadsResponse?.data ?? [];
 
   // Summary metrics
   const metrics = useMemo(() => {
@@ -182,12 +196,6 @@ export default function LeadsPage() {
     won: metrics.won,
     lost: metrics.lost,
   }), [leads.length, metrics]);
-
-  const safeFormatDate = (value: unknown): string => {
-    if (!value) return "-";
-    const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : new Date(String(value));
-    return isValid(d) ? format(d, "MMM d, yyyy") : "-";
-  };
 
   // List stability: single return path — loading state renders inside content area only
   return (
@@ -248,23 +256,22 @@ export default function LeadsPage() {
         </div>
 
         {/* Table */}
-        <EntityListTable<Lead>
+        <EntityListTable<EnrichedLead>
           rows={filteredLeads.slice(0, visibleCount)}
           rowKey={(lead) => lead.id}
           onRowClick={(lead) => setLocation(`/leads/${lead.id}`)}
-          loadingState={
-            isLoading ? (
-              <div className="text-center py-8 text-slate-500">Loading leads...</div>
-            ) : undefined
-          }
+          loadingState={isLoading}
           emptyState={
-            <EmptyState
-              icon={Users}
-              message={searchQuery || activeFilter !== "all" ? "No leads match your filters" : "No leads yet"}
-              description={!searchQuery && activeFilter === "all" ? "Create your first lead to start tracking opportunities." : undefined}
-            />
+            searchQuery || activeFilter !== "all"
+              ? { kind: "no-results", title: "No leads match your filters", icon: "users" }
+              : { kind: "empty", title: "No leads yet", icon: "users", description: "Create your first lead to start tracking opportunities." }
           }
-          columns={LEAD_COLUMNS(safeFormatDate)}
+          errorState={
+            isError
+              ? { kind: "error", title: "Failed to load leads", primaryAction: { label: "Retry", onClick: () => refetchLeads(), variant: "outline" } }
+              : undefined
+          }
+          columns={LEAD_COLUMNS}
         />
 
         <ListLoadMoreFooter

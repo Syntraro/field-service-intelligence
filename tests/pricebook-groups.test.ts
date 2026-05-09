@@ -829,13 +829,12 @@ describe("PricebookPickerModal — edit / delete wiring", () => {
   const src = read(PICKER_PATH);
   const codeOnly = stripComments(src);
 
-  it("uses the canonical AlertDialog primitive for delete confirmation", () => {
-    expect(src).toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
-    expect(src).toMatch(/<AlertDialog\b/);
-    expect(src).toMatch(/<AlertDialogContent\b/);
-    expect(src).toMatch(/<AlertDialogTitle\b/);
-    expect(src).toMatch(/<AlertDialogAction\b/);
-    expect(src).toMatch(/<AlertDialogCancel\b/);
+  it("uses ConfirmModal for delete confirmation (migrated 2026-05-09 from AlertDialog)", () => {
+    // 2026-05-09: group-delete migrated from AlertDialog to canonical ConfirmModal.
+    expect(src).toMatch(/ConfirmModal/);
+    expect(src).toMatch(/testIdPrefix="pricebook-group-delete"/);
+    expect(src).not.toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
+    expect(src).not.toMatch(/<AlertDialog\b/);
   });
 
   it("threads onEditGroup + onDeleteGroup into the rail", () => {
@@ -882,13 +881,16 @@ describe("PricebookPickerModal — edit / delete wiring", () => {
   });
 
   it("delete dialog body names the target group (so the user knows what they're deleting)", () => {
-    expect(src).toMatch(/data-testid="pricebook-group-delete-dialog"/);
+    // 2026-05-09: migrated to ConfirmModal; testIdPrefix="pricebook-group-delete"
+    // generates data-testid="pricebook-group-delete-modal" on the ModalShell wrapper.
+    expect(src).toMatch(/data-testid="pricebook-group-delete-modal"|testIdPrefix="pricebook-group-delete"/);
     expect(codeOnly).toMatch(/deleteTarget\.name/);
   });
 
-  it("delete confirm button is the canonical AlertDialogAction with stable test id", () => {
-    expect(src).toMatch(/data-testid="pricebook-group-delete-confirm"/);
-    expect(src).toMatch(/data-testid="pricebook-group-delete-cancel"/);
+  it("delete confirm/cancel buttons have stable test ids", () => {
+    // ConfirmModal with testIdPrefix generates these automatically.
+    expect(src).toMatch(/data-testid="pricebook-group-delete-confirm"|testIdPrefix="pricebook-group-delete"/);
+    expect(src).toMatch(/data-testid="pricebook-group-delete-cancel"|testIdPrefix="pricebook-group-delete"/);
   });
 });
 

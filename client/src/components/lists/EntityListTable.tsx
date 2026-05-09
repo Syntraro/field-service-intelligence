@@ -1,66 +1,124 @@
 /**
  * EntityListTable — canonical grid-based list table for core entity list
- * pages (Leads, Quotes, Invoices in V1; Jobs / Clients / Suppliers /
- * Locations follow in later passes).
+ * pages (Jobs, Invoices, Quotes, Leads, Clients, Locations, Suppliers,
+ * Inventory, PMWorkspacePage).
  *
- * Why this exists:
- *   The Invoices list page used a hand-tuned `gridTemplateColumns` string
- *   with bare fractional tracks (`0.7fr`, `0.9fr`, …). At moderate
- *   desktop widths the "Awaiting Payment" status badge — `whitespace-nowrap
- *   inline-flex` — became the longest intrinsic content in its track and
- *   forced CSS Grid's track-sizing algorithm to shrink the lowest-weight
- *   fractional tracks (Total / Balance) to satisfy it. Other list pages
- *   (Quotes, Leads) avoided this only because they used shadcn's semantic
- *   `<Table>` whose browser-driven auto-layout uses a different algorithm.
+ * Architecture (2026-05-08 canonical refactor):
+ *   The component is a TRUE canonical renderer, not just a shared shell.
+ *   Columns declare WHAT to render via the typed `EntityListCell<Row>`
+ *   discriminated union — the component handles the HOW. Common patterns
+ *   (primary name + secondary, plain text, entity number, status chip,
+ *   date, money) are first-class typed descriptors; `customRender` is the
+ *   named escape hatch for one-off compositions.
  *
- *   The fix has been applied in two places: (1) the immediate Invoices
- *   page got explicit `minmax(<floor>, fr)` floors, and (2) this
- *   component bakes those floors into the API so a caller cannot
- *   accidentally re-introduce the bug. Every fractional track passes
- *   through `kindToTrack()` which always emits `minmax(<floor>, fr)`,
- *   never bare `Nfr`.
+ * Cell type → rendering contract:
+ *   entity-primary — two-line name/secondary block; `secondary` and `testId` optional.
+ *   entity-text    — single truncated text line; inherits `min-w-0` from kind.
+ *   entity-number  — EntityNumber variant="primary" blue pill.
+ *   entity-status  — StatusChip (tone + label from meta function).
+ *   entity-date    — formatDate(value) string; optional isActive/overdueWhen for conditional states.
+ *   entity-money   — formatCurrency(value) string.
+ *   customRender   — caller-owned ReactNode; escape hatch; visible in code.
  *
- * V1 scope (matches Leads + Quotes + Invoices):
- *   - column kinds: select / primary / text / status / date / money / badge
- *   - row click navigation
- *   - explicit empty / loading slots
- *   - selectable highlight row
+ * Canonical sort:
+ *   Add `sortKey` to a column and `sortField/sortDirection/onSort` to the
+ *   table to get a canonical sort button in the header. Replaces page-local
+ *   SortableHeaderCell / SortHeader components.
  *
- * V1 deliberately does NOT support: row actions / kebabs (per product
- * direction — core lists are navigational, detail pages own actions),
- * grouping (Clients-only need), keyboard navigation (Jobs-only),
- * infinite scroll (Jobs-only), pagination, sorting, drag/drop,
- * virtualization. Each is an opt-in slot that can land later without
- * breaking the V1 callers.
+ * `align` prop:
+ *   "left" (default) | "right" | "center". Replaces cellClassName /
+ *   headerClassName overrides for alignment. Money kind defaults to right.
  *
  * Hard rules baked into the renderer (callers cannot break them):
  *   - Track sizing always emits `minmax(<floor>, ratio*fr)` for fractional
  *     kinds; bare `Nfr` is impossible.
  *   - Money cells are right-aligned, `whitespace-nowrap`, `tabular-nums`.
  *   - Date cells are `whitespace-nowrap`.
- *   - Status cells use a `flex flex-wrap min-w-0` container so multi-badge
- *     compositions (Invoices + QboSyncBadge, Quotes + assessment badges)
- *     wrap within the cell instead of pushing neighbours.
- *   - Primary / text cells get `min-w-0 truncate` so they yield space
- *     to fixed-floor neighbours.
- *   - Select cells stop click propagation so checkbox clicks don't fire
- *     `onRowClick`.
- *
- * Caller composition pattern (see InvoicesListPage post-migration for
- * the full example): callers declare a `EntityListColumn[]` array,
- * provide `rows` + `rowKey` + `onRowClick`, and supply their own custom
- * `render(row)` for each cell. The component owns layout, sizing, and
- * the navigation gesture; the caller owns content.
+ *   - Status cells wrap content in `flex flex-wrap min-w-0` (for multi-
+ *     badge compositions).
+ *   - Select cells stop click propagation and center their content.
  */
 import * as React from "react";
+import { ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   listSurfaceClass,
   listHeaderRowClass,
   tableRowClass,
+  ENTITY_SECONDARY_CLASS,
 } from "@/components/ui/list-surface";
+import { StatusChip } from "@/components/ui/chip";
+import { EntityNumber } from "@/components/common/EntityNumber";
+import { formatDate, formatCurrency } from "@/lib/formatters";
+import { StateBlock, type StateBlockProps } from "@/components/ui/state-block";
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+// ─── Cell type system ────────────────────────────────────────────────────────
+
+/**
+ * Typed cell descriptor — the core of the canonical renderer contract.
+ * Each type maps to a canonical rendering in the component; `customRender`
+ * is the visible escape hatch for surfaces that don't fit a typed descriptor.
+ */
+export type EntityListCell<Row> =
+  | {
+      type: "entity-primary";
+      /** Primary text — rendered with text-list-primary (15px/20px/500). */
+      value: (row: Row) => string | null | undefined;
+      /** Optional secondary line — rendered with ENTITY_SECONDARY_CLASS. */
+      secondary?: (row: Row) => string | null | undefined;
+      /** Optional data-testid applied directly to the primary line element. */
+      testId?: (row: Row) => string;
+    }
+  | {
+      type: "entity-text";
+      /** Truncated text line — inherits `min-w-0` from the kind wrapper. */
+      value: (row: Row) => string | null | undefined;
+    }
+  | {
+      type: "entity-number";
+      /** Entity number string or number — rendered as EntityNumber primary pill. */
+      value: (row: Row) => string | number | null | undefined;
+    }
+  | {
+      type: "entity-status";
+      /** Returns `{ label, tone }` — rendered as StatusChip. */
+      getStatusMeta: (row: Row) => { label: string; tone: string };
+    }
+  | {
+      type: "entity-date";
+      /** ISO date string — formatted via canonical formatDate(). */
+      value: (row: Row) => string | Date | null | undefined;
+      /**
+       * Optional: when provided and returns false for a row, the cell renders
+       * "Inactive" in muted style instead of the date value.
+       */
+      isActive?: (row: Row) => boolean;
+      /**
+       * Optional: when provided and returns true, the cell renders "Overdue"
+       * in red/semibold style. Evaluated only when isActive is absent or true.
+       */
+      overdueWhen?: (row: Row) => boolean;
+    }
+  | {
+      type: "entity-money";
+      /** Numeric or string amount — formatted via canonical formatCurrency(). */
+      value: (row: Row) => string | number | null | undefined;
+    }
+  | {
+      type: "customRender";
+      /**
+       * Required justification. customRender is an escape hatch — before using
+       * it, confirm that no existing descriptor fits (entity-primary,
+       * entity-text, entity-status, entity-date, entity-money, entity-number).
+       * Add a reason and update the allowlist in tests/entity-list-canonical.test.ts.
+       */
+      reason: string;
+      /** Caller-owned render function. The caller is responsible for truncation,
+       *  min-w-0, and all typography since the component adds no wrapper. */
+      render: (row: Row) => React.ReactNode;
+    };
+
+// ─── Column + table interfaces ───────────────────────────────────────────────
 
 export type EntityListColumnKind =
   | "select"
@@ -69,119 +127,113 @@ export type EntityListColumnKind =
   | "status"
   | "date"
   | "money"
-  | "badge";
+  | "badge"
+  | "body";
 
 export interface EntityListColumn<Row> {
   /** Stable id used as React key for header/cell elements. */
   id: string;
-  /** Header content. The component never renders a default — callers
-   *  supply the full ReactNode. For `select` columns this is typically
-   *  a "select-all" Checkbox; for `money` this is a right-aligned
-   *  label. */
+  /** Header content. Plain strings are styled by listHeaderRowClass.
+   *  When `sortKey` is set, the component wraps this in a sort button. */
   header: React.ReactNode;
-  /** Drives default track-sizing, alignment, nowrap, and wrap behavior.
-   *  See the kind table in `kindToTrack` and `kindCellClasses` below. */
+  /** Drives track-sizing, padding, alignment, and nowrap/wrap behavior. */
   kind: EntityListColumnKind;
-  /** Cell renderer. Receives the row; returns the cell's inner content.
-   *  The component wraps the result in a div with the kind-appropriate
-   *  classes (truncate / nowrap / right-align / flex-wrap), so callers
-   *  do NOT need to add those manually. */
-  render: (row: Row) => React.ReactNode;
-  /** Fractional weight (`fr`). Defaults per kind. Ignored for `select`
-   *  (always 40px exact). */
+  /** Typed cell descriptor — replaces the old open `render()` function. */
+  cell: EntityListCell<Row>;
+  /** Fractional weight (`fr`). Kind defaults apply when omitted. */
   ratio?: number;
-  /** Minimum-width floor in px. Overrides the kind default. Required
-   *  protective floor for money/date/status; bare `0` is rejected for
-   *  fractional kinds at runtime by `kindToTrack`. */
+  /** Minimum-width floor in px. Overrides the kind default. */
   minWidthPx?: number;
-  /** Extra classes applied to BOTH header and cell wrappers. Use
-   *  `headerClassName` / `cellClassName` for one-side overrides. */
+  /** Extra classes on BOTH header and cell wrappers. */
   className?: string;
-  headerClassName?: string;
-  cellClassName?: string;
+  /**
+   * Cell + header alignment override.
+   * `money` kind defaults to "right"; all others default to "left".
+   * "center" is for icon-only cells (Active column, etc.).
+   */
+  align?: "left" | "right" | "center";
+  /**
+   * Sort key for canonical sort. When set AND the table receives `onSort`,
+   * the header renders as a clickable sort button with chevron indicators.
+   * Replaces page-local SortableHeaderCell / SortHeader components.
+   */
+  sortKey?: string;
 }
 
 export interface EntityListTableProps<Row> {
   rows: Row[];
   columns: EntityListColumn<Row>[];
-  /** Stable per-row key (e.g., row.id). Used for React keys + the
-   *  `selectedRowKey` highlight comparison. */
+  /** Stable per-row key (e.g., row.id). Used for React keys + selected highlight. */
   rowKey: (row: Row) => string;
-  /** When set, the row container becomes clickable and navigates via
-   *  this handler. The renderer adds the standard hover-bg utility from
-   *  `tableRowClass`. Pass `undefined` to render rows non-interactive. */
+  /** Row click handler. Adds hover-bg and cursor-pointer from `tableRowClass`. */
   onRowClick?: (row: Row) => void;
-  /** Highlights the row whose key matches. Caller decides what
-   *  "selected" means (e.g., last-opened detail). */
+  /** Highlights the row whose key matches. */
   selectedRowKey?: string;
-  /** Replaces the rows region when `rows.length === 0` and not loading. */
-  emptyState?: React.ReactNode;
-  /** Replaces the rows region while parent's data is loading. */
-  loadingState?: React.ReactNode;
+  /**
+   * Typed empty-state descriptor rendered by StateBlock when rows.length === 0
+   * and no loading/error state is active. Replaces the former ReactNode slot.
+   * Use legacyEmptyStateNode only for callers that can't yet migrate.
+   */
+  emptyState?: StateBlockProps;
+  /**
+   * Loading state descriptor.
+   *   true              → canonical StateBlock kind="loading" title="Loading…"
+   *   StateBlockProps   → that descriptor (add kind/title/testId as needed)
+   *   undefined / false → no loading state shown
+   * Use legacyLoadingStateNode for skeleton-row patterns that are intentionally
+   * better UX than a spinner (e.g., Inventory tabs).
+   */
+  loadingState?: boolean | StateBlockProps;
+  /** Error state descriptor. Shown when rows === 0, not loading, not empty. */
+  errorState?: StateBlockProps;
+  /** Back-compat: ReactNode empty state for callers not yet migrated. */
+  legacyEmptyStateNode?: React.ReactNode;
+  /** Back-compat: ReactNode loading state for skeleton patterns (Inventory). */
+  legacyLoadingStateNode?: React.ReactNode;
   /** Outer wrapper extra classes. Applied AFTER `listSurfaceClass`. */
   className?: string;
   /**
-   * 2026-05-03 grouping API (V1 — minimal, 1-level only):
-   * Optional grouping. When supplied, rows with the same key are
-   * collected into a bucket and a header row is rendered before each
-   * bucket. Buckets appear in the order their first row appeared in
-   * the input `rows` array (no sorting). Group headers are inert: they
-   * span all columns, are NOT clickable, do NOT receive `onRowClick`,
-   * and are NOT part of selection logic. Rows inside a group render
-   * exactly as ungrouped rows do — same `rowKey`, same `onRowClick`,
-   * same select-cell propagation guard. Nesting / collapse / sorting
-   * are deliberately out of V1.
-   *
-   * Returning `null` from `groupBy` for a given row puts it in a
-   * synthetic "ungrouped" bucket whose header is suppressed (no header
-   * row rendered for null-keyed buckets) — this preserves the option
-   * for callers to mix grouped + ungrouped rows in one list without
-   * forcing the latter to live under a header.
+   * Optional grouping. Rows with the same key are rendered under a group
+   * header. `null` keys render without a header (ungrouped bucket).
+   * Group headers span all columns and are NOT clickable.
    */
   groupBy?: (row: Row) => string | null;
-  /**
-   * Custom group-header content. Called once per non-null group key
-   * with the bucket's rows. If omitted, the component falls back to
-   * rendering the raw `groupKey` as a bold label. Has no effect when
-   * `groupBy` is undefined.
-   */
+  /** Custom group-header content. Falls back to the raw `groupKey` string. */
   renderGroupHeader?: (groupKey: string, rows: Row[]) => React.ReactNode;
+  /**
+   * Canonical sort props. Pass all three together:
+   *   `sortField`    — active sort key (matches a column's `sortKey`).
+   *   `sortDirection` — "asc" | "desc".
+   *   `onSort`       — called with the clicked column's `sortKey`.
+   * Sort logic stays entirely in the page (compare function, state). The
+   * component only renders the sort indicator + fires onSort.
+   */
+  sortField?: string;
+  sortDirection?: "asc" | "desc";
+  onSort?: (key: string) => void;
 }
 
-// ─── Default per-kind track sizing + cell classes ───────────────────────────
+// ─── Default per-kind track sizing ──────────────────────────────────────────
 
 interface KindTrackDefaults {
-  ratio: number;       // default fr weight
-  minWidthPx: number;  // default min-width floor
+  ratio: number;
+  minWidthPx: number;
 }
 
 const KIND_DEFAULTS: Record<Exclude<EntityListColumnKind, "select">, KindTrackDefaults> = {
-  // `primary` and `text` use `0` floor so they're free to shrink and
-  // truncate. They MUST shrink for fixed-floor money/date columns to
-  // stay at their minimums.
   primary: { ratio: 1.5, minWidthPx: 0 },
   text:    { ratio: 1.0, minWidthPx: 0 },
-  // `status` is the column that historically caused the bug. 120px is
-  // wide enough for typical badges ("Awaiting Payment" ≈ 110-120px);
-  // long labels still wrap inside the cell's flex-wrap container.
+  body:    { ratio: 1.0, minWidthPx: 0 },
   status:  { ratio: 0.9, minWidthPx: 120 },
-  // `date` floor accommodates the canonical "MMM d, yyyy" formatter
-  // (~100px in the project's text-row size) without truncation.
   date:    { ratio: 0.8, minWidthPx: 100 },
-  // `money` floor accommodates currency-formatted strings up to ~7 digits.
   money:   { ratio: 0.7, minWidthPx: 96 },
-  // `badge` is intrinsic; no floor pressure.
   badge:   { ratio: 0.7, minWidthPx: 0 },
 };
 
 const SELECT_TRACK_PX = 40;
 
-/** Resolve a column to its CSS Grid track string. Always emits
- *  `minmax(<px>, <fr>)` for fractional kinds — never bare `Nfr`. */
 function kindToTrack(col: EntityListColumn<unknown>): string {
-  if (col.kind === "select") {
-    return `${SELECT_TRACK_PX}px`;
-  }
+  if (col.kind === "select") return `${SELECT_TRACK_PX}px`;
   const defaults = KIND_DEFAULTS[col.kind];
   const ratio = col.ratio ?? defaults.ratio;
   const minPx = col.minWidthPx ?? defaults.minWidthPx;
@@ -189,105 +241,172 @@ function kindToTrack(col: EntityListColumn<unknown>): string {
 }
 
 /**
- * Cell classes applied by kind. The renderer adds these on top of any
- * `cellClassName` / `className` the caller supplied.
+ * Cell classes applied by kind.
  *
- * 2026-05-03 typography normalization: typography is now baked in here
- * so no migrated page needs to reapply `text-row` / `text-row-emphasis`
- * / body color classes inside its `render` functions. Pages that need a
- * specific override (a muted placeholder, a colored balance, a darker
- * primary line) wrap the inner content in a span with the override —
- * the cascade picks it up correctly because cell classes set the base.
+ * Typography tokens (locked — cannot be overridden at the cell level):
+ *   text-list-primary       → primary (15px / 20px / 500)
+ *   text-list-body          → text, body, date, money (15px / 20px / 400)
+ *   text-row                → status, badge (14px — pills bring their own)
+ *   (none)                  → select
  *
- * Token map (project semantic tokens, established in Typography Phase D
- * — see `client/src/components/ui/list-surface.tsx` header comment):
- *   text-row           → body baseline
- *   text-caption       → 14px — also the operational-density primary-name
- *                        size after the 2026-05-07 recalibration (paired
- *                        with `font-medium` for weight 500)
- *   text-label         → label/header (cascades from `listHeaderRowClass`
- *                        on the header row; cell wrappers don't restate it)
+ * Secondary sub-lines (entity-primary secondary:) use ENTITY_SECONDARY_CLASS
+ * (text-helper 13px / 400) — intentionally smaller to subordinate them to
+ * the primary line. This is the only remaining text-helper path.
  *
- * 2026-05-07 operational-density recalibration:
- *   The primary cell previously baked `text-row-emphasis` (15px / 500).
- *   It now composes `text-caption font-medium` (14px / 500) so it
- *   inherits the same density as the canonical `ENTITY_NAME_CLASS`
- *   primitive in `client/src/components/ui/typography.tsx` — the
- *   reference baseline is the row labels in the dashboard's
- *   `OperationalAlertsCard`. Every list page mounted via this primitive
- *   (Clients / Jobs / Invoices / Quotes / Leads / Locations / Suppliers)
- *   inherits the tighter density automatically with no per-screen patch.
- *
- * Hard rules baked in here (callers cannot override the size, only the
- * color/weight via inner spans):
- *   - primary: `text-caption font-medium text-slate-800` — operational
- *     primary-name density. Sub-lines must explicitly set
- *     `font-normal text-helper text-slate-500` (or similar) to break
- *     the medium-weight cascade.
- *   - text: `text-row text-slate-700` — body baseline for generic text cells.
- *   - date / money: `text-caption text-slate-700` — reduced weight (14px)
- *     for secondary metadata (dates, timestamps, amounts). 2026-05-08.
- *   - status / badge: `text-row` only — no color (caller controls
- *     because Badge / StatusPill ship their own typography).
- *   - select: no typography (checkbox cell).
+ * 2026-05-09 normalization: text / date / money bumped from text-helper (13px)
+ * to text-list-body (15px / 20px / 400) for visual consistency with primary.
  */
-function kindCellClasses(kind: EntityListColumnKind): string {
+function kindCellClasses(kind: EntityListColumnKind, align?: "left" | "right" | "center"): string {
+  const alignCls = align === "center" ? " justify-center text-center"
+    : align === "right" ? " text-right"
+    : "";
+
   switch (kind) {
     case "select":
-      return "px-4 py-2.5 flex items-center";
+      // Centered checkbox; stop-propagation added in renderRow.
+      return "px-4 py-1.5 flex items-center justify-center";
     case "primary":
-      // `min-w-0` is critical: without it, a flex/grid child with content
-      // (text) wider than the column won't shrink, defeating the
-      // truncate. With it, the text yields and `truncate` kicks in.
-      // Typography matches the canonical `ENTITY_NAME_CLASS` primitive
-      // (text-caption font-medium = 14px / 500) — see file-level docs.
-      return "px-4 py-2.5 min-w-0 text-caption font-medium text-slate-800";
+      return `px-4 py-1.5 min-w-0 text-list-primary text-slate-800${alignCls}`;
+    case "body":
+      return `px-4 py-1.5 min-w-0 text-list-body text-slate-700${alignCls}`;
     case "text":
-      return "px-4 py-2.5 min-w-0 text-row text-slate-700";
+      return `px-4 py-1.5 min-w-0 text-list-body text-slate-700${alignCls}`;
     case "status":
-      // Cell wraps badges in a flex-wrap container so multi-badge
-      // compositions wrap to a second line inside the cell instead of
-      // pushing the column wider. Color/weight come from the rendered
-      // Badge / StatusPill / inline span — the cell only contributes
-      // the size baseline.
-      return "px-4 py-2.5 min-w-0 text-row";
+      return `px-4 py-1.5 min-w-0 text-row${alignCls}`;
     case "date":
-      // 2026-05-08: date/timestamp cells use text-caption (14px) rather
-      // than text-row (15px) — reduced visual weight for secondary metadata.
-      return "px-4 py-2.5 whitespace-nowrap text-caption text-slate-700";
+      return `px-4 py-1.5 whitespace-nowrap text-list-body text-slate-700${alignCls}`;
     case "money":
-      // 2026-05-08: money cells use text-caption (14px) — same rationale as date.
-      return "px-4 py-2.5 whitespace-nowrap tabular-nums text-right text-caption text-slate-700";
+      // Money defaults to right; caller can override via `align`.
+      return `px-4 py-1.5 whitespace-nowrap tabular-nums text-right text-list-body text-slate-700${align === "left" || align === "center" ? alignCls : ""}`;
     case "badge":
-      // `badge` is a layout marker for inline pill content. Pills
-      // (Badge / EntityNumber) carry their own typography; the cell
-      // only contributes the size baseline for any sub-line text the
-      // caller stacks under the pill (see Jobs `Job` column).
-      return "px-4 py-2.5 text-row";
+      return `px-4 py-1.5 text-row${alignCls}`;
   }
 }
 
-/** Header classes applied by kind. */
-function kindHeaderClasses(kind: EntityListColumnKind): string {
+/** Header classes applied by kind. When `hasSortButton` is true, the sort
+ *  button inside supplies its own `px-4` — suppress the kind padding. */
+function kindHeaderClasses(
+  kind: EntityListColumnKind,
+  align?: "left" | "right" | "center",
+  hasSortButton?: boolean,
+): string {
+  const padding = hasSortButton ? "" : "px-4";
+  const alignCls = align === "center" ? " text-center"
+    : align === "right" ? " text-right"
+    : "";
+
   switch (kind) {
     case "select":
-      return "px-4 flex items-center";
+      return `${padding} flex items-center justify-center`;
     case "money":
-      return "px-4 text-right";
+      // Money defaults to right.
+      return `${padding}${align === "left" || align === "center" ? alignCls : " text-right"}`;
     default:
-      return "px-4";
+      return `${padding}${alignCls}`;
   }
 }
 
-// ─── Component ──────────────────────────────────────────────────────────────
+// ─── Cell content renderer ───────────────────────────────────────────────────
 
-/**
- * Build the `gridTemplateColumns` string from a columns array. Stable
- * across renders for the same column shape.
- */
+function renderCellContent<Row>(
+  cell: EntityListCell<Row>,
+  row: Row,
+  kind: EntityListColumnKind,
+): React.ReactNode {
+  switch (cell.type) {
+    case "entity-primary": {
+      const val = cell.value(row);
+      const sec = cell.secondary?.(row);
+      return (
+        <div className="min-w-0">
+          <div
+            className="text-list-primary truncate"
+            data-testid={cell.testId ? cell.testId(row) : undefined}
+          >{val ?? "—"}</div>
+          {sec ? <div className={ENTITY_SECONDARY_CLASS}>{sec}</div> : null}
+        </div>
+      );
+    }
+    case "entity-text":
+      return <div className="truncate">{cell.value(row) ?? "—"}</div>;
+    case "entity-number":
+      return (
+        <EntityNumber variant="primary">
+          {cell.value(row)}
+        </EntityNumber>
+      );
+    case "entity-status": {
+      const meta = cell.getStatusMeta(row);
+      return (
+        <StatusChip tone={meta.tone as Parameters<typeof StatusChip>[0]["tone"]}>
+          {meta.label}
+        </StatusChip>
+      );
+    }
+    case "entity-date": {
+      if (cell.isActive && !cell.isActive(row)) {
+        return <span className="text-muted-foreground">Inactive</span>;
+      }
+      const val = cell.value(row);
+      if (!val) return <span className="text-muted-foreground">—</span>;
+      if (cell.overdueWhen?.(row)) {
+        return <span className="text-red-700 font-semibold">Overdue</span>;
+      }
+      return formatDate(val instanceof Date ? val.toISOString() : (val as string | null | undefined));
+    }
+    case "entity-money":
+      return formatCurrency(cell.value(row));
+    case "customRender":
+      return cell.render(row);
+  }
+}
+
+// ─── Grid template ───────────────────────────────────────────────────────────
+
 function buildGridTemplate(columns: EntityListColumn<unknown>[]): string {
   return columns.map(kindToTrack).join(" ");
 }
+
+// ─── Sort header ─────────────────────────────────────────────────────────────
+
+function SortButton({
+  children,
+  active,
+  direction,
+  onClick,
+  align,
+}: {
+  children: React.ReactNode;
+  active: boolean;
+  direction?: "asc" | "desc";
+  onClick: () => void;
+  align?: "left" | "right" | "center";
+}) {
+  const justifyCls = align === "right" ? "justify-end"
+    : align === "center" ? "justify-center"
+    : "justify-start";
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex items-center gap-1 px-4 w-full text-left hover:text-foreground select-none cursor-pointer",
+        justifyCls,
+      )}
+      onClick={onClick}
+    >
+      {children}
+      {active ? (
+        direction === "asc"
+          ? <ChevronUp className="h-3 w-3 shrink-0" />
+          : <ChevronDown className="h-3 w-3 shrink-0" />
+      ) : (
+        <ArrowUpDown className="h-3 w-3 shrink-0 opacity-30" />
+      )}
+    </button>
+  );
+}
+
+// ─── Component ──────────────────────────────────────────────────────────────
 
 export function EntityListTable<Row>({
   rows,
@@ -297,52 +416,71 @@ export function EntityListTable<Row>({
   selectedRowKey,
   emptyState,
   loadingState,
+  errorState,
+  legacyEmptyStateNode,
+  legacyLoadingStateNode,
   className,
   groupBy,
   renderGroupHeader,
+  sortField,
+  sortDirection,
+  onSort,
 }: EntityListTableProps<Row>) {
-  // The columns array is typically a stable ref from the caller, but we
-  // memoize the grid template anyway because rendering the rows below
-  // also reads it — re-computing on every render is fine but cheap to
-  // avoid.
   const gridTemplate = React.useMemo(
     () => buildGridTemplate(columns as EntityListColumn<unknown>[]),
     [columns],
   );
 
-  // Loading state replaces the rows but still shows the surface chrome.
-  // Empty state replaces the rows when the parent has finished loading
-  // and there's nothing to show. Header is always rendered so the page
-  // doesn't visually jump when state flips.
-  const showLoading = loadingState !== undefined && rows.length === 0;
-  const showEmpty = !showLoading && emptyState !== undefined && rows.length === 0;
+  // Typed loading wins over legacy loading; both gate on rows.length === 0.
+  const showTypedLoading  = !!loadingState && rows.length === 0;
+  const showLegacyLoading = !showTypedLoading && !!legacyLoadingStateNode && rows.length === 0;
+  const isLoadingAny      = showTypedLoading || showLegacyLoading;
+  const showError  = !!errorState && !isLoadingAny && rows.length === 0;
+  const showEmpty  = !isLoadingAny && !showError && rows.length === 0 &&
+                     (!!emptyState || !!legacyEmptyStateNode);
 
   return (
     <div className={cn(listSurfaceClass, "overflow-hidden", className)} data-testid="entity-list-table">
       {/* Header */}
-      <div
-        className={cn(listHeaderRowClass)}
-        style={{ gridTemplateColumns: gridTemplate }}
-      >
-        {columns.map((col) => (
-          <div
-            key={col.id}
-            className={cn(
-              kindHeaderClasses(col.kind),
-              col.className,
-              col.headerClassName,
-            )}
-          >
-            {col.header}
-          </div>
-        ))}
+      <div className={cn(listHeaderRowClass)} style={{ gridTemplateColumns: gridTemplate }}>
+        {columns.map((col) => {
+          const hasSortButton = Boolean(col.sortKey && onSort);
+          return (
+            <div
+              key={col.id}
+              className={cn(
+                kindHeaderClasses(col.kind, col.align, hasSortButton),
+                col.className,
+              )}
+            >
+              {hasSortButton ? (
+                <SortButton
+                  active={sortField === col.sortKey}
+                  direction={sortField === col.sortKey ? sortDirection : undefined}
+                  onClick={() => onSort!(col.sortKey!)}
+                  align={col.align}
+                >
+                  {col.header}
+                </SortButton>
+              ) : (
+                col.header
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {/* Body */}
-      {showLoading ? (
-        loadingState
+      {/* Body — state priority: loading > error > empty > rows */}
+      {showTypedLoading ? (
+        loadingState === true
+          ? <StateBlock kind="loading" title="Loading…" />
+          : <StateBlock {...(loadingState as StateBlockProps)} />
+      ) : showLegacyLoading ? (
+        legacyLoadingStateNode
+      ) : showError ? (
+        <StateBlock {...errorState!} />
       ) : showEmpty ? (
-        emptyState
+        legacyEmptyStateNode ?? <StateBlock {...emptyState!} />
       ) : groupBy ? (
         renderGroupedBody({
           rows,
@@ -353,6 +491,8 @@ export function EntityListTable<Row>({
           gridTemplate,
           groupBy,
           renderGroupHeader,
+          sortField,
+          sortDirection,
         })
       ) : (
         rows.map((row) =>
@@ -363,7 +503,7 @@ export function EntityListTable<Row>({
   );
 }
 
-// ─── Row + group renderers ──────────────────────────────────────────────────
+// ─── Row renderer ────────────────────────────────────────────────────────────
 
 interface RenderRowArgs<Row> {
   row: Row;
@@ -390,11 +530,6 @@ function renderRow<Row>({
       key={key}
       className={cn(
         "grid items-center",
-        // Reuse canonical row styling. tableRowClass already includes
-        // `cursor-pointer hover:bg-... border-b ...` — perfect when
-        // interactive. When not interactive, we still want the border/
-        // hover but not the cursor; the shared utility's hover is
-        // harmless on non-clickable rows so we keep one source of truth.
         tableRowClass,
         isSelected && "bg-slate-50",
       )}
@@ -405,8 +540,6 @@ function renderRow<Row>({
       onKeyDown={
         interactive
           ? (e) => {
-              // Enter triggers row click. Space intentionally not
-              // bound to avoid hijacking checkbox space-toggle.
               if (e.key === "Enter") {
                 e.preventDefault();
                 onRowClick!(row);
@@ -418,43 +551,31 @@ function renderRow<Row>({
     >
       {columns.map((col) => {
         const isSelectCell = col.kind === "select";
+        const content = renderCellContent(col.cell, row, col.kind);
+
+        // Status cells always wrap in flex-wrap for multi-badge compositions.
+        const wrappedContent =
+          col.kind === "status" ? (
+            <div className="flex items-center gap-2 flex-wrap min-w-0">{content}</div>
+          ) : (
+            content
+          );
+
         return (
           <div
             key={col.id}
-            className={cn(
-              kindCellClasses(col.kind),
-              col.className,
-              col.cellClassName,
-            )}
-            onClick={
-              // Stop propagation on select cells so checkbox clicks
-              // don't bubble to row navigation.
-              isSelectCell ? (e) => e.stopPropagation() : undefined
-            }
+            className={cn(kindCellClasses(col.kind, col.align), col.className)}
+            onClick={isSelectCell ? (e) => e.stopPropagation() : undefined}
           >
-            {col.kind === "status" ? (
-              // Status cell wrapper: flex-wrap so multi-badge
-              // compositions wrap inside the cell rather than pushing
-              // the column wider.
-              <div className="flex items-center gap-2 flex-wrap min-w-0">
-                {col.render(row)}
-              </div>
-            ) : col.kind === "primary" || col.kind === "text" ? (
-              // Primary/text cells get truncation by default. Callers
-              // can override with `cellClassName` if they want a multi-
-              // line/secondary-text layout — they already opt-out by
-              // rendering their own block-level structure inside
-              // `render`.
-              <div className="min-w-0 truncate">{col.render(row)}</div>
-            ) : (
-              col.render(row)
-            )}
+            {wrappedContent}
           </div>
         );
       })}
     </div>
   );
 }
+
+// ─── Grouped body renderer ───────────────────────────────────────────────────
 
 interface RenderGroupedBodyArgs<Row> {
   rows: Row[];
@@ -465,24 +586,13 @@ interface RenderGroupedBodyArgs<Row> {
   gridTemplate: string;
   groupBy: (row: Row) => string | null;
   renderGroupHeader?: (groupKey: string, rows: Row[]) => React.ReactNode;
+  sortField?: string;
+  sortDirection?: "asc" | "desc";
 }
 
-/**
- * Walks `rows` once in input order, accumulates buckets keyed by
- * `groupBy(row)`, and emits a header row before each non-null bucket
- * followed by its rows. Null-keyed buckets render their rows without a
- * header. Order of buckets matches first-appearance order in the input.
- *
- * Group header layout: a div whose `gridColumn: 1 / -1` spans all
- * columns of the surrounding grid, but it lives inside the same
- * `listSurfaceClass` parent so borders / hover styling stay consistent.
- * The header row's grid template is set to a single full-width track so
- * its content layout doesn't fight the column grid.
- */
 function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNode {
   const { rows, rowKey, gridTemplate, groupBy, renderGroupHeader } = args;
 
-  // Preserve first-appearance order via a parallel array of bucket keys.
   const bucketOrder: (string | null)[] = [];
   const buckets = new Map<string | null, Row[]>();
   for (const row of rows) {
@@ -496,28 +606,16 @@ function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNo
 
   return bucketOrder.map((groupKey) => {
     const groupRows = buckets.get(groupKey)!;
-    // Stable React key per bucket. For null buckets we use a sentinel.
     const headerKey = groupKey === null ? "__ungrouped__" : `__group__${groupKey}`;
     return (
       <React.Fragment key={headerKey}>
         {groupKey !== null && (
           <div
             className={cn(
-              // Visual: bold, faint background, slightly tighter padding.
-              // Matches `listHeaderRowClass` flavour but is intentionally
-              // distinct (no uppercase tracking, no full header border).
               "border-b border-[#e5e7eb] dark:border-gray-800 px-4 py-2 text-row-emphasis text-slate-700 bg-slate-50/70 dark:bg-gray-900/40",
             )}
-            // Span all columns by collapsing the surrounding grid track
-            // template to a single full-width track for this row only.
-            // The parent grid's track template only applies via inline
-            // style on each row, so giving this row a different style
-            // is enough — no stray empty cells from the column grid.
             style={{ gridTemplateColumns: "1fr" }}
             data-testid={`entity-list-group-${groupKey}`}
-            // Inert: not clickable, no role, no key handlers, no select
-            // logic. Group headers are pure presentation.
-            aria-hidden={false}
           >
             {renderGroupHeader ? renderGroupHeader(groupKey, groupRows) : (
               <span className="font-semibold">{groupKey}</span>

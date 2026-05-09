@@ -40,6 +40,10 @@ type SavedProps = {
   onSave: (text: string) => void | Promise<unknown>;
   /** Pending state for the parent's PATCH mutation. */
   isSaving?: boolean;
+  /** When true, renders without card chrome and Collapsible — for use
+   *  inside CanonicalDetailHeader via the description prop (2026-05-08).
+   *  Always expanded; click-to-edit. Default: false (standalone card). */
+  inline?: boolean;
 };
 
 type DraftProps = {
@@ -60,7 +64,7 @@ export function QuoteDescriptionCard(props: QuoteDescriptionCardProps) {
 }
 
 // ── Saved-mode body — collapsible + click-to-edit ──
-function SavedDescription({ value, onSave, isSaving }: SavedProps) {
+function SavedDescription({ value, onSave, isSaving, inline }: SavedProps) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -80,6 +84,81 @@ function SavedDescription({ value, onSave, isSaving }: SavedProps) {
     }
   };
 
+  // ── Inline mode (inside CanonicalDetailHeader description slot) ────
+  // No outer card chrome, no Collapsible — always expanded.
+  // Matches JobDetailPage's inline description pattern (2026-05-08).
+  if (inline) {
+    return (
+      <div data-testid="card-quote-description">
+        {editing ? (
+          <div className="space-y-2">
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={4}
+              autoFocus
+              disabled={isSaving}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  commit();
+                } else if (e.key === "Escape") {
+                  setEditing(false);
+                }
+              }}
+              data-testid="input-quote-description"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isSaving}
+                onClick={() => setEditing(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={isSaving}
+                onClick={commit}
+                data-testid="button-save-quote-description"
+              >
+                {isSaving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                Save
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={startEditing}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                startEditing();
+              }
+            }}
+            className="group flex items-start gap-1.5 cursor-pointer"
+            data-testid="text-quote-description"
+          >
+            {value && value.trim() !== "" ? (
+              <p className="text-sm text-slate-600 whitespace-pre-wrap flex-1 min-w-0 group-hover:text-slate-800 transition-colors">
+                {value}
+              </p>
+            ) : (
+              <p className="text-sm text-slate-400 italic group-hover:text-slate-500 transition-colors">
+                Click to add description…
+              </p>
+            )}
+            <Pencil className="h-3.5 w-3.5 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Standalone card mode (original behavior) ───────────────────────
   return (
     <div
       className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden"
