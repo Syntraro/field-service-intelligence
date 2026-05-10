@@ -10,24 +10,29 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { AlertCircle, Mail, Copy } from "lucide-react";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import {
+  InlineInput,
+  InlineSelectTrigger,
+  FormField,
+  FormHelperText,
+} from "@/components/ui/form-field";
 
 // Backend createInvitationSchema restricts role to these three (server/routes/invitations.ts:16-19).
 // `manager` and `owner` invites are intentionally blocked at the API layer.
@@ -122,40 +127,37 @@ export function InviteMemberDialog({ open, onOpenChange }: InviteMemberDialogPro
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent data-testid="dialog-invite-member">
-        <DialogHeader>
-          <DialogTitle>Invite Team Member</DialogTitle>
-          <DialogDescription>
-            Send an invitation. Each email can only belong to one company.
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={handleClose} data-testid="dialog-invite-member">
+      <ModalHeader>
+        <ModalTitle>Invite Team Member</ModalTitle>
+        <ModalDescription>
+          Send an invitation. Each email can only belong to one company.
+        </ModalDescription>
+      </ModalHeader>
 
+      <ModalBody className={!issued ? "space-y-4" : "space-y-3"}>
         {!issued ? (
-          <div className="space-y-4 py-2">
+          <>
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <div className="space-y-2">
-              <Label htmlFor="invite-email">Email</Label>
-              <Input
-                id="invite-email"
-                type="email"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  dirty.markDirty();
-                }}
-                placeholder="name@example.com"
-                data-testid="input-invite-email"
-                autoFocus
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invite-role">Role</Label>
+            <InlineInput
+              id="invite-email"
+              label="Email"
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                dirty.markDirty();
+              }}
+              placeholder="name@example.com"
+              data-testid="input-invite-email"
+              autoFocus
+            />
+            <FormField>
               <Select
                 value={role}
                 onValueChange={(v) => {
@@ -163,9 +165,9 @@ export function InviteMemberDialog({ open, onOpenChange }: InviteMemberDialogPro
                   dirty.markDirty();
                 }}
               >
-                <SelectTrigger id="invite-role" data-testid="select-invite-role">
+                <InlineSelectTrigger id="invite-role" label="Role" data-testid="select-invite-role">
                   <SelectValue />
-                </SelectTrigger>
+                </InlineSelectTrigger>
                 <SelectContent>
                   {INVITABLE_ROLES.map((r) => (
                     <SelectItem key={r.value} value={r.value}>
@@ -174,13 +176,13 @@ export function InviteMemberDialog({ open, onOpenChange }: InviteMemberDialogPro
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <FormHelperText>
                 Owner and manager roles must be assigned from a user's profile after signup.
-              </p>
-            </div>
-          </div>
+              </FormHelperText>
+            </FormField>
+          </>
         ) : (
-          <div className="space-y-3 py-2">
+          <>
             <Alert>
               <Mail className="h-4 w-4" />
               <AlertDescription>
@@ -188,7 +190,7 @@ export function InviteMemberDialog({ open, onOpenChange }: InviteMemberDialogPro
                 below — it expires on {new Date(issued.expiresAt).toLocaleString()}.
               </AlertDescription>
             </Alert>
-            <div className="space-y-1">
+            <FormField>
               <Label>Accept link</Label>
               <div className="flex gap-2">
                 <Input
@@ -201,32 +203,32 @@ export function InviteMemberDialog({ open, onOpenChange }: InviteMemberDialogPro
                   <Copy className="h-4 w-4" />
                 </Button>
               </div>
-            </div>
-          </div>
+            </FormField>
+          </>
         )}
+      </ModalBody>
 
-        <DialogFooter>
-          {!issued ? (
-            <>
-              <Button variant="outline" onClick={() => handleClose(false)}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => inviteMutation.mutate({ email, role })}
-                disabled={!email || inviteMutation.isPending}
-                data-testid="button-send-invite"
-              >
-                <Mail className="h-4 w-4 mr-2" />
-                {inviteMutation.isPending ? "Sending..." : "Send Invite"}
-              </Button>
-            </>
-          ) : (
-            <Button onClick={() => handleClose(false)} data-testid="button-close-invite">
-              Done
+      <ModalFooter>
+        {!issued ? (
+          <>
+            <Button variant="outline" onClick={() => handleClose(false)}>
+              Cancel
             </Button>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <Button
+              onClick={() => inviteMutation.mutate({ email, role })}
+              disabled={!email || inviteMutation.isPending}
+              data-testid="button-send-invite"
+            >
+              <Mail className="h-4 w-4 mr-2" />
+              {inviteMutation.isPending ? "Sending..." : "Send Invite"}
+            </Button>
+          </>
+        ) : (
+          <Button onClick={() => handleClose(false)} data-testid="button-close-invite">
+            Done
+          </Button>
+        )}
+      </ModalFooter>
+    </ModalShell>
   );
 }

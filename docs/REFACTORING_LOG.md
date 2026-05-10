@@ -4,6 +4,36 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-10: Phase 2E P1 — Payment / Member / Portal Link Dialog Migration
+
+### Status
+**Completed.**
+
+### Scope
+4 P1 modals: `CollectPaymentDialog`, `RefundPaymentDialog`, `InviteMemberDialog`, `SendPaymentLinkDialog`.
+
+### Files Changed
+- `client/src/components/invoice/CollectPaymentDialog.tsx` — Inline primitives only. Raw `Dialog` retained (see exception below). Payment method + date → `InlineSelectTrigger` + `InlineInput` in `FormRow`. Reference → `InlineInput`. Notes → `InlineTextarea`. `Input` kept for allocation-row amount widgets.
+- `client/src/components/invoice/RefundPaymentDialog.tsx` — Full `Dialog*` → `ModalShell`. Refund amount → `InlineInput` + `FormErrorText`. Stripe reason / manual method → `InlineSelectTrigger` + `FormHelperText`. Notes → `InlineTextarea`. Single `ModalFooter` replacing per-state `DialogFooter` pattern.
+- `client/src/components/team-hub/InviteMemberDialog.tsx` — Full `Dialog*` → `ModalShell`. Email → `InlineInput`. Role → `InlineSelectTrigger` + `FormHelperText`. Accept-link readonly field (success state) kept as raw `Input` + `Label` — display widget, not a form input.
+- `client/src/components/portal/SendPaymentLinkDialog.tsx` — Full `Dialog*` → `ModalShell`. Recipient email → `InlineInput`. `FormHelperText` for anti-enumeration hint.
+
+### CollectPaymentDialog — Scrollable/Sticky Layout Exception
+`CollectPaymentDialog` retains raw `Dialog` because its layout cannot be modelled by `ModalShell` without restructuring:
+- Outer shell: `max-h-[88vh] overflow-hidden flex flex-col gap-0 p-0` — custom constrained-height flex column.
+- Scrollable middle: `overflow-y-auto flex-1` — the invoice allocation list grows arbitrarily.
+- Sticky footer: rendered after the scroll container; a no-billing-email amber bar is appended below the action row.
+
+`ModalShell` provides a width-neutral, unstyled `DialogContent`. It does not own the scroll/sticky contract — that belongs to `ModalBody` and `ModalFooter` individually. Reconstructing the amber-bar-below-footer pattern inside `ModalShell` would require either (a) extending `ModalFooter` to accept a slot for sub-footer content or (b) wrapping `ModalBody + ModalFooter` in an extra flex container. Neither is warranted for one dialog. Raw `Dialog` is kept and documented.
+
+### Stripe PaymentElement — Intentionally Excluded
+`EmbeddedStripeCardForm` / `<Elements stripe=...>` inside `CollectPaymentDialog` are not touched. These components have their own internal layout contract with Stripe's hosted iframe and cannot be wrapped in inline-field primitives. The migration applies only to the surrounding manual-payment form fields.
+
+### Compact-Density Exceptions — Deferred
+Compact-density forms (tech-app scheduling inputs, `QuickAddJobDialog` compact form) are explicitly out of scope for the Phase 2 inline-field migration. These use `CompactFormField` / `CompactColHeader` (10–11px label tier). Phase 2 only targets standard-density modal forms.
+
+---
+
 ## 2026-05-10: Phase 2D P0 — Inline-field + ModalShell Migration
 
 ### Status

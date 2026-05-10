@@ -33,26 +33,30 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Loader2, Undo2, Clock3, AlertTriangle, CheckCircle2 } from "lucide-react";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import {
+  InlineInput,
+  InlineSelectTrigger,
+  InlineTextarea,
+  FormField,
+  FormErrorText,
+  FormHelperText,
+} from "@/components/ui/form-field";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
@@ -212,62 +216,63 @@ export function RefundPaymentDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : handleClose())}>
-      <DialogContent className="sm:max-w-md" data-testid="refund-payment-dialog">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Undo2 className="h-5 w-5 text-rose-600" />
-            Issue refund
-          </DialogTitle>
-          <DialogDescription>
-            Refunding payment{" "}
-            {payment.reference ? (
-              <span className="font-medium">#{payment.reference}</span>
-            ) : (
-              <span className="font-medium">of {formatCurrency(parentAmount, currency)}</span>
-            )}
-            {isStripeLinked
-              ? " — money will be returned to the original card via Stripe."
-              : " — this records a manual refund only; no funds move automatically."}
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell
+      open={open}
+      onOpenChange={(o) => (o ? onOpenChange(true) : handleClose())}
+      className="sm:max-w-md"
+      data-testid="refund-payment-dialog"
+    >
+      <ModalHeader>
+        <ModalTitle className="flex items-center gap-2">
+          <Undo2 className="h-5 w-5 text-rose-600" />
+          Issue refund
+        </ModalTitle>
+        <ModalDescription>
+          Refunding payment{" "}
+          {payment.reference ? (
+            <span className="font-medium">#{payment.reference}</span>
+          ) : (
+            <span className="font-medium">of {formatCurrency(parentAmount, currency)}</span>
+          )}
+          {isStripeLinked
+            ? " — money will be returned to the original card via Stripe."
+            : " — this records a manual refund only; no funds move automatically."}
+        </ModalDescription>
+      </ModalHeader>
 
+      <ModalBody className="space-y-3">
         {result?.kind === "reconciliation_pending" ? (
-          <div className="py-4 space-y-3" data-testid="refund-reconciliation-pending">
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
-              <Clock3 className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
-              <div className="text-sm text-amber-900">
-                <p className="font-semibold">Refund issued — reconciliation pending</p>
-                <p className="text-xs opacity-90 mt-1 leading-relaxed">
-                  Stripe accepted the refund. The local record will appear in the
-                  payment history within a few seconds, when the webhook lands.
-                  No further action is needed — retrying would not produce a
-                  duplicate refund.
-                </p>
-              </div>
+          <div
+            className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2"
+            data-testid="refund-reconciliation-pending"
+          >
+            <Clock3 className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
+            <div className="text-sm text-amber-900">
+              <p className="font-semibold">Refund issued — reconciliation pending</p>
+              <p className="text-xs opacity-90 mt-1 leading-relaxed">
+                Stripe accepted the refund. The local record will appear in the
+                payment history within a few seconds, when the webhook lands.
+                No further action is needed — retrying would not produce a
+                duplicate refund.
+              </p>
             </div>
-            <DialogFooter>
-              <Button onClick={handleClose}>Close</Button>
-            </DialogFooter>
           </div>
         ) : result?.kind === "settled" ? (
-          <div className="py-4 space-y-3" data-testid="refund-settled">
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-start gap-2">
-              <CheckCircle2 className="h-4 w-4 text-emerald-700 mt-0.5 shrink-0" />
-              <div className="text-sm text-emerald-900">
-                <p className="font-semibold">Refund recorded</p>
-                <p className="text-xs opacity-90 mt-1">
-                  {formatCurrency(parseFloat(result.amount.replace("-", "")), currency)} attached
-                  to the original payment.
-                </p>
-              </div>
+          <div
+            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-start gap-2"
+            data-testid="refund-settled"
+          >
+            <CheckCircle2 className="h-4 w-4 text-emerald-700 mt-0.5 shrink-0" />
+            <div className="text-sm text-emerald-900">
+              <p className="font-semibold">Refund recorded</p>
+              <p className="text-xs opacity-90 mt-1">
+                {formatCurrency(parseFloat(result.amount.replace("-", "")), currency)} attached
+                to the original payment.
+              </p>
             </div>
-            <DialogFooter>
-              <Button onClick={handleClose}>Close</Button>
-            </DialogFooter>
           </div>
         ) : (
-          <div className="space-y-3 py-2">
+          <>
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs flex items-start gap-2">
               <AlertTriangle className="h-3.5 w-3.5 text-slate-500 mt-0.5 shrink-0" />
               <div>
@@ -285,12 +290,10 @@ export function RefundPaymentDialog({
               </div>
             </div>
 
-            <div>
-              <Label htmlFor="refund-amount" className="text-xs">
-                Refund amount
-              </Label>
-              <Input
+            <FormField>
+              <InlineInput
                 id="refund-amount"
+                label="Refund amount"
                 type="number"
                 inputMode="decimal"
                 step="0.01"
@@ -302,26 +305,27 @@ export function RefundPaymentDialog({
                 data-testid="input-refund-amount"
               />
               {!amountValid && amount.length > 0 && (
-                <p className="text-xs text-red-600 mt-1">
+                <FormErrorText>
                   Amount must be greater than 0 and at most{" "}
                   {formatCurrency(remainingRefundable, currency)}.
-                </p>
+                </FormErrorText>
               )}
-            </div>
+            </FormField>
 
             {isStripeLinked ? (
-              <div>
-                <Label htmlFor="refund-reason" className="text-xs">
-                  Reason (optional)
-                </Label>
+              <FormField>
                 <Select
                   value={reason || "__none"}
                   onValueChange={(v) => setReason(v === "__none" ? "" : v)}
                   disabled={refundMutation.isPending}
                 >
-                  <SelectTrigger id="refund-reason" data-testid="select-refund-reason">
+                  <InlineSelectTrigger
+                    id="refund-reason"
+                    label="Reason (optional)"
+                    data-testid="select-refund-reason"
+                  >
                     <SelectValue placeholder="Select a reason" />
-                  </SelectTrigger>
+                  </InlineSelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none">No reason</SelectItem>
                     <SelectItem value="duplicate">Duplicate</SelectItem>
@@ -331,80 +335,81 @@ export function RefundPaymentDialog({
                     </SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-[11px] text-muted-foreground mt-1">
+                <FormHelperText>
                   Reason is sent to Stripe; free-text notes stay local.
-                </p>
-              </div>
+                </FormHelperText>
+              </FormField>
             ) : (
-              <div>
-                <Label htmlFor="refund-method" className="text-xs">
-                  Refund method (optional)
-                </Label>
-                <Select
-                  value={methodOverride || "__same"}
-                  onValueChange={(v) => setMethodOverride(v === "__same" ? "" : v)}
-                  disabled={refundMutation.isPending}
+              <Select
+                value={methodOverride || "__same"}
+                onValueChange={(v) => setMethodOverride(v === "__same" ? "" : v)}
+                disabled={refundMutation.isPending}
+              >
+                <InlineSelectTrigger
+                  id="refund-method"
+                  label="Refund method (optional)"
+                  data-testid="select-refund-method"
                 >
-                  <SelectTrigger id="refund-method" data-testid="select-refund-method">
-                    <SelectValue placeholder={`Same as original (${payment.method})`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__same">
-                      Same as original ({payment.method})
-                    </SelectItem>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="credit">Credit</SelectItem>
-                    <SelectItem value="debit">Debit</SelectItem>
-                    <SelectItem value="e-transfer">E-Transfer</SelectItem>
-                    <SelectItem value="cheque">Cheque</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                  <SelectValue placeholder={`Same as original (${payment.method})`} />
+                </InlineSelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__same">
+                    Same as original ({payment.method})
+                  </SelectItem>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="credit">Credit</SelectItem>
+                  <SelectItem value="debit">Debit</SelectItem>
+                  <SelectItem value="e-transfer">E-Transfer</SelectItem>
+                  <SelectItem value="cheque">Cheque</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
             )}
 
-            <div>
-              <Label htmlFor="refund-notes" className="text-xs">
-                Notes (optional)
-              </Label>
-              <Textarea
-                id="refund-notes"
-                placeholder="Internal notes for this refund…"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                disabled={refundMutation.isPending}
-                data-testid="input-refund-notes"
-              />
-            </div>
-
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={handleClose}
-                disabled={refundMutation.isPending}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSubmit}
-                disabled={!canSubmit}
-                className="bg-rose-600 hover:bg-rose-700 text-white"
-                data-testid="button-submit-refund"
-              >
-                {refundMutation.isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Refunding…
-                  </>
-                ) : (
-                  `Refund ${formatCurrency(parseFloat(amount || "0"), currency)}`
-                )}
-              </Button>
-            </DialogFooter>
-          </div>
+            <InlineTextarea
+              id="refund-notes"
+              label="Notes (optional)"
+              placeholder="Internal notes for this refund…"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={refundMutation.isPending}
+              data-testid="input-refund-notes"
+            />
+          </>
         )}
-      </DialogContent>
-    </Dialog>
+      </ModalBody>
+
+      <ModalFooter>
+        {result ? (
+          <Button onClick={handleClose} data-testid="button-close-refund">Close</Button>
+        ) : (
+          <>
+            <Button
+              variant="outline"
+              onClick={handleClose}
+              disabled={refundMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              className="bg-rose-600 hover:bg-rose-700 text-white"
+              data-testid="button-submit-refund"
+            >
+              {refundMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Refunding…
+                </>
+              ) : (
+                `Refund ${formatCurrency(parseFloat(amount || "0"), currency)}`
+              )}
+            </Button>
+          </>
+        )}
+      </ModalFooter>
+    </ModalShell>
   );
 }
 

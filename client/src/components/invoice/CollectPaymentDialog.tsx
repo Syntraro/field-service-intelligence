@@ -44,17 +44,20 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  InlineInput,
+  InlineTextarea,
+  InlineSelectTrigger,
+  FormRow,
+} from "@/components/ui/form-field";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
@@ -508,73 +511,63 @@ export function CollectPaymentDialog({
           </div>
 
           {/* Method + date row. Two-column on md+; stacked on mobile. */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label htmlFor="payment-method" className="text-xs">Payment method</Label>
-              <Select
-                value={method}
-                onValueChange={(v) => setMethod(v as PaymentMethod)}
+          <FormRow className="grid-cols-1 md:grid-cols-2">
+            <Select
+              value={method}
+              onValueChange={(v) => setMethod(v as PaymentMethod)}
+            >
+              <InlineSelectTrigger
+                id="payment-method"
+                label="Payment method"
+                data-testid="collect-payment-method"
               >
-                <SelectTrigger id="payment-method" data-testid="collect-payment-method" className="h-9">
-                  <SelectValue placeholder="Select method" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(context?.supportedMethods ?? Object.keys(METHOD_LABELS) as PaymentMethod[]).map(
-                    (m) => (
-                      <SelectItem key={m} value={m}>
-                        {METHOD_LABELS[m]}
-                      </SelectItem>
-                    ),
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+                <SelectValue placeholder="Select method" />
+              </InlineSelectTrigger>
+              <SelectContent>
+                {(context?.supportedMethods ?? Object.keys(METHOD_LABELS) as PaymentMethod[]).map(
+                  (m) => (
+                    <SelectItem key={m} value={m}>
+                      {METHOD_LABELS[m]}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectContent>
+            </Select>
             {!isCardMode && (
-              <div className="space-y-1">
-                <Label htmlFor="payment-date" className="text-xs">Transaction date</Label>
-                <Input
-                  id="payment-date"
-                  type="date"
-                  value={transactionDate}
-                  onChange={(e) => setTransactionDate(e.target.value)}
-                  data-testid="collect-payment-date"
-                  className="h-9"
-                />
-              </div>
+              <InlineInput
+                id="payment-date"
+                label="Transaction date"
+                type="date"
+                value={transactionDate}
+                onChange={(e) => setTransactionDate(e.target.value)}
+                data-testid="collect-payment-date"
+              />
             )}
-          </div>
+          </FormRow>
 
           {/* Reference (only when method has one). */}
           {METHOD_HAS_REFERENCE[method] && (
-            <div className="space-y-1">
-              <Label htmlFor="payment-reference" className="text-xs">
-                {REFERENCE_LABEL_BY_METHOD[method]}
-              </Label>
-              <Input
-                id="payment-reference"
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                placeholder={REFERENCE_PLACEHOLDER_BY_METHOD[method]}
-                data-testid="collect-payment-reference"
-                className="h-9"
-              />
-            </div>
+            <InlineInput
+              id="payment-reference"
+              label={REFERENCE_LABEL_BY_METHOD[method]}
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              placeholder={REFERENCE_PLACEHOLDER_BY_METHOD[method]}
+              data-testid="collect-payment-reference"
+            />
           )}
 
           {/* Details (only when method has them). */}
           {METHOD_HAS_DETAILS[method] && (
-            <div className="space-y-1">
-              <Label htmlFor="payment-notes" className="text-xs">Details</Label>
-              <Textarea
-                id="payment-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-                placeholder="Optional notes"
-                data-testid="collect-payment-notes"
-                className="min-h-[56px]"
-              />
-            </div>
+            <InlineTextarea
+              id="payment-notes"
+              label="Details"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              placeholder="Optional notes"
+              data-testid="collect-payment-notes"
+            />
           )}
 
           {/* Outstanding invoices list. */}
