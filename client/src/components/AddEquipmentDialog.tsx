@@ -12,15 +12,16 @@
  * UI today (tagNumber, installDate, warrantyExpiry, nameplatePhotoId)
  * are not exposed in either mode and remain untouched on PATCH (server
  * uses partial-update validation).
+ * 2026-05-10 Phase 2F: srOnly FormLabel + Input replaced with InlineInput;
+ *   Textarea replaced with InlineTextarea. EquipmentTypeCombobox keeps a
+ *   visible FormLabel above (custom widget — cannot accept inline label).
  */
 
 import { useState, useCallback, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
+import { FormField, FormLabel, FormRow, InlineInput, InlineTextarea } from "@/components/ui/form-field";
 // 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
 // for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
 // Taxonomy rule #2 (generic / simple modal). ModalShell stays width-
@@ -204,19 +205,18 @@ export function AddEquipmentDialog({
         <ModalDescription>{dialogDescription}</ModalDescription>
       </ModalHeader>
       <ModalBody className="grid gap-3">
+        <InlineInput
+          id="eq-name"
+          label="Equipment Name"
+          required
+          value={form.name}
+          onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
+          autoFocus
+        />
+        {/* EquipmentTypeCombobox is a custom combobox widget — it cannot
+            accept an inline label. FormLabel stays visible above it. */}
         <FormField>
-          <FormLabel htmlFor="eq-name" srOnly>Equipment Name</FormLabel>
-          <Input
-            id="eq-name"
-            value={form.name}
-            onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
-            placeholder="Equipment Name *"
-            className="h-8 text-sm"
-            autoFocus
-          />
-        </FormField>
-        <FormField>
-          <FormLabel srOnly>Type</FormLabel>
+          <FormLabel>Type</FormLabel>
           <EquipmentTypeCombobox
             value={form.equipmentType}
             onChange={(name) => setForm(prev => ({ ...prev, equipmentType: name }))}
@@ -224,48 +224,33 @@ export function AddEquipmentDialog({
           />
         </FormField>
         <FormRow className="grid-cols-2">
-          <FormField>
-            <FormLabel htmlFor="eq-manufacturer" srOnly>Manufacturer</FormLabel>
-            <Input
-              id="eq-manufacturer"
-              value={form.manufacturer}
-              onChange={(e) => setForm(prev => ({ ...prev, manufacturer: e.target.value }))}
-              placeholder="Manufacturer"
-              className="h-8 text-sm"
-            />
-          </FormField>
-          <FormField>
-            <FormLabel htmlFor="eq-model" srOnly>Model Number</FormLabel>
-            <Input
-              id="eq-model"
-              value={form.modelNumber}
-              onChange={(e) => setForm(prev => ({ ...prev, modelNumber: e.target.value }))}
-              placeholder="Model Number"
-              className="h-8 text-sm"
-            />
-          </FormField>
+          <InlineInput
+            id="eq-manufacturer"
+            label="Manufacturer"
+            value={form.manufacturer}
+            onChange={(e) => setForm(prev => ({ ...prev, manufacturer: e.target.value }))}
+          />
+          <InlineInput
+            id="eq-model"
+            label="Model Number"
+            value={form.modelNumber}
+            onChange={(e) => setForm(prev => ({ ...prev, modelNumber: e.target.value }))}
+          />
         </FormRow>
-        <FormField>
-          <FormLabel htmlFor="eq-serial" srOnly>Serial Number</FormLabel>
-          <Input
-            id="eq-serial"
-            value={form.serialNumber}
-            onChange={(e) => setForm(prev => ({ ...prev, serialNumber: e.target.value }))}
-            placeholder="Serial Number"
-            className="h-8 text-sm"
-          />
-        </FormField>
-        <FormField>
-          <FormLabel htmlFor="eq-notes" srOnly>Notes</FormLabel>
-          <Textarea
-            id="eq-notes"
-            value={form.notes}
-            onChange={(e) => setForm(prev => ({ ...prev, notes: e.target.value }))}
-            placeholder="Optional details..."
-            rows={2}
-            className="text-sm resize-none"
-          />
-        </FormField>
+        <InlineInput
+          id="eq-serial"
+          label="Serial Number"
+          value={form.serialNumber}
+          onChange={(e) => setForm(prev => ({ ...prev, serialNumber: e.target.value }))}
+        />
+        <InlineTextarea
+          id="eq-notes"
+          label="Notes"
+          value={form.notes}
+          onChange={(e) => setForm(prev => ({ ...prev, notes: e.target.value }))}
+          placeholder="Optional details..."
+          rows={2}
+        />
       </ModalBody>
       <ModalFooter>
         <Button type="button" variant="outline" size="sm" onClick={resetAndClose}>

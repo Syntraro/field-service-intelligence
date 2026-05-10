@@ -144,26 +144,33 @@ describe("AddEquipmentDialog — form fields preserved verbatim", () => {
     "eq-serial",
     "eq-notes",
   ]) {
-    it(`preserves the ${fieldId} field`, () => {
-      expect(src).toMatch(new RegExp(`htmlFor="${fieldId}"`));
+    it(`preserves the ${fieldId} field id`, () => {
       expect(src).toMatch(new RegExp(`id="${fieldId}"`));
     });
   }
 
-  it("Equipment Name is marked required (asterisk in the label)", () => {
-    expect(src).toMatch(/Equipment Name \*/);
-  });
-
-  it("EquipmentTypeCombobox is rendered for the Type field", () => {
-    expect(src).toMatch(/<EquipmentTypeCombobox/);
-  });
-
-  it("Notes field is a 2-row Textarea with non-resizable height", () => {
-    // Pin the rows + className so the form's vertical rhythm doesn't
-    // silently change.
+  it("Equipment Name uses InlineInput with required prop and label='Equipment Name'", () => {
     expect(src).toMatch(
-      /<Textarea[\s\S]*?id="eq-notes"[\s\S]*?rows=\{2\}[\s\S]*?className="text-sm resize-none"/,
+      /<InlineInput[\s\S]*?id="eq-name"[\s\S]*?label="Equipment Name"[\s\S]*?required/,
     );
+  });
+
+  it("EquipmentTypeCombobox is rendered for the Type field with a visible FormLabel", () => {
+    expect(src).toMatch(/<EquipmentTypeCombobox/);
+    expect(src).toMatch(/<FormLabel>Type<\/FormLabel>/);
+  });
+
+  it("Notes field is an InlineTextarea with rows={2}", () => {
+    expect(src).toMatch(
+      /<InlineTextarea[\s\S]*?id="eq-notes"[\s\S]*?rows=\{2\}/,
+    );
+  });
+
+  it("does NOT use raw Input or Textarea (replaced by InlineInput / InlineTextarea)", () => {
+    expect(src).not.toMatch(/from\s+["']@\/components\/ui\/input["']/);
+    expect(src).not.toMatch(/from\s+["']@\/components\/ui\/textarea["']/);
+    expect(codeOnly).not.toMatch(/<Input\b/);
+    expect(codeOnly).not.toMatch(/<Textarea\b/);
   });
 });
 

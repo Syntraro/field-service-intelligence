@@ -4,6 +4,66 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-10: Phase 2F — srOnly/Placeholder-first → Inline-field Migration
+
+### Status
+**Completed.**
+
+### Scope
+3 canonical forms: `CreateClientModal`, `EditCompanyDialog`, `AddEquipmentDialog`.
+
+### What Changed
+These forms were migrated to Phase 2C canonical form primitives (FormSection/FormField/FormRow) in 2026-05-09, but retained the *placeholder-first* pattern: `FormLabel srOnly` above each input for accessibility, with `placeholder` as the visible field identity. Phase 2F replaces the srOnly/placeholder-first pattern with the true inline-label pattern (`InlineInput` / `InlineTextarea` / `InlineSelectTrigger` from `form-field.tsx`) so the label lives inside the bordered field shell.
+
+### Files Changed
+- `client/src/components/CreateClientModal.tsx` — All text/address fields migrated to `InlineInput`. Contact phone/email visible labels migrated to `InlineInput label=` prop. Email error state uses `InlineInput error={showEmailError}` instead of manual `aria-invalid` + destructive className.
+- `client/src/components/EditCompanyDialog.tsx` — All text/address/phone/email fields migrated to `InlineInput`. Payment terms `SelectTrigger` → `InlineSelectTrigger`. Custom payment days visible FormLabel + Input → `InlineInput label="Custom days"`.
+- `client/src/components/AddEquipmentDialog.tsx` — All text fields migrated to `InlineInput` (h-8/text-sm overrides removed — InlineInput sets its own height). Notes `Textarea` → `InlineTextarea`. `EquipmentTypeCombobox` exception below.
+
+### EquipmentTypeCombobox Exception
+`EquipmentTypeCombobox` is a custom combobox widget that renders its own trigger UI. There is no way to position a label absolutely inside a black-box component (same constraint as `CanonicalDatePicker`). This field keeps a visible `FormLabel` above the combobox: `<FormField><FormLabel>Type</FormLabel><EquipmentTypeCombobox .../></FormField>`. This is the same pattern approved for CanonicalDatePicker in Phase 2D.
+
+### Compact-Density Exceptions — Deferred
+Compact-density forms (`QuickAddJobDialog` compact form, tech-app scheduling inputs) remain out of scope. These use `CompactFormField`/`CompactColHeader` at 10–11px label density and are not part of the Phase 2 inline-field migration.
+
+---
+
+## 2026-05-10: Invoice right rail — UI polish pass
+
+### Status
+**Completed.**
+
+### Scope
+Visual polish for the 3-tab invoice right rail (Summary / Notes & Activity / Pricing). No API, schema, or prop contract changes.
+
+### Changes Made
+
+#### Summary tab — spacing fix
+`InvoiceDetailPage.tsx` `card-summary` div gained `className="space-y-3"`. The `RailPanelRenderer` output (`<ul m-0>`) was flush against `ClientVisibilityCardV2` with zero gap; `space-y-3` restores the same 12px inter-card gap the renderer uses internally between Financial Summary and Payment Status cards.
+
+#### ClientVisibilityCardV2 — compacted
+Row padding reduced `py-2 px-4` → `py-1 px-3`; header/footer `py-2 px-4` → `py-1.5 px-3`. Saves ~48px of vertical space when all 6 rows are visible. All behavior (toggles, Custom badges, Reset to defaults, Discard/Save) unchanged.
+
+#### InvoiceActivityPanel — Activity in canonical card
+Activity section moved from bare `div.mt-3.px-3.pb-3` (double-padding with panel body's `p-3`, floating on rail background) into `RailContentCard testId="invoice-timeline-section"` with `RailContentCardTitle`. Outer wrapper gains `space-y-3` to separate EntityNotesPanel and Activity card with canonical gap. No data/query changes.
+
+#### InvoicePricingHistoryPanel — canonical card styling + visual hierarchy
+Both pricing sections (`PricingSection` internal helper) now use `RailContentCard` + `RailContentCardTitle` for canonical card chrome. Price values upgraded to `text-row-emphasis tabular-nums` for visual prominence. Compact segmented line selector uses `rounded-md border border-slate-200 bg-slate-50` container with `bg-white shadow-sm` selected state. Per-section empty states added: "No previous pricing for this client." / "No recent pricing elsewhere." (previously a generic "No history found.").
+
+### Canonical Primitives Used (no changes to primitives themselves)
+- `RailContentCard` — now consumed by `InvoiceActivityPanel` and `InvoicePricingHistoryPanel` (was only consumed by `RailPanelRenderer` internally + Job/Client rail pages).
+- `RailContentCardHeader`, `RailContentCardTitle` — same.
+
+### Files Changed
+- `client/src/components/invoice/InvoiceActivityPanel.tsx`
+- `client/src/components/invoice/InvoicePricingHistoryPanel.tsx`
+- `client/src/pages/InvoiceDetailPage.tsx` (2 edits: `space-y-3` on card-summary div + 3 padding reductions in `ClientVisibilityCardV2`)
+- `tests/invoice-rail-activity-tab.test.ts` (5 new tests, updated `data-testid` → `testId` prop check)
+- `tests/invoice-rail-pricing-history-tab.test.ts` (8 new tests: per-section empty states, card usage, no averages, price prominence)
+- `tests/invoice-rail-summary-tab.test.ts` (3 new tests: space-y-3 gap, editable controls, compact padding)
+
+---
+
 ## 2026-05-10: Phase 2E P1 — Payment / Member / Portal Link Dialog Migration
 
 ### Status

@@ -11,37 +11,9 @@
  */
 import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
-// 2026-05-06 Phase 1 modal canonicalization: ModalShell + Modal* primitives
-// per CLAUDE.md Modal Taxonomy rule #2. Width (`max-w-lg`) made explicit
-// at the call-site per rule #5.
-//
-// 2026-05-07 Phase 2B bellwether migration: interior fields migrated to
-// the canonical FormField primitives from `@/components/ui/form-field`
-// (FormSection / FormField / FormLabel / FormRow). Validates the
-// Phase 2A primitive API in production before the Phase 2C batch
-// migration.
-//
-// Visual style: placeholder-first per CLAUDE.md "Phase 2: Form Field
-// Canonicalization". Basic text/email/phone/address inputs use
-// `placeholder` for visible identity and a paired `<FormLabel srOnly>`
-// for screen-reader accessibility. The visible result mirrors
-// QuickAddJobDialog — field identity inside the box, not headers above
-// each text box. Section headings (Client Identity) and the checkbox
-// row label stay visible per the design rule.
-//
-// Spacing notes:
-//   • Field-stack rhythm (label→input) is FormField's canonical
-//     `space-y-1.5` (6px). With sr-only labels this only governs
-//     spacing between visible elements (input + helper/error).
-//   • Identity row keeps its tighter gap-2 via `<FormRow className=
-//     "grid-cols-2 gap-2">` — the existing tight Identity layout was
-//     intentional and the 4px delta from FormRow's gap-3 default is
-//     more noticeable than the 2px field-stack delta.
-//   • All other grids match FormRow's gap-3 default.
-//   • The "Use company name as primary client name" checkbox+label
-//     stays as a raw `<div className="flex items-center gap-2">`
-//     row per the Phase 2A guidance — FormField is for labeled-input
-//     stacks, not checkbox-label pairs.
+// 2026-05-06 Phase 1: ModalShell + Modal* primitives.
+// 2026-05-07 Phase 2B: FormField/FormRow canonical structure.
+// 2026-05-10 Phase 2F: inline-field migration (InlineInput, InlineSelectTrigger).
 import {
   ModalShell,
   ModalHeader,
@@ -51,19 +23,19 @@ import {
 } from "@/components/ui/modal";
 import {
   FormField,
-  FormLabel,
+  FormHelperText,
   FormSection,
   FormRow,
+  InlineInput,
+  InlineSelectTrigger,
 } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
@@ -212,11 +184,6 @@ export function EditCompanyDialog({
   });
 
   return (
-    // 2026-05-06: width passed at the call-site per Modal Taxonomy
-    // rule #5 (ModalShell stays width-neutral). `max-w-lg` makes the
-    // contract explicit (matches the prior implicit DialogContent
-    // default); `max-h-[90vh] overflow-y-auto` lets long forms scroll
-    // inside the modal on short viewports.
     <ModalShell
       open={open}
       onOpenChange={onOpenChange}
@@ -226,9 +193,6 @@ export function EditCompanyDialog({
         <ModalTitle>Edit Client</ModalTitle>
       </ModalHeader>
       <ModalBody className="space-y-4">
-        {/* Identity section — matches the create modal's structure
-            (first name OR company name required; checkbox toggles
-            which one becomes the primary identity for invoices). */}
         <FormSection
           title={
             <>
@@ -239,27 +203,27 @@ export function EditCompanyDialog({
             </>
           }
         >
-          {/* Tight gap-2 grid (4px tighter than FormRow's gap-3 default) —
-              the placeholder-only First/Last name inputs were
-              intentionally tight in the original layout. Each input
-              gets a paired sr-only FormLabel for screen-reader users. */}
+          {/* Tight gap-2 grid — intentional layout from prior design. */}
           <FormRow className="grid-cols-2 gap-2">
-            <FormField>
-              <FormLabel htmlFor="edit-first-name" srOnly>First name</FormLabel>
-              <Input id="edit-first-name" placeholder="First name" value={form.firstName}
-                onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))} />
-            </FormField>
-            <FormField>
-              <FormLabel htmlFor="edit-last-name" srOnly>Last name</FormLabel>
-              <Input id="edit-last-name" placeholder="Last name" value={form.lastName}
-                onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))} />
-            </FormField>
+            <InlineInput
+              id="edit-first-name"
+              label="First name"
+              value={form.firstName}
+              onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))}
+            />
+            <InlineInput
+              id="edit-last-name"
+              label="Last name"
+              value={form.lastName}
+              onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))}
+            />
           </FormRow>
-          <FormField>
-            <FormLabel htmlFor="edit-company-name" srOnly>Company name</FormLabel>
-            <Input id="edit-company-name" placeholder="Company name" value={form.name}
-              onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          </FormField>
+          <InlineInput
+            id="edit-company-name"
+            label="Company name"
+            value={form.name}
+            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          />
           {/* Checkbox + label stays as a raw flex row — FormField is
               for labeled-input stacks, not checkbox-label pairs. */}
           <div className="flex items-center gap-2">
@@ -275,51 +239,55 @@ export function EditCompanyDialog({
         </FormSection>
 
         <FormRow className="grid-cols-2">
-          <FormField>
-            <FormLabel htmlFor="edit-phone" srOnly>Phone</FormLabel>
-            <Input id="edit-phone" placeholder="Phone" value={form.phone}
-              onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
-          </FormField>
-          <FormField>
-            <FormLabel htmlFor="edit-email" srOnly>Email</FormLabel>
-            <Input id="edit-email" type="email" placeholder="Email" value={form.email}
-              onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
-          </FormField>
+          <InlineInput
+            id="edit-phone"
+            label="Phone"
+            value={form.phone}
+            onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+          />
+          <InlineInput
+            id="edit-email"
+            label="Email"
+            type="email"
+            value={form.email}
+            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+          />
         </FormRow>
 
-        <FormField>
-          <FormLabel htmlFor="edit-billing-street" srOnly>Billing street</FormLabel>
-          <Input id="edit-billing-street" placeholder="Billing street" value={form.billingStreet}
-            onChange={e => setForm(f => ({ ...f, billingStreet: e.target.value }))} />
-        </FormField>
+        <InlineInput
+          id="edit-billing-street"
+          label="Billing street"
+          value={form.billingStreet}
+          onChange={e => setForm(f => ({ ...f, billingStreet: e.target.value }))}
+        />
 
-        <FormField>
-          {/* Visible identity differs from sr-only label because the
-              placeholder spells out the optional sub-address fields
-              in user-facing terms; the sr-only label keeps the field
-              name compact for screen-reader users. */}
-          <FormLabel htmlFor="edit-billing-street2" srOnly>Billing street line 2</FormLabel>
-          <Input id="edit-billing-street2" value={form.billingStreet2}
-            onChange={e => setForm(f => ({ ...f, billingStreet2: e.target.value }))}
-            placeholder="Suite, Unit, PO Box (optional)" />
-        </FormField>
+        <InlineInput
+          id="edit-billing-street2"
+          label="Street line 2"
+          value={form.billingStreet2}
+          onChange={e => setForm(f => ({ ...f, billingStreet2: e.target.value }))}
+          placeholder="Suite, Unit, PO Box (optional)"
+        />
 
         <FormRow className="grid-cols-3">
-          <FormField>
-            <FormLabel htmlFor="edit-billing-city" srOnly>City</FormLabel>
-            <Input id="edit-billing-city" placeholder="City" value={form.billingCity}
-              onChange={e => setForm(f => ({ ...f, billingCity: e.target.value }))} />
-          </FormField>
-          <FormField>
-            <FormLabel htmlFor="edit-billing-province" srOnly>Province</FormLabel>
-            <Input id="edit-billing-province" placeholder="Province" value={form.billingProvince}
-              onChange={e => setForm(f => ({ ...f, billingProvince: e.target.value }))} />
-          </FormField>
-          <FormField>
-            <FormLabel htmlFor="edit-billing-postal-code" srOnly>Postal code</FormLabel>
-            <Input id="edit-billing-postal-code" placeholder="Postal code" value={form.billingPostalCode}
-              onChange={e => setForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
-          </FormField>
+          <InlineInput
+            id="edit-billing-city"
+            label="City"
+            value={form.billingCity}
+            onChange={e => setForm(f => ({ ...f, billingCity: e.target.value }))}
+          />
+          <InlineInput
+            id="edit-billing-province"
+            label="Province"
+            value={form.billingProvince}
+            onChange={e => setForm(f => ({ ...f, billingProvince: e.target.value }))}
+          />
+          <InlineInput
+            id="edit-billing-postal-code"
+            label="Postal code"
+            value={form.billingPostalCode}
+            onChange={e => setForm(f => ({ ...f, billingPostalCode: e.target.value }))}
+          />
         </FormRow>
 
         {/* 2026-05-07: client-level invoice payment-terms default. New
@@ -331,22 +299,19 @@ export function EditCompanyDialog({
             time. */}
         <FormSection title="Payment Terms">
           <FormField>
-            <FormLabel htmlFor="edit-payment-terms-mode" srOnly>
-              Payment terms
-            </FormLabel>
             <Select
               value={form.paymentTermsMode}
               onValueChange={(v) =>
                 setForm((f) => ({ ...f, paymentTermsMode: v as PaymentTermsMode }))
               }
             >
-              <SelectTrigger
+              <InlineSelectTrigger
                 id="edit-payment-terms-mode"
-                aria-label="Payment terms"
+                label="Payment terms"
                 data-testid="select-client-payment-terms"
               >
                 <SelectValue placeholder="Select payment terms" />
-              </SelectTrigger>
+              </InlineSelectTrigger>
               <SelectContent>
                 <SelectItem value="default">Use company default</SelectItem>
                 <SelectItem value="due_on_receipt">Due on receipt</SelectItem>
@@ -358,35 +323,28 @@ export function EditCompanyDialog({
                 <SelectItem value="custom">Custom</SelectItem>
               </SelectContent>
             </Select>
-            <p
-              className="text-xs text-muted-foreground"
-              data-testid="text-client-payment-terms-helper"
-            >
+            <FormHelperText data-testid="text-client-payment-terms-helper">
               Used as the default payment terms for new invoices for this
               client.
-            </p>
+            </FormHelperText>
           </FormField>
           {form.paymentTermsMode === "custom" && (
-            <FormField>
-              <FormLabel htmlFor="edit-payment-terms-custom-days">
-                Custom days
-              </FormLabel>
-              <Input
-                id="edit-payment-terms-custom-days"
-                type="number"
-                min={0}
-                max={365}
-                placeholder="e.g., 21"
-                value={form.customPaymentTermsDays}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    customPaymentTermsDays: e.target.value,
-                  }))
-                }
-                data-testid="input-client-payment-terms-custom-days"
-              />
-            </FormField>
+            <InlineInput
+              id="edit-payment-terms-custom-days"
+              label="Custom days"
+              type="number"
+              min={0}
+              max={365}
+              placeholder="e.g., 21"
+              value={form.customPaymentTermsDays}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  customPaymentTermsDays: e.target.value,
+                }))
+              }
+              data-testid="input-client-payment-terms-custom-days"
+            />
           )}
         </FormSection>
       </ModalBody>

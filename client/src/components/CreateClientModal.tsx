@@ -8,9 +8,8 @@
  *   - When unchecked, billing section appears prefilled from service values
  *   - On submit: service address → primary location, billing → customer_company
  *   - Server enforces billingSameAsService derivation
- * 2026-05-09 Phase 2C: migrated body from raw fieldset/Label/div stacks to
- *   canonical FormSection / FormField / FormLabel / FormRow / FormErrorText.
- *   No layout or behavior changes.
+ * 2026-05-09 Phase 2C: canonical form primitives (FormSection/FormRow/FormErrorText).
+ * 2026-05-10 Phase 2F: replaced srOnly labels + Input with InlineInput throughout.
  *
  * Uses POST /api/clients/full-create which atomically creates:
  * - customer_companies row (with billing address)
@@ -35,12 +34,11 @@ import {
 import {
   FormSection,
   FormField,
-  FormLabel,
   FormRow,
   FormErrorText,
+  InlineInput,
 } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2 } from "lucide-react";
@@ -252,38 +250,29 @@ export function CreateClientModal({
           {/* ── Client Identity ── */}
           <FormSection title="Client Identity (first name or company required)">
             <FormRow className="grid-cols-2">
-              <FormField>
-                <FormLabel htmlFor="input-client-first-name" srOnly>First name</FormLabel>
-                <Input
-                  id="input-client-first-name"
-                  placeholder="First name"
-                  value={clientFirstName}
-                  onChange={(e) => setClientFirstName(e.target.value)}
-                  autoFocus
-                  data-testid="input-client-first-name"
-                />
-              </FormField>
-              <FormField>
-                <FormLabel htmlFor="input-client-last-name" srOnly>Last name</FormLabel>
-                <Input
-                  id="input-client-last-name"
-                  placeholder="Last name"
-                  value={clientLastName}
-                  onChange={(e) => setClientLastName(e.target.value)}
-                  data-testid="input-client-last-name"
-                />
-              </FormField>
-            </FormRow>
-            <FormField>
-              <FormLabel htmlFor="input-company-name" srOnly>Company name</FormLabel>
-              <Input
-                id="input-company-name"
-                placeholder="Company name"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-                data-testid="input-company-name"
+              <InlineInput
+                id="input-client-first-name"
+                label="First name"
+                value={clientFirstName}
+                onChange={(e) => setClientFirstName(e.target.value)}
+                autoFocus
+                data-testid="input-client-first-name"
               />
-            </FormField>
+              <InlineInput
+                id="input-client-last-name"
+                label="Last name"
+                value={clientLastName}
+                onChange={(e) => setClientLastName(e.target.value)}
+                data-testid="input-client-last-name"
+              />
+            </FormRow>
+            <InlineInput
+              id="input-company-name"
+              label="Company name"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              data-testid="input-company-name"
+            />
             <div className="flex items-center gap-2">
               <Checkbox
                 id="use-company-primary"
@@ -299,28 +288,23 @@ export function CreateClientModal({
 
           {/* ── Contact Info ── */}
           <FormRow className="grid-cols-2">
+            <InlineInput
+              id="input-contact-phone"
+              label="Phone"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              data-testid="input-contact-phone"
+            />
             <FormField>
-              <FormLabel htmlFor="input-contact-phone">Phone</FormLabel>
-              <Input
-                id="input-contact-phone"
-                placeholder="Phone"
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                data-testid="input-contact-phone"
-              />
-            </FormField>
-            <FormField>
-              <FormLabel htmlFor="input-contact-email">Email</FormLabel>
-              <Input
+              <InlineInput
                 id="input-contact-email"
-                placeholder="Email"
+                label="Email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 onBlur={() => setEmailTouched(true)}
-                aria-invalid={showEmailError || undefined}
-                className={showEmailError ? "border-destructive focus-visible:ring-destructive/30" : undefined}
+                error={showEmailError}
                 data-testid="input-contact-email"
               />
               {showEmailError && (
@@ -333,57 +317,42 @@ export function CreateClientModal({
 
           {/* ── Primary Service Address ── */}
           <FormSection title="Primary Service Address (enter a location name, or provide street address and city)">
-            <FormField>
-              <FormLabel htmlFor="input-service-street" srOnly>Street address</FormLabel>
-              <Input
-                id="input-service-street"
-                placeholder="Street address"
-                value={svcStreet}
-                onChange={(e) => setSvcStreet(e.target.value)}
-                data-testid="input-service-street"
-              />
-            </FormField>
-            <FormField>
-              <FormLabel htmlFor="input-service-street2" srOnly>Unit / Suite</FormLabel>
-              <Input
-                id="input-service-street2"
-                placeholder="Unit / Suite"
-                value={svcStreet2}
-                onChange={(e) => setSvcStreet2(e.target.value)}
-                data-testid="input-service-street2"
-              />
-            </FormField>
+            <InlineInput
+              id="input-service-street"
+              label="Street address"
+              value={svcStreet}
+              onChange={(e) => setSvcStreet(e.target.value)}
+              data-testid="input-service-street"
+            />
+            <InlineInput
+              id="input-service-street2"
+              label="Unit / Suite"
+              value={svcStreet2}
+              onChange={(e) => setSvcStreet2(e.target.value)}
+              data-testid="input-service-street2"
+            />
             <FormRow className="grid-cols-3">
-              <FormField>
-                <FormLabel htmlFor="input-service-city" srOnly>City</FormLabel>
-                <Input
-                  id="input-service-city"
-                  placeholder="City"
-                  value={svcCity}
-                  onChange={(e) => setSvcCity(e.target.value)}
-                  data-testid="input-service-city"
-                />
-              </FormField>
-              <FormField>
-                <FormLabel htmlFor="input-service-province" srOnly>Province / State</FormLabel>
-                <Input
-                  id="input-service-province"
-                  placeholder="Province / State"
-                  value={svcProvince}
-                  onChange={(e) => setSvcProvince(e.target.value)}
-                  data-testid="input-service-province"
-                />
-              </FormField>
-              <FormField>
-                <FormLabel htmlFor="input-service-postal" srOnly>Postal / Zip</FormLabel>
-                <Input
-                  id="input-service-postal"
-                  placeholder="Postal / Zip"
-                  value={svcPostal}
-                  onChange={(e) => setSvcPostal(e.target.value)}
-                  data-testid="input-service-postal"
-                />
-              </FormField>
+              <InlineInput
+                id="input-service-city"
+                label="City"
+                value={svcCity}
+                onChange={(e) => setSvcCity(e.target.value)}
+                data-testid="input-service-city"
+              />
+              <InlineInput
+                id="input-service-province"
+                label="Province / State"
+                value={svcProvince}
+                onChange={(e) => setSvcProvince(e.target.value)}
+                data-testid="input-service-province"
+              />
+              <InlineInput
+                id="input-service-postal"
+                label="Postal / Zip"
+                value={svcPostal}
+                onChange={(e) => setSvcPostal(e.target.value)}
+                data-testid="input-service-postal"
+              />
             </FormRow>
           </FormSection>
 
@@ -403,57 +372,42 @@ export function CreateClientModal({
           {/* ── Billing Address (visible only when different) ── */}
           {!billingSameAsService && (
             <FormSection title="Billing Address">
-              <FormField>
-                <FormLabel htmlFor="input-billing-street" srOnly>Street address</FormLabel>
-                <Input
-                  id="input-billing-street"
-                  placeholder="Street address"
-                  value={billStreet}
-                  onChange={(e) => setBillStreet(e.target.value)}
-                  data-testid="input-billing-street"
-                />
-              </FormField>
-              <FormField>
-                <FormLabel htmlFor="input-billing-street2" srOnly>Unit / Suite</FormLabel>
-                <Input
-                  id="input-billing-street2"
-                  placeholder="Unit / Suite"
-                  value={billStreet2}
-                  onChange={(e) => setBillStreet2(e.target.value)}
-                  data-testid="input-billing-street2"
-                />
-              </FormField>
+              <InlineInput
+                id="input-billing-street"
+                label="Street address"
+                value={billStreet}
+                onChange={(e) => setBillStreet(e.target.value)}
+                data-testid="input-billing-street"
+              />
+              <InlineInput
+                id="input-billing-street2"
+                label="Unit / Suite"
+                value={billStreet2}
+                onChange={(e) => setBillStreet2(e.target.value)}
+                data-testid="input-billing-street2"
+              />
               <FormRow className="grid-cols-3">
-                <FormField>
-                  <FormLabel htmlFor="input-billing-city" srOnly>City</FormLabel>
-                  <Input
-                    id="input-billing-city"
-                    placeholder="City"
-                    value={billCity}
-                    onChange={(e) => setBillCity(e.target.value)}
-                    data-testid="input-billing-city"
-                  />
-                </FormField>
-                <FormField>
-                  <FormLabel htmlFor="input-billing-province" srOnly>Province / State</FormLabel>
-                  <Input
-                    id="input-billing-province"
-                    placeholder="Province / State"
-                    value={billProvince}
-                    onChange={(e) => setBillProvince(e.target.value)}
-                    data-testid="input-billing-province"
-                  />
-                </FormField>
-                <FormField>
-                  <FormLabel htmlFor="input-billing-postal" srOnly>Postal / Zip</FormLabel>
-                  <Input
-                    id="input-billing-postal"
-                    placeholder="Postal / Zip"
-                    value={billPostal}
-                    onChange={(e) => setBillPostal(e.target.value)}
-                    data-testid="input-billing-postal"
-                  />
-                </FormField>
+                <InlineInput
+                  id="input-billing-city"
+                  label="City"
+                  value={billCity}
+                  onChange={(e) => setBillCity(e.target.value)}
+                  data-testid="input-billing-city"
+                />
+                <InlineInput
+                  id="input-billing-province"
+                  label="Province / State"
+                  value={billProvince}
+                  onChange={(e) => setBillProvince(e.target.value)}
+                  data-testid="input-billing-province"
+                />
+                <InlineInput
+                  id="input-billing-postal"
+                  label="Postal / Zip"
+                  value={billPostal}
+                  onChange={(e) => setBillPostal(e.target.value)}
+                  data-testid="input-billing-postal"
+                />
               </FormRow>
             </FormSection>
           )}
@@ -473,7 +427,9 @@ export function CreateClientModal({
             disabled={!canSubmit || createMutation.isPending}
             data-testid="button-save-client"
           >
-            {createMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+            {createMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : null}
             {createMutation.isPending ? "Creating..." : "Create Client"}
           </Button>
         </ModalFooter>
