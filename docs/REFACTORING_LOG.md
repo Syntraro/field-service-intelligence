@@ -4,6 +4,67 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-10: Phase 2D P0 — Inline-field + ModalShell Migration
+
+### Status
+**Completed.**
+
+### Scope
+4 P0 modals migrated to `ModalShell + Modal*` primitives and `InlineInput` / `InlineTextarea` / `InlineSelectTrigger` replacing raw `Label + Input/Textarea/SelectTrigger` patterns.
+
+### Files Changed
+- `client/src/components/AddVisitDialog.tsx` — ModalShell; Date row FormRow; Time → InlineInput; Duration → InlineInput + FormHelperText; Notes → InlineTextarea.
+- `client/src/components/ActionRequiredModal.tsx` — ModalShell; Reason → InlineSelectTrigger (required asterisk from primitive); Notes → InlineTextarea; Date → FormLabel + CanonicalDatePicker.
+- `client/src/components/leads/ScheduleLeadVisitModal.tsx` — ModalShell; Date+Time → InlineInput in FormRow; Duration → InlineInput + FormHelperText; Technician → InlineSelectTrigger; Notes → InlineTextarea.
+- `client/src/components/notes/EntityNoteDialog.tsx` — ModalShell (ConfirmModals keep their own shell); Note → InlineTextarea; attachment list `space-y-1.5` → `flex flex-col gap-1.5`; attachment header `<Label className=>` → `<span>`; image grid class reordered to avoid RAW_GRID_FIELD_ROW; file size `<p>` → `<span>`.
+
+### Invariants
+- `CanonicalDatePicker` fields do not support inline labels (no accessible way to position a label inside the picker's trigger button). These fields use `FormField + FormLabel` (visible label above) in all 4 files.
+- ModalFooter `className="justify-between"` is the approved approach for modals that need a destructive-action button on the left (EntityNoteDialog Delete note).
+- No allowlist entries were needed — all drift patterns were eliminated by code changes.
+
+---
+
+## 2026-05-10: Pricebook Modal — Corrected to True In-Field Inline Labels
+
+### Status
+**Completed.** Supersedes the FormInlineField attempt from 2026-05-09.
+
+### Problem (What Was Wrong)
+The first inline-label pass (2026-05-09) added `FormInlineField` to `form-field.tsx`. It used a `space-y-1` wrapper with a small annotation label rendered ABOVE the input, not inside the field box. This matched the placeholder-first pattern — the label was external to the field's visual container, just smaller than a standard FormLabel. It did not produce the Jobber-style in-field label where the label and input value share one bordered shell.
+
+### Correct Behavior
+The label must live **inside** the bordered field shell:
+```
+┌─────────────────────┐
+│ Name *              │  ← 10px label, absolute top-left inside the border
+│ [typed value here]  │  ← input text below with pt-6 clearance
+└─────────────────────┘
+```
+
+### Architecture
+Three canonical primitives added to `client/src/components/ui/form-field.tsx`:
+
+| Primitive | Inner element | Use for |
+|---|---|---|
+| `InlineInput` | raw `<input>` | text, number, email, tel |
+| `InlineTextarea` | raw `<textarea>` | multi-line description fields |
+| `InlineSelectTrigger` | `SelectPrimitive.Trigger` (Radix, not shadcn) | dropdowns inside `<Select>` |
+
+**Shell owns:** `border border-border-strong`, `bg-surface`, `rounded-md`, `overflow-hidden`, `focus-within:border-brand`, `focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]` (matches project's branded focus style).
+
+**Label:** `absolute top-1.5 left-3 text-[10px] font-medium text-muted-foreground pointer-events-none`.
+
+**Inner control:** `bg-transparent`, `outline-none`, `pt-6 pb-2 px-3` (no border — the shell provides it). `InlineSelectTrigger` uses `SelectPrimitive.Trigger` directly to avoid the class-override battle that would occur against shadcn's `SelectTrigger` style layer.
+
+### Why SelectPrimitive.Trigger Instead of SelectTrigger
+The project's `SelectTrigger` applies `border border-border-strong focus:border-brand focus:shadow-[...]` via its own className. When wrapped inside a shell div that also has these styles, both layers fire simultaneously, requiring `!important` overrides that are fragile and invisible. Using `SelectPrimitive.Trigger` directly lets InlineSelectTrigger define only the classes it needs without fighting an existing style layer.
+
+### Future Rule
+Any new form that needs visible compact labels inside field boxes (dense modal forms, Jobber-style data-entry screens) MUST use `InlineInput` / `InlineTextarea` / `InlineSelectTrigger`. Do NOT use `FormField + FormLabel srOnly` (placeholder-first) for these contexts. Do NOT create page-specific wrappers or one-off padding overrides on `<Input>`.
+
+---
+
 ## 2026-05-09: Pricebook EntityListTable Canonicalization
 
 ### Status

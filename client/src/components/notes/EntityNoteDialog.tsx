@@ -43,20 +43,19 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+// 2026-05-09: nested AlertDialogs migrated to ConfirmModal.
+// 2026-05-10 Phase 2D: outer Dialog migrated to ModalShell.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-// 2026-05-09: nested AlertDialogs (confirmDeleteNote, confirmRemoveAll)
-// migrated to canonical ConfirmModal. AlertDialog import removed.
-import { ConfirmModal } from "@/components/ui/modal";
+  ConfirmModal,
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import { InlineTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Loader2, Paperclip, X, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -514,33 +513,34 @@ export function EntityNoteDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-md" data-testid="dialog-job-note">
-          <form onSubmit={handleSubmit}>
-            <DialogHeader>
-              <DialogTitle>{mode === "create" ? "Add Note" : "Edit Note"}</DialogTitle>
-              <DialogDescription>
-                {mode === "create"
-                  ? "Add a note to track details and communication."
-                  : "Update the note text, add or remove attachments."}
-              </DialogDescription>
-            </DialogHeader>
+      <ModalShell
+        open={open}
+        onOpenChange={onOpenChange}
+        className="sm:max-w-md"
+        data-testid="dialog-job-note"
+      >
+        <form onSubmit={handleSubmit}>
+          <ModalHeader>
+            <ModalTitle>{mode === "create" ? "Add Note" : "Edit Note"}</ModalTitle>
+            <ModalDescription>
+              {mode === "create"
+                ? "Add a note to track details and communication."
+                : "Update the note text, add or remove attachments."}
+            </ModalDescription>
+          </ModalHeader>
 
-            <div className="space-y-4 py-4">
-              <div>
-                <Label htmlFor="noteText">Note</Label>
-                <Textarea
-                  id="noteText"
-                  rows={5}
-                  value={noteText}
-                  onChange={(e) => setNoteText(e.target.value)}
-                  placeholder="Enter your note here..."
-                  required
-                  disabled={busy}
-                  data-testid="input-note-text"
-                  className="resize-none"
-                />
-              </div>
+          <ModalBody className="space-y-4">
+            <InlineTextarea
+              id="noteText"
+              label="Note"
+              rows={5}
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              placeholder="Enter your note here..."
+              required
+              disabled={busy}
+              data-testid="input-note-text"
+            />
 
               {/* Saved attachments (edit mode only) — images as thumbnail
                   grid, non-images as compact file chips. */}
@@ -550,12 +550,12 @@ export function EntityNoteDialog({
                 return (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label className="text-xs flex items-center gap-2">
+                      <span className="text-xs flex items-center gap-2">
                         Saved attachments
                         <span className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600">
                           {existingAttachments.length}
                         </span>
-                      </Label>
+                      </span>
                       {existingAttachments.length > 1 && (
                         <Button
                           type="button"
@@ -572,7 +572,7 @@ export function EntityNoteDialog({
                     </div>
 
                     {savedImages.length > 0 && (
-                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                      <div className="grid gap-2 grid-cols-3 sm:grid-cols-4">
                         {savedImages.map((a) => (
                           <SavedImageThumb
                             key={a.id}
@@ -585,7 +585,7 @@ export function EntityNoteDialog({
                     )}
 
                     {savedFiles.length > 0 && (
-                      <div className="space-y-1.5">
+                      <div className="flex flex-col gap-1.5">
                         {savedFiles.map((a) => (
                           <div
                             key={a.id}
@@ -595,7 +595,7 @@ export function EntityNoteDialog({
                             <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                             <div className="flex-1 min-w-0">
                               <p className="text-xs truncate">{a.originalName ?? "Attachment"}</p>
-                              <p className="text-xs text-muted-foreground">{formatSize(a.size)}</p>
+                              <span className="text-xs text-muted-foreground">{formatSize(a.size)}</span>
                             </div>
                             <Button
                               type="button"
@@ -620,15 +620,15 @@ export function EntityNoteDialog({
               {/* New attachments (staged, not yet uploaded). 2026-05-02
                   (PR 3C): always rendered — every entity type now has
                   a backend upload adapter. */}
-              <div className="space-y-1.5">
-                <Label className="text-xs flex items-center gap-2">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs flex items-center gap-2">
                   New attachments
                   {stagedFiles.length > 0 && (
                     <span className="inline-flex items-center rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
                       {stagedFiles.length} staged
                     </span>
                   )}
-                </Label>
+                </span>
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
@@ -655,7 +655,7 @@ export function EntityNoteDialog({
                   onChange={handleFilePick}
                 />
                 {stagedFiles.length > 0 && (
-                  <div className="space-y-1.5">
+                  <div className="flex flex-col gap-1.5">
                     {stagedFiles.map((sf, idx) => (
                       <div
                         key={idx}
@@ -669,7 +669,7 @@ export function EntityNoteDialog({
                         )}
                         <div className="flex-1 min-w-0">
                           <p className="text-xs truncate">{sf.file.name}</p>
-                          <p className="text-xs text-muted-foreground">{formatSize(sf.file.size)}</p>
+                          <span className="text-xs text-muted-foreground">{formatSize(sf.file.size)}</span>
                         </div>
                         <Button
                           type="button"
@@ -688,56 +688,55 @@ export function EntityNoteDialog({
                   </div>
                 )}
               </div>
-            </div>
 
             {busy && stagedFiles.length > 0 && (
-              <div className="text-xs text-muted-foreground mb-2">
+              <div className="text-xs text-muted-foreground">
                 Uploading {Math.min(uploadIndex + 1, stagedFiles.length)} of {stagedFiles.length}
                 {" — "}
                 {Math.round(progress * 100)}%
               </div>
             )}
+          </ModalBody>
 
-            <DialogFooter className="flex-col gap-2 border-t pt-3 sm:flex-row sm:justify-between sm:gap-3">
-              {mode === "edit" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  onClick={() => setConfirmDeleteNote(true)}
-                  disabled={busy}
-                  data-testid="button-delete-note"
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                  Delete note
-                </Button>
-              ) : (
-                <span />
-              )}
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => onOpenChange(false)}
-                  disabled={busy}
-                  data-testid="button-cancel-note"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={busy || !noteText.trim()}
-                  data-testid="button-save-note"
-                >
-                  {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  {mode === "create" ? "Add note" : "Save changes"}
-                </Button>
-              </div>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+          <ModalFooter className="justify-between">
+            {mode === "edit" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => setConfirmDeleteNote(true)}
+                disabled={busy}
+                data-testid="button-delete-note"
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Delete note
+              </Button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={busy}
+                data-testid="button-cancel-note"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={busy || !noteText.trim()}
+                data-testid="button-save-note"
+              >
+                {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {mode === "create" ? "Add note" : "Save changes"}
+              </Button>
+            </div>
+          </ModalFooter>
+        </form>
+      </ModalShell>
 
       <ConfirmModal
         open={confirmDeleteNote}

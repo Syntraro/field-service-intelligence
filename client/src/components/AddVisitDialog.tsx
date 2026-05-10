@@ -1,18 +1,23 @@
 import { useState, useEffect } from "react";
 import { format } from "date-fns";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import {
+  InlineInput,
+  InlineTextarea,
+  FormField,
+  FormRow,
+  FormHelperText,
+  FormLabel,
+} from "@/components/ui/form-field";
 import { Loader2 } from "lucide-react";
 // 2026-04-12 UI consistency: use the canonical visit team assignment pattern,
 // not the legacy single-select TechnicianSelector. Matches EditVisitModal.
@@ -149,105 +154,104 @@ export function AddVisitDialog({
   const isPending = submitting || savingIds.has(targetVisitId ?? jobId);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" data-testid="dialog-add-visit">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Schedule Visit</DialogTitle>
-            <DialogDescription>
-              Add a scheduled site visit for this job.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label htmlFor="scheduledDate">Date</Label>
-                <CanonicalDatePicker
-                  id="scheduledDate"
-                  value={scheduledDate}
-                  onChange={(next) => setScheduledDate(next ?? "")}
-                  className="w-full h-9 text-sm"
-                  data-testid="input-visit-date"
-                />
-              </div>
-              <div>
-                <Label htmlFor="scheduledTime">Time</Label>
-                <Input
-                  id="scheduledTime"
-                  type="time"
-                  value={scheduledTime}
-                  onChange={(e) => setScheduledTime(e.target.value)}
-                  required
-                  data-testid="input-visit-time"
-                />
-              </div>
-            </div>
-            <div>
-              <Label htmlFor="estimatedDuration">Estimated Duration (minutes)</Label>
-              <Input
-                id="estimatedDuration"
-                type="number"
-                min="15"
-                step="15"
-                value={estimatedDuration}
-                onChange={(e) => setEstimatedDuration(e.target.value)}
-                required
-                data-testid="input-visit-duration"
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="sm:max-w-md"
+      data-testid="dialog-add-visit"
+    >
+      <form onSubmit={handleSubmit}>
+        <ModalHeader>
+          <ModalTitle>Schedule Visit</ModalTitle>
+          <ModalDescription>
+            Add a scheduled site visit for this job.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody className="space-y-4">
+          <FormRow className="grid-cols-2">
+            <FormField>
+              <FormLabel htmlFor="scheduledDate">Date</FormLabel>
+              <CanonicalDatePicker
+                id="scheduledDate"
+                value={scheduledDate}
+                onChange={(next) => setScheduledDate(next ?? "")}
+                className="w-full h-9 text-sm"
+                data-testid="input-visit-date"
               />
-              {(() => {
-                const summary = formatScheduledBlockSummary(
-                  parseInt(estimatedDuration || "0", 10) || 0,
-                  defaultBufferMinutes,
-                );
-                return summary ? (
-                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-buffer-hint">
-                    {summary}
-                  </p>
-                ) : null;
-              })()}
-            </div>
-            <div>
-              {/* 2026-04-12 UI consistency: canonical visit team assignment —
-                  same popover + chip UX as EditVisitModal. Multi-select. */}
-              <VisitTeamAssignment
-                value={assignedTechnicianIds}
-                onChange={setAssignedTechnicianIds}
-              />
-            </div>
-            <div>
-              <Label htmlFor="visitNotes">Notes (Optional)</Label>
-              <Textarea
-                id="visitNotes"
-                rows={3}
-                value={visitNotes}
-                onChange={(e) => setVisitNotes(e.target.value)}
-                placeholder="Special instructions or notes for this visit..."
-                data-testid="input-visit-notes"
-              />
-            </div>
+            </FormField>
+            <InlineInput
+              id="scheduledTime"
+              label="Time"
+              type="time"
+              value={scheduledTime}
+              onChange={(e) => setScheduledTime(e.target.value)}
+              required
+              data-testid="input-visit-time"
+            />
+          </FormRow>
+          <FormField>
+            <InlineInput
+              id="estimatedDuration"
+              label="Duration (minutes)"
+              type="number"
+              min="15"
+              step="15"
+              value={estimatedDuration}
+              onChange={(e) => setEstimatedDuration(e.target.value)}
+              required
+              data-testid="input-visit-duration"
+            />
+            {(() => {
+              const summary = formatScheduledBlockSummary(
+                parseInt(estimatedDuration || "0", 10) || 0,
+                defaultBufferMinutes,
+              );
+              return summary ? (
+                <FormHelperText data-testid="text-buffer-hint">
+                  {summary}
+                </FormHelperText>
+              ) : null;
+            })()}
+          </FormField>
+          <div>
+            {/* 2026-04-12 UI consistency: canonical visit team assignment —
+                same popover + chip UX as EditVisitModal. Multi-select. */}
+            <VisitTeamAssignment
+              value={assignedTechnicianIds}
+              onChange={setAssignedTechnicianIds}
+            />
           </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              data-testid="button-cancel-visit"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={isPending}
-              data-testid="button-save-visit"
-            >
-              {isPending && (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              )}
-              Schedule Visit
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+          <InlineTextarea
+            id="visitNotes"
+            label="Notes (Optional)"
+            rows={3}
+            value={visitNotes}
+            onChange={(e) => setVisitNotes(e.target.value)}
+            placeholder="Special instructions or notes for this visit..."
+            data-testid="input-visit-notes"
+          />
+        </ModalBody>
+        <ModalFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            data-testid="button-cancel-visit"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={isPending}
+            data-testid="button-save-visit"
+          >
+            {isPending && (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            )}
+            Schedule Visit
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

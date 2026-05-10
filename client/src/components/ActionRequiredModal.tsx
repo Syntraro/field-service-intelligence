@@ -1,26 +1,28 @@
 import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import {
+  InlineSelectTrigger,
+  InlineTextarea,
+  FormField,
+  FormLabel,
+} from "@/components/ui/form-field";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
@@ -138,85 +140,85 @@ export function ActionRequiredModal({
   const isValid = reason !== "";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" data-testid="dialog-action-required">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Put Job On Hold</DialogTitle>
-            <DialogDescription>
-              Specify why this job is on hold before it can continue.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {/* Reason (required) */}
-            <div className="space-y-2">
-              <Label htmlFor="reason">
-                Reason <span className="text-destructive">*</span>
-              </Label>
-              <Select value={reason} onValueChange={setReason}>
-                <SelectTrigger id="reason" data-testid="select-action-reason">
-                  <SelectValue placeholder="Select a reason" />
-                </SelectTrigger>
-                <SelectContent>
-                  {HOLD_REASONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Notes (optional) */}
-            <div className="space-y-2">
-              <Label htmlFor="notes">Notes (optional)</Label>
-              <Textarea
-                id="notes"
-                rows={3}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Add additional details about what's needed..."
-                data-testid="textarea-action-notes"
-                className="resize-none"
-              />
-            </div>
-
-            {/* Next Action Date (optional) */}
-            <div className="space-y-2">
-              <Label htmlFor="nextActionDate">Next Action Date (optional)</Label>
-              <CanonicalDatePicker
-                id="nextActionDate"
-                value={nextActionDate}
-                onChange={(next) => setNextActionDate(next ?? "")}
-                placeholder="Optional"
-                clearable
-                className="w-full h-9 text-sm"
-                data-testid="input-next-action-date"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              data-testid="button-cancel-action-required"
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="sm:max-w-md"
+      data-testid="dialog-action-required"
+    >
+      <form onSubmit={handleSubmit}>
+        <ModalHeader>
+          <ModalTitle>Put Job On Hold</ModalTitle>
+          <ModalDescription>
+            Specify why this job is on hold before it can continue.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody className="space-y-4">
+          {/* Reason (required) */}
+          <Select value={reason} onValueChange={setReason}>
+            <InlineSelectTrigger
+              id="reason"
+              label="Reason"
+              required
+              data-testid="select-action-reason"
             >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={updateStatusMutation.isPending || !isValid}
-              data-testid="button-save-action-required"
-            >
-              {updateStatusMutation.isPending && (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              )}
-              Save
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+              <SelectValue placeholder="Select a reason" />
+            </InlineSelectTrigger>
+            <SelectContent>
+              {HOLD_REASONS.map((r) => (
+                <SelectItem key={r.value} value={r.value}>
+                  {r.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Notes (optional) */}
+          <InlineTextarea
+            id="notes"
+            label="Notes (optional)"
+            rows={3}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Add additional details about what's needed..."
+            data-testid="textarea-action-notes"
+          />
+
+          {/* Next Action Date (optional) */}
+          <FormField>
+            <FormLabel htmlFor="nextActionDate">Next Action Date (optional)</FormLabel>
+            <CanonicalDatePicker
+              id="nextActionDate"
+              value={nextActionDate}
+              onChange={(next) => setNextActionDate(next ?? "")}
+              placeholder="Optional"
+              clearable
+              className="w-full h-9 text-sm"
+              data-testid="input-next-action-date"
+            />
+          </FormField>
+        </ModalBody>
+        <ModalFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            data-testid="button-cancel-action-required"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={updateStatusMutation.isPending || !isValid}
+            data-testid="button-save-action-required"
+          >
+            {updateStatusMutation.isPending && (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            )}
+            Save
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

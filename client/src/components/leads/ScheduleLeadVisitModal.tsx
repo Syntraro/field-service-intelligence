@@ -13,25 +13,29 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
+import {
+  InlineInput,
+  InlineSelectTrigger,
+  InlineTextarea,
+  FormField,
+  FormRow,
+  FormHelperText,
+} from "@/components/ui/form-field";
 
 interface Props {
   leadId: string;
@@ -145,105 +149,96 @@ export function ScheduleLeadVisitModal({
   void leadLocationId;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Schedule lead visit</DialogTitle>
-          <DialogDescription>
-            Send a tech onsite for a pre-sales appointment. No quote or
-            job is created yet — completing the visit will mark the
-            lead as "Needs review".
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={onOpenChange}>
+      <ModalHeader>
+        <ModalTitle>Schedule lead visit</ModalTitle>
+        <ModalDescription>
+          Send a tech onsite for a pre-sales appointment. No quote or
+          job is created yet — completing the visit will mark the
+          lead as "Needs review".
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label htmlFor="schedule-date">Date</Label>
-              <Input
-                id="schedule-date"
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                data-testid="input-schedule-date"
-              />
-            </div>
-            <div>
-              <Label htmlFor="schedule-time">Start time</Label>
-              <Input
-                id="schedule-time"
-                type="time"
-                value={time}
-                onChange={(e) => setTime(e.target.value)}
-                data-testid="input-schedule-time"
-              />
-            </div>
-          </div>
+      <ModalBody className="space-y-4">
+        <FormRow className="grid-cols-2">
+          <InlineInput
+            id="schedule-date"
+            label="Date"
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            data-testid="input-schedule-date"
+          />
+          <InlineInput
+            id="schedule-time"
+            label="Start time"
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            data-testid="input-schedule-time"
+          />
+        </FormRow>
 
-          <div>
-            <Label htmlFor="schedule-duration">Duration (minutes)</Label>
-            <Input
-              id="schedule-duration"
-              type="number"
-              min={30}
-              step={15}
-              value={duration}
-              onChange={(e) => setDuration(e.target.value)}
-              data-testid="input-schedule-duration"
-            />
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Defaults to 60 minutes. Minimum 30.
-            </p>
-          </div>
+        <FormField>
+          <InlineInput
+            id="schedule-duration"
+            label="Duration (minutes)"
+            type="number"
+            min={30}
+            step={15}
+            value={duration}
+            onChange={(e) => setDuration(e.target.value)}
+            data-testid="input-schedule-duration"
+          />
+          <FormHelperText>Defaults to 60 minutes. Minimum 30.</FormHelperText>
+        </FormField>
 
-          <div>
-            <Label htmlFor="schedule-tech">Technician</Label>
-            <Select value={techId} onValueChange={setTechId}>
-              <SelectTrigger id="schedule-tech" data-testid="select-schedule-tech">
-                <SelectValue placeholder="Choose a technician" />
-              </SelectTrigger>
-              <SelectContent>
-                {schedulable.length === 0 ? (
-                  <SelectItem value="__none__" disabled>
-                    No schedulable technicians
-                  </SelectItem>
-                ) : (
-                  schedulable.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.fullName}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div>
-            <Label htmlFor="schedule-notes">Visit notes (optional)</Label>
-            <Textarea
-              id="schedule-notes"
-              rows={3}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="What does the tech need to know about this lead?"
-              data-testid="input-schedule-notes"
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => createVisit.mutate()}
-            disabled={createVisit.isPending}
-            data-testid="button-confirm-schedule-lead-visit"
+        <Select value={techId} onValueChange={setTechId}>
+          <InlineSelectTrigger
+            id="schedule-tech"
+            label="Technician"
+            data-testid="select-schedule-tech"
           >
-            {createVisit.isPending ? "Scheduling…" : "Schedule visit"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <SelectValue placeholder="Choose a technician" />
+          </InlineSelectTrigger>
+          <SelectContent>
+            {schedulable.length === 0 ? (
+              <SelectItem value="__none__" disabled>
+                No schedulable technicians
+              </SelectItem>
+            ) : (
+              schedulable.map((t) => (
+                <SelectItem key={t.id} value={t.id}>
+                  {t.fullName}
+                </SelectItem>
+              ))
+            )}
+          </SelectContent>
+        </Select>
+
+        <InlineTextarea
+          id="schedule-notes"
+          label="Visit notes (optional)"
+          rows={3}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="What does the tech need to know about this lead?"
+          data-testid="input-schedule-notes"
+        />
+      </ModalBody>
+
+      <ModalFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button
+          onClick={() => createVisit.mutate()}
+          disabled={createVisit.isPending}
+          data-testid="button-confirm-schedule-lead-visit"
+        >
+          {createVisit.isPending ? "Scheduling…" : "Schedule visit"}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }
