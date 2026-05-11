@@ -1,26 +1,21 @@
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  InlineInput,
+  InlineTextarea,
+  InlineSelectTrigger,
   FormField,
-  FormLabel,
   FormRow,
   FormSection,
   FormErrorText,
 } from "@/components/ui/form-field";
-// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
-// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
-// Taxonomy rule #2 (generic / simple form modal). Body is a standard
-// space-y form layout with intra-body `border-t pt-2` section separators
-// (Pricing / Duration+Category / Checkboxes rows) — fits cleanly inside
-// <ModalBody>. Width (`sm:max-w-[550px]`) + `overflow-visible` (lets the
-// Type and Category Select dropdowns extend outside the modal) passed at
-// the call-site per Modal Taxonomy rule #5.
-// 2026-05-09 Phase 2C: migrated body from raw Label/div stacks to canonical
-// FormField / FormLabel / FormRow / FormSection / FormErrorText. No behavior changes.
+// 2026-05-06 Phase 1: ModalShell + Modal* primitives.
+// 2026-05-09 Phase 2C: FormField / FormLabel / FormRow / FormSection / FormErrorText.
+// 2026-05-10 inline-label correction: replaced FormInlineField (label-above) with
+// InlineInput / InlineTextarea / InlineSelectTrigger — each owns its bordered shell
+// so the label lives physically inside the field box, not above it.
 import {
   ModalShell,
   ModalHeader,
@@ -83,10 +78,6 @@ export function ProductServiceFormDialog({
   };
 
   return (
-    // 2026-05-06: width + overflow-visible passed at the call-site per
-    // Modal Taxonomy rule #5. The `overflow-visible` is intentional —
-    // the Type and Category Select dropdowns rely on it to extend
-    // outside the modal's content area.
     <ModalShell
       open={open}
       onOpenChange={onOpenChange}
@@ -101,146 +92,116 @@ export function ProductServiceFormDialog({
       </ModalHeader>
 
       <ModalBody className="space-y-3">
-        {/* Row A: Type | SKU — Type is a Select so keeps visible label */}
+        {/* Row A: Type | SKU */}
         <FormRow className="grid-cols-2">
-          <FormField>
-            <FormLabel>Type *</FormLabel>
-            <Select value={formData.type} onValueChange={(v: "service" | "product") => setField("type", v)}>
-              <SelectTrigger data-testid="select-type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="product">Product</SelectItem>
-                <SelectItem value="service">Service</SelectItem>
-              </SelectContent>
-            </Select>
-          </FormField>
-          <FormField>
-            <FormLabel htmlFor="ps-sku" srOnly>SKU</FormLabel>
-            <Input
-              id="ps-sku"
-              value={formData.sku}
-              onChange={(e) => setField("sku", e.target.value)}
-              placeholder="SKU (e.g. HVAC-001)"
-              data-testid="input-sku"
-            />
-          </FormField>
+          <Select value={formData.type} onValueChange={(v: "service" | "product") => setField("type", v)}>
+            <InlineSelectTrigger id="ps-type" label="Type" required data-testid="select-type">
+              <SelectValue />
+            </InlineSelectTrigger>
+            <SelectContent>
+              <SelectItem value="product">Product</SelectItem>
+              <SelectItem value="service">Service</SelectItem>
+            </SelectContent>
+          </Select>
+          <InlineInput
+            id="ps-sku"
+            label="SKU (optional)"
+            value={formData.sku}
+            onChange={(e) => setField("sku", e.target.value)}
+            placeholder="e.g. HVAC-001"
+            data-testid="input-sku"
+          />
         </FormRow>
 
-        {/* Row B: Name (full width) */}
+        {/* Row B: Name — wrapped in FormField for FormErrorText spacing */}
         <FormField>
-          <FormLabel htmlFor="ps-name" srOnly>Name</FormLabel>
-          <Input
+          <InlineInput
             id="ps-name"
+            label="Name"
+            required
+            error={!!checkDuplicate}
             value={formData.name}
             onChange={(e) => setField("name", e.target.value)}
-            placeholder="Name *"
             data-testid="input-name"
-            className={checkDuplicate ? "border-destructive" : ""}
           />
           {checkDuplicate && (
             <FormErrorText>An item named "{checkDuplicate.name}" already exists</FormErrorText>
           )}
         </FormField>
 
-        {/* Row C: Description (full width) */}
-        <FormField>
-          <FormLabel htmlFor="ps-description" srOnly>Description</FormLabel>
-          <Textarea
-            id="ps-description"
-            value={formData.description}
-            onChange={(e) => setField("description", e.target.value)}
-            rows={2}
-            data-testid="input-description"
-          />
-        </FormField>
+        {/* Row C: Description */}
+        <InlineTextarea
+          id="ps-description"
+          label="Description"
+          value={formData.description}
+          onChange={(e) => setField("description", e.target.value)}
+          rows={2}
+          placeholder="Optional description"
+          data-testid="input-description"
+        />
 
-        {/* Row D: Pricing section */}
+        {/* Row D: Pricing — label text carries unit annotation ($ / %) */}
         <FormSection title="Pricing" className="border-t pt-2">
           <FormRow className="grid-cols-3">
-            <FormField>
-              <FormLabel htmlFor="ps-cost" srOnly>Cost</FormLabel>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                <Input
-                  id="ps-cost"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.cost}
-                  onChange={handleCostChange}
-                  placeholder="0.00"
-                  className="pl-7"
-                  data-testid="input-cost"
-                />
-              </div>
-            </FormField>
-            <FormField>
-              <FormLabel htmlFor="ps-markup" srOnly>Markup</FormLabel>
-              <div className="relative">
-                <Input
-                  id="ps-markup"
-                  type="number"
-                  step="1"
-                  min="0"
-                  value={formData.markupPercent}
-                  onChange={handleMarkupChange}
-                  placeholder="50"
-                  className="pr-7"
-                  data-testid="input-markup"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
-              </div>
-            </FormField>
-            <FormField>
-              <FormLabel htmlFor="ps-price" srOnly>Price</FormLabel>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                <Input
-                  id="ps-price"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.unitPrice}
-                  onChange={(e) => setField("unitPrice", e.target.value)}
-                  placeholder="0.00"
-                  className="pl-7"
-                  data-testid="input-price"
-                />
-              </div>
-            </FormField>
-          </FormRow>
-        </FormSection>
-
-        {/* Row E: Duration | Category — Category is a Select so keeps visible label */}
-        <FormRow className="grid-cols-2 border-t pt-2">
-          <FormField>
-            <FormLabel htmlFor="ps-duration" srOnly>Duration (minutes)</FormLabel>
-            <Input
-              id="ps-duration"
+            <InlineInput
+              id="ps-cost"
+              label="Cost ($)"
+              type="number"
+              step="0.01"
+              min="0"
+              value={formData.cost}
+              onChange={handleCostChange}
+              placeholder="0.00"
+              data-testid="input-cost"
+            />
+            <InlineInput
+              id="ps-markup"
+              label="Markup (%)"
               type="number"
               step="1"
               min="0"
-              value={formData.estimatedDurationMinutes}
-              onChange={(e) => setField("estimatedDurationMinutes", e.target.value)}
-              placeholder="Duration (minutes)"
-              data-testid="input-duration"
+              value={formData.markupPercent}
+              onChange={handleMarkupChange}
+              placeholder="50"
+              data-testid="input-markup"
             />
-          </FormField>
-          <FormField>
-            <FormLabel>Category</FormLabel>
-            <Select value={formData.category || "__none__"} onValueChange={(v) => setField("category", v === "__none__" ? "" : v)}>
-              <SelectTrigger data-testid="select-category">
-                <SelectValue placeholder="Uncategorized" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">Uncategorized</SelectItem>
-                {uniqueCategories.map((cat) => (
-                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
+            <InlineInput
+              id="ps-price"
+              label="Unit Price ($)"
+              type="number"
+              step="0.01"
+              min="0"
+              value={formData.unitPrice}
+              onChange={(e) => setField("unitPrice", e.target.value)}
+              placeholder="0.00"
+              data-testid="input-price"
+            />
+          </FormRow>
+        </FormSection>
+
+        {/* Row E: Duration | Category */}
+        <FormRow className="grid-cols-2 border-t pt-2">
+          <InlineInput
+            id="ps-duration"
+            label="Duration (minutes)"
+            type="number"
+            step="1"
+            min="0"
+            value={formData.estimatedDurationMinutes}
+            onChange={(e) => setField("estimatedDurationMinutes", e.target.value)}
+            data-testid="input-duration"
+          />
+          <Select value={formData.category || "__none__"} onValueChange={(v) => setField("category", v === "__none__" ? "" : v)}>
+            <InlineSelectTrigger id="ps-category" label="Category" data-testid="select-category">
+              <SelectValue placeholder="Uncategorized" />
+            </InlineSelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Uncategorized</SelectItem>
+              {uniqueCategories.map((cat) => (
+                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </FormRow>
 
         {/* Row F: Checkboxes — keep visible Label per canonical rule for checkboxes */}

@@ -43,8 +43,6 @@ export interface CompactTimeEntryCardProps {
   jobSummary?: string | null;
   /** True when any underlying entry has endAt === null (still running). */
   hasOpenEntry?: boolean;
-  /** True for the synthetic unallocated-session row. Changes the label. */
-  isUnallocated?: boolean;
 }
 
 export function CompactTimeEntryCard({
@@ -56,7 +54,6 @@ export function CompactTimeEntryCard({
   locationName,
   jobSummary,
   hasOpenEntry,
-  isUnallocated,
 }: CompactTimeEntryCardProps) {
   // ── General variant ─────────────────────────────────────────────────
   if (variant === "general") {
@@ -76,7 +73,7 @@ export function CompactTimeEntryCard({
         data-testid={testId}
       >
         <span className="text-row text-muted-foreground leading-tight">
-          {isUnallocated ? "Unallocated" : "General Time"}
+          {"General Time"}
         </span>
         <span
           className="text-row font-semibold tabular-nums text-foreground shrink-0"

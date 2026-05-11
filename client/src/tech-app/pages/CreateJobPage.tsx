@@ -7,7 +7,7 @@
  * Location picker: search existing locations or create new client inline.
  * Supports prefill via query param: ?locationId=X (data fetched from server).
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, MapPin, Clock, Calendar, Check, UserPlus } from "lucide-react";
@@ -33,6 +33,11 @@ import { FormField, FormLabel } from "@/components/ui/form-field";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { getMemberDisplayName } from "@/lib/displayName";
+import { parseCreateJobParams } from "../utils/createJobParams";
+import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
+
+// Must match the server constant in server/routes/techField.ts.
+const JOBS_CREATE_PERMISSION = "jobs.edit";
 
 type LocationItem = LocationResult;
 
@@ -41,8 +46,30 @@ export function CreateJobPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
-  // Read locationId from query params
-  const prefillLocationId = new URLSearchParams(window.location.search).get("locationId") || "";
+  // Permission gate — jobs.edit required, same key enforced server-side.
+  // Redirect once permissions are loaded and the user is confirmed to lack it.
+  // While loading (effectivePermissions === undefined) we don't redirect to
+  // avoid a false redirect during session restore.
+  const { data: effectivePermissions } = useEffectivePermissions();
+  const canCreateJob = (effectivePermissions?.permissions ?? []).includes(JOBS_CREATE_PERMISSION);
+  useEffect(() => {
+    if (effectivePermissions !== undefined && !canCreateJob) {
+      setLocation("/tech/today");
+    }
+  }, [effectivePermissions, canCreateJob, setLocation]);
+
+  // Read and validate all supported prefill params from the query string.
+  // Values that fail format validation are silently discarded so a crafted
+  // URL cannot inject an invalid date/UUID/duration into form state.
+  const {
+    locationId: prefillLocationId,
+    technicianId: prefillTechId,
+    date: prefillDate,
+    startTime: prefillStartTime,
+    duration: prefillDurationNum,
+    hasSchedulePrefill,
+  } = parseCreateJobParams(new URLSearchParams(window.location.search));
+  const prefillDuration = String(prefillDurationNum);
 
   // Resolve prefilled location from server
   const { data: resolvedLocation } = useTechLocationById(prefillLocationId || null);
@@ -53,11 +80,11 @@ export function CreateJobPage() {
   const [locationSearch, setLocationSearch] = useState("");
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
-  const [techId, setTechId] = useState(user?.id ?? "");
-  const [scheduleMode, setScheduleMode] = useState<"later" | "now">("later");
-  const [schedDate, setSchedDate] = useState("");
-  const [schedTime, setSchedTime] = useState("");
-  const [schedDuration, setSchedDuration] = useState("60");
+  const [techId, setTechId] = useState(prefillTechId || user?.id || "");
+  const [scheduleMode, setScheduleMode] = useState<"later" | "now">(hasSchedulePrefill ? "now" : "later");
+  const [schedDate, setSchedDate] = useState(prefillDate);
+  const [schedTime, setSchedTime] = useState(prefillStartTime);
+  const [schedDuration, setSchedDuration] = useState(prefillDuration);
 
   // Default date/time when switching to "Schedule Now"
   const handleScheduleMode = (mode: "later" | "now") => {

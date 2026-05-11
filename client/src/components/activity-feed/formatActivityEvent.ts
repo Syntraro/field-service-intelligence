@@ -105,12 +105,14 @@ export function formatActivityEvent(item: ActivityFeedItem): ActivityEventDispla
         subtitle: job,
         detail: clientName ?? undefined,
       };
-    case "visit.completed":
+    case "visit.completed": {
+      const locationAddress = trimToNull(meta.locationAddress);
       return {
         title: actorName ? `${actorName} completed a visit` : "Visit completed",
         subtitle: job,
-        detail: clientName ?? undefined,
+        detail: joinDot([clientName, locationAddress]),
       };
+    }
 
     // ── Technician Updates ──────────────────────────────────────────
     case "visit.on_route":
@@ -136,8 +138,22 @@ export function formatActivityEvent(item: ActivityFeedItem): ActivityEventDispla
         subtitle: formatTimeShort(typeof meta.at === "string" ? meta.at : null, item.createdAt),
       };
 
+    // ── Job Updates ─────────────────────────────────────────────────
+    case "job.created":
+      return {
+        title: actorName ? `${actorName} created a job` : "Job created",
+        subtitle: job,
+        detail: clientName ?? undefined,
+      };
+
     // ── Quote Updates ───────────────────────────────────────────────
     // Money values are intentionally omitted (permission-gated content).
+    case "quote.created":
+      return {
+        title: actorName ? `${actorName} created a quote` : "Quote created",
+        subtitle: quoteNumber ? `Quote #${quoteNumber}` : undefined,
+        detail: clientName ?? undefined,
+      };
     case "quote.approved":
       return {
         title: quoteNumber ? `Quote #${quoteNumber} approved` : "Quote approved",

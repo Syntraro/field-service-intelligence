@@ -42,13 +42,14 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
-import { and, eq, ilike, or } from "drizzle-orm";
+import { and, eq, ilike, ne, or } from "drizzle-orm";
 import {
   invoices,
   invoiceLines,
   quotes,
   quoteLines,
   items,
+  clientLocations,
 } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 
@@ -61,6 +62,9 @@ export type PricingHistorySourceType = "invoice" | "quote";
 export interface PricingHistoryItem {
   clientId: string;
   locationId: string | null;
+  /** Display name of the client/location — populated by getItemPricingContext,
+   *  null in getClientPricingHistory (all results are the same client). */
+  locationName: string | null;
   itemId: string | null;
   itemName: string;
   category: string | null;
@@ -240,6 +244,7 @@ export async function getClientPricingHistory(
     result.push({
       clientId,
       locationId: row.locationId ?? null,
+      locationName: null,
       itemId: row.productId ?? null,
       itemName: row.description ?? row.itemName ?? "",
       category: row.itemCategory ?? null,
@@ -258,6 +263,7 @@ export async function getClientPricingHistory(
     result.push({
       clientId,
       locationId: row.locationId ?? null,
+      locationName: null,
       itemId: row.productId ?? null,
       itemName: row.description ?? row.itemName ?? "",
       category: row.itemCategory ?? null,
@@ -272,6 +278,132 @@ export async function getClientPricingHistory(
   }
 
   // Newest-first across all sources, then cap to limit.
+  result.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  return { items: result.slice(0, limit) };
+}
+
+/**
+ * Company-wide pricing context for a single catalog item.
+ *
+ * Returns recent invoice_lines + quote_lines for `itemId` across ALL
+ * locations in the tenant, optionally excluding one location (used by
+ * Invoice Detail "Most Recent Elsewhere" to exclude the current client).
+ *
+ * Same response envelope as `getClientPricingHistory` — callers can
+ * render the result with the same component.
+ */
+export async function getItemPricingContext(
+  ctx: QueryCtx,
+  itemId: string,
+  opts: { excludeLocationId?: string; limit?: number } = {},
+): Promise<PricingHistoryResult> {
+  const limit = clampLimit(opts.limit);
+
+  const invoicePromise = ctx.db
+    .select({
+      lineId: invoiceLines.id,
+      productId: invoiceLines.productId,
+      description: invoiceLines.description,
+      unitPrice: invoiceLines.unitPrice,
+      quantity: invoiceLines.quantity,
+      lineTotal: invoiceLines.lineTotal,
+      invoiceId: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      locationId: invoices.locationId,
+      issueDate: invoices.issueDate,
+      createdAt: invoices.createdAt,
+      itemCategory: items.category,
+      itemName: items.name,
+      locationName: clientLocations.companyName,
+    })
+    .from(invoiceLines)
+    .innerJoin(invoices, eq(invoiceLines.invoiceId, invoices.id))
+    .leftJoin(items, eq(invoiceLines.productId, items.id))
+    .leftJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
+    .where(
+      and(
+        eq(invoices.companyId, ctx.tenantId),
+        eq(invoiceLines.companyId, ctx.tenantId),
+        eq(invoiceLines.productId, itemId),
+        opts.excludeLocationId
+          ? ne(invoices.locationId, opts.excludeLocationId)
+          : undefined,
+      ),
+    );
+
+  const quotePromise = ctx.db
+    .select({
+      lineId: quoteLines.id,
+      productId: quoteLines.productId,
+      description: quoteLines.description,
+      unitPrice: quoteLines.unitPrice,
+      quantity: quoteLines.quantity,
+      lineTotal: quoteLines.lineTotal,
+      quoteId: quotes.id,
+      quoteNumber: quotes.quoteNumber,
+      locationId: quotes.locationId,
+      issueDate: quotes.issueDate,
+      createdAt: quotes.createdAt,
+      itemCategory: items.category,
+      itemName: items.name,
+      locationName: clientLocations.companyName,
+    })
+    .from(quoteLines)
+    .innerJoin(quotes, eq(quoteLines.quoteId, quotes.id))
+    .leftJoin(items, eq(quoteLines.productId, items.id))
+    .leftJoin(clientLocations, eq(quotes.locationId, clientLocations.id))
+    .where(
+      and(
+        eq(quotes.companyId, ctx.tenantId),
+        eq(quoteLines.companyId, ctx.tenantId),
+        eq(quoteLines.productId, itemId),
+        opts.excludeLocationId
+          ? ne(quotes.locationId, opts.excludeLocationId)
+          : undefined,
+      ),
+    );
+
+  const [invoiceRows, quoteRows] = await Promise.all([invoicePromise, quotePromise]);
+
+  const result: PricingHistoryItem[] = [];
+
+  for (const r of invoiceRows as any[]) {
+    result.push({
+      clientId: r.locationId ?? "",
+      locationId: r.locationId ?? null,
+      locationName: r.locationName ?? null,
+      itemId: r.productId ?? null,
+      itemName: r.description ?? r.itemName ?? "",
+      category: r.itemCategory ?? null,
+      sourceType: "invoice",
+      sourceId: r.invoiceId,
+      sourceNumber: r.invoiceNumber ?? null,
+      unitPrice: moneyString(r.unitPrice),
+      quantity: quantityString(r.quantity),
+      total: moneyString(r.lineTotal),
+      date: toIso(r.issueDate ?? r.createdAt),
+    });
+  }
+
+  for (const r of quoteRows as any[]) {
+    result.push({
+      clientId: r.locationId ?? "",
+      locationId: r.locationId ?? null,
+      locationName: r.locationName ?? null,
+      itemId: r.productId ?? null,
+      itemName: r.description ?? r.itemName ?? "",
+      category: r.itemCategory ?? null,
+      sourceType: "quote",
+      sourceId: r.quoteId,
+      sourceNumber: r.quoteNumber ?? null,
+      unitPrice: moneyString(r.unitPrice),
+      quantity: quantityString(r.quantity),
+      total: moneyString(r.lineTotal),
+      date: toIso(r.issueDate ?? r.createdAt),
+    });
+  }
+
   result.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
   return { items: result.slice(0, limit) };

@@ -14,7 +14,7 @@ import {
   Plus, Trash2, GripVertical,
   ChevronDown, MoreHorizontal,
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
-  Eye, StickyNote, Receipt,
+  Eye, BarChart2, Activity, Tag,
   Send, Download, CreditCard,
 } from "lucide-react";
 // 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
@@ -29,6 +29,9 @@ import {
   RAIL_WIDTH_TRANSITION,
   type DetailRailTab,
 } from "@/components/detail-rail/DetailRightRail";
+import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
+import type { RailPanelDescriptor, RailCardDescriptor } from "@/components/detail-rail/railTypes";
+import { buildFinancialSummaryContent } from "@/components/detail-rail/buildFinancialSummaryContent";
 import { cn } from "@/lib/utils";
 import {
   DndContext,
@@ -64,7 +67,8 @@ import { Badge } from "@/components/ui/badge";
 // (entityType="invoice" + writeEntityId=jobId).
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
-import { PaymentHistoryCard } from "@/components/invoice/PaymentHistoryCard";
+import { InvoiceActivityPanel } from "@/components/invoice/InvoiceActivityPanel";
+import { InvoicePricingHistoryPanel } from "@/components/invoice/InvoicePricingHistoryPanel";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -80,6 +84,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -430,7 +444,7 @@ export function ClientVisibilityCardV2({
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
-        className="grid w-full grid-cols-[1fr_auto] items-center gap-3 border-b border-card-border px-4 py-2 text-left hover:bg-stone-50"
+        className="grid w-full grid-cols-[1fr_auto] items-center gap-3 border-b border-card-border px-3 py-1.5 text-left hover:bg-stone-50"
         aria-expanded={isExpanded}
         data-testid="button-vis-toggle-collapse"
       >
@@ -463,7 +477,7 @@ export function ClientVisibilityCardV2({
         <>
           <div>
             {ROWS.map((r) => (
-              <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-4 py-2 last:border-b-0">
+              <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-3 py-1 last:border-b-0">
                 <div className="min-w-0 text-[13px] font-medium text-slate-900 flex items-center gap-2">
                   <span>{r.label}</span>
                   {isCustom(r.key) && (
@@ -486,7 +500,7 @@ export function ClientVisibilityCardV2({
             ))}
           </div>
           {(dirty || (tenantDefaults && onResetToTenantDefaults && anyCustom)) && (
-            <div className="flex justify-end gap-2 border-t border-card-border px-4 py-2">
+            <div className="flex justify-end gap-2 border-t border-card-border px-3 py-1.5">
               {tenantDefaults && onResetToTenantDefaults && anyCustom && (
                 <Button
                   variant="ghost"
@@ -658,8 +672,8 @@ export default function InvoiceDetailPage() {
   // `null` = no panel open (icon strip only). Default open: "visibility"
   // — the most-frequently-edited tab on this page (per-invoice client
   // visibility overrides).
-  type InvoiceRailTab = "visibility" | "notes" | "payments";
-  const [invoiceRailTab, setInvoiceRailTab] = useState<InvoiceRailTab | null>("visibility");
+  type InvoiceRailTab = "summary" | "notes_activity" | "pricing";
+  const [invoiceRailTab, setInvoiceRailTab] = useState<InvoiceRailTab | null>("summary");
   // 2026-05-08 Tier 4 Notes canonicalization — page-level signal that
   // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
   // reacts via `openAddNoteSignal`. Declarative, no imperative ref.
@@ -1684,15 +1698,6 @@ export default function InvoiceDetailPage() {
   // dropdown is gone; manual emails now ride the canonical primary
   // action above and route through `<SendCommunicationModal>`.
 
-  // 2026-04-29: Action cluster split into two surfaces.
-  //   • `headerActions` — the section-scoped edit pencil that lives on the
-  //     meta card chrome. Distinct from the lifecycle / PDF / send flows.
-  //   • `actionBarDropdown` — the More dropdown with every lifecycle and
-  //     PDF action; rendered in the new top action bar above the meta
-  //     card (alongside Status pill / Send invoice / Preview PDF).
-  // Splitting them keeps the meta card focused on identity / billing, and
-  // surfaces the most-used lifecycle actions as visible buttons rather
-  // than buried inside a kebab.
   // 2026-05-01: edit-mode entry handler hoisted so the canonical detail
   // header (above) and the InvoiceMetaCard's own pencil (kept) can both
   // dispatch the same flow. No duplication of seed/state setters.
@@ -1871,19 +1876,6 @@ export default function InvoiceDetailPage() {
     },
   ];
 
-  const actionBarDropdown = (
-    <ActionMenu
-      items={actionBarItems}
-      trigger={
-        <Button variant="outline" size="sm" className="h-8 w-8 p-0" data-testid="button-meta-more" aria-label="More actions">
-          <MoreHorizontal className="h-4 w-4" />
-        </Button>
-      }
-      align="end"
-      contentClassName="w-56"
-    />
-  );
-
   // Group invoice lines by canonical `lineItemType`. Falls back to a single
   // "Line items" group if every row is the default service kind.
   const sortedLines = [...lines].sort((a, b) => a.lineNumber - b.lineNumber);
@@ -1893,64 +1885,99 @@ export default function InvoiceDetailPage() {
   })).filter((g) => g.rows.length > 0);
   const ungroupedFallback = linesByGroup.length <= 1; // collapse single-group view to flat table
 
-  // 2026-05-08 RALPH (rail migration): canonical Job-Detail-style tab
-  // registry. Three tabs — Visibility (per-invoice client visibility
-  // overrides), Notes (EntityNotesSection), Payments (PaymentHistoryCard
-  // with per-row refund initiator). The prior <InvoiceDetailShell
-  // rightRail> stacked these as three always-visible cards; the
-  // canonical rail shows one panel at a time and toggles via the icon
-  // strip. The Visibility "Custom" badges, Reset-to-defaults flow, and
-  // the Payments per-row refund button are preserved verbatim — only
-  // the outer card chrome is dropped (rail panel header replaces it).
+  const buildInvoiceSummaryPanelDescriptor = (): RailPanelDescriptor => {
+    const hasData = (details?.lines?.length ?? 0) > 0;
+    const financialCard: RailCardDescriptor = {
+      key: "financial-summary",
+      testId: "invoice-summary-financial",
+      title: { text: "Financial Summary", as: "h4" },
+      extraContent: buildFinancialSummaryContent({
+        marginPct: profitSummary.margin,
+        profit: profitSummary.profit,
+        hasData,
+        profitValue: hasData ? formatCurrency(profitSummary.profit) : "—",
+        marginTestId: "invoice-summary-margin-pct",
+        marginBarTestId: "invoice-summary-margin-bar",
+        profitTestId: "invoice-summary-profit",
+        rows: [
+          {
+            label: "Revenue",
+            value: hasData ? formatCurrency(profitSummary.totalPrice) : "—",
+            testId: "invoice-summary-revenue",
+          },
+          {
+            label: "Cost",
+            value: hasData ? formatCurrency(profitSummary.totalCost) : "—",
+            testId: "invoice-summary-cost",
+          },
+        ],
+      }),
+    };
+    const statusMeta = getInvoiceStatusMeta(invoice.status, isPastDue, invoice.dueDate);
+    const paymentStatusCard: RailCardDescriptor = {
+      key: "payment-status",
+      testId: "invoice-summary-payment-status",
+      title: { text: "Payment Status", as: "h4", chip: { text: statusMeta.label, variant: statusMeta.tone as any } },
+      fields: [
+        { label: "Balance due", value: formatCurrency(invoice.balance), testId: "invoice-summary-balance" },
+        { label: "Subtotal", value: formatCurrency(invoice.subtotal), testId: "invoice-summary-subtotal" },
+        ...(payments.length > 0
+          ? [{ label: "Payments", value: String(payments.length), testId: "invoice-summary-payment-count" }]
+          : []),
+      ],
+    };
+    return { kind: "list", testId: "invoice-summary-panel", cards: [financialCard, paymentStatusCard] };
+  };
+
+  // Rail tab registry — three tabs: Summary (financial KPI + payment status +
+  // client visibility editor), Notes & Activity (notes + timeline),
+  // Pricing (per-line item context).
   const invoiceRailTabs: DetailRailTab[] = [
     {
-      id: "visibility",
-      label: "Visibility",
-      icon: Eye,
-      testId: "invoice-rail-tab-visibility",
+      id: "summary",
+      label: "Summary",
+      icon: BarChart2,
+      testId: "invoice-rail-tab-summary",
       content: (
-        <ClientVisibilityCardV2
-          draft={visibilityDraft}
-          server={serverVisibility}
-          onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
-          onSave={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
-          onReset={() => setVisibilityDraft(serverVisibility)}
-          dirty={isVisibilityDirty}
-          isSaving={updateInvoiceFieldsMutation.isPending}
-          rawInvoiceFlags={rawInvoiceFlags}
-          tenantDefaults={tenantInvoiceDisplay ? {
-            showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
-            showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
-            showQuantity: tenantInvoiceDisplay.invoiceShowQuantities,
-            showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices,
-            showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
-          } : undefined}
-          onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
-            // PATCH `null` for each of the 5 per-invoice override
-            // flags. The resolver will then fall back to tenant
-            // defaults at render time, and the Custom badges will
-            // disappear because the stored values are no longer
-            // real booleans.
-            updateInvoiceFieldsMutation.mutate({
-              showJobDescription: null,
-              showLineItems: null,
-              showQuantity: null,
-              showUnitPrice: null,
-              showLineTotals: null,
-            });
-          } : undefined}
-        />
+        <div className="space-y-3" data-testid="card-summary">
+          <RailPanelRenderer
+            panel={buildInvoiceSummaryPanelDescriptor()}
+            testIdPrefix="invoice-summary"
+          />
+          <ClientVisibilityCardV2
+            draft={visibilityDraft}
+            server={serverVisibility}
+            onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
+            onSave={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
+            onReset={() => setVisibilityDraft(serverVisibility)}
+            dirty={isVisibilityDirty}
+            isSaving={updateInvoiceFieldsMutation.isPending}
+            rawInvoiceFlags={rawInvoiceFlags}
+            tenantDefaults={tenantInvoiceDisplay ? {
+              showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
+              showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
+              showQuantity: tenantInvoiceDisplay.invoiceShowQuantities,
+              showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices,
+              showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
+            } : undefined}
+            onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
+              updateInvoiceFieldsMutation.mutate({
+                showJobDescription: null,
+                showLineItems: null,
+                showQuantity: null,
+                showUnitPrice: null,
+                showLineTotals: null,
+              });
+            } : undefined}
+          />
+        </div>
       ),
     },
     {
-      id: "notes",
-      label: "Notes",
-      icon: StickyNote,
-      testId: "invoice-rail-tab-notes",
-      // 2026-05-08 Tier 4 Notes canonicalization — +Add affordance
-      // moved from inside the prior EntityNotesSection body to the
-      // canonical rail tab `action` slot. Bumping `notesAddSignal`
-      // opens the create dialog inside EntityNotesPanel.
+      id: "notes_activity",
+      label: "Notes & Activity",
+      icon: Activity,
+      testId: "invoice-rail-tab-notes-activity",
       action: (
         <button
           type="button"
@@ -1963,22 +1990,22 @@ export default function InvoiceDetailPage() {
         </button>
       ),
       content: (
-        <EntityNotesPanel
-          entityType="invoice"
-          entityId={invoiceId}
-          openAddNoteSignal={notesAddSignal}
+        <InvoiceActivityPanel
+          invoiceId={invoiceId}
+          notesAddSignal={notesAddSignal}
         />
       ),
     },
     {
-      id: "payments",
-      label: "Payments",
-      icon: Receipt,
-      testId: "invoice-rail-tab-payments",
+      id: "pricing",
+      label: "Pricing",
+      icon: Tag,
+      testId: "invoice-rail-tab-pricing",
       content: (
-        <PaymentHistoryCard
-          payments={payments as any}
-          onRefund={(p) => setRefundTarget(p as unknown as Payment)}
+        <InvoicePricingHistoryPanel
+          invoiceId={invoiceId}
+          locationId={details?.location?.id ?? null}
+          lines={details?.lines ?? []}
         />
       ),
     },
@@ -2049,6 +2076,7 @@ export default function InvoiceDetailPage() {
               if (cityLine) addrLines.push(cityLine);
               return addrLines.length > 0 ? addrLines : undefined;
             })()}
+            addressLabel={serviceAddress ? "Service Address" : billingAddress ? "Billing Address" : undefined}
             phone={primaryContact?.phone || location.phone || undefined}
             email={primaryContact?.email || location.email || undefined}
             primaryActions={[
@@ -2101,7 +2129,7 @@ export default function InvoiceDetailPage() {
                     value={metaDraft.invoiceNumber}
                     onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, invoiceNumber: e.target.value } : prev)}
                     placeholder="INV-…"
-                    className="w-32 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                    className="w-32 h-7 px-1.5 text-row font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
                     data-testid="header-input-invoice-number"
                   />
                 ) : undefined,
@@ -2116,7 +2144,7 @@ export default function InvoiceDetailPage() {
                   <CanonicalDatePicker
                     value={metaDraft.dueDate}
                     onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, dueDate: next ?? "" } : prev)}
-                    className="h-7 text-sm"
+                    className="h-7 text-row"
                     data-testid="header-input-due-date"
                   />
                 ) : undefined,
@@ -2146,7 +2174,7 @@ export default function InvoiceDetailPage() {
                   <CanonicalDatePicker
                     value={metaDraft.issueDate}
                     onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, issueDate: next ?? "" } : prev)}
-                    className="h-7 text-sm"
+                    className="h-7 text-row"
                     data-testid="header-input-issue-date"
                   />
                 ) : undefined,
@@ -2164,7 +2192,7 @@ export default function InvoiceDetailPage() {
                     pattern="[0-9]*"
                     value={metaDraft.paymentTermsDays}
                     onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, paymentTermsDays: e.target.value.replace(/[^0-9]/g, "") } : prev)}
-                    className="h-7 w-20 px-2 py-0 text-right text-sm"
+                    className="h-7 w-20 px-2 py-0 text-right text-row"
                     placeholder="30"
                     data-testid="header-input-payment-terms"
                   />
@@ -2182,7 +2210,7 @@ export default function InvoiceDetailPage() {
                     value={referenceDraft[f.definitionId] ?? ""}
                     onChange={(e) => setReferenceDraft((prev) => ({ ...prev, [f.definitionId]: e.target.value }))}
                     disabled={!f.active || isMetaSaving}
-                    className="h-7 w-32 px-2 py-0 text-right text-sm"
+                    className="h-7 w-32 px-2 py-0 text-right text-row"
                     placeholder={`Enter ${f.label.toLowerCase()}…`}
                     data-testid={`header-input-ref-${f.key}`}
                   />
@@ -2195,6 +2223,7 @@ export default function InvoiceDetailPage() {
                     value: workDescDraft,
                     onChange: setWorkDescDraft,
                     maxLength: 600,
+                    testId: "textarea-invoice-description",
                   }
                 : undefined
             }
@@ -2205,6 +2234,8 @@ export default function InvoiceDetailPage() {
                     onSave: handleHeaderSave,
                     onCancel: handleHeaderCancel,
                     isSaving: isMetaSaving,
+                    saveTestId: "button-header-save",
+                    cancelTestId: "button-header-cancel",
                   }
                 : undefined
             }
@@ -2445,7 +2476,7 @@ export default function InvoiceDetailPage() {
             "border-t lg:border-t-0 lg:border-l border-slate-200",
           )}
           style={{
-            ["--invoice-rail-width" as any]: `${invoiceRailTab === null ? 80 : 380}px`,
+            ["--invoice-rail-width" as any]: `${invoiceRailTab === null ? 48 : 380}px`,
           }}
           data-testid="invoice-detail-rail-column"
           data-panel-open={invoiceRailTab === null ? "false" : "true"}
@@ -2653,27 +2684,27 @@ export default function InvoiceDetailPage() {
         />
       )}
 
-      {/* Delete Draft Confirmation */}
-      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Draft Invoice</DialogTitle>
-            <DialogDescription>
+      {/* Delete Draft Confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Draft Invoice</AlertDialogTitle>
+            <AlertDialogDescription>
               Are you sure you want to delete invoice #{invoice.invoiceNumber}? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
-            <Button
-              variant="destructive"
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowDeleteConfirm(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
               onClick={() => deleteMutation.mutate()}
               disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Void Confirmation Modal */}
       <ConfirmVoidModal

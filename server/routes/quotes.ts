@@ -246,7 +246,12 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     entityType: "quote",
     entityId: quote.id,
     summary: `Created Quote #${quote.quoteNumber}`,
-    meta: { quoteNumber: quote.quoteNumber, customerCompanyId, leadId: leadId || undefined },
+    meta: {
+      quoteNumber: quote.quoteNumber,
+      customerCompanyId,
+      leadId: leadId || undefined,
+      clientName: location.companyName ?? null,
+    },
   });
 
   res.status(201).json(quote);

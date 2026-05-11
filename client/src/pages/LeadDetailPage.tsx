@@ -410,7 +410,7 @@ export default function LeadDetailPage() {
           "border-t lg:border-t-0 lg:border-l border-slate-200",
         )}
         style={{
-          ["--lead-rail-width" as any]: `${leadRailTab === null ? 80 : 380}px`,
+          ["--lead-rail-width" as any]: `${leadRailTab === null ? 48 : 380}px`,
         }}
         data-testid="lead-detail-rail-column"
         data-panel-open={leadRailTab === null ? "false" : "true"}

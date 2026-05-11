@@ -1,8 +1,8 @@
 {
   "generatedAt": "2026-05-08",
   "description": "Frozen baseline of (a) legacy typography-ramp + arbitrary text-[Npx], and (b) deprecated component-specific aliases per Phase S1 (Simplified Semantic Typography). tests/semantic-typography-guard.test.ts fails when any file's count increases for any of the three families or a new file introduces them. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
-  "totalLegacy": 2791,
-  "totalArbitrary": 748,
+  "totalLegacy": 2660,
+  "totalArbitrary": 702,
   "totalDeprecated": 80,
   "files": {
     "client/src/App.tsx": {
@@ -321,13 +321,13 @@
       "deprecated": 1
     },
     "client/src/components/dashboard/LowerOpsCards.tsx": {
-      "legacy": 8,
-      "arbitrary": 7,
+      "legacy": 5,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/dashboard/OperationalAlertsCard.tsx": {
-      "legacy": 3,
-      "arbitrary": 2,
+      "legacy": 1,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/dashboard/PMHealthCard.tsx": {
@@ -335,24 +335,9 @@
       "arbitrary": 0,
       "deprecated": 0
     },
-    "client/src/components/dashboard/QuotePipelineCard.tsx": {
-      "legacy": 3,
-      "arbitrary": 13,
-      "deprecated": 0
-    },
-    "client/src/components/dashboard/RevenueCenterCard.tsx": {
-      "legacy": 4,
-      "arbitrary": 9,
-      "deprecated": 0
-    },
     "client/src/components/dashboard/RightColumnFinancialCards.tsx": {
-      "legacy": 7,
-      "arbitrary": 7,
-      "deprecated": 0
-    },
-    "client/src/components/dashboard/TopKpiRow.tsx": {
-      "legacy": 1,
-      "arbitrary": 1,
+      "legacy": 3,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/detail-rail/RailContentCard.tsx": {
@@ -440,6 +425,11 @@
       "arbitrary": 0,
       "deprecated": 0
     },
+    "client/src/components/forms/InlineEditableText.tsx": {
+      "legacy": 2,
+      "arbitrary": 0,
+      "deprecated": 0
+    },
     "client/src/components/help/HelpPanel.tsx": {
       "legacy": 6,
       "arbitrary": 14,
@@ -501,12 +491,12 @@
       "deprecated": 0
     },
     "client/src/components/invoice/DraftNotesCard.tsx": {
-      "legacy": 7,
+      "legacy": 4,
       "arbitrary": 5,
       "deprecated": 0
     },
     "client/src/components/invoice/EditableMessageCard.tsx": {
-      "legacy": 5,
+      "legacy": 1,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -622,7 +612,7 @@
     },
     "client/src/components/line-items/PricebookPickerModal.tsx": {
       "legacy": 5,
-      "arbitrary": 6,
+      "arbitrary": 3,
       "deprecated": 0
     },
     "client/src/components/lists/EntityListTable.tsx": {
@@ -675,18 +665,13 @@
       "arbitrary": 0,
       "deprecated": 0
     },
-    "client/src/components/products-services/ProductsServicesTable.tsx": {
-      "legacy": 11,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
     "client/src/components/products-services/ProductsServicesToolbar.tsx": {
       "legacy": 4,
       "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/quotes/QuoteDescriptionCard.tsx": {
-      "legacy": 8,
+      "legacy": 4,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -790,16 +775,6 @@
       "arbitrary": 0,
       "deprecated": 0
     },
-    "client/src/components/timesheets/DaySummaryCard.tsx": {
-      "legacy": 6,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/components/timesheets/DayView.tsx": {
-      "legacy": 2,
-      "arbitrary": 0,
-      "deprecated": 0
-    },
     "client/src/components/timesheets/JobSessionCreateModal.tsx": {
       "legacy": 13,
       "arbitrary": 12,
@@ -810,24 +785,19 @@
       "arbitrary": 7,
       "deprecated": 0
     },
-    "client/src/components/timesheets/JobTimeGroupCard.tsx": {
-      "legacy": 9,
-      "arbitrary": 1,
-      "deprecated": 0
-    },
     "client/src/components/timesheets/TimeEntryEditModal.tsx": {
       "legacy": 11,
       "arbitrary": 2,
       "deprecated": 0
     },
-    "client/src/components/timesheets/TimeEntryRowCompact.tsx": {
-      "legacy": 3,
-      "arbitrary": 3,
-      "deprecated": 0
-    },
     "client/src/components/timesheets/TimelineRail.tsx": {
       "legacy": 1,
       "arbitrary": 1,
+      "deprecated": 0
+    },
+    "client/src/components/timesheets/TimesheetSummaryStrip.tsx": {
+      "legacy": 1,
+      "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/components/timesheets/timeline/WeekTimeline.tsx": {
@@ -843,6 +813,11 @@
     "client/src/components/ui/accordion.tsx": {
       "legacy": 1,
       "arbitrary": 0,
+      "deprecated": 0
+    },
+    "client/src/components/ui/action-menu.tsx": {
+      "legacy": 0,
+      "arbitrary": 1,
       "deprecated": 0
     },
     "client/src/components/ui/alert-dialog.tsx": {
@@ -1166,17 +1141,17 @@
       "deprecated": 1
     },
     "client/src/pages/PaymentsDashboardPage.tsx": {
-      "legacy": 42,
+      "legacy": 14,
       "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/pages/PaymentsSettingsPage.tsx": {
-      "legacy": 12,
+      "legacy": 5,
       "arbitrary": 0,
       "deprecated": 0
     },
     "client/src/pages/PayrollPage.tsx": {
-      "legacy": 24,
+      "legacy": 9,
       "arbitrary": 0,
       "deprecated": 0
     },
@@ -1461,8 +1436,8 @@
       "deprecated": 0
     },
     "client/src/pages/timesheets/WeekStackPage.tsx": {
-      "legacy": 25,
-      "arbitrary": 2,
+      "legacy": 2,
+      "arbitrary": 1,
       "deprecated": 0
     },
     "client/src/tech-app/app/TechApp.tsx": {
@@ -1571,7 +1546,7 @@
       "deprecated": 0
     },
     "client/src/tech-app/pages/VisitDetailPage.tsx": {
-      "legacy": 123,
+      "legacy": 121,
       "arbitrary": 23,
       "deprecated": 0
     },

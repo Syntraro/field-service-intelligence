@@ -7,18 +7,13 @@
  *
  * The rail is chronological (one labeled dot per entry start time, in
  * order). Cards on the right are grouped by jobId, with a single
- * "General / Unbillable" fallback card for entries that have no jobId
- * OR whose enum type buckets to the `general` UI category.
+ * "General Time" fallback card for entries that have no jobId OR whose
+ * enum type buckets to the `general` UI category.
  *
  * Mutations target the canonical admin-timesheets endpoints:
  *   - PATCH /api/admin/timesheets/entries/:id
  *   - POST  /api/admin/timesheets/entries
  *   - POST  /api/time/entries/stop
- *
- * Locked entries route to the existing TimeEntryModal via
- * `onOpenLockedEdit` so the manager-override-reason flow stays the
- * single source of truth. Approval-lock state is server-enforced;
- * this component reflects it via the per-row Lock badge.
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -60,7 +55,7 @@ import {
 
 export interface DayViewEntry extends JobGroupEntry {
   technicianId: string;
-  /** Lock fields surfaced from the DTO; consumed via `isEntryLocked`. */
+  /** Lock fields preserved on the DTO for data integrity; not used for UI gating. */
   lockedAt: string | null;
   lockedByInvoiceId: string | null;
   invoiceId: string | null;
@@ -73,13 +68,9 @@ export interface DayViewProps {
   entries: DayViewEntry[];
   loading: boolean;
   formatMemberName: (member: DayTeamMember) => string;
-  isEntryLocked: (entry: DayViewEntry) => boolean;
   onSelectMember: (memberId: string) => void;
   onJobClick: (jobId: string) => void;
   onLocationClick: (locationId: string) => void;
-  /** Routes locked entries through the existing canonical TimeEntryModal
-   *  so the manager-override-reason flow is unchanged. */
-  onOpenLockedEdit: (entry: DayViewEntry) => void;
   /** Forwarded to the page-level confirm dialog + canonical delete mutation. */
   onRequestDelete: (entryId: string, label: string) => void;
   /** Query keys the parent expects to invalidate after mutations. */
@@ -176,11 +167,9 @@ export function DayView({
   entries,
   loading,
   formatMemberName,
-  isEntryLocked,
   onSelectMember,
   onJobClick,
   onLocationClick,
-  onOpenLockedEdit,
   onRequestDelete,
   invalidateQueryKeys,
 }: DayViewProps) {
@@ -192,9 +181,8 @@ export function DayView({
   //     (combined drive + on-site editor; backend rows stay separate).
   //   - General / unbillable group OR single-entry edge cases →
   //     TimeEntryEditModal (existing focused editor).
-  // Locked entries still route to the canonical TimeEntryModal via
-  // `onOpenLockedEdit`. Running entries are blocked at the click
-  // handler with a toast — the user must clock out first.
+  // Running entries are blocked at the click handler with a toast —
+  // the user must clock out first.
   const [editingEntry, setEditingEntry] = useState<DayViewEntry | null>(null);
   const [editingGroup, setEditingGroup] = useState<JobSessionEditModalGroup | null>(null);
   // 2026-05-05: Add Entry now opens JobSessionCreateModal (the
@@ -382,10 +370,6 @@ export function DayView({
   });
 
   const handleEditClick = (entry: DayViewEntry) => {
-    if (isEntryLocked(entry)) {
-      onOpenLockedEdit(entry);
-      return;
-    }
     // 2026-05-04 v4 fix: routing decision is based on the ENTRY itself
     // (its jobId + category), NOT on `groups.find(...).variant`. This
     // decouples click routing from the visual grouping algorithm so a
@@ -620,7 +604,6 @@ export function DayView({
                     locationName={group.locationName}
                     locationId={group.locationId}
                     entries={group.entries}
-                    isEntryLocked={(e) => isEntryLocked(e as DayViewEntry)}
                     onEditEntry={(e) => handleEditClick(e as DayViewEntry)}
                     onClockOutEntry={(id) => clockOutMutation.mutate(id)}
                     onJobClick={onJobClick}
@@ -671,9 +654,7 @@ export function DayView({
 
             {/* 2026-05-04 v3: focused single-entry editor — used for
                 general/unbillable groups and as a fallback for any
-                row not covered by the combined editor. Locked entries
-                still route through the canonical TimeEntryModal via
-                onOpenLockedEdit. */}
+                row not covered by the combined editor. */}
             <TimeEntryEditModal
               open={editingEntry !== null}
               onOpenChange={(open) => {

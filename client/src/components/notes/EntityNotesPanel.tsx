@@ -103,6 +103,7 @@ import {
 } from "@/hooks/useFileUpload";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ACTIVITY_FEED_QUERY_KEY } from "@/components/activity-feed/useActivityFeed";
 import type { ClientNote } from "@shared/schema";
 
 // ── Public types ────────────────────────────────────────────────────
@@ -657,6 +658,7 @@ function ClientScopedNotesPanel({
       }
 
       queryClient.invalidateQueries({ queryKey: qk });
+      queryClient.invalidateQueries({ queryKey: ACTIVITY_FEED_QUERY_KEY });
       resetCreateForm();
       toast({ title: "Note added" });
     } catch {

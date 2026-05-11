@@ -73,7 +73,14 @@ export interface DetailHeaderItem {
   label: string;
   /** Read-mode value. Pass `<span>—</span>` for empty. */
   value: ReactNode;
-  /** Edit-mode override. Shown in place of `value` when `isEditing=true`. */
+  /**
+   * Edit-mode override. Shown in place of `value` when `isEditing=true`.
+   *
+   * Escape hatch for structured controls (date pickers, number inputs) that CDH
+   * cannot own. Callers are responsible for token alignment:
+   * - Typography: `text-row` (14px canonical token, not raw `text-sm`)
+   * - Compact height: `h-7` (28px — aligns with `size="header-action"` buttons)
+   */
   editNode?: ReactNode;
   /** Hide in read mode when true. Edit mode with editNode always shows. */
   hidden?: boolean;
@@ -258,6 +265,8 @@ export interface CanonicalDetailHeaderProps {
 
   // ── Meta items ───────────────────────────────────────────────────
   items: DetailHeaderItem[];
+  /** Number of columns for the metadata grid. Defaults to 2. Pass 3 for entities with 5+ items. */
+  itemsColumns?: 2 | 3;
 
   // ── Description ──────────────────────────────────────────────────
   /** Read-mode description text. */
@@ -297,8 +306,8 @@ function renderHeaderAction(action: HeaderAction) {
   if (action.variant === "primary") {
     return (
       <Button
-        size="sm"
-        className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
+        size="header-action"
+        className="bg-green-600 hover:bg-green-700 text-white gap-1"
         onClick={action.onClick}
         disabled={action.disabled}
         data-testid={action.testId}
@@ -311,8 +320,8 @@ function renderHeaderAction(action: HeaderAction) {
     return (
       <Button
         variant="outline"
-        size="sm"
-        className="gap-1 text-xs h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+        size="header-action"
+        className="gap-1 text-destructive hover:text-destructive hover:bg-destructive/10"
         onClick={action.onClick}
         disabled={action.disabled}
         data-testid={action.testId}
@@ -325,8 +334,8 @@ function renderHeaderAction(action: HeaderAction) {
     return (
       <Button
         variant="ghost"
-        size="sm"
-        className="gap-1 text-xs h-7"
+        size="header-action"
+        className="gap-1"
         onClick={action.onClick}
         disabled={action.disabled}
         data-testid={action.testId}
@@ -338,8 +347,8 @@ function renderHeaderAction(action: HeaderAction) {
   return (
     <Button
       variant="outline"
-      size="sm"
-      className="gap-1 text-xs h-7"
+      size="header-action"
+      className="gap-1"
       onClick={action.onClick}
       disabled={action.disabled}
       data-testid={action.testId}
@@ -390,8 +399,8 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
       {!workflow.assessmentStatus && (
         <Button
           variant="outline"
-          size="sm"
-          className="gap-1 text-xs h-7"
+          size="header-action"
+          className="gap-1"
           onClick={workflow.onMarkAssessmentNeeded}
           disabled={workflow.isAssessmentMutating}
           data-testid="quote-header-assessment-mark-needed"
@@ -407,8 +416,8 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
           </StatusChip>
           <Button
             variant="outline"
-            size="sm"
-            className="gap-1 text-xs h-7"
+            size="header-action"
+            className="gap-1"
             onClick={workflow.onScheduleAssessment}
             disabled={workflow.isAssessmentMutating}
             data-testid="quote-header-assessment-schedule"
@@ -417,8 +426,8 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
           </Button>
           <Button
             variant="ghost"
-            size="sm"
-            className="gap-1 text-xs h-7 text-muted-foreground"
+            size="header-action"
+            className="gap-1 text-muted-foreground"
             onClick={workflow.onClearAssessmentNeeded}
             disabled={workflow.isAssessmentMutating}
             data-testid="quote-header-assessment-clear"
@@ -435,8 +444,8 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
           </StatusChip>
           <Button
             variant="outline"
-            size="sm"
-            className="gap-1 text-xs h-7"
+            size="header-action"
+            className="gap-1"
             onClick={workflow.onCompleteAssessment}
             disabled={workflow.isAssessmentMutating}
             data-testid="quote-header-assessment-complete"
@@ -445,8 +454,8 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
           </Button>
           <Button
             variant="ghost"
-            size="sm"
-            className="gap-1 text-xs h-7 text-muted-foreground"
+            size="header-action"
+            className="gap-1 text-muted-foreground"
             onClick={workflow.onCancelAssessment}
             disabled={workflow.isAssessmentMutating}
             data-testid="quote-header-assessment-cancel"
@@ -490,6 +499,7 @@ export function CanonicalDetailHeader({
   workflow,
   alert,
   items,
+  itemsColumns = 2,
   description,
   descriptionLabel,
   descriptionEdit,
@@ -525,7 +535,7 @@ export function CanonicalDetailHeader({
     );
   } else {
     descriptionContent = (
-      <p className="text-sm text-text-primary whitespace-pre-line">
+      <p className="text-row text-text-primary whitespace-pre-line">
         {description}
       </p>
     );
@@ -535,6 +545,11 @@ export function CanonicalDetailHeader({
     (editCapability?.enabled ?? false) ||
     visiblePrimary.length > 0 ||
     visibleOverflow.length > 0;
+
+  const hasClientBlock = !!(
+    clientName || (addressLines && addressLines.length > 0) || phone || email
+  );
+  const hasBodyRow = hasClientBlock || visibleItems.length > 0;
 
   return (
     <div
@@ -560,12 +575,13 @@ export function CanonicalDetailHeader({
       )}
 
       {/* ── Identity section ───────────────────────────────────────── */}
-      <div className="px-5 pt-4 pb-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className={cn("px-5 pt-4", !hasBodyRow && "pb-4")}>
 
-          {/* ── LEFT: title area + client + address ────────────────── */}
-          <div className="flex-1 min-w-0 max-w-2xl">
-            {/* Row 1: optional entity label + back button */}
+        {/* TOP ROW: title + status (left) | actions + workflow (right) */}
+        <div className="flex items-start justify-between gap-4">
+
+          {/* LEFT: optional entityLabel/back → title H1 + status */}
+          <div className="flex-1 min-w-0">
             {(onBack || entityLabel) && (
               <div className="flex items-center gap-2 mb-1">
                 {onBack && (
@@ -586,7 +602,6 @@ export function CanonicalDetailHeader({
               </div>
             )}
 
-            {/* Row 2: title H1 (or textarea) + status chip */}
             <div className="flex items-start gap-3 flex-wrap">
               <div className="min-w-0">
                 {titleEdit !== undefined ? (
@@ -633,10 +648,88 @@ export function CanonicalDetailHeader({
                 </div>
               )}
             </div>
+          </div>
 
-            {/* Row 3: client name + contact name + address block */}
-            {(clientName || (addressLines && addressLines.length > 0) || phone || email) && (
-              <div className="mt-2 space-y-2">
+          {/* RIGHT: actions cluster + workflow */}
+          {(hasActionsCluster || workflow) && (
+            <div
+              className="shrink-0 flex flex-col items-end gap-2"
+              data-testid={`${testId}-right`}
+            >
+              {hasActionsCluster && (
+                <div
+                  className="flex items-center gap-1.5 flex-wrap justify-end"
+                  data-testid={`${testId}-actions`}
+                >
+                  {editCapability?.enabled && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={editCapability.onStartEdit}
+                      className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                      aria-label={editCapability.ariaLabel ?? "Edit"}
+                      data-testid={`${testId}-edit`}
+                      disabled={isEditing}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                  {visiblePrimary.map((action) => (
+                    <Fragment key={action.id}>
+                      {renderHeaderAction(action)}
+                    </Fragment>
+                  ))}
+                  {visibleOverflow.length > 0 && (
+                    <ActionMenu
+                      items={visibleOverflow.map((item) => ({
+                        id: item.id,
+                        label: item.label,
+                        icon: item.icon,
+                        tone: item.tone,
+                        disabled: item.disabled,
+                        hidden: item.hidden,
+                        separator: item.separator,
+                        onSelect: item.onClick,
+                        testId: item.testId,
+                      }))}
+                      trigger={
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary"
+                          data-testid={`${testId}-overflow`}
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      }
+                      align="end"
+                      contentClassName="w-52"
+                    />
+                  )}
+                </div>
+              )}
+              {workflow && renderWorkflow(workflow, testId)}
+            </div>
+          )}
+        </div>
+
+        {/* BODY ROW: client/address (left) | metadata grid (right) */}
+        {hasBodyRow && (
+          <div
+            className={cn(
+              "flex mt-3 pt-3 pb-4 border-t border-card-border",
+              !hasClientBlock && "justify-end",
+            )}
+          >
+            {/* Client block — left column, fixed ~40% width */}
+            {hasClientBlock && (
+              <div
+                className={cn(
+                  "w-2/5 shrink-0 min-w-0 space-y-2",
+                  visibleItems.length > 0 && "pr-6",
+                )}
+                data-testid={`${testId}-client-block`}
+              >
                 {clientName && (
                   <div className="space-y-0.5">
                     {clientHref ? (
@@ -697,74 +790,15 @@ export function CanonicalDetailHeader({
                 )}
               </div>
             )}
-          </div>
 
-          {/* ── RIGHT: actions + workflow + meta grid ──────────────── */}
-          <div
-            className="shrink-0 flex flex-col items-end gap-3"
-            data-testid={`${testId}-right`}
-          >
-            {/* Actions cluster row */}
-            {hasActionsCluster && (
-              <div
-                className="flex items-center gap-1.5 flex-wrap justify-end"
-                data-testid={`${testId}-actions`}
-              >
-                {editCapability?.enabled && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={editCapability.onStartEdit}
-                    className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
-                    aria-label={editCapability.ariaLabel ?? "Edit"}
-                    data-testid={`${testId}-edit`}
-                    disabled={isEditing}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-                {visiblePrimary.map((action) => (
-                  <Fragment key={action.id}>
-                    {renderHeaderAction(action)}
-                  </Fragment>
-                ))}
-                {visibleOverflow.length > 0 && (
-                  <ActionMenu
-                    items={visibleOverflow.map((item) => ({
-                      id: item.id,
-                      label: item.label,
-                      icon: item.icon,
-                      tone: item.tone,
-                      disabled: item.disabled,
-                      hidden: item.hidden,
-                      separator: item.separator,
-                      onSelect: item.onClick,
-                      testId: item.testId,
-                    }))}
-                    trigger={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary"
-                        data-testid={`${testId}-overflow`}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    }
-                    align="end"
-                    contentClassName="w-52"
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Workflow row — CDH owns all chrome and renders canonical UI */}
-            {workflow && renderWorkflow(workflow, testId)}
-
-            {/* Meta grid */}
+            {/* Metadata grid — right column, flex-1 so it takes remaining ~60% */}
             {visibleItems.length > 0 && (
               <div
-                className="flex items-start gap-x-6 gap-y-3 flex-wrap justify-end"
+                className={cn(
+                  "flex-1 min-w-0 grid gap-x-6 gap-y-3",
+                  itemsColumns === 3 ? "grid-cols-3" : "grid-cols-2",
+                  hasClientBlock && "border-l border-card-border pl-6",
+                )}
                 data-testid={`${testId}-items`}
               >
                 {visibleItems.map((it) => {
@@ -772,7 +806,7 @@ export function CanonicalDetailHeader({
                   return (
                     <div
                       key={it.key}
-                      className="flex flex-col items-end min-w-0"
+                      className="flex flex-col items-start min-w-0"
                       data-testid={`${testId}-item-${it.key}`}
                     >
                       <span className="text-label uppercase text-text-muted">
@@ -787,7 +821,7 @@ export function CanonicalDetailHeader({
               </div>
             )}
           </div>
-        </div>
+        )}
       </div>
 
       {/* ── Description section — CDH owns all chrome ──────────────── */}
@@ -819,6 +853,7 @@ export function CanonicalDetailHeader({
               {editControls.error}
             </span>
           )}
+          {/* size="sm" (32px) is intentional — commit controls are heavier than header-action (28px) */}
           <Button
             variant="outline"
             size="sm"

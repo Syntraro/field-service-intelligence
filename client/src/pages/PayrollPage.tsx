@@ -25,7 +25,6 @@ import {
   Clock,
   LockKeyhole,
   Plus,
-  Lock,
   Briefcase,
   User,
   Save,
@@ -584,11 +583,6 @@ export default function PayrollPage() {
     setEntryModal({ open: true, mode: "edit", entry: modalEntry, jobId: entry.jobId, assignedTechIds: [], lockedTechId: techId || null });
   }, [getActiveTechId]);
 
-  const isEntryLocked = useCallback(
-    (entry: TimesheetDayEntry) => !!(entry.lockedAt || entry.lockedByInvoiceId || entry.invoiceId),
-    []
-  );
-
   // Helper to get display name for a tech
   const getTechName = (id: string) => {
     const t = technicians.find(t => t.id === id);
@@ -716,7 +710,7 @@ export default function PayrollPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setLocation("/timesheets")}
+                onClick={() => setLocation(dayViewTechId ? `/timesheets?tech=${dayViewTechId}` : "/timesheets")}
                 className="px-3 py-1.5 text-row font-medium rounded text-muted-foreground hover:text-foreground hover:bg-slate-200 transition-colors"
                 data-testid="view-toggle-week"
               >
@@ -1055,13 +1049,9 @@ export default function PayrollPage() {
 
       {/* ═══════════════ DAY VIEW ═══════════════ */}
       {viewMode === "day" && (
-        // 2026-05-04 Day View redesign — timeline + category-strip + inline
-        // editor card. The previous compact-grouped block (and its
-        // `renderEntryList` helper) was replaced by the canonical
-        // `<DayView>` component under `client/src/components/timesheets/`.
-        // Locked entries still route through the existing `TimeEntryModal`
-        // via `onOpenLockedEdit` so the manager-override-reason flow is
-        // unchanged. Week View is intentionally not redesigned in this PR.
+        // 2026-05-04 Day View redesign — timeline + category-strip +
+        // grouped cards. Canonical `<DayView>` component under
+        // `client/src/components/timesheets/`.
         <DayView
           date={dayViewDate}
           members={technicians}
@@ -1069,11 +1059,9 @@ export default function PayrollPage() {
           entries={(dayData?.entries ?? []) as DayViewEntry[]}
           loading={dayLoading}
           formatMemberName={getMemberDisplayName}
-          isEntryLocked={(entry) => isEntryLocked(entry as TimesheetDayEntry)}
           onSelectMember={setDayViewTechId}
           onJobClick={(jobId) => setLocation(`/jobs/${jobId}`)}
           onLocationClick={(locationId) => setLocation(`/clients/${locationId}`)}
-          onOpenLockedEdit={(entry) => openEditEntry(entry as TimesheetDayEntry)}
           onRequestDelete={(id, label) => setDeleteTarget({ id, label })}
           invalidateQueryKeys={[[QK_DAY], [QK_WEEKLY], [QK_WEEK_ENTRIES]]}
         />

@@ -2,8 +2,8 @@
  * Client Detail right-side rail source-pin tests
  * (2026-05-07 v3 — canonical `<DetailRightRail>` primitive extraction).
  *
- * The rail chrome (icon strip + panel header + close X + accent bar +
- * aria-pressed wiring) is now owned by the canonical
+ * The rail chrome (top-tab nav + panel header + close X + bottom-border
+ * underline + aria-pressed wiring) is now owned by the canonical
  * `<DetailRightRail>` primitive at
  * `client/src/components/detail-rail/DetailRightRail.tsx`. ClientDetailPage
  * mounts it via `testIdPrefix="client-side"` so the rendered DOM still
@@ -17,7 +17,7 @@
  *   - re-introduces a parallel local UtilityRail/RailHeaderAction
  *   - adds a "Files" item or a separate "History" item
  *   - drops any of the seven canonical rail items
- *   - drops the close-X / aria-pressed / accent-bar wiring from the
+ *   - drops the close-X / aria-pressed / bottom-underline wiring from the
  *     primitive
  *   - reverts Equipment / Parts / Maintenance / Activity panels to the
  *     prior shortcut-only `<RailJumpoutPanel>` design
@@ -87,16 +87,16 @@ describe("Client Detail layout — right utility region spans full content heigh
   it("the page-level aside still owns the resize-aware width contract (CSS variable + persisted width)", () => {
     // Closing the rail on ClientDetailPage continues to flow through
     // the page-level aside's width control: utilityTab=null →
-    // RAIL_ICON_STRIP_WIDTH (80px), open → persisted rightRailWidth.
+    // RAIL_COLLAPSED_WIDTH (48px), open → persisted rightRailWidth.
     // The canonical primitive's `w-fit` collapse fix is additive —
     // ClientDetailPage's external width control still drives the
     // visible aside width.
     expect(pageSrc).toMatch(
-      /utilityTab === null \? RAIL_ICON_STRIP_WIDTH : rightRailWidth/,
+      /utilityTab === null \? RAIL_COLLAPSED_WIDTH : rightRailWidth/,
     );
   });
 
-  it("rail content collapses to icon-only when no panel is open (canonical primitive contract)", () => {
+  it("rail content collapses to compact strip when no panel is open (canonical primitive contract)", () => {
     // Verified at the primitive level: when activeTabId is null,
     // the panel <section> isn't rendered AND the outer container
     // shrinks via `w-fit`. Re-pinning here documents that
@@ -104,7 +104,7 @@ describe("Client Detail layout — right utility region spans full content heigh
     expect(pageSrc).toMatch(
       /<DetailRightRail[\s\S]{0,400}?activeTabId=\{utilityTab\}/,
     );
-    expect(railSrc).toMatch(/!activeTab\s*&&\s*"w-fit"/);
+    expect(railSrc).toMatch(/!displayedTab\s*&&\s*"w-fit"/);
   });
 });
 
@@ -194,13 +194,15 @@ describe("Client Detail panel header — single canonical row, no scope chip", (
     );
   });
 
-  it("active rail item carries aria-pressed + canonical green accent bar", () => {
+  it("active rail item carries aria-pressed + canonical green bottom-border underline", () => {
     expect(railSrc).toMatch(/aria-pressed=\{isActive\}/);
-    expect(railSrc).toMatch(/isActive[\s\S]{0,200}?bg-\[#76B054\]/);
+    // 2026-05-11: top-tab layout uses border-b-2 border-[#76B054] underline
+    // instead of the old left-side bg-[#76B054] accent bar span.
+    expect(railSrc).toMatch(/isActive[\s\S]{0,200}?border-\[#76B054\]/);
   });
 
-  it("each panel header carries a stable per-panel test id", () => {
-    expect(railSrc).toMatch(/data-testid=\{`\$\{testIdPrefix\}-panel-header-\$\{activeTab\.id\}`\}/);
+  it("each panel header carries a stable per-panel test id (from displayedTab)", () => {
+    expect(railSrc).toMatch(/data-testid=\{`\$\{testIdPrefix\}-panel-header-\$\{displayedTab\.id\}`\}/);
   });
 });
 
@@ -905,22 +907,20 @@ describe("Client Detail rail — collapsed state still shows the icon menu", () 
     );
   });
 
-  it("the rail aside width adapts: icon-strip (~80px) when no panel, persisted width when panel open", () => {
-    expect(pageSrc).toMatch(/RAIL_ICON_STRIP_WIDTH\s*=\s*80/);
+  it("the rail aside width adapts: collapsed strip (~48px) when no panel, persisted width when panel open", () => {
+    expect(pageSrc).toMatch(/RAIL_COLLAPSED_WIDTH\s*=\s*48/);
     expect(pageSrc).toMatch(
-      /utilityTab === null \? RAIL_ICON_STRIP_WIDTH : rightRailWidth/,
+      /utilityTab === null \? RAIL_COLLAPSED_WIDTH : rightRailWidth/,
     );
   });
 
-  it("the canonical primitive's nav iterates `tabs.map` unconditionally (icon strip stays visible at every state)", () => {
-    // The icon nav inside `<DetailRightRail>` iterates `tabs.map(...)`
-    // regardless of whether a panel is active — this is the contract
-    // that "collapsed" (panel-closed) state still shows all seven
-    // icons. The page passes `clientRailTabs` (which always has
-    // length 7), so length is enforced at the page level via the
+  it("the canonical primitive's top-tab nav iterates `tabs.map` inside the expanded panel section", () => {
+    // The horizontal tab nav is inside the expanded section (rendered
+    // only when a panel is open). The page passes `clientRailTabs`
+    // (always length 7); length enforced at page level via the
     // registry test above.
     expect(railSrc).toMatch(
-      /aria-label=\{ariaLabel\}[\s\S]{0,400}?tabs\.map/,
+      /\{displayedTab\s*&&[\s\S]{0,1500}?aria-label=\{ariaLabel\}[\s\S]{0,600}?tabs\.map/,
     );
   });
 });

@@ -194,7 +194,6 @@ import { ActivityFeedButton } from "@/components/activity-feed/ActivityFeedButto
 // header; clicking either deep-links into /communications with the
 // matching ?module= query param.
 import { MessagesHeaderButton } from "@/components/communications/MessagesHeaderButton";
-import { PhoneHeaderButton } from "@/components/communications/PhoneHeaderButton";
 import CommunicationsHub from "@/pages/CommunicationsHub";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
@@ -1081,11 +1080,10 @@ function AppContent() {
     setAddClientModalOpen(true);
   };
 
-  // 2026-05-06 sidebar trim — third pass landed on 136px (8.5rem)
-  // after a brief regression at 128px (8rem) where "Maintenance" was
-  // ellipsis-truncated due to active-state semibold weight pushing it
-  // past the available width. 8.5rem restores the headroom while
-  // still being ~18px narrower than the prior 154px / 9.625rem.
+  // 2026-05-11 sidebar trim — 9.25rem (148px), down from 9.5rem
+  // (152px). Active-state text area = W − 51px; empirical bounds put
+  // "Service Plans" in (85px, 101px], so 9.25rem yields a 97px text
+  // area with 6px of safety above the worst-case bound.
   //
   // The variable is the SINGLE source of truth: ui/sidebar.tsx reads
   // `var(--sidebar-width)` for both the fixed sidebar pane AND the
@@ -1093,7 +1091,7 @@ function AppContent() {
   // automatically updates the main-content offset too — no second
   // place to keep in sync. Pin: tests/sidebar-width.test.ts.
   const style = {
-    "--sidebar-width": "9.5rem",
+    "--sidebar-width": "9.25rem",
     "--sidebar-width-icon": "3rem",
   };
 
@@ -1177,21 +1175,16 @@ function AppContent() {
               />
 
               {/* 2026-05-07 — Communications Hub triggers. Two icon-only
-                  buttons sit immediately after the Activity trigger.
-                  `MessagesHeaderButton` opens the hub at the inbox view;
-                  `PhoneHeaderButton` deep-links into ?module=calls.
-                  Both share the same compact tonal style as Activity /
-                  Tasks / Help. Phase 1 unread counts are 0 (mocked); a
-                  Phase 2 hook will replace the literals. */}
+                  Single Communications button — replaces the former
+                  separate Messages + Phone triggers. Default click opens
+                  the inbox; calls remain accessible via the hub rail.
+                  Active when the user is anywhere inside /communications.
+                  Phase 1 unread count is 0 (mocked); Phase 2 will add
+                  a real unread hook. */}
               <MessagesHeaderButton
-                active={location.startsWith("/communications") && !location.includes("module=calls")}
+                active={location.startsWith("/communications")}
                 unreadCount={0}
                 onClick={() => setLocation("/communications")}
-              />
-              <PhoneHeaderButton
-                active={location.startsWith("/communications") && location.includes("module=calls")}
-                unreadCount={0}
-                onClick={() => setLocation("/communications?module=calls")}
               />
 
               {/* 2026-04-15 — Tasks global popover. Relocated from the

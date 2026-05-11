@@ -31,7 +31,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getQuoteStatusBadge } from "@/lib/statusBadges";
 import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -86,8 +85,10 @@ import { QuoteHeaderCard } from "@/components/QuoteHeaderCard";
 // 2026-05-06: extracted shared cards. Both QuoteDetailPage (saved mode)
 // and CreateQuotePage (draft mode) consume the same DOM/CSS so the two
 // pages cannot drift visually.
-import { QuoteSummaryCard } from "@/components/quotes/QuoteSummaryCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
+import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
+import type { RailPanelDescriptor, RailCardDescriptor } from "@/components/detail-rail/railTypes";
+import { buildFinancialSummaryContent } from "@/components/detail-rail/buildFinancialSummaryContent";
 // Canonical notes section. Quote notes share the same UI + dialog +
 // attachment pipeline as job / invoice notes.
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
@@ -595,6 +596,23 @@ export default function QuoteDetailPage() {
     serverItems: details?.lines ?? [],
   });
 
+  // Profit/margin derived from quote lines — mirrors InvoiceDetailPage.profitSummary.
+  const quoteProfitSummary = useMemo(() => {
+    const ls = details?.lines || [];
+    let totalPrice = 0;
+    let totalCost = 0;
+    for (const line of ls) {
+      const qty = parseFloat(String(line.quantity)) || 0;
+      const price = parseFloat(String(line.unitPrice ?? "0")) || 0;
+      const cost = parseFloat(String(line.unitCost ?? "0")) || 0;
+      totalPrice += qty * price;
+      totalCost += qty * cost;
+    }
+    const profit = totalPrice - totalCost;
+    const margin = totalPrice > 0 ? (profit / totalPrice) * 100 : 0;
+    return { totalPrice, totalCost, profit, margin };
+  }, [details?.lines]);
+
   // ── Early returns AFTER all hook declarations ──
   // Hook order is now stable across render passes — see the multi-line
   // doc comment above the `quoteLineItemsAdapter` useMemo for the full
@@ -616,7 +634,6 @@ export default function QuoteDetailPage() {
   }
 
   const { quote, lines, location, customerCompany, isExpired } = details;
-  const statusInfo = getQuoteStatusBadge(quote.status);
   const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "Client");
   const isDraft = quote.status === "draft";
   const isSent = quote.status === "sent";
@@ -628,6 +645,37 @@ export default function QuoteDetailPage() {
   };
   const handlePreviewPdf = () => {
     window.open(`/api/quotes/${quoteId}/pdf/preview`, "_blank");
+  };
+
+  const buildQuoteSummaryPanelDescriptor = (): RailPanelDescriptor => {
+    const hasData = (details?.lines?.length ?? 0) > 0;
+    const financialCard: RailCardDescriptor = {
+      key: "financial-summary",
+      testId: "quote-summary-financial",
+      title: { text: "Financial Summary", as: "h4" },
+      extraContent: buildFinancialSummaryContent({
+        marginPct: quoteProfitSummary.margin,
+        profit: quoteProfitSummary.profit,
+        hasData,
+        profitValue: hasData ? formatCurrency(quoteProfitSummary.profit) : "—",
+        marginTestId: "quote-summary-margin-pct",
+        marginBarTestId: "quote-summary-margin-bar",
+        profitTestId: "quote-summary-profit",
+        rows: [
+          {
+            label: "Revenue",
+            value: hasData ? formatCurrency(quoteProfitSummary.totalPrice) : "—",
+            testId: "quote-summary-revenue",
+          },
+          {
+            label: "Cost",
+            value: hasData ? formatCurrency(quoteProfitSummary.totalCost) : "—",
+            testId: "quote-summary-cost",
+          },
+        ],
+      }),
+    };
+    return { kind: "list", testId: "quote-summary-panel", cards: [financialCard] };
   };
 
   // 2026-05-08 RALPH (rail migration): canonical 5-tab registry — Summary,
@@ -643,11 +691,12 @@ export default function QuoteDetailPage() {
       icon: DollarSign,
       testId: "quote-rail-tab-summary",
       content: (
-        <QuoteSummaryCard
-          subtotal={quote.subtotal}
-          taxTotal={quote.taxTotal}
-          total={quote.total}
-        />
+        <div data-testid="card-summary">
+          <RailPanelRenderer
+            panel={buildQuoteSummaryPanelDescriptor()}
+            testIdPrefix="quote-summary"
+          />
+        </div>
       ),
     },
     {
@@ -723,7 +772,6 @@ export default function QuoteDetailPage() {
               quote={quote}
               location={location}
               customerCompany={customerCompany ?? null}
-              statusInfo={statusInfo}
               isDraft={isDraft}
               isSent={isSent}
               isApproved={isApproved}
@@ -832,7 +880,7 @@ export default function QuoteDetailPage() {
             "border-t lg:border-t-0 lg:border-l border-slate-200",
           )}
           style={{
-            ["--quote-rail-width" as any]: `${quoteRailTab === null ? 80 : 380}px`,
+            ["--quote-rail-width" as any]: `${quoteRailTab === null ? 48 : 380}px`,
           }}
           data-testid="quote-detail-rail-column"
           data-panel-open={quoteRailTab === null ? "false" : "true"}

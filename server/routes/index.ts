@@ -13,6 +13,7 @@ import invitationsRouter from "./invitations";
 import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
+import itemCategoriesRouter from "./itemCategories";
 import pricebookGroupsRouter from "./pricebookGroups";
 import companySettingsRouter from "./companySettings";
 // 2026-05-05: tenant-level Invoice Display policy. Companion endpoint to
@@ -364,6 +365,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/onboarding", onboardingRouter);
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
+  app.use("/api/item-categories", itemCategoriesRouter);
   app.use("/api/pricebook-groups", pricebookGroupsRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/invoice-display-settings", invoiceDisplaySettingsRouter);

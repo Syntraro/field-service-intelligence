@@ -12,6 +12,7 @@
  */
 import { TimeEntryRowCompact, type TimeEntryRowCompactDatum } from "./TimeEntryRowCompact";
 import { TimesheetEntryCard } from "./TimesheetEntryCard";
+import { formatDurationHm } from "@/lib/timeDuration";
 
 export interface JobGroupEntry extends TimeEntryRowCompactDatum {
   jobId: string | null;
@@ -33,19 +34,11 @@ export interface JobTimeGroupCardProps {
   locationId?: string | null;
   /** Already-sorted entries belonging to this group. */
   entries: JobGroupEntry[];
-  isEntryLocked: (entry: JobGroupEntry) => boolean;
   onEditEntry: (entry: JobGroupEntry) => void;
   onClockOutEntry: (entryId: string) => void;
   /** Optional click handlers for the header job/location identifiers. */
   onJobClick?: (jobId: string) => void;
   onLocationClick?: (locationId: string) => void;
-}
-
-function formatMinutes(minutes: number): string {
-  if (minutes === 0) return "0h 0m";
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hrs}h ${mins}m`;
 }
 
 export function JobTimeGroupCard({
@@ -56,7 +49,6 @@ export function JobTimeGroupCard({
   locationName,
   locationId,
   entries,
-  isEntryLocked,
   onEditEntry,
   onClockOutEntry,
   onJobClick,
@@ -75,7 +67,7 @@ export function JobTimeGroupCard({
   if (variant === "general") {
     return (
       <div
-        className="overflow-hidden rounded-md border border-slate-200 bg-white"
+        className="overflow-hidden rounded-md border border-slate-200 border-l-2 border-l-emerald-400 bg-emerald-50/30"
         data-testid={groupTestId}
         data-variant="general"
       >
@@ -85,7 +77,6 @@ export function JobTimeGroupCard({
               key={entry.id}
               variant="general-flat"
               entry={entry}
-              isLocked={isEntryLocked(entry)}
               onEdit={() => onEditEntry(entry)}
               onClockOut={() => onClockOutEntry(entry.id)}
               index={idx}
@@ -98,7 +89,7 @@ export function JobTimeGroupCard({
 
   return (
     <div
-      className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+      className="overflow-hidden rounded-lg border border-slate-200 border-l-2 border-l-blue-400 bg-white shadow-sm"
       data-testid={groupTestId}
       data-variant={variant}
     >
@@ -109,19 +100,19 @@ export function JobTimeGroupCard({
             type="button"
             onClick={() => jobId && onJobClick?.(jobId)}
             disabled={!jobId}
-            className="shrink-0 text-row font-bold text-primary hover:underline disabled:no-underline tabular-nums"
+            className="shrink-0 text-row text-muted-foreground tabular-nums hover:underline disabled:no-underline"
             data-testid="job-group-job-number"
           >
             #{jobNumber ?? "?"}
           </button>
           {locationName && (
             <>
-              <span className="shrink-0 text-row font-semibold text-muted-foreground">—</span>
+              <span className="shrink-0 text-row text-muted-foreground">—</span>
               <button
                 type="button"
                 onClick={() => locationId && onLocationClick?.(locationId)}
                 disabled={!locationId}
-                className="truncate text-row font-semibold text-primary hover:underline disabled:no-underline"
+                className="truncate text-row font-medium text-primary hover:underline disabled:no-underline"
                 data-testid="job-group-location"
               >
                 {locationName}
@@ -143,9 +134,9 @@ export function JobTimeGroupCard({
         </div>
         <span className="ml-auto shrink-0 text-helper text-muted-foreground tabular-nums">
           Total{" "}
-          <strong className="ml-1 font-mono text-foreground">
-            {formatMinutes(total)}
-          </strong>
+          <span className="ml-1 font-mono font-semibold tabular-nums text-foreground">
+            {formatDurationHm(total)}
+          </span>
         </span>
       </div>
 
@@ -156,7 +147,6 @@ export function JobTimeGroupCard({
           <TimeEntryRowCompact
             key={entry.id}
             entry={entry}
-            isLocked={isEntryLocked(entry)}
             onEdit={() => onEditEntry(entry)}
             onClockOut={() => onClockOutEntry(entry.id)}
           />

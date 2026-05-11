@@ -4633,6 +4633,94 @@ Use this guard in any code path that persists or transforms job status.
 
 ---
 
+---
+
+## 2026-05-11: Canonical Form Field Rules — Permanent Density Tiers
+
+### Session Summary
+Formalizes the three permanent density tiers for form field primitives as
+documented source-level comments and a guard test. No runtime behavior changed;
+no forms migrated.
+
+---
+
+### Canonical Form Field Rules (Permanent)
+
+#### Tier 1 — Inline-shell fields (standard CRUD/business forms)
+
+**Primitives:** `InlineInput` / `InlineTextarea` / `InlineSelectTrigger`
+**Source:** `client/src/components/ui/form-field.tsx`
+
+**Use for:** Native text / email / phone / number / address / select /
+textarea inputs in all standard modal and page forms.
+
+**Rule:** These are the default for all new and migrated CRUD form fields.
+The shell owns the border, radius, and focus-within ring. The inner element is
+borderless and transparent. The inline label lives at `top-1.5` inside the shell.
+
+---
+
+#### Tier 2 — Label-above (composite Button+Popover controls)
+
+**Primitives:** `FormField` + `FormLabel` (visible, above), or the widget's
+existing accessible label pattern.
+
+**Controls that remain label-above permanently:**
+- `CanonicalDatePicker` (`client/src/components/ui/canonical-date-picker.tsx`)
+- `TechnicianSelector` (`client/src/components/TechnicianSelector.tsx`)
+- `EquipmentTypeCombobox` (`client/src/components/EquipmentTypeCombobox.tsx`)
+- `EquipmentPicker` (`client/src/components/EquipmentPicker.tsx`)
+- `MultiSelectDropdown` (`client/src/components/MultiSelectDropdown.tsx`)
+
+**Why these are permanent exceptions:**
+1. Button+Popover trigger architecture — no native `<input>` element exists.
+2. Radix popover anchor mechanics bind the trigger as the anchor; wrapping it
+   in an inline-shell div breaks positioning.
+3. Missing native `id`/`htmlFor` binding — composite controls carry their own
+   accessible name via `role`, `aria-label`, or button text.
+4. Fake inline-shell adapters would introduce accessible-name conflicts.
+
+**Rule:** Do NOT create inline-shell wrappers for these controls.
+
+---
+
+#### Tier 3 — Compact-density (scheduling/timesheet/dispatch grids)
+
+**Primitives:** `CompactFormField` / `CompactColHeader`
+**Source:** `client/src/components/ui/compact-form-field.tsx`
+
+**Surfaces that remain compact-density permanently:**
+- Scheduling grids (PMScheduleCard recurring block inputs)
+- Timesheet / time-entry row-edit (`CompactTimeEntryCard`, `DayView`,
+  `JobTimeGroupCard`, `TimeEntryRowCompact`)
+- Dispatch surfaces
+- `QuickAddJobDialog` compact sections
+
+**Why these are permanent exceptions:**
+- `text-xs` (12px) label is required — `text-form-label` (15.2px) is too large
+  for grid-column spatial indicators.
+- No border chrome at the field level — each control owns its own border.
+- `mb-*` spacing baked into the label element — `space-y-*` wrapper breaks
+  grid row alignment.
+- `CompactColHeader` uses `text-[11px]` (`aria-hidden`) — even smaller than
+  `text-xs` — for schedule column spatial cues (Date / Start / Duration / Assigned).
+
+**Rule:** Do NOT force inline-shell fields into compact grids or row-edit matrices.
+
+---
+
+### Files Changed (2026-05-11)
+
+- `client/src/components/ui/form-field.tsx` — Added "CANONICAL PRIMITIVE" scope
+  comments on `InlineInput`, `InlineTextarea`, `InlineSelectTrigger` naming the
+  Button+Popover exclusion and the compact-density exclusion.
+- `client/src/components/ui/compact-form-field.tsx` — Added "CANONICAL PRIMITIVE
+  for compact-density" header naming the surfaces it applies to and warning against
+  forcing inline-shell fields into compact grids.
+- `tests/form-density-rules.test.ts` — New guard test pinning all three tiers.
+
+---
+
 ## Template for Future Entries
 
 ```markdown

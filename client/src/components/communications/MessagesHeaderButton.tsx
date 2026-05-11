@@ -1,5 +1,9 @@
 /**
- * Top-header trigger for the Communications Hub — Messages entry.
+ * Top-header trigger for the Communications Hub.
+ *
+ * Single entry point for all communications (inbox, calls, contacts, etc.).
+ * Default click navigates to /communications (inbox). Calls remain
+ * accessible inside the Communications Hub side-rail.
  *
  * Visual contract — matches the Activity / Tasks / Help triggers in
  * `App.tsx`: icon-only `h-8 w-8 p-0`, dark tonal at rest, brand-green
@@ -25,7 +29,7 @@ export function MessagesHeaderButton({
   unreadCount,
   onClick,
 }: MessagesHeaderButtonProps) {
-  const aria = unreadCount > 0 ? `Messages (${unreadCount} unread)` : "Messages";
+  const aria = unreadCount > 0 ? `Communications (${unreadCount} unread)` : "Communications";
   return (
     <Button
       variant="outline"
@@ -34,7 +38,7 @@ export function MessagesHeaderButton({
       aria-expanded={active}
       aria-label={aria}
       data-testid="button-messages-header"
-      title="Messages"
+      title="Communications"
       className={cn(
         "relative h-8 w-8 p-0 inline-flex items-center justify-center",
         !active && "bg-slate-800/60 border-slate-700 text-slate-100 hover:bg-slate-700 hover:text-white",

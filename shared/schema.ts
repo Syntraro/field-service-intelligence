@@ -933,6 +933,21 @@ export const insertItemSchema = createInsertSchema(items).omit({
 export type InsertItem = z.infer<typeof insertItemSchema>;
 export type Item = typeof items.$inferSelect;
 
+// Item categories — named persistent category labels per company.
+// The items.category text field remains the FK-free source of truth on
+// each item; this table is the catalog / registry that powers
+// Add / Rename / Delete from the Category Management page.
+// "Uncategorized" is NOT a row — derived at read time from null item.category.
+export const itemCategories = pgTable("item_categories", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  isSystem: boolean("is_system").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type ItemCategory = typeof itemCategories.$inferSelect;
+
 // 2026-05-07 RALPH — Pricebook Groups: saved bundles of pricebook items
 // (e.g. "Service Call" = Labor + Truck Charge + Parking) that expand
 // into N line items when added to a job/quote/invoice.

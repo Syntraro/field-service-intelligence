@@ -11,6 +11,7 @@ import {
   jobVisits,
   jobs as jobsTable,
   clientLocations,
+  customerCompanies,
 } from "@shared/schema";
 import { clientNotesRepository } from "../storage/clientNotes";
 // 2026-05-02 (Audit #2 invoice-flow Phase 2): read-only billable preview
@@ -252,12 +253,28 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   }
 
   // Phase 1: Log event + recompute attention
+  // Fetch client name for activity feed enrichment (lightweight single-row join)
+  const [jobLocationMeta] = job.locationId ? await db
+    .select({
+      clientName: customerCompanies.name,
+      locationCompanyName: clientLocations.companyName,
+    })
+    .from(clientLocations)
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
+    .where(and(eq(clientLocations.id, job.locationId), eq(clientLocations.companyId, companyId)))
+    .limit(1) : [undefined];
+
   logEventAsync(getQueryCtx(req), {
     eventType: "job.created",
     entityType: "job",
     entityId: job.id,
     summary: `Created Job #${job.jobNumber}`,
-    meta: { jobNumber: job.jobNumber, summary: job.summary, status: job.status },
+    meta: {
+      jobNumber: job.jobNumber != null ? String(job.jobNumber) : null,
+      jobSummary: job.summary,
+      status: job.status,
+      clientName: jobLocationMeta?.clientName ?? jobLocationMeta?.locationCompanyName ?? null,
+    },
   });
   recomputeAttentionForEntity(companyId, "job", job.id).catch(() => {});
 

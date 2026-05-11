@@ -12,7 +12,7 @@
  *   - Visit card tap navigates to /tech/visit/:id (detail stays mock until Phase 2)
  */
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { MobileShell } from "../components/MobileShell";
 import { DaySelector, toDateStr } from "../components/DaySelector";
 import { useTodayVisits, type TodayVisit, type TodayScope } from "../hooks/useTodayVisits";
@@ -41,11 +41,16 @@ import { GeofenceStartPrompt } from "../components/GeofenceStartPrompt";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
+import { computeOpenSlots } from "../utils/openSlots";
+import { useTechTeamAvailability } from "../hooks/useTechTeamAvailability";
 import type { Task } from "@shared/schema";
 
 // Capability key for cross-tech viewing. Matches server permission seeded in
 // server/routes/roles.ts (granted to admin + manager by default).
 const SCOPE_ALL_VIEW = "schedule.all.view";
+// Capability key for job creation. Intentionally separate from SCOPE_ALL_VIEW:
+// a user may be able to view team schedules without being allowed to create jobs.
+const JOBS_CREATE_PERMISSION = "jobs.edit";
 const SCOPE_STORAGE_PREFIX = "tech.today.scope.v1:";
 
 // Display maps imported from shared utils/visitDisplay.ts
@@ -257,6 +262,65 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+// ── Open slot card — gap between visits (cross-tech view only) ──
+//
+// Two modes:
+//  canCreate=true  — tappable <button> with Plus icon; navigates to create-job.
+//  canCreate=false — inert <div> with Clock icon; schedule.all.view permits
+//                    visibility but jobs.edit is required to act on the slot.
+
+function OpenSlotCard({ startIso, endIso, durationMinutes, onTap, canCreate = true }: {
+  startIso: string;
+  endIso: string;
+  durationMinutes: number;
+  onTap: () => void;
+  /** Whether the current user holds jobs.edit. When false the card is visible
+   *  but non-interactive — plus button hidden, click does not navigate. */
+  canCreate?: boolean;
+}) {
+  const startTime = new Date(startIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const endTime = new Date(endIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const h = Math.floor(durationMinutes / 60);
+  const m = durationMinutes % 60;
+  const durationLabel = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+
+  if (!canCreate) {
+    return (
+      <div
+        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md border border-dashed border-slate-200 bg-slate-50/40 text-left opacity-75"
+        data-testid="open-slot-card"
+        data-create-blocked="true"
+      >
+        <div className="h-7 w-7 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
+          <Clock className="h-3.5 w-3.5 text-slate-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-semibold text-slate-500">Available · {durationLabel}</div>
+          <div className="text-[11px] text-slate-400">{startTime} – {endTime}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onTap}
+      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md border border-dashed border-emerald-300 bg-emerald-50/40 hover:bg-emerald-50 active:bg-emerald-100 transition-colors text-left"
+      data-testid="open-slot-card"
+    >
+      <div className="h-7 w-7 rounded-md bg-emerald-100 flex items-center justify-center shrink-0">
+        <Plus className="h-3.5 w-3.5 text-emerald-600" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-semibold text-emerald-700">Available · {durationLabel}</div>
+        <div className="text-[11px] text-slate-400">{startTime} – {endTime}</div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-emerald-400 shrink-0" />
+    </button>
+  );
+}
+
 // ── Empty state ──
 
 function EmptyState({ dateLabel, onCheckTomorrow, message }: { dateLabel?: string; onCheckTomorrow?: () => void; message?: string }) {
@@ -353,6 +417,8 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const { user } = useAuth();
   const { data: effectivePermissions } = useEffectivePermissions();
   const canViewOthers = (effectivePermissions?.permissions ?? []).includes(SCOPE_ALL_VIEW);
+  // Separate from canViewOthers: viewing team schedules does not imply job creation.
+  const canCreateJob = (effectivePermissions?.permissions ?? []).includes(JOBS_CREATE_PERMISSION);
   const resolveTechName = useTechnicianName();
 
   // Date navigation state
@@ -403,8 +469,15 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const effectiveScope: TodayScope = canViewOthers ? scope : { kind: "self" };
   const isSelfScope = effectiveScope.kind === "self";
 
+  // "Open slots" filter — only relevant in cross-tech view. Shows only
+  // technicians with schedulable gaps and highlights the gaps.
+  const [showOpenOnly, setShowOpenOnly] = useState(false);
+
   const { visits, isLoading, isError, refetch } = useTodayVisits(dateParam, effectiveScope);
   const { tasks, runningTaskId } = useTechTasks();
+  // Canonical team availability from the same capacity service used by the dashboard.
+  // Only fetched in cross-tech mode for today — the endpoint requires schedule.all.view.
+  const { data: teamAvailability } = useTechTeamAvailability(!isSelfScope && isSelectedToday && canViewOthers);
   // Task actions (start/stop/complete) live on TaskDetailPage — no inline state needed
   const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
   const { formatted: elapsed } = useElapsedTimer(clockInAt, isClockedIn, 10_000);
@@ -665,6 +738,42 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
     return entries;
   }, [isSelfScope, timelineItems, resolveTechName]);
 
+  // Unified open-slot type matching OpenSlotCard props (lowercase 'i' in startIso/endIso).
+  type OpenSlotItem = { startIso: string; endIso: string; durationMinutes: number };
+
+  // Pre-compute open slots per technician group, keyed by techId.
+  // When canonical availability data is loaded (today only), use it — it includes
+  // post-last-visit gaps that computeOpenSlots misses because it has no workday bounds.
+  // Fall back to client-side gap math for non-today dates or while loading.
+  const techOpenSlotsMap = useMemo((): Map<string, OpenSlotItem[]> => {
+    if (!groupedByTech) return new Map();
+    if (teamAvailability && isSelectedToday) {
+      const byId = new Map(teamAvailability.technicians.map(t => [t.technicianId, t.openSlots]));
+      return new Map(
+        groupedByTech.map(([techId]) => [
+          techId,
+          (byId.get(techId) ?? []).map(s => ({
+            startIso: s.startISO,
+            endIso: s.endISO,
+            durationMinutes: s.durationMinutes,
+          })),
+        ])
+      );
+    }
+    // Fallback: client-side gap math (between-visit gaps only, no post-last-visit gap).
+    const nowOpt = isSelectedToday ? { now: nowTick } : undefined;
+    return new Map(
+      groupedByTech.map(([techId, techVisits]) => [
+        techId,
+        computeOpenSlots(techVisits, 30, nowOpt).map(s => ({
+          startIso: s.startIso,
+          endIso: s.endIso,
+          durationMinutes: s.durationMinutes,
+        })),
+      ])
+    );
+  }, [groupedByTech, teamAvailability, isSelectedToday, nowTick]);
+
   // Label for the Viewing chip trigger — communicates current scope at a glance.
   const scopeTriggerLabel = useMemo(() => {
     if (effectiveScope.kind === "self") return "Me";
@@ -690,7 +799,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
             on the day strip. Self-mode users never see this row. */}
         {canViewOthers && (
           <div className="bg-white px-3 py-2 flex items-center gap-2 border-b border-slate-200">
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Viewing</span>
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider shrink-0">Viewing</span>
             <button
               type="button"
               onClick={() => setScopePickerOpen(true)}
@@ -702,9 +811,30 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
               ) : (
                 <UserIcon className="h-3.5 w-3.5 text-slate-500" />
               )}
-              <span className="max-w-[180px] truncate">{scopeTriggerLabel}</span>
+              <span className="max-w-[140px] truncate">{scopeTriggerLabel}</span>
               <ChevronRight className="h-3 w-3 text-slate-400" />
             </button>
+            {/* All / Open slots toggle — only meaningful in cross-tech view */}
+            {!isSelfScope && (
+              <div className="ml-auto flex items-center rounded-md border border-slate-200 overflow-hidden shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowOpenOnly(false)}
+                  className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${!showOpenOnly ? "bg-slate-100 text-slate-700" : "text-slate-400 hover:bg-slate-50"}`}
+                  data-testid="toggle-view-all"
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOpenOnly(true)}
+                  className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${showOpenOnly ? "bg-emerald-50 text-emerald-700" : "text-slate-400 hover:bg-slate-50"}`}
+                  data-testid="toggle-view-open"
+                >
+                  Open
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -851,42 +981,125 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           }
         />
       ) : !isSelfScope && groupedByTech ? (
-        // Manager cross-tech view — grouped by technician.
+        // Manager cross-tech view — grouped by technician with open slots.
         <div className="p-2.5 space-y-3">
-          {groupedByTech.map(([techId, techVisits]) => {
-            const displayName = techId === UNASSIGNED_KEY ? "Unassigned" : resolveTechName(techId);
-            return (
-              <div key={techId} data-testid={`tech-group-${techId}`}>
-                <div className="flex items-center gap-2 px-1 py-1.5 sticky top-0 bg-slate-50">
-                  <UserIcon className="h-3.5 w-3.5 text-slate-400" />
-                  <span className="text-xs font-semibold text-slate-600 truncate">{displayName}</span>
-                  <span className="text-[11px] text-slate-400">
-                    {techVisits.length} visit{techVisits.length === 1 ? "" : "s"}
-                  </span>
+          {groupedByTech
+            .filter(([techId]) => {
+              if (!showOpenOnly) return true;
+              // In "Open" mode, only show techs with at least one open slot
+              // (slots already clamped to now via techOpenSlotsMap).
+              return (techOpenSlotsMap.get(techId)?.length ?? 0) > 0;
+            })
+            .map(([techId, techVisits]) => {
+              const displayName = techId === UNASSIGNED_KEY ? "Unassigned" : resolveTechName(techId);
+              // Pre-computed slots from canonical availability (includes post-last-visit gaps).
+              const openSlots = techOpenSlotsMap.get(techId) ?? [];
+              return (
+                <div key={techId} data-testid={`tech-group-${techId}`}>
+                  <div className="flex items-center gap-2 px-1 py-1.5 sticky top-0 bg-slate-50">
+                    <UserIcon className="h-3.5 w-3.5 text-slate-400" />
+                    <span className="text-xs font-semibold text-slate-600 truncate">{displayName}</span>
+                    <span className="text-[11px] text-slate-400">
+                      {showOpenOnly
+                        ? `${openSlots.length} open slot${openSlots.length === 1 ? "" : "s"}`
+                        : `${techVisits.length} visit${techVisits.length === 1 ? "" : "s"}`
+                      }
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {showOpenOnly ? (
+                      // Open-only: show just the available slots for quick booking.
+                      openSlots.map((slot, idx) => (
+                        <OpenSlotCard
+                          key={idx}
+                          startIso={slot.startIso}
+                          endIso={slot.endIso}
+                          durationMinutes={slot.durationMinutes}
+                          canCreate={canCreateJob}
+                          onTap={() => {
+                            const slotDate = toDateStr(selectedDate);
+                            const d = new Date(slot.startIso);
+                            const hh = String(d.getHours()).padStart(2, "0");
+                            const mm = String(d.getMinutes()).padStart(2, "0");
+                            const params = new URLSearchParams({
+                              date: slotDate,
+                              startTime: `${hh}:${mm}`,
+                              duration: String(slot.durationMinutes),
+                              ...(techId !== UNASSIGNED_KEY ? { technicianId: techId } : {}),
+                            });
+                            setLocation(`/tech/create-job?${params.toString()}`);
+                          }}
+                        />
+                      ))
+                    ) : (
+                      // All view: merge visits and open slots in chronological order.
+                      // Time-based sort replaces the prior afterIndex approach, which
+                      // couldn't handle pre-first-visit or post-last-visit gaps.
+                      (() => {
+                        const slotDate = toDateStr(selectedDate);
+                        type AllRow =
+                          | { kind: "visit"; visit: TodayVisit }
+                          | { kind: "slot"; slot: OpenSlotItem };
+                        const merged: AllRow[] = [
+                          ...techVisits.map(v => ({ kind: "visit" as const, visit: v })),
+                          ...openSlots.map(s => ({ kind: "slot" as const, slot: s })),
+                        ].sort((a, b) => {
+                          const aMs = a.kind === "visit"
+                            ? (toEpochMsSafe(a.visit.scheduledStartRaw) ?? 0)
+                            : Date.parse(a.slot.startIso);
+                          const bMs = b.kind === "visit"
+                            ? (toEpochMsSafe(b.visit.scheduledStartRaw) ?? 0)
+                            : Date.parse(b.slot.startIso);
+                          return aMs - bMs;
+                        });
+                        return merged.map((row, idx) => {
+                          if (row.kind === "visit") {
+                            const { visit } = row;
+                            const assignedIds = visit.assignedTechnicianIds;
+                            const cardLabel = assignedIds.length > 1
+                              ? `${resolveTechName(assignedIds[0])} +${assignedIds.length - 1}`
+                              : null;
+                            return (
+                              <JobCard
+                                key={`${techId}:${visit.id}`}
+                                visit={visit}
+                                isNext={false}
+                                onTap={() => { /* non-tappable in cross-tech view */ }}
+                                readOnly
+                                technicianLabel={cardLabel}
+                              />
+                            );
+                          }
+                          const { slot } = row;
+                          const d = new Date(slot.startIso);
+                          const hh = String(d.getHours()).padStart(2, "0");
+                          const mm = String(d.getMinutes()).padStart(2, "0");
+                          const params = new URLSearchParams({
+                            date: slotDate,
+                            startTime: `${hh}:${mm}`,
+                            duration: String(slot.durationMinutes),
+                            ...(techId !== UNASSIGNED_KEY ? { technicianId: techId } : {}),
+                          });
+                          return (
+                            <OpenSlotCard
+                              key={`slot-${idx}`}
+                              startIso={slot.startIso}
+                              endIso={slot.endIso}
+                              durationMinutes={slot.durationMinutes}
+                              canCreate={canCreateJob}
+                              onTap={() => setLocation(`/tech/create-job?${params.toString()}`)}
+                            />
+                          );
+                        });
+                      })()
+                    )}
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  {techVisits.map((visit) => {
-                    const assignedIds = visit.assignedTechnicianIds;
-                    // Only add the per-card tech label when the visit is on
-                    // multiple crews — otherwise the group header already says it.
-                    const cardLabel = assignedIds.length > 1
-                      ? `${resolveTechName(assignedIds[0])} +${assignedIds.length - 1}`
-                      : null;
-                    return (
-                      <JobCard
-                        key={`${techId}:${visit.id}`}
-                        visit={visit}
-                        isNext={false}
-                        onTap={() => { /* non-tappable in cross-tech view */ }}
-                        readOnly
-                        technicianLabel={cardLabel}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          {showOpenOnly && groupedByTech.every(([techId]) => (techOpenSlotsMap.get(techId)?.length ?? 0) === 0) && (
+            <EmptyState message="No open slots found for selected technicians" />
+          )}
         </div>
       ) : (
         <>
@@ -969,18 +1182,20 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
                 <X className="h-5 w-5 text-slate-400" />
               </button>
             </div>
-            <button
-              onClick={() => { setShowCreateMenu(false); setLocation("/tech/create-job"); }}
-              className="w-full flex items-center gap-3 px-3 py-3 rounded-md border border-slate-200 bg-white hover:bg-slate-50 active:bg-slate-100 transition-colors"
-            >
-              <div className="h-9 w-9 rounded-md bg-emerald-50 flex items-center justify-center shrink-0">
-                <Briefcase className="h-4.5 w-4.5 text-emerald-600" style={{ width: 18, height: 18 }} />
-              </div>
-              <div className="text-left">
-                <p className="text-sm font-semibold text-slate-800">Create Job</p>
-                <p className="text-xs text-slate-400">New work order with scheduling</p>
-              </div>
-            </button>
+            {canCreateJob && (
+              <button
+                onClick={() => { setShowCreateMenu(false); setLocation("/tech/create-job"); }}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-md border border-slate-200 bg-white hover:bg-slate-50 active:bg-slate-100 transition-colors"
+              >
+                <div className="h-9 w-9 rounded-md bg-emerald-50 flex items-center justify-center shrink-0">
+                  <Briefcase className="h-4.5 w-4.5 text-emerald-600" style={{ width: 18, height: 18 }} />
+                </div>
+                <div className="text-left">
+                  <p className="text-sm font-semibold text-slate-800">Create Job</p>
+                  <p className="text-xs text-slate-400">New work order with scheduling</p>
+                </div>
+              </button>
+            )}
             <button
               onClick={() => { setShowCreateMenu(false); setLocation("/tech/create-lead"); }}
               className="w-full flex items-center gap-3 px-3 py-3 rounded-md border border-slate-200 bg-white hover:bg-slate-50 active:bg-slate-100 transition-colors"

@@ -25,6 +25,7 @@ import {
   // ClientDetailPage's rail), Clock already imported above for the
   // Labour summary (reused as the Labour tab icon).
   StickyNote,
+  BarChart2,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { useJobVisits } from "@/hooks/useJobVisits";
@@ -114,7 +115,9 @@ import type {
   RailPanelDescriptor,
   RailCardDescriptor,
   RailSubrowDescriptor,
+  RailChipDescriptor,
 } from "@/components/detail-rail/railTypes";
+import { buildFinancialSummaryContent } from "@/components/detail-rail/buildFinancialSummaryContent";
 // 2026-05-02 entity-number visual language: blue pill for current
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
@@ -995,8 +998,8 @@ export default function JobDetailPage() {
   // tab is `notes` — Notes is the most-frequent surface a dispatcher
   // hits on a Job page, and starting with Notes mirrors the reading
   // order ClientDetailPage uses.
-  type JobRailTab = "notes" | "labour" | "equipment";
-  const [jobRailTab, setJobRailTab] = useState<JobRailTab | null>("notes");
+  type JobRailTab = "summary" | "notes" | "labour" | "equipment";
+  const [jobRailTab, setJobRailTab] = useState<JobRailTab | null>("summary");
 
   // 2026-05-07 controlled add-note trigger: incrementing this counter
   // signals `<EntityNotesSection>` (which already supports the
@@ -1525,6 +1528,114 @@ export default function JobDetailPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   })();
 
+  // 2026-05-09: Summary tab — financial KPI card + associated visits.
+  // Uses existing state (billingTotals, labourBuckets, expenseTotalAmount,
+  // jobVisitsAll, techByIdMap) — no new queries. Financial card uses
+  // `extraContent` (the documented RailCardDescriptor escape hatch) for the
+  // margin hero + progress bar layout that the descriptor fields system
+  // cannot represent. Visit subrows wire into the existing
+  // selectedVisitId / VisitEditorLauncher flow.
+  const buildJobSummaryPanelDescriptor = (): RailPanelDescriptor => {
+    // ── Financial card ────────────────────────────────────────────
+    const profit = billingTotals?.profit ?? 0;
+    const marginPct = billingTotals?.margin ?? 0;
+
+    const financialCard: RailCardDescriptor = {
+      key: "financial-summary",
+      testId: "job-summary-financial",
+      title: { text: "Financial Summary", as: "h4" },
+      extraContent: buildFinancialSummaryContent({
+        marginPct,
+        profit,
+        hasData: !!billingTotals,
+        profitValue: billingTotals ? formatCurrency(billingTotals.profit) : "—",
+        marginTestId: "job-summary-margin-pct",
+        marginBarTestId: "job-summary-margin-bar",
+        profitTestId: "job-summary-profit",
+        rows: [
+          {
+            label: "Revenue",
+            value: billingTotals ? formatCurrency(billingTotals.totalPrice) : "—",
+            testId: "job-summary-revenue",
+          },
+          {
+            label: "Labour",
+            value: formatCurrency(labourBuckets.totalCost),
+            testId: "job-summary-labour-cost",
+          },
+          {
+            label: "Expenses",
+            value: formatCurrency(expenseTotalAmount),
+            testId: "job-summary-expenses",
+          },
+        ],
+      }),
+    };
+
+    // ── Visits card ───────────────────────────────────────────────
+    const resolveVisitChip = (status: string): RailChipDescriptor => {
+      if (status === "completed") return { text: "Completed", variant: "success" };
+      if (status === "cancelled") return { text: "Cancelled", variant: "neutral" };
+      if (status === "paused" || status === "on_hold")
+        return { text: status === "paused" ? "Paused" : "On Hold", variant: "warning" };
+      return {
+        text: status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        variant: "info",
+      };
+    };
+
+    const visitSubrows: RailSubrowDescriptor[] = [...jobVisitsAll]
+      .sort((a, b) => {
+        const aT = a.scheduledStart ? new Date(a.scheduledStart).getTime() : 0;
+        const bT = b.scheduledStart ? new Date(b.scheduledStart).getTime() : 0;
+        return bT - aT;
+      })
+      .map((visit) => {
+        const dateLabel = visit.scheduledStart
+          ? format(new Date(visit.scheduledStart), "MMM d, yyyy")
+          : "Unscheduled";
+
+        // Time range: start – end when both present, start-only otherwise.
+        const timeLabel = visit.scheduledStart
+          ? visit.scheduledEnd
+            ? `${format(new Date(visit.scheduledStart), "h:mm a")} – ${format(new Date(visit.scheduledEnd), "h:mm a")}`
+            : format(new Date(visit.scheduledStart), "h:mm a")
+          : "—";
+
+        // Technician names from existing directory; "Unassigned" when empty.
+        const techLabel =
+          visit.assignedTechnicianIds && visit.assignedTechnicianIds.length > 0
+            ? visit.assignedTechnicianIds
+                .map((id) => techByIdMap.get(id)?.name ?? "Unknown")
+                .join(", ")
+            : "Unassigned";
+
+        return {
+          key: visit.id,
+          testId: `job-summary-visit-${visit.id}`,
+          onClick: () => setSelectedVisitId(visit.id),
+          ariaLabel: `Edit visit on ${dateLabel}`,
+          title: { text: dateLabel, chip: resolveVisitChip(visit.status) },
+          meta: { leftText: timeLabel, rightText: techLabel, leftTruncate: true },
+        };
+      });
+
+    const visitsCard: RailCardDescriptor = {
+      key: "associated-visits",
+      testId: "job-summary-visits",
+      title: { text: "Associated Visits", as: "h4" },
+      ...(visitSubrows.length > 0
+        ? { subrows: visitSubrows }
+        : { meta: "No visits scheduled." }),
+    };
+
+    return {
+      kind: "list",
+      testId: "job-summary-panel",
+      cards: [financialCard, visitsCard],
+    };
+  };
+
   // 2026-05-07 Phase 7 — pure descriptor builder for Job Detail
   // Labour. Visuals (group spacing, section-header chrome, sub-row
   // hover, totals divider) live inside `<RailPanelRenderer>`. The
@@ -1610,6 +1721,20 @@ export default function JobDetailPage() {
   };
 
   const jobRailTabs: DetailRailTab[] = [
+    {
+      id: "summary",
+      label: "Summary",
+      icon: BarChart2,
+      testId: "job-rail-tab-summary",
+      content: (
+        <div data-testid="card-summary">
+          <RailPanelRenderer
+            panel={buildJobSummaryPanelDescriptor()}
+            testIdPrefix="job-summary"
+          />
+        </div>
+      ),
+    },
     {
       id: "notes",
       label: "Notes",
@@ -1856,6 +1981,7 @@ export default function JobDetailPage() {
                     streetLine,
                     cityLine,
                   ].filter(Boolean) as string[]}
+                  addressLabel="Service Address"
                   phone={job.location?.phone ?? undefined}
                   email={job.location?.email ?? undefined}
                   editCapability={{ enabled: true, ariaLabel: "Edit job header", onStartEdit: enterHeaderEdit }}
@@ -1864,6 +1990,7 @@ export default function JobDetailPage() {
                       id: "schedule-visit",
                       label: "Schedule Visit",
                       onClick: handleScheduleVisit,
+                      variant: "primary" as const,
                       testId: "button-schedule-visit-action",
                     } satisfies HeaderAction] : []),
                     ...(job.status === "completed" && isOfficeUser ? [{
@@ -1996,6 +2123,30 @@ export default function JobDetailPage() {
                       ),
                     },
                     {
+                      key: "job-type",
+                      label: "Type",
+                      value: job.jobType ? (
+                        <span>
+                          {job.jobType
+                            .replace(/_/g, " ")
+                            .replace(/\b\w/g, (c) => c.toUpperCase())}
+                        </span>
+                      ) : (
+                        <span className="text-text-disabled">—</span>
+                      ),
+                    },
+                    {
+                      key: "priority",
+                      label: "Priority",
+                      value: job.priority ? (
+                        <span>
+                          {job.priority.charAt(0).toUpperCase() + job.priority.slice(1)}
+                        </span>
+                      ) : (
+                        <span className="text-text-disabled">—</span>
+                      ),
+                    },
+                    {
                       key: "scheduled",
                       label: "Scheduled",
                       value: nextVisit?.scheduledStart ? (
@@ -2052,6 +2203,7 @@ export default function JobDetailPage() {
                         }
                       : undefined
                   }
+                  itemsColumns={3}
                   editControls={
                     editingHeader
                       ? {
@@ -2171,7 +2323,7 @@ export default function JobDetailPage() {
             ClientDetailPage's `client-right-column` aside). Spans the
             full page-content height and pins to the far right edge.
             Width is driven by the `--job-rail-width` CSS variable:
-              - panel closed (`jobRailTab === null`) → fixed 80px (icon
+              - panel closed (`jobRailTab === null`) → fixed 48px (collapsed
                 strip only)
               - panel open → fixed 380px (compact comfortable width;
                 no drag-resize on this page)
@@ -2186,7 +2338,7 @@ export default function JobDetailPage() {
             "border-t lg:border-t-0 lg:border-l border-slate-200",
           )}
           style={{
-            ["--job-rail-width" as any]: `${jobRailTab === null ? 80 : 380}px`,
+            ["--job-rail-width" as any]: `${jobRailTab === null ? 48 : 380}px`,
           }}
           data-testid="job-detail-rail-column"
           data-panel-open={jobRailTab === null ? "false" : "true"}

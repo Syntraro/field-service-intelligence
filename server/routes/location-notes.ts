@@ -126,6 +126,7 @@ router.post(
       loc?.companyName?.trim() ||
       loc?.parentName?.trim() ||
       null;
+    const clientName = loc?.parentName?.trim() || loc?.companyName?.trim() || null;
     const NOTE_PREVIEW_MAX = 140;
     const preview =
       body.noteText.length > NOTE_PREVIEW_MAX
@@ -145,6 +146,7 @@ router.post(
         noteId: created.id,
         locationId,
         locationName,
+        clientName,
         preview,
       },
     });

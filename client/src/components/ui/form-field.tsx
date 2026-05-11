@@ -76,6 +76,8 @@
  *   </ModalBody>
  */
 import * as React from "react";
+import * as SelectPrimitive from "@radix-ui/react-select";
+import { ChevronDown } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
@@ -259,3 +261,200 @@ export const FormRow = React.forwardRef<HTMLDivElement, FormRowProps>(
   ),
 );
 FormRow.displayName = "FormRow";
+
+// ── Shared inline-label helpers ────────────────────────────────────
+//
+// Used by InlineInput / InlineTextarea / InlineSelectTrigger to
+// generate consistent shell and label styles.
+
+const inlineShell = (error?: boolean, extra?: string) =>
+  cn(
+    "relative overflow-hidden rounded-md border border-border-strong bg-surface",
+    "focus-within:outline-none focus-within:border-brand",
+    "focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]",
+    error && "border-destructive focus-within:border-destructive focus-within:shadow-[0_0_0_2px_rgba(239,68,68,0.25)]",
+    extra,
+  );
+
+const InlineLabel = ({
+  htmlFor,
+  label,
+  required,
+}: {
+  htmlFor?: string;
+  label: React.ReactNode;
+  required?: boolean;
+}) => (
+  <label
+    htmlFor={htmlFor}
+    className="pointer-events-none absolute left-3 top-1.5 z-10 text-[10px] font-medium leading-none text-muted-foreground"
+  >
+    {label}
+    {required && (
+      <span className="ml-0.5 text-destructive" aria-hidden="true">
+        *
+      </span>
+    )}
+  </label>
+);
+
+// ── InlineInput ────────────────────────────────────────────────────
+//
+// CANONICAL PRIMITIVE — use for standard text / email / phone / number /
+// address inputs in modal and page forms. Part of the inline-shell family
+// (InlineInput / InlineTextarea / InlineSelectTrigger) that is the default
+// for all CRUD/business form fields.
+//
+// Do NOT use inline-shell primitives for:
+//   • Button+Popover composite controls (CanonicalDatePicker,
+//     TechnicianSelector, EquipmentTypeCombobox, EquipmentPicker,
+//     MultiSelectDropdown) — they remain FormField + FormLabel above
+//     because Radix popover anchor mechanics and missing native id/htmlFor
+//     bindings make fake inline-shell wrappers inaccessible.
+//   • Compact-density grids (scheduling, timesheet, dispatch row-edit) —
+//     use CompactFormField / CompactColHeader from compact-form-field.tsx.
+//
+// True in-field labeled input: label lives inside the bordered shell
+// at the top-left, input text sits below it in the same container.
+// The shell owns border / radius / focus ring; the inner <input>
+// is borderless and transparent.
+//
+// Usage:
+//   <InlineInput id="ps-name" label="Name" required
+//     value={name} onChange={e => setName(e.target.value)} />
+//
+//   error state:
+//   <InlineInput label="Name" required error={!!nameError} .../>
+//   {nameError && <FormErrorText>{nameError}</FormErrorText>}
+
+export interface InlineInputProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "required"> {
+  label: React.ReactNode;
+  required?: boolean;
+  /** Applies destructive border + focus ring to the shell. */
+  error?: boolean;
+  /** Extra className forwarded to the outer shell (not the input). */
+  wrapperClassName?: string;
+}
+
+export const InlineInput = React.forwardRef<HTMLInputElement, InlineInputProps>(
+  ({ label, required, error, wrapperClassName, className, id, ...props }, ref) => (
+    <div className={inlineShell(error, wrapperClassName)}>
+      <InlineLabel htmlFor={id} label={label} required={required} />
+      <input
+        ref={ref}
+        id={id}
+        required={required}
+        aria-invalid={error || undefined}
+        className={cn(
+          "w-full bg-transparent px-3 pb-2 pt-6 text-input text-text-primary outline-none",
+          "placeholder:text-text-disabled",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+          className,
+        )}
+        {...props}
+      />
+    </div>
+  ),
+);
+InlineInput.displayName = "InlineInput";
+
+// ── InlineTextarea ─────────────────────────────────────────────────
+//
+// CANONICAL PRIMITIVE — use for multi-line text fields in standard
+// modal / page forms. Same scope rules as InlineInput above.
+//
+// Same shell-owns-border pattern as InlineInput, for multi-line text.
+// Resize is disabled by default (matches shadcn Textarea convention
+// inside modals). Pass `className="resize-y"` to restore it.
+//
+// Usage:
+//   <InlineTextarea id="ps-desc" label="Description"
+//     value={desc} onChange={e => setDesc(e.target.value)} rows={2} />
+
+export interface InlineTextareaProps
+  extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  label: React.ReactNode;
+  required?: boolean;
+  error?: boolean;
+  wrapperClassName?: string;
+}
+
+export const InlineTextarea = React.forwardRef<
+  HTMLTextAreaElement,
+  InlineTextareaProps
+>(({ label, required, error, wrapperClassName, className, id, ...props }, ref) => (
+  <div className={inlineShell(error, wrapperClassName)}>
+    <InlineLabel htmlFor={id} label={label} required={required} />
+    <textarea
+      ref={ref}
+      id={id}
+      required={required}
+      aria-invalid={error || undefined}
+      className={cn(
+        "w-full resize-none bg-transparent px-3 pb-2 pt-6 text-input text-text-primary outline-none",
+        "placeholder:text-text-disabled",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        className,
+      )}
+      {...props}
+    />
+  </div>
+));
+InlineTextarea.displayName = "InlineTextarea";
+
+// ── InlineSelectTrigger ────────────────────────────────────────────
+//
+// CANONICAL PRIMITIVE — use for native Radix <Select> controls in
+// standard modal / page forms. Same scope rules as InlineInput above.
+// NOT for composite Button+Popover controls (CanonicalDatePicker etc.),
+// which bind their own accessible label through a different mechanism.
+//
+// Shell + label wrapper for Radix Select. Replaces SelectTrigger
+// inside a <Select> when you need an in-field visible label. Renders
+// SelectPrimitive.Trigger directly (bypasses the shadcn SelectTrigger
+// style layer) so there is no class-override battle over border/focus.
+//
+// Usage:
+//   <Select value={val} onValueChange={setVal}>
+//     <InlineSelectTrigger id="ps-type" label="Type" required
+//       data-testid="select-type">
+//       <SelectValue />
+//     </InlineSelectTrigger>
+//     <SelectContent>...</SelectContent>
+//   </Select>
+
+export interface InlineSelectTriggerProps
+  extends React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> {
+  label: React.ReactNode;
+  required?: boolean;
+  error?: boolean;
+  wrapperClassName?: string;
+}
+
+export const InlineSelectTrigger = React.forwardRef<
+  React.ElementRef<typeof SelectPrimitive.Trigger>,
+  InlineSelectTriggerProps
+>(({ label, required, error, wrapperClassName, className, id, children, ...props }, ref) => (
+  <div className={inlineShell(error, wrapperClassName)}>
+    <InlineLabel htmlFor={id} label={label} required={required} />
+    <SelectPrimitive.Trigger
+      ref={ref}
+      id={id}
+      className={cn(
+        "flex h-auto w-full items-center justify-between px-3 pb-2 pt-6",
+        "text-input text-text-primary outline-none",
+        "data-[placeholder]:text-text-disabled [&>span]:line-clamp-1",
+        "focus:outline-none disabled:cursor-not-allowed disabled:opacity-50",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+      <SelectPrimitive.Icon asChild>
+        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+      </SelectPrimitive.Icon>
+    </SelectPrimitive.Trigger>
+  </div>
+));
+InlineSelectTrigger.displayName = "InlineSelectTrigger";

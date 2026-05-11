@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 // 2026-03-18: Deprecated service wrapper removed — import canonical repository directly
 import { jobVisitsRepository } from "../storage/jobVisits";
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
@@ -9,7 +10,8 @@ import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
-import { jobVisitStatusEnum, visitOutcomeEnum, holdReasonEnum } from "../../shared/schema";
+import { jobVisitStatusEnum, visitOutcomeEnum, holdReasonEnum, jobs as jobsTable, clientLocations, customerCompanies } from "../../shared/schema";
+import { db } from "../db";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { storage } from "../storage/index";
@@ -405,6 +407,26 @@ router.post(
       autoCloseJobOnLastVisit,
     });
 
+    // Fetch job + client data to enrich the activity feed event
+    const [jobMeta] = await db
+      .select({
+        jobNumber: jobsTable.jobNumber,
+        summary: jobsTable.summary,
+        address: clientLocations.address,
+        city: clientLocations.city,
+        clientNameFromCompany: customerCompanies.name,
+        clientNameFromLocation: clientLocations.companyName,
+      })
+      .from(jobsTable)
+      .leftJoin(clientLocations, eq(jobsTable.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
+      .where(and(eq(jobsTable.id, jobId), eq(jobsTable.companyId, companyId)))
+      .limit(1);
+
+    const addrParts = [jobMeta?.address, jobMeta?.city].filter(Boolean);
+    const locationAddress = addrParts.length > 0 ? addrParts.join(", ") : null;
+    const enrichedClientName = jobMeta?.clientNameFromCompany ?? jobMeta?.clientNameFromLocation ?? null;
+
     // Emit events
     const ctx = getQueryCtx(req);
     logEventAsync(ctx, {
@@ -412,7 +434,16 @@ router.post(
       entityType: "visit",
       entityId: visitId,
       summary: `Visit completed with outcome=${outcome} (job ${jobId})`,
-      meta: { jobId, outcome, holdReason, result },
+      meta: {
+        jobId,
+        outcome,
+        holdReason,
+        result,
+        jobNumber: jobMeta?.jobNumber != null ? String(jobMeta.jobNumber) : null,
+        jobSummary: jobMeta?.summary ?? null,
+        clientName: enrichedClientName,
+        locationAddress,
+      },
     });
 
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });

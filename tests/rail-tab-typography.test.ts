@@ -1,32 +1,26 @@
 /**
- * Right-rail tab typography — canonical token pins (2026-05-07).
+ * Right-rail tab typography — canonical token pins (2026-05-07,
+ * updated 2026-05-11 for top-tab horizontal layout).
  *
- * The shared vertical-icon-strip primitive at
+ * The shared top-tab navigation primitive at
  * `client/src/components/detail-rail/DetailRightRail.tsx` is the ONE
- * tab-button surface for both ClientDetailPage and JobDetailPage. The
- * earlier visual scale (`text-helper font-medium` on the label, same on
- * the count chip) read as "button copy" — chunky enough at the 19px
- * root font-size that the rail strip looked oversized next to the
- * panel content.
+ * tab-button surface for all detail pages. The layout changed from a
+ * vertical icon strip to a horizontal top-tab bar in 2026-05-11.
  *
- * The corrected scale uses regular-weight `text-helper` (canonical
- * 13px non-uppercase) on both the label and the count chip. Active
- * emphasis lives in color (`text-brand`) + background (`bg-white`) +
- * the left accent bar, NOT in font size or font weight. `text-label`
- * was considered but rejected — its uppercase tracking overflows the
- * 76px column on "MAINTENANCE" / "COMMUNICATIONS".
+ * Typography rules (unchanged from 2026-05-07):
+ *   - regular-weight `text-helper` (canonical 13px non-uppercase) on
+ *     both the label and the count chip.
+ *   - Active emphasis lives in color (`text-brand`) + bottom-border
+ *     underline (`border-[#76B054]`) — NOT font size or weight.
  *
  * These pins fail if a future refactor:
  *   - re-introduces `font-medium` / `font-semibold` / `font-bold` on
  *     the tab button or count chip (visual weight regresses)
  *   - swaps the canonical token for the legacy ramp
  *     (`text-xs` / `text-sm` / `text-base` / `text-lg` / `text-xl`)
- *   - re-introduces an arbitrary `text-[Npx]` value (the original
- *     `text-[11px]` / `text-[10px]` drift this primitive was extracted
- *     to fix)
- *   - drops the canonical green accent bar / `text-brand` active color /
- *     `bg-white` active background — those are the three remaining
- *     emphasis sources after weight was removed.
+ *   - re-introduces an arbitrary `text-[Npx]` value
+ *   - drops `text-brand` active color or `border-[#76B054]` underline
+ *   - re-introduces the old left-side `bg-[#76B054]` accent bar span
  */
 
 import { describe, it, expect } from "vitest";
@@ -50,22 +44,17 @@ const codeOnly = stripComments(railSrc);
 // ── 1. Canonical token usage ───────────────────────────────────────
 
 describe("DetailRightRail — tab button typography", () => {
-  it("uses the canonical `text-helper` token for the label", () => {
-    // The button's className list contains the canonical token. The
-    // tab label inherits the parent button's font-size — there is no
-    // separate text-* class on the inner <span>{tab.label}</span>.
-    expect(codeOnly).toMatch(/"text-helper transition-colors"/);
+  it("uses the canonical `text-helper` token on the tab button class block", () => {
+    // The button's className list contains the canonical token.
+    // px-2.5 py-2 is the horizontal tab padding; text-helper is 13px.
+    expect(codeOnly).toMatch(/"px-2\.5 py-2 text-helper transition-colors"/);
   });
 
   it("does NOT layer `font-medium` / `font-semibold` / `font-bold` on the tab button", () => {
-    // The earlier `text-helper font-medium` modifier read as button
-    // copy. After 2026-05-07 the weight comes purely from the role
-    // token (text-helper bakes regular 400). Active emphasis lives
-    // in color + bg + accent bar, not weight.
     const buttonBlockMatch = codeOnly.match(
-      /relative w-full px-1 py-2[\s\S]{0,400}?text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
+      /px-2\.5 py-2 text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
     );
-    expect(buttonBlockMatch, "tab button class block must contain `text-helper transition-colors`").not.toBeNull();
+    expect(buttonBlockMatch, "tab button class block must contain `px-2.5 py-2 text-helper transition-colors`").not.toBeNull();
     const block = buttonBlockMatch?.[0] ?? "";
     expect(block).not.toMatch(/\bfont-medium\b/);
     expect(block).not.toMatch(/\bfont-semibold\b/);
@@ -73,11 +62,8 @@ describe("DetailRightRail — tab button typography", () => {
   });
 
   it("does NOT use the legacy size ramp on the tab button", () => {
-    // Scoped to the button class block so unrelated `text-xs` /
-    // `text-sm` elsewhere in the file (none today, but defensively
-    // bounded) don't false-match.
     const buttonBlockMatch = codeOnly.match(
-      /relative w-full px-1 py-2[\s\S]{0,400}?text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
+      /px-2\.5 py-2 text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
     );
     const block = buttonBlockMatch?.[0] ?? "";
     expect(block).not.toMatch(/\btext-xs\b/);
@@ -89,11 +75,8 @@ describe("DetailRightRail — tab button typography", () => {
   });
 
   it("does NOT use any arbitrary text-[Npx] value on the tab button", () => {
-    // The whole point of the H2 token migration was to retire the
-    // earlier `text-[11px]` drift. Any new `text-[Npx]` on this
-    // surface would be a regression.
     const buttonBlockMatch = codeOnly.match(
-      /relative w-full px-1 py-2[\s\S]{0,400}?text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
+      /px-2\.5 py-2 text-helper transition-colors[\s\S]{0,400}?focus-visible:ring-\[#76B054\]\/40/,
     );
     const block = buttonBlockMatch?.[0] ?? "";
     expect(block).not.toMatch(/\btext-\[[^\]]+\]/);
@@ -131,42 +114,54 @@ describe("DetailRightRail — tab count chip typography", () => {
   });
 });
 
-// ── 3. Active / inactive state visuals preserved ───────────────────
+// ── 3. Active / inactive state visuals ────────────────────────────
 
-describe("DetailRightRail — active/inactive emphasis preserved without typography size changes", () => {
-  it("active tab keeps `text-brand bg-white` (color + background — the typography-free emphasis sources)", () => {
-    expect(codeOnly).toMatch(/isActive[\s\S]{0,200}?"text-brand bg-white"/);
+describe("DetailRightRail — active/inactive emphasis without typography size changes", () => {
+  it("active tab keeps `text-brand` color token", () => {
+    expect(codeOnly).toMatch(/isActive[\s\S]{0,200}?"text-brand\s+border-\[#76B054\]"/);
   });
 
-  it("inactive tab keeps `text-slate-600 hover:text-slate-900 hover:bg-white`", () => {
+  it("active tab uses green bottom-border underline (`border-[#76B054]`) as the visual accent", () => {
+    // 2026-05-11: replaced the old left-side `bg-[#76B054]` accent bar
+    // span with a `border-b-2 border-[#76B054]` bottom-underline on the
+    // horizontal top tab button. Same canonical green, different surface.
+    expect(codeOnly).toMatch(/isActive[\s\S]{0,400}?border-\[#76B054\]/);
+  });
+
+  it("inactive tab keeps `text-slate-600 hover:text-slate-900 border-transparent`", () => {
     expect(codeOnly).toMatch(
-      /"text-slate-600 hover:text-slate-900 hover:bg-white"/,
+      /"text-slate-600 hover:text-slate-900 border-transparent"/,
     );
   });
 
-  it("active accent bar (canonical green `#76B054`) is preserved as the third emphasis source", () => {
-    expect(codeOnly).toMatch(/isActive\s*&&\s*\(\s*\n?\s*<span[\s\S]{0,400}?bg-\[#76B054\]/);
+  it("aria-pressed wiring is preserved (active state is announced semantically)", () => {
+    expect(codeOnly).toMatch(/aria-pressed=\{isActive\}/);
   });
 
-  it("aria-pressed wiring is preserved (active state is announced semantically, not visually only)", () => {
-    expect(codeOnly).toMatch(/aria-pressed=\{isActive\}/);
+  it("does NOT render the old vertical accent bar `<span bg-[#76B054]>` element", () => {
+    // The old pattern: isActive && (<span className="... bg-[#76B054]" />)
+    // Replaced by the horizontal tab's border-b-2 bottom underline.
+    expect(codeOnly).not.toMatch(
+      /isActive\s*&&\s*\(\s*\n?\s*<span[\s\S]{0,200}?bg-\[#76B054\]/,
+    );
   });
 });
 
-// ── 4. Icon sizing aligned with typography scale ───────────────────
+// ── 4. Icon in collapsed strip only (not in expanded tab labels) ───
 
-describe("DetailRightRail — icon scaled to typography", () => {
-  it("tab icon stays at `h-4 w-4` (16px) — paired with 13px label is the canonical 16/13 icon-text ratio", () => {
-    // The label is text-helper (13px / 16px line-height). 16px icon +
-    // 16px line-height label is the canonical balanced ratio for
-    // vertical-icon-strip nav. Bumping the icon while shrinking the
-    // label (or vice versa) breaks the balance.
-    expect(codeOnly).toMatch(/<Icon className="h-4 w-4" \/>/);
+describe("DetailRightRail — icon usage", () => {
+  it("the close-X icon stays at `h-3.5 w-3.5`", () => {
+    expect(codeOnly).toMatch(/<X className="h-3\.5 w-3\.5" \/>/);
   });
 
-  it("the close-X icon stays at `h-3.5 w-3.5` (it lives in the panel header, not the tab strip)", () => {
-    // Sanity check — the close-X is a different surface and its size
-    // is intentionally distinct from the tab icon size.
-    expect(codeOnly).toMatch(/<X className="h-3\.5 w-3\.5" \/>/);
+  it("the expand ChevronLeft icon in collapsed strip is `h-4 w-4`", () => {
+    expect(codeOnly).toMatch(/<ChevronLeft className="h-4 w-4" \/>/);
+  });
+
+  it("expanded top-tab buttons do NOT render an `<Icon>` element", () => {
+    // In the old vertical strip each button rendered `<Icon className="h-4 w-4" />`.
+    // In the new horizontal tabs, only text labels are shown in the
+    // expanded panel header — icons are not used in the top-tab row.
+    expect(codeOnly).not.toMatch(/<Icon className="h-4 w-4" \/>/);
   });
 });

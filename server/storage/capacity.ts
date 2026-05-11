@@ -122,6 +122,13 @@ export interface TechnicianCapacity {
   visitCount: number;
   /** Total scheduled/booked minutes today (sum of booked block durations). */
   bookedMinutes: number;
+  /**
+   * All remaining open gaps (≥MIN_SLOT_MINUTES) within the workday from
+   * max(workStart, now) to workEnd. Empty for off_today / day_over /
+   * fully_booked. Exposed so the tech-app availability endpoint can return
+   * canonical slot math without re-implementing gap logic client-side.
+   */
+  allOpenSlots: Array<{ startISO: string; endISO: string; durationMinutes: number }>;
 }
 
 /**
@@ -877,6 +884,7 @@ export async function getTodayCapacity(
         scheduleBlocks,
         visitCount,
         bookedMinutes,
+        allOpenSlots: [],
       };
     }
 
@@ -897,6 +905,7 @@ export async function getTodayCapacity(
         scheduleBlocks,
         visitCount,
         bookedMinutes,
+        allOpenSlots: [],
       };
     }
 
@@ -907,15 +916,16 @@ export async function getTodayCapacity(
     // current time still at/before workday start).
     if (!hasAnyBusy && nowMs <= workStartMs) {
       const durationMinutes = Math.round((workEndMs - workStartMs) / 60_000);
+      const fullDaySlot = {
+        startISO: new Date(workStartMs).toISOString(),
+        endISO: new Date(workEndMs).toISOString(),
+        durationMinutes,
+      };
       return {
         technicianId: member.id,
         name,
         state: "fully_open",
-        slot: {
-          startISO: new Date(workStartMs).toISOString(),
-          endISO: new Date(workEndMs).toISOString(),
-          durationMinutes,
-        },
+        slot: fullDaySlot,
         totalAvailableMinutes: durationMinutes,
         meaningfulSlotCount: 1,
         workday: baseWorkday,
@@ -923,6 +933,7 @@ export async function getTodayCapacity(
         scheduleBlocks,
         visitCount,
         bookedMinutes,
+        allOpenSlots: [fullDaySlot],
       };
     }
 
@@ -956,6 +967,7 @@ export async function getTodayCapacity(
         scheduleBlocks,
         visitCount,
         bookedMinutes,
+        allOpenSlots: [],
       };
     }
 
@@ -992,6 +1004,11 @@ export async function getTodayCapacity(
       scheduleBlocks,
       visitCount,
       bookedMinutes,
+      allOpenSlots: meaningful.map(s => ({
+        startISO: new Date(s.start).toISOString(),
+        endISO: new Date(s.end).toISOString(),
+        durationMinutes: Math.round((s.end - s.start) / 60_000),
+      })),
     };
   });
 

@@ -37,6 +37,16 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
   Clock, Package, Tag, Building2, AlertTriangle, Archive, Loader2,
@@ -497,10 +507,8 @@ export default function ClientDetailPage() {
   const RAIL_MIN_WIDTH = 300;
   const RAIL_MAX_WIDTH_PX = 520;
   const RAIL_MAX_WIDTH_RATIO = 0.45;
-  // 2026-05-07 v3: width of the rail when no panel is open (icon nav
-  // only). Matches the inner <UtilityRail>'s `<nav className="w-[76px]">`
-  // + a small slack so the right border doesn't clip the focus ring.
-  const RAIL_ICON_STRIP_WIDTH = 80;
+  // Width of the rail when no panel is open (collapsed strip).
+  const RAIL_COLLAPSED_WIDTH = 48;
   const LS_RAIL_WIDTH_KEY = "syntraro.detail.rail.width";
 
   // 2026-05-07 v3: rail-collapsed boolean state retired alongside the
@@ -2069,7 +2077,7 @@ export default function ClientDetailPage() {
            2026-05-07 v3: the prior "DETAILS" collapsed strip is gone —
            the icon rail itself is always visible. Aside width:
              - panel open  → user-resized `rightRailWidth` (persisted)
-             - panel closed → fixed RAIL_ICON_STRIP_WIDTH (icon nav only) */}
+             - panel closed → fixed RAIL_COLLAPSED_WIDTH (compact strip only) */}
       <aside
         className={cn(
           "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
@@ -2077,7 +2085,7 @@ export default function ClientDetailPage() {
         )}
         style={{
           ["--client-rail-width" as any]: `${
-            utilityTab === null ? RAIL_ICON_STRIP_WIDTH : rightRailWidth
+            utilityTab === null ? RAIL_COLLAPSED_WIDTH : rightRailWidth
           }px`,
         }}
         data-testid="client-right-column"
@@ -2087,7 +2095,7 @@ export default function ClientDetailPage() {
             and desktop (lg+) mount the canonical `<DetailRightRail>`
             primitive. The outer aside still owns the resize / width
             persistence (page-specific concern); the primitive owns the
-            icon-strip + panel chrome. `testIdPrefix="client-side"`
+            top-tab-nav + panel chrome. `testIdPrefix="client-side"`
             preserves the rendered DOM contract: `client-side-rail`,
             `client-side-panel-${id}`, `client-side-panel-close`,
             `client-side-panel-empty` all render byte-for-byte the
@@ -2141,18 +2149,18 @@ export default function ClientDetailPage() {
         jobPreselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
 
-      {/* Delete / Archive Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+      {/* Delete / Archive Confirmation Dialog — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
               {deleteEligibility?.canHardDelete ? (
                 <><AlertTriangle className="h-5 w-5 text-destructive" /> Delete {deleteTarget === "company" ? "Client" : "Location"}</>
               ) : (
                 <><Archive className="h-5 w-5 text-amber-500" /> Archive {deleteTarget === "company" ? "Client" : "Location"}</>
               )}
-            </DialogTitle>
-            <DialogDescription>
+            </AlertDialogTitle>
+            <AlertDialogDescription>
               {deleteCheckLoading ? "Checking dependencies..." :
                 deleteEligibility?.canHardDelete
                   ? deleteTarget === "company"
@@ -2162,8 +2170,8 @@ export default function ClientDetailPage() {
                       : `This will permanently remove "${selectedLoc ? locationDisplayName(selectedLoc) : "this location"}". This cannot be undone.`
                   : `Cannot permanently delete — ${(deleteEligibility?.reasons ?? []).join(", ")}. You can archive instead, which hides it from lists while preserving historical records.`
               }
-            </DialogDescription>
-          </DialogHeader>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
 
           {!deleteCheckLoading && deleteEligibility && (
             <div className="space-y-4 py-2">
@@ -2190,29 +2198,28 @@ export default function ClientDetailPage() {
             </div>
           )}
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteDialogOpen(false)}>Cancel</AlertDialogCancel>
             {deleteEligibility?.canHardDelete && !(deleteTarget === "location" && deleteEligibility.isLastLocation) ? (
-              <Button
-                variant="destructive"
+              <AlertDialogAction
                 onClick={() => executeDelete.mutate()}
                 disabled={deleteConfirmText !== "DELETE" || executeDelete.isPending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 {executeDelete.isPending ? "Deleting..." : "Permanently Delete"}
-              </Button>
+              </AlertDialogAction>
             ) : deleteEligibility && !(deleteTarget === "location" && deleteEligibility?.isLastLocation) ? (
-              <Button
-                variant="default"
-                className="bg-amber-600 hover:bg-amber-700"
+              <AlertDialogAction
                 onClick={() => executeDelete.mutate()}
                 disabled={executeDelete.isPending}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
               >
                 {executeDelete.isPending ? "Archiving..." : "Archive"}
-              </Button>
+              </AlertDialogAction>
             ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Edit Client Dialog — canonical component */}
       <EditCompanyDialog
@@ -3886,48 +3893,53 @@ function LocEquipmentTab({
         <p className="text-xs text-slate-400 mt-1">No archived equipment</p>
       )}
 
-      {/* Delete confirmation dialog */}
+      {/* Delete confirmation dialog — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
       {confirmTarget && (
-        <Dialog open={!!confirmDeleteId} onOpenChange={(open) => { if (!open) setConfirmDeleteId(null); }}>
-          <DialogContent className="sm:max-w-[400px]">
-            <DialogHeader>
-              <DialogTitle>Delete this equipment?</DialogTitle>
-              <DialogDescription>
+        <AlertDialog open={!!confirmDeleteId} onOpenChange={(open) => { if (!open) setConfirmDeleteId(null); }}>
+          <AlertDialogContent className="sm:max-w-[400px]">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this equipment?</AlertDialogTitle>
+              <AlertDialogDescription>
                 This will remove <span className="font-medium text-foreground">{confirmTarget.name}</span> from
                 the active equipment list for this location. Service history and related notes will be preserved.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
-              <Button variant="destructive" onClick={() => { onDelete(confirmDeleteId!); setConfirmDeleteId(null); }}>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="gap-2 sm:gap-0">
+              <AlertDialogCancel onClick={() => setConfirmDeleteId(null)}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => { onDelete(confirmDeleteId!); setConfirmDeleteId(null); }}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
                 Delete
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
 
-      {/* Restore confirmation dialog */}
+      {/* Restore confirmation dialog — blocking confirmation → AlertDialog per CLAUDE.md taxonomy rule #1 */}
       {restoreTarget && (
-        <Dialog open={!!confirmRestoreId} onOpenChange={(open) => { if (!open) setConfirmRestoreId(null); }}>
-          <DialogContent className="sm:max-w-[400px]">
-            <DialogHeader>
-              <DialogTitle>Restore this equipment?</DialogTitle>
-              <DialogDescription>
+        <AlertDialog open={!!confirmRestoreId} onOpenChange={(open) => { if (!open) setConfirmRestoreId(null); }}>
+          <AlertDialogContent className="sm:max-w-[400px]">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Restore this equipment?</AlertDialogTitle>
+              <AlertDialogDescription>
                 This will make <span className="font-medium text-foreground">{restoreTarget.name}</span> active
                 again and return it to the active equipment list.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => setConfirmRestoreId(null)}>Cancel</Button>
-              <Button onClick={() => restoreMutation.mutate(confirmRestoreId!)}
-                disabled={restoreMutation.isPending}>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="gap-2 sm:gap-0">
+              <AlertDialogCancel onClick={() => setConfirmRestoreId(null)}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => restoreMutation.mutate(confirmRestoreId!)}
+                disabled={restoreMutation.isPending}
+              >
                 {restoreMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
                 Restore
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
 
       <EquipmentDetailModal

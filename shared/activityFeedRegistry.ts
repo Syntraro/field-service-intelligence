@@ -17,12 +17,9 @@
  * key requires a SQL migration AND a coordinated update at every emitter
  * site. Adding a new key is safe; deleting is not.
  *
- * EXCLUSIONS (deliberate, do NOT add): job.created, job.scheduled,
- * job.unscheduled, job.reassigned, quote.created, quote.sent,
- * invoice.sent, invoice.created, client.created, client.updated,
- * reviews, marketing. The Activity Feed is operational signal only —
- * those low-value lifecycle events live on entity timelines but not
- * in the global drawer.
+ * EXCLUSIONS (deliberate, do NOT add): job.scheduled, job.unscheduled,
+ * job.reassigned, quote.sent, invoice.sent, invoice.created,
+ * client.created, client.updated, reviews, marketing.
  */
 
 export const ACTIVITY_FEED_EVENT_TYPES = [
@@ -30,6 +27,8 @@ export const ACTIVITY_FEED_EVENT_TYPES = [
   "visit.completed",
   "visit.on_route",
   "tech.arrived",
+  "job.created",
+  "quote.created",
   "quote.approved",
   "quote.declined",
   "invoice.viewed",
@@ -50,6 +49,7 @@ export type ActivityFeedEventType = (typeof ACTIVITY_FEED_EVENT_TYPES)[number];
 export type ActivityFeedCategory =
   | "visit_updates"
   | "technician_updates"
+  | "job_updates"
   | "quote_updates"
   | "invoice_updates"
   | "payment_updates"
@@ -95,12 +95,20 @@ export const ACTIVITY_FEED_CATEGORIES: readonly ActivityFeedCategoryDefinition[]
     order: 20,
   },
   {
+    key: "job_updates",
+    label: "Job Updates",
+    description: "New jobs created",
+    eventTypes: ["job.created"],
+    defaultEnabled: true,
+    order: 35,
+  },
+  {
     key: "quote_updates",
     label: "Quote Updates",
-    description: "Approvals and declines",
-    eventTypes: ["quote.approved", "quote.declined"],
+    description: "New quotes, approvals, and declines",
+    eventTypes: ["quote.created", "quote.approved", "quote.declined"],
     defaultEnabled: true,
-    order: 30,
+    order: 40,
   },
   {
     key: "invoice_updates",
@@ -108,7 +116,7 @@ export const ACTIVITY_FEED_CATEGORIES: readonly ActivityFeedCategoryDefinition[]
     description: "Customer views and full payments",
     eventTypes: ["invoice.viewed", "invoice.paid"],
     defaultEnabled: true,
-    order: 40,
+    order: 50,
   },
   {
     key: "payment_updates",
@@ -116,7 +124,7 @@ export const ACTIVITY_FEED_CATEGORIES: readonly ActivityFeedCategoryDefinition[]
     description: "Partial payments and failures",
     eventTypes: ["invoice.partial_paid", "payment.failed"],
     defaultEnabled: true,
-    order: 50,
+    order: 60,
   },
   {
     key: "notes",
@@ -124,7 +132,7 @@ export const ACTIVITY_FEED_CATEGORIES: readonly ActivityFeedCategoryDefinition[]
     description: "New notes added to jobs, clients, or locations",
     eventTypes: ["note.created"],
     defaultEnabled: false,
-    order: 60,
+    order: 70,
   },
 ];
 
@@ -173,6 +181,8 @@ export type ActivityFeedIcon =
   | "check-circle-2"
   | "navigation"
   | "map-pin"
+  | "briefcase"
+  | "file-plus"
   | "file-check-2"
   | "file-x-2"
   | "eye"
@@ -200,7 +210,10 @@ export const ACTIVITY_FEED_EVENT_DEFINITIONS: readonly ActivityFeedEventDefiniti
   { eventType: "tech.arrived",         category: "technician_updates", icon: "map-pin",             tone: "blue" },
   { eventType: "timesheet.clocked_in", category: "technician_updates", icon: "log-in",              tone: "blue" },
   { eventType: "timesheet.clocked_out",category: "technician_updates", icon: "log-out",             tone: "blue" },
+  // Job Updates
+  { eventType: "job.created",          category: "job_updates",        icon: "briefcase",           tone: "blue" },
   // Quote Updates
+  { eventType: "quote.created",        category: "quote_updates",      icon: "file-plus",           tone: "purple" },
   { eventType: "quote.approved",       category: "quote_updates",      icon: "file-check-2",        tone: "purple" },
   { eventType: "quote.declined",       category: "quote_updates",      icon: "file-x-2",            tone: "red" },
   // Invoice Updates

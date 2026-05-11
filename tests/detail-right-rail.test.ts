@@ -1,27 +1,23 @@
 /**
  * Detail right-rail canonical primitive — source pin tests
- * (2026-05-07 extraction).
+ * (2026-05-07 extraction, 2026-05-11 top-tab layout).
  *
- * The vertical icon strip + expandable panel chrome shared by
- * ClientDetailPage / JobDetailPage / future Invoice + Quote detail
- * surfaces lives in the canonical primitive at
+ * The top-tab-navigation + expandable-panel chrome shared by
+ * ClientDetailPage / JobDetailPage / InvoiceDetailPage / QuoteDetailPage /
+ * LeadDetailPage lives in the canonical primitive at
  * `client/src/components/detail-rail/DetailRightRail.tsx`. These pins
  * fail if a future refactor:
  *
  *   - makes the primitive stateful (it MUST be controlled —
  *     `activeTabId` + `onActiveTabChange` props are the contract)
- *   - drops the `aria-pressed` / accent-bar / close-X wiring
+ *   - drops the `aria-pressed` / bottom-underline / close-X wiring
  *   - hardcodes a testid string instead of templating from
  *     `${testIdPrefix}` (would break ClientDetailPage's
  *     `client-side-rail` / `client-side-panel-*` selectors and
  *     JobDetailPage's `job-side-*` namespace)
  *   - couples the primitive to a specific page's tab registry or
  *     domain types
- *
- * The primitive is tested at the source-pin level (it doesn't render
- * React in isolation here) — page-level tests in
- * `tests/client-side-rail.test.ts` and `tests/job-detail-right-rail.test.ts`
- * verify the consumer wiring.
+ *   - re-introduces the old left-side vertical icon strip nav
  */
 
 import { describe, it, expect } from "vitest";
@@ -69,7 +65,7 @@ describe("DetailRailTab — tab config shape", () => {
     expect(railSrc).toMatch(/^\s*count\?:\s*number;/m);
   });
 
-  it("supports an optional `action` slot rendered in the panel header", () => {
+  it("supports an optional `action` slot rendered in the panel body (not the header)", () => {
     expect(railSrc).toMatch(/^\s*action\?:\s*ReactNode;/m);
   });
 
@@ -87,13 +83,11 @@ describe("DetailRightRail — controlled, no internal state", () => {
   });
 
   it("the primitive remains controlled — `activeTabId` + `onActiveTabChange` are the contract", () => {
-    // 2026-05-07 RALPH: the primitive now carries internal `useState`
-    // strictly to lag the panel section's unmount during the close
-    // animation (so the slide-out can complete before the DOM tears
-    // down). The controlled prop contract is unchanged; the lag state
-    // is purely an animation-staging implementation detail. We pin
-    // the controlled props are still there and ban `useReducer` /
-    // `useRef` (which would imply a heavier internal model).
+    // 2026-05-07 RALPH: the primitive carries internal `useState`
+    // strictly for the close animation lag (`displayedActiveId`) and
+    // for tracking the last-active tab for the collapsed strip. The
+    // controlled prop contract is unchanged; these states are purely
+    // implementation details. We pin `useReducer`/`useRef` are absent.
     expect(railSrc).toMatch(
       /^\s*activeTabId:\s*string\s*\|\s*null;/m,
     );
@@ -102,16 +96,13 @@ describe("DetailRightRail — controlled, no internal state", () => {
     );
     expect(railSrc).not.toMatch(/\buseReducer\b/);
     expect(railSrc).not.toMatch(/\buseRef\b/);
-    // The single permitted internal state is the lagged display id;
-    // it must be initialized from `activeTabId` (not a literal null).
+    // Animation lag state: initialized from `activeTabId`.
     expect(railSrc).toMatch(
       /useState<string\s*\|\s*null>\(\s*\n?\s*activeTabId,?\s*\n?\s*\)/,
     );
   });
 
   it("clicking the active tab again closes the panel via onActiveTabChange(null)", () => {
-    // Toggle behavior must be implemented inside the primitive, not
-    // shoved onto consumers.
     expect(railSrc).toMatch(
       /onActiveTabChange\(\s*isActive\s*\?\s*null\s*:\s*tab\.id\s*\)/,
     );
@@ -132,11 +123,6 @@ describe("DetailRightRail — testid templates use the testIdPrefix prop", () =>
   });
 
   it("the panel <section> emits `${testIdPrefix}-panel-${displayedTab.id}` (lagged for close animation)", () => {
-    // 2026-05-07 RALPH: testids now read from `displayedTab` so they
-    // remain stable during the close slide-out (when the user has
-    // already cleared `activeTabId` but the panel is still mounted
-    // and fading). The id value is identical for the duration of the
-    // panel's visible lifetime.
     expect(railSrc).toMatch(
       /data-testid=\{`\$\{testIdPrefix\}-panel-\$\{displayedTab\.id\}`\}/,
     );
@@ -165,6 +151,18 @@ describe("DetailRightRail — testid templates use the testIdPrefix prop", () =>
       /data-testid=\{`\$\{testIdPrefix\}-panel-empty`\}/,
     );
   });
+
+  it("the collapsed strip emits `${testIdPrefix}-collapsed`", () => {
+    expect(railSrc).toMatch(
+      /data-testid=\{`\$\{testIdPrefix\}-collapsed`\}/,
+    );
+  });
+
+  it("the expand button in collapsed strip emits `${testIdPrefix}-rail-expand`", () => {
+    expect(railSrc).toMatch(
+      /data-testid=\{`\$\{testIdPrefix\}-rail-expand`\}/,
+    );
+  });
 });
 
 // ── 5. Accessibility wiring ────────────────────────────────────────
@@ -179,58 +177,40 @@ describe("DetailRightRail — accessibility", () => {
   });
 
   it("the panel <section> carries an aria-label using the displayed tab's label", () => {
-    // 2026-05-07 RALPH: aria-label reads from `displayedTab` for the
-    // same reason testids do — it stays valid throughout the close
-    // animation. `aria-hidden` (asserted in `rail-animation.test.ts`)
-    // is what tells AT the panel is in transition.
     expect(railSrc).toMatch(/aria-label=\{`\$\{displayedTab\.label\}\s+panel`\}/);
   });
 
-  it("the icon-strip nav carries the configurable ariaLabel prop", () => {
+  it("the tab navigation nav carries the configurable ariaLabel prop", () => {
     expect(railSrc).toMatch(/aria-label=\{ariaLabel\}/);
+  });
+
+  it("the expand button in collapsed strip has a descriptive aria-label", () => {
+    expect(railSrc).toMatch(/aria-label=\{`Open \$\{collapsedTab\.label\} panel`\}/);
   });
 });
 
-// ── 5b. Collapsed-state contract: panel + width both go away ───────
+// ── 5b. Collapsed-state contract ───────────────────────────────────
 
 describe("DetailRightRail — collapsed state (activeTabId === null)", () => {
   it("panel <section> is rendered while `displayedTab` is non-null (lagged unmount for close animation)", () => {
-    // 2026-05-07 RALPH: the section's render guard now reads from
-    // `displayedTab`, the lagged copy of `activeTab`. When the user
-    // closes the panel `activeTab` becomes null immediately; the
-    // section keeps rendering for ~300ms until the deferred-unmount
-    // timer (in `rail-animation.test.ts`) fires and clears
-    // `displayedTab`. After that the section truly leaves the DOM —
-    // there is still no fallback / hidden div in the closed steady
-    // state.
     expect(railSrc).toMatch(
       /\{displayedTab\s*&&\s*\(\s*\n?\s*<section\b/,
     );
   });
 
-  it("the outer container shrinks to fit the nav (`w-fit`) once the close animation finishes", () => {
-    // Without `w-fit`, the flex container stretches to fill its
-    // parent's width and renders a blank-white rectangle next to the
-    // icon strip on any page that doesn't externally constrain rail
-    // width (the JobDetailPage bug). 2026-05-07 RALPH: the toggle is
-    // gated on `displayedTab`, NOT `activeTab`, so it doesn't snap on
-    // mid-close — see `rail-animation.test.ts` for the rationale.
+  it("the outer container shrinks to fit (`w-fit`) once the close animation finishes", () => {
+    // Gated on `displayedTab` (lagged), NOT `activeTab` (immediate),
+    // so the container doesn't snap mid-close animation.
     expect(railSrc).toMatch(/!displayedTab\s*&&\s*"w-fit"/);
   });
 
   it("the outer container exposes `data-panel-open` reflecting open/closed state", () => {
-    // Useful for downstream layout adapters and a programmatic
-    // hook for tests that want to assert collapsed/open without
-    // querying className.
     expect(railSrc).toMatch(
       /data-panel-open=\{activeTab\s*\?\s*"true"\s*:\s*"false"\}/,
     );
   });
 
   it("clicking a tab when closed reopens that tab (toggle handler restores activeTabId)", () => {
-    // The same toggle expression handles both directions: re-clicking
-    // the active tab closes (`isActive` → null), clicking a non-
-    // active tab opens it (`!isActive` → tab.id).
     expect(railSrc).toMatch(
       /onActiveTabChange\(\s*isActive\s*\?\s*null\s*:\s*tab\.id\s*\)/,
     );
@@ -240,40 +220,112 @@ describe("DetailRightRail — collapsed state (activeTabId === null)", () => {
     expect(railSrc).toMatch(/onClick=\{\(\)\s*=>\s*onActiveTabChange\(null\)\}/);
   });
 
-  it("the empty-state helper (`<DetailRightRailEmpty>`) is intended for panel BODIES — never auto-rendered when the panel is closed", () => {
-    // The primitive does not render `<DetailRightRailEmpty>` itself.
-    // It's a separate exported helper consumers compose into per-tab
-    // bodies. So when the panel is closed (no body), no empty-state
-    // placeholder appears either.
+  it("the empty-state helper (`<DetailRightRailEmpty>`) is never auto-rendered when the panel is closed", () => {
     expect(railSrc).not.toMatch(
       /\{!activeTab[\s\S]{0,200}?<DetailRightRailEmpty/,
     );
     expect(railSrc).not.toMatch(/<DetailRightRailEmpty[\s\S]{0,200}?\/>\s*\}\s*\)/);
   });
-});
 
-// ── 6. Active-state visual (canonical green accent bar) ────────────
-
-describe("DetailRightRail — active-state styling", () => {
-  it("active tab carries the canonical green accent bar (#76B054)", () => {
-    expect(railSrc).toMatch(/isActive[\s\S]{0,400}?bg-\[#76B054\]/);
+  it("collapsed strip renders when `!displayedTab` (not icon strip — compact label only)", () => {
+    expect(railSrc).toMatch(
+      /\{!displayedTab\s*&&\s*collapsedTab\s*&&\s*\(/,
+    );
   });
 
-  it("active tab text color is the canonical brand green (text-brand → #76B054 via CSS var)", () => {
-    // 2026-05-07: the active state was migrated from the literal arbitrary
-    // value `text-[#76B054]` to the canonical `text-brand` token. Same
-    // rendered color (the brand CSS variable resolves to #76B054); the
-    // utility name is now token-driven so a future brand re-tint flows
-    // automatically.
-    expect(railSrc).toMatch(/\btext-brand\b[\s\S]{0,200}?bg-white/);
+  it("collapsed strip does NOT render the full tab list (no tabs.map in the collapsed strip)", () => {
+    // tabs.map is inside the expanded section — the collapsed strip
+    // only shows the last-active label. Pin against regression.
+    const collapsedBlockMatch = railSrc.match(
+      /\{!displayedTab\s*&&\s*collapsedTab\s*&&\s*\([\s\S]{0,1800}?\)\s*\}/,
+    );
+    expect(collapsedBlockMatch, "collapsed strip block must exist").not.toBeNull();
+    const block = collapsedBlockMatch?.[0] ?? "";
+    expect(block).not.toMatch(/tabs\.map/);
+  });
+
+  it("collapsed strip shows the last-active or first tab label", () => {
+    expect(railSrc).toMatch(/collapsedTab\.label/);
+  });
+
+  it("last-active tab id is tracked internally for collapsed strip display", () => {
+    expect(railSrc).toMatch(/lastActiveTabId/);
+    expect(railSrc).toMatch(/setLastActiveTabId/);
+  });
+});
+
+// ── 6. Active-state visual (top-tab horizontal underline) ──────────
+
+describe("DetailRightRail — active-state styling (top-tab underline)", () => {
+  it("active tab uses green bottom-border underline (`border-[#76B054]`)", () => {
+    // 2026-05-11: the old left-side accent bar (`bg-[#76B054]` span) is
+    // replaced by a bottom-border underline on the horizontal top tab.
+    expect(railSrc).toMatch(
+      /isActive[\s\S]{0,400}?border-\[#76B054\]/,
+    );
+  });
+
+  it("active tab text color is the canonical brand green (text-brand)", () => {
+    expect(railSrc).toMatch(/isActive[\s\S]{0,200}?"text-brand\s+border-\[#76B054\]"/);
+  });
+
+  it("inactive tab uses border-transparent (no underline)", () => {
+    expect(railSrc).toMatch(
+      /"text-slate-600 hover:text-slate-900 border-transparent"/,
+    );
   });
 
   it("focus ring is the canonical green at 40% opacity", () => {
     expect(railSrc).toMatch(/focus-visible:ring-\[#76B054\]\/40/);
   });
+
+  it("does NOT render the old left-side accent bar `<span>` with `bg-[#76B054]`", () => {
+    // The old vertical-strip accent bar was:
+    //   isActive && (<span ... className="... bg-[#76B054]" />)
+    // The new active indicator is the tab's own bottom border — no
+    // extra <span> element needed.
+    expect(railSrc).not.toMatch(
+      /isActive\s*&&\s*\(\s*\n?\s*<span[\s\S]{0,200}?bg-\[#76B054\]/,
+    );
+  });
 });
 
-// ── 7. Surface contract: no domain coupling ────────────────────────
+// ── 7. Layout: top-tab not vertical icon strip ─────────────────────
+
+describe("DetailRightRail — top horizontal tab layout (not vertical icon strip)", () => {
+  it("the horizontal nav is rendered INSIDE the expanded `<section>` (not outside it)", () => {
+    // Nav lives inside {displayedTab && (<section ... }. It is NOT
+    // an always-visible element outside the panel — the old vertical
+    // icon strip was always-visible; the new horizontal nav is only
+    // present when a panel is open.
+    expect(railSrc).toMatch(
+      /\{displayedTab\s*&&[\s\S]{0,1500}?aria-label=\{ariaLabel\}[\s\S]{0,600}?tabs\.map/,
+    );
+  });
+
+  it("the outer container is flex-col (not flex-row) — top-tabs stack with body", () => {
+    // Old: flex (flex-row) to place icon strip left + panel right.
+    // New: flex-col to stack top-tab header above panel body.
+    expect(railSrc).toMatch(
+      /"h-full flex flex-col overflow-hidden bg-white border-l border-slate-200"/,
+    );
+  });
+
+  it("does NOT render a standalone vertical icon strip nav outside the section", () => {
+    // The old 76px `<nav className="w-[76px] shrink-0 ...">` must be gone.
+    expect(railSrc).not.toMatch(/w-\[76px\]\s+shrink-0/);
+    expect(railSrc).not.toMatch(/"w-\[76px\]"/);
+  });
+
+  it("tab buttons use horizontal tab padding (px-2.5) not vertical strip padding (px-1 py-2 flex-col)", () => {
+    // Old vertical strip buttons: `relative w-full px-1 py-2 flex flex-col`
+    // New horizontal tab buttons: `px-2.5 py-2 text-helper`
+    expect(railSrc).not.toMatch(/relative w-full px-1 py-2 flex flex-col/);
+    expect(railSrc).toMatch(/px-2\.5 py-2 text-helper/);
+  });
+});
+
+// ── 8. Surface contract: no domain coupling ────────────────────────
 
 describe("DetailRightRail — purely presentational, no domain coupling", () => {
   it("does NOT import any page-specific or domain types", () => {

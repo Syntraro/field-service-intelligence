@@ -48,6 +48,7 @@ import { generateInvoicePdf } from "../services/invoicePdfService";
 // company contact block.
 import { companyTaxRegistrationRepository } from "../storage/companyTaxRegistrations";
 import { getInvoiceTimeline } from "../storage/invoiceTimeline";
+import { getItemPricingContext } from "../services/clientPricingHistoryService";
 // 2026-04-12 Phase 4: canonical email dispatch for invoice send flow.
 import { emailDispatchService } from "../services/emailDispatchService";
 // 2026-04-12 Phase 5: preview + recipient defaults.
@@ -680,6 +681,23 @@ router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Respon
   const { items } = await getInvoicesFeed(ctx, { jobId: req.params.jobId });
   const enriched = items.find((i) => i.id === primary.id);
   res.json(enriched ?? primary);
+}));
+
+// GET /api/invoices/item-pricing-context — company-wide pricing history for one catalog item.
+// Must be registered before GET /:id so "item-pricing-context" is not captured as an invoice id.
+// Query params: itemId (required), excludeLocationId (optional), limit (optional, default 20).
+router.get("/item-pricing-context", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const itemId = typeof req.query.itemId === "string" ? req.query.itemId.trim() : "";
+  if (!itemId) throw createError(400, "itemId query param is required");
+  const excludeLocationId =
+    typeof req.query.excludeLocationId === "string" && req.query.excludeLocationId.trim()
+      ? req.query.excludeLocationId.trim()
+      : undefined;
+  const rawLimit = parseInt(String(req.query.limit ?? "20"), 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 20;
+  const ctx = getQueryCtx(req);
+  const result = await getItemPricingContext(ctx, itemId, { excludeLocationId, limit });
+  res.json(result);
 }));
 
 // GET /api/invoices/:id - Get single invoice

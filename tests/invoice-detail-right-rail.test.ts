@@ -1,8 +1,8 @@
 /**
- * Invoice Detail right rail — source pin tests (2026-05-08).
+ * Invoice Detail right rail — source pin tests (2026-05-08, updated 2026-05-10).
  *
  * Verifies InvoiceDetailPage uses the canonical `<DetailRightRail>` primitive
- * with the spec'd 3-tab layout (Visibility / Notes / Payments).
+ * with the spec'd 4-tab layout (Summary / Visibility / Activity / Pricing History).
  *
  * What stays the same:
  *   - <InvoiceDetailShell> is preserved (still consumed by /invoices/new
@@ -67,9 +67,9 @@ describe("InvoiceDetailPage — canonical right rail", () => {
     expect(invoiceDetailSrc).toMatch(/useState<InvoiceRailTab\s*\|\s*null>\(/);
   });
 
-  it("the default open tab is Visibility", () => {
+  it("the default open tab is Summary", () => {
     expect(invoiceDetailSrc).toMatch(
-      /useState<InvoiceRailTab\s*\|\s*null>\(\s*"visibility"\s*\)/,
+      /useState<InvoiceRailTab\s*\|\s*null>\(\s*"summary"\s*\)/,
     );
   });
 });
@@ -81,7 +81,7 @@ describe("InvoiceDetailPage — invoiceRailTabs registry", () => {
     );
   });
 
-  it("has exactly THREE tabs (Visibility + Notes + Payments)", () => {
+  it("has exactly THREE tabs (Summary + Notes & Activity + Pricing)", () => {
     const arrStart = invoiceDetailSrc.indexOf("const invoiceRailTabs:");
     expect(arrStart).toBeGreaterThan(-1);
     const arrEnd = invoiceDetailSrc.indexOf("];", arrStart);
@@ -89,12 +89,12 @@ describe("InvoiceDetailPage — invoiceRailTabs registry", () => {
     const arrSlice = invoiceDetailSrc.slice(arrStart, arrEnd);
     const idMatches = arrSlice.match(/\bid:\s*"\w+"/g) ?? [];
     expect(idMatches.length).toBe(3);
-    expect(arrSlice).toMatch(/id:\s*"visibility"/);
-    expect(arrSlice).toMatch(/id:\s*"notes"/);
-    expect(arrSlice).toMatch(/id:\s*"payments"/);
+    expect(arrSlice).toMatch(/id:\s*"summary"/);
+    expect(arrSlice).toMatch(/id:\s*"notes_activity"/);
+    expect(arrSlice).toMatch(/id:\s*"pricing"/);
   });
 
-  it("rail tab order is Visibility, Notes, Payments (per spec)", () => {
+  it("rail tab order is Summary, Notes & Activity, Pricing (per spec)", () => {
     const arrStart = invoiceDetailSrc.indexOf("const invoiceRailTabs:");
     const arrEnd = invoiceDetailSrc.indexOf("];", arrStart);
     const arrSlice = invoiceDetailSrc.slice(arrStart, arrEnd);
@@ -102,56 +102,51 @@ describe("InvoiceDetailPage — invoiceRailTabs registry", () => {
     const re = /\bid:\s*"(\w+)"/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(arrSlice)) !== null) idOrder.push(m[1]);
-    expect(idOrder).toEqual(["visibility", "notes", "payments"]);
+    expect(idOrder).toEqual(["summary", "notes_activity", "pricing"]);
   });
 
-  it("Visibility tab carries Eye icon + stable testId", () => {
+  it("Summary tab carries BarChart2 icon + stable testId", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"visibility"[\s\S]{0,400}?label:\s*"Visibility"[\s\S]{0,400}?icon:\s*Eye[\s\S]{0,400}?testId:\s*"invoice-rail-tab-visibility"/,
+      /id:\s*"summary"[\s\S]{0,400}?label:\s*"Summary"[\s\S]{0,400}?icon:\s*BarChart2[\s\S]{0,400}?testId:\s*"invoice-rail-tab-summary"/,
     );
   });
 
-  it("Notes tab carries StickyNote icon + stable testId", () => {
+  it("Notes & Activity tab carries Activity icon + stable testId", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,400}?label:\s*"Notes"[\s\S]{0,400}?icon:\s*StickyNote[\s\S]{0,400}?testId:\s*"invoice-rail-tab-notes"/,
+      /id:\s*"notes_activity"[\s\S]{0,400}?label:\s*"Notes & Activity"[\s\S]{0,400}?icon:\s*Activity[\s\S]{0,400}?testId:\s*"invoice-rail-tab-notes-activity"/,
     );
   });
 
-  it("Payments tab carries Receipt icon + stable testId", () => {
+  it("Pricing tab carries Tag icon + stable testId", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"payments"[\s\S]{0,400}?label:\s*"Payments"[\s\S]{0,400}?icon:\s*Receipt[\s\S]{0,400}?testId:\s*"invoice-rail-tab-payments"/,
+      /id:\s*"pricing"[\s\S]{0,400}?label:\s*"Pricing"[\s\S]{0,400}?icon:\s*Tag[\s\S]{0,400}?testId:\s*"invoice-rail-tab-pricing"/,
     );
   });
 
-  it("Visibility tab content slot mounts <ClientVisibilityCardV2>", () => {
+  it("Summary tab content slot mounts <ClientVisibilityCardV2>", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"visibility"[\s\S]{0,3000}?<ClientVisibilityCardV2\b/,
+      /id:\s*"summary"[\s\S]{0,3000}?<ClientVisibilityCardV2\b/,
     );
   });
 
-  it("Notes tab content slot mounts <EntityNotesPanel entityType=\"invoice\" entityId={invoiceId}>", () => {
-    // 2026-05-08 Tier 4 Notes canonicalization: the prior
-    // `<EntityNotesSection embedded hideHeader>` mount is replaced by
-    // the canonical `<EntityNotesPanel>`. Panel title + +Add live on
-    // the rail tab descriptor (label / action) so EntityNotesPanel
-    // doesn't carry chrome props.
+  it("Notes & Activity tab content slot mounts <InvoiceActivityPanel>", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,1600}?<EntityNotesPanel[\s\S]{0,400}?entityType="invoice"[\s\S]{0,400}?entityId=\{invoiceId\}/,
+      /id:\s*"notes_activity"[\s\S]{0,1600}?<InvoiceActivityPanel[\s\S]{0,400}?invoiceId=\{invoiceId\}/,
     );
   });
 
-  it("Notes tab carries the canonical +Add `action` slot wired to `notesAddSignal`", () => {
+  it("Notes & Activity tab carries the canonical +Add `action` slot wired to `notesAddSignal`", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,1600}?action:\s*\([\s\S]{0,400}?data-testid="button-add-note-rail"/,
+      /id:\s*"notes_activity"[\s\S]{0,1600}?action:\s*\([\s\S]{0,400}?data-testid="button-add-note-rail"/,
     );
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"notes"[\s\S]{0,1600}?openAddNoteSignal=\{notesAddSignal\}/,
+      /id:\s*"notes_activity"[\s\S]{0,1600}?notesAddSignal=\{notesAddSignal\}/,
     );
   });
 
-  it("Payments tab content slot mounts <PaymentHistoryCard>", () => {
+  it("Pricing tab content slot mounts <InvoicePricingHistoryPanel>", () => {
     expect(invoiceDetailSrc).toMatch(
-      /id:\s*"payments"[\s\S]{0,1200}?<PaymentHistoryCard\b/,
+      /id:\s*"pricing"[\s\S]{0,1200}?<InvoicePricingHistoryPanel\b/,
     );
   });
 });
@@ -224,11 +219,11 @@ describe("InvoiceDetailPage — single-scroll canonical layout (mirrors Job Deta
 
   it("the body wrapper uses the canonical Job pattern: padding + space-y only", () => {
     // Body wrapper directly inside the shell is
-    // `<div className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5">` (no
+    // `<div className="px-4 lg:px-6 pt-4 pb-4 space-y-2.5">` (no
     // flex-1 / min-h-0 / overflow). The wrapper now contains BOTH
     // the CanonicalDetailHeader and the prior body content.
     expect(invoiceDetailSrc).toMatch(
-      /data-testid="invoice-detail-left-column-shell"[\s\S]{0,1500}?<div\s+className="px-4 lg:px-6 pt-0 pb-4 space-y-2\.5">/,
+      /data-testid="invoice-detail-left-column-shell"[\s\S]{0,1500}?<div\s+className="px-4 lg:px-6 pt-4 pb-4 space-y-2\.5">/,
     );
   });
 
@@ -237,7 +232,7 @@ describe("InvoiceDetailPage — single-scroll canonical layout (mirrors Job Deta
     // — so when <main> scrolls, the header scrolls with the body
     // instead of staying pinned at the top of the shell.
     const wrapperIdx = invoiceDetailCodeOnly.indexOf(
-      'className="px-4 lg:px-6 pt-0 pb-4 space-y-2.5"',
+      'className="px-4 lg:px-6 pt-4 pb-4 space-y-2.5"',
     );
     const headerIdx = invoiceDetailCodeOnly.indexOf(
       "<CanonicalDetailHeader",

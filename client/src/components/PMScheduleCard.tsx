@@ -26,7 +26,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { ChevronDown, ChevronRight, Pause, Play, Pencil, Zap, Archive } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -514,12 +513,12 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Hard delete confirmation — requires typing DELETE */}
-      <Dialog open={hardDeleteDialogOpen} onOpenChange={(v) => { setHardDeleteDialogOpen(v); if (!v) setHardDeleteConfirmText(""); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Permanently Delete PM Schedule</DialogTitle>
-          </DialogHeader>
+      {/* Hard delete confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
+      <AlertDialog open={hardDeleteDialogOpen} onOpenChange={(v) => { setHardDeleteDialogOpen(v); if (!v) setHardDeleteConfirmText(""); }}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Permanently Delete PM Schedule</AlertDialogTitle>
+          </AlertDialogHeader>
           <div className="space-y-3 py-2 text-sm">
             <p className="text-muted-foreground">
               This will permanently delete the PM schedule and all its instance records. Previously generated jobs and invoices are <span className="font-medium text-foreground">not affected</span>.
@@ -535,21 +534,19 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
               data-testid="pm-hard-delete-confirm-input"
             />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setHardDeleteDialogOpen(false); setHardDeleteConfirmText(""); }}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
               onClick={() => hardDeleteMutation.mutate()}
               disabled={hardDeleteConfirmText !== "DELETE" || hardDeleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               data-testid="pm-hard-delete-confirm-btn"
             >
               {hardDeleteMutation.isPending ? "Deleting..." : "Delete Permanently"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -1047,7 +1047,7 @@ export default function NewInvoicePage() {
             "border-t lg:border-t-0 lg:border-l border-slate-200",
           )}
           style={{
-            ["--new-invoice-rail-width" as any]: `${invoiceRailTab === null ? 80 : 380}px`,
+            ["--new-invoice-rail-width" as any]: `${invoiceRailTab === null ? 48 : 380}px`,
           }}
           data-testid="new-invoice-rail-column"
           data-panel-open={invoiceRailTab === null ? "false" : "true"}

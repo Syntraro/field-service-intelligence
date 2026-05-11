@@ -12,9 +12,10 @@
  *     parent — no mutation, no PATCH. The create page submits
  *     `notesCustomer` along with the rest of the quote payload.
  *
- * The chrome (rounded card, FileText icon, "Quote Description" header,
- * pencil affordance) is identical between modes so the visual stack
- * stays stable across new ↔ saved transitions.
+ * 2026-05-10: SavedDescription state machine migrated to useInlineEdit.
+ * Edit mode UI (Loader2 + primary save button, Cmd+Enter, Escape) kept
+ * as QDC-specific; InlineEditFooter not used here due to different
+ * button variant (default/primary vs outline).
  */
 import { useState } from "react";
 import { ChevronDown, FileText, Loader2, Pencil } from "lucide-react";
@@ -26,6 +27,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useInlineEdit } from "@/components/forms/InlineEditableText";
 
 type SavedProps = {
   mode: "saved";
@@ -34,8 +36,7 @@ type SavedProps = {
   /**
    * Called when the user clicks Save. Parent owns the PATCH mutation.
    * Returning a Promise lets the card close edit-mode on success and
-   * stay open on error. Fire-and-forget callers can return undefined;
-   * edit mode then closes immediately.
+   * stay open on error.
    */
   onSave: (text: string) => void | Promise<unknown>;
   /** Pending state for the parent's PATCH mutation. */
@@ -66,99 +67,97 @@ export function QuoteDescriptionCard(props: QuoteDescriptionCardProps) {
 // ── Saved-mode body — collapsible + click-to-edit ──
 function SavedDescription({ value, onSave, isSaving, inline }: SavedProps) {
   const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
 
-  const startEditing = () => {
-    setDraft(value ?? "");
-    setEditing(true);
-  };
+  // onSave returns Promise<unknown>; useInlineEdit expects Promise<void>.
+  // Cast is safe — we only await resolution/rejection, not the value.
+  const { editing, draft, setDraft, saving, enterEdit, handleCancel, handleSave } =
+    useInlineEdit({
+      value: value ?? "",
+      onSave: onSave as (text: string) => void | Promise<void>,
+      isSaving,
+    });
 
-  const commit = async () => {
-    try {
-      await onSave(draft);
-      setEditing(false);
-    } catch {
-      // Parent surfaces the error toast; keep edit mode open so the
-      // user can retry.
-    }
-  };
+  const isEmpty = !value || value.trim() === "";
+
+  // Shared edit mode body used in both inline and standalone card modes.
+  const editBody = (
+    <div className="space-y-2">
+      <Textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={inline ? 4 : 5}
+        autoFocus
+        disabled={saving}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void handleSave();
+          } else if (e.key === "Escape") {
+            handleCancel();
+          }
+        }}
+        data-testid="input-quote-description"
+      />
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={saving}
+          onClick={handleCancel}
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          disabled={saving}
+          onClick={() => void handleSave()}
+          data-testid="button-save-quote-description"
+        >
+          {saving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+
+  // Shared view mode body used in both inline and standalone card modes.
+  const viewBody = (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={enterEdit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          enterEdit();
+        }
+      }}
+      className="group flex items-start gap-1.5 cursor-pointer"
+      data-testid="text-quote-description"
+    >
+      {isEmpty ? (
+        <p className="text-helper italic text-muted-foreground group-hover:text-foreground transition-colors">
+          Click to add description…
+        </p>
+      ) : (
+        <p className="text-helper leading-relaxed whitespace-pre-wrap flex-1 min-w-0 text-foreground group-hover:text-foreground/80 transition-colors">
+          {value}
+        </p>
+      )}
+      <Pencil className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors shrink-0 mt-0.5" />
+    </div>
+  );
 
   // ── Inline mode (inside CanonicalDetailHeader description slot) ────
-  // No outer card chrome, no Collapsible — always expanded.
-  // Matches JobDetailPage's inline description pattern (2026-05-08).
   if (inline) {
     return (
       <div data-testid="card-quote-description">
-        {editing ? (
-          <div className="space-y-2">
-            <Textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              rows={4}
-              autoFocus
-              disabled={isSaving}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  commit();
-                } else if (e.key === "Escape") {
-                  setEditing(false);
-                }
-              }}
-              data-testid="input-quote-description"
-            />
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={isSaving}
-                onClick={() => setEditing(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                disabled={isSaving}
-                onClick={commit}
-                data-testid="button-save-quote-description"
-              >
-                {isSaving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-                Save
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={startEditing}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                startEditing();
-              }
-            }}
-            className="group flex items-start gap-1.5 cursor-pointer"
-            data-testid="text-quote-description"
-          >
-            {value && value.trim() !== "" ? (
-              <p className="text-sm text-slate-600 whitespace-pre-wrap flex-1 min-w-0 group-hover:text-slate-800 transition-colors">
-                {value}
-              </p>
-            ) : (
-              <p className="text-sm text-slate-400 italic group-hover:text-slate-500 transition-colors">
-                Click to add description…
-              </p>
-            )}
-            <Pencil className="h-3.5 w-3.5 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
-          </div>
-        )}
+        {editing ? editBody : viewBody}
       </div>
     );
   }
 
-  // ── Standalone card mode (original behavior) ───────────────────────
+  // ── Standalone card mode ────────────────────────────────────────────
   return (
     <div
       className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden"
@@ -190,70 +189,8 @@ function SavedDescription({ value, onSave, isSaving, inline }: SavedProps) {
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="px-4 py-3" data-testid="text-quote-description">
-            {editing ? (
-              <div className="space-y-2">
-                <Textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  rows={5}
-                  autoFocus
-                  disabled={isSaving}
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                      e.preventDefault();
-                      commit();
-                    } else if (e.key === "Escape") {
-                      setEditing(false);
-                    }
-                  }}
-                  data-testid="input-quote-description"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={isSaving}
-                    onClick={() => setEditing(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={isSaving}
-                    onClick={commit}
-                    data-testid="button-save-quote-description"
-                  >
-                    {isSaving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-                    Save
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={startEditing}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    startEditing();
-                  }
-                }}
-                className="group flex items-start gap-1.5 cursor-pointer"
-              >
-                {value && value.trim() !== "" ? (
-                  <p className="text-sm text-slate-600 whitespace-pre-wrap flex-1 min-w-0 group-hover:text-slate-800 transition-colors">
-                    {value}
-                  </p>
-                ) : (
-                  <p className="text-sm text-slate-400 italic group-hover:text-slate-500 transition-colors">
-                    Click to add description…
-                  </p>
-                )}
-                <Pencil className="h-3.5 w-3.5 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
-              </div>
-            )}
+          <div className="px-4 py-3">
+            {editing ? editBody : viewBody}
           </div>
         </CollapsibleContent>
       </Collapsible>

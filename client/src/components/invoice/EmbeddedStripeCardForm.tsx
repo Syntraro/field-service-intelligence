@@ -33,6 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { FormHelperText } from "@/components/ui/form-field";
 
 interface EmbeddedStripeCardFormProps {
   /** Called once Stripe confirms (succeeded or processing). The parent
@@ -113,7 +114,7 @@ export function EmbeddedStripeCardForm({
     >
       <PaymentElement />
       {helperLine && (
-        <p className="text-xs text-muted-foreground">{helperLine}</p>
+        <FormHelperText>{helperLine}</FormHelperText>
       )}
       {error && (
         <p className="text-sm text-red-600" data-testid="embedded-stripe-card-error">

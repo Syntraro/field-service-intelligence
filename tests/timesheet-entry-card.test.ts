@@ -25,7 +25,7 @@
  * 14. timeDuration.ts exports the canonical shared utilities.
  * 15. No text-xs in timesheet feature components (legacy size token).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -290,11 +290,129 @@ describe("timeDuration.ts — canonical shared utility exports", () => {
     expect(TIME_DURATION).toMatch(/export function formatTimeOfDay/);
   });
 
+  it("exports formatDurationHm", () => {
+    expect(TIME_DURATION).toMatch(/export function formatDurationHm/);
+  });
+
   it("formatDurationCompact handles null (Live)", () => {
     expect(TIME_DURATION).toMatch(/Live/);
   });
 
   it("no text-[Npx] arbitrary sizes in utility file", () => {
     expect(TIME_DURATION).not.toMatch(/text-\[\d+px\]/);
+  });
+});
+
+// ── 16. formatDurationHm — output pin ─────────────────────────────
+
+describe("formatDurationHm — output strings pinned", () => {
+  // Import dynamically so the test is driven by the real implementation.
+  let formatDurationHm: (minutes: number) => string;
+
+  beforeAll(async () => {
+    const mod = await import("../client/src/lib/timeDuration");
+    formatDurationHm = mod.formatDurationHm;
+  });
+
+  it("0 → '0h 0m'", () => {
+    expect(formatDurationHm(0)).toBe("0h 0m");
+  });
+
+  it("30 → '0h 30m'", () => {
+    expect(formatDurationHm(30)).toBe("0h 30m");
+  });
+
+  it("60 → '1h 0m'", () => {
+    expect(formatDurationHm(60)).toBe("1h 0m");
+  });
+
+  it("90 → '1h 30m'", () => {
+    expect(formatDurationHm(90)).toBe("1h 30m");
+  });
+
+  it("125 → '2h 5m'", () => {
+    expect(formatDurationHm(125)).toBe("2h 5m");
+  });
+});
+
+// ── 17. Day View typography-token audit pins (2026-05-10) ──────────
+
+describe("JobTimeGroupCard — typography token audit", () => {
+  it("job number is not font-bold", () => {
+    expect(JOB_GROUP).not.toMatch(/job-group-job-number[\s\S]{0,200}font-bold/);
+  });
+
+  it("job number is not font-semibold", () => {
+    expect(JOB_GROUP).not.toMatch(/job-group-job-number[\s\S]{0,200}font-semibold/);
+  });
+
+  it("job number uses text-muted-foreground (recedes visually)", () => {
+    expect(JOB_GROUP).toMatch(/job-group-job-number[\s\S]{0,200}text-muted-foreground/);
+  });
+
+  it("dash separator has no font-semibold", () => {
+    // The "—" separator between job# and location must be muted weight only.
+    expect(JOB_GROUP).not.toMatch(/shrink-0 text-row font-semibold text-muted-foreground/);
+  });
+
+  it("location name uses font-medium not font-semibold", () => {
+    // className appears before data-testid in JSX; match in reverse direction.
+    expect(JOB_GROUP).toMatch(/font-medium[\s\S]{0,100}job-group-location/);
+    expect(JOB_GROUP).not.toMatch(/font-semibold[\s\S]{0,100}job-group-location/);
+  });
+
+  it("total value uses span not <strong>", () => {
+    expect(JOB_GROUP).not.toMatch(/<strong/);
+  });
+
+  it("total value uses font-semibold on an explicit span", () => {
+    expect(JOB_GROUP).toMatch(/font-mono font-semibold tabular-nums text-foreground/);
+  });
+
+  it("no font-bold anywhere in file", () => {
+    expect(JOB_GROUP).not.toMatch(/\bfont-bold\b/);
+  });
+
+  it("no text-xs in file", () => {
+    expect(JOB_GROUP).not.toMatch(/\btext-xs\b/);
+  });
+
+  it("no text-sm in file", () => {
+    expect(JOB_GROUP).not.toMatch(/\btext-sm\b/);
+  });
+
+  it("no text-[Npx] arbitrary sizes in file", () => {
+    expect(JOB_GROUP).not.toMatch(/text-\[\d+px\]/);
+  });
+});
+
+describe("TimesheetEntryCard — typography token audit", () => {
+  it("time range has text-helper semantic size token", () => {
+    expect(ENTRY_CARD).toMatch(/text-helper font-mono tabular-nums text-muted-foreground/);
+  });
+
+  it("time range has text-muted-foreground (not opacity variant)", () => {
+    // Must use the canonical muted token, not text-foreground/70.
+    expect(ENTRY_CARD).not.toMatch(/text-foreground\/70/);
+  });
+
+  it("duration uses text-row font-semibold tabular-nums", () => {
+    expect(ENTRY_CARD).toMatch(/text-row font-semibold tabular-nums/);
+  });
+
+  it("no font-bold in file", () => {
+    expect(ENTRY_CARD).not.toMatch(/\bfont-bold\b/);
+  });
+
+  it("no text-xs in file", () => {
+    expect(ENTRY_CARD).not.toMatch(/\btext-xs\b/);
+  });
+
+  it("no text-sm in file", () => {
+    expect(ENTRY_CARD).not.toMatch(/\btext-sm\b/);
+  });
+
+  it("no text-[Npx] arbitrary sizes in file", () => {
+    expect(ENTRY_CARD).not.toMatch(/text-\[\d+px\]/);
   });
 });

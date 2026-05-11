@@ -75,8 +75,6 @@ interface QuoteHeaderCardProps {
   quote: Quote;
   location: Client;
   customerCompany: CustomerCompany | null;
-  /** Legacy prop — kept for API compat. Status chip derived from quote.status. */
-  statusInfo: { label: string; variant: string };
   isDraft: boolean;
   isSent: boolean;
   isApproved: boolean;
@@ -295,6 +293,8 @@ export function QuoteHeaderCard({
           error: headerError,
           saveLabel: "Save",
           cancelLabel: "Cancel",
+          saveTestId: "button-header-save",
+          cancelTestId: "button-header-cancel",
         }
       : undefined;
 
@@ -328,6 +328,7 @@ export function QuoteHeaderCard({
         customerCompany?.id ? `/clients/${customerCompany.id}` : undefined
       }
       addressLines={addressLines.length > 0 ? addressLines : undefined}
+      addressLabel="Service Address"
       phone={location.phone ?? undefined}
       email={location.email ?? undefined}
       primaryActions={primaryActions}
@@ -341,6 +342,7 @@ export function QuoteHeaderCard({
               value: headerDescDraft ?? "",
               onChange: onHeaderDescChange,
               maxLength: 2000,
+              testId: "textarea-quote-description",
             }
           : undefined
       }

@@ -382,7 +382,7 @@ export default function CreateLeadPage() {
           "border-t lg:border-t-0 lg:border-l border-slate-200",
         )}
         style={{
-          ["--create-lead-rail-width" as any]: `${leadRailTab === null ? 80 : 380}px`,
+          ["--create-lead-rail-width" as any]: `${leadRailTab === null ? 48 : 380}px`,
         }}
         data-testid="create-lead-detail-rail-column"
         data-panel-open={leadRailTab === null ? "false" : "true"}

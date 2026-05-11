@@ -12,7 +12,6 @@ export type TimeEntryRowCompactDatum = TimesheetEntryCardDatum;
 
 export interface TimeEntryRowCompactProps {
   entry: TimeEntryRowCompactDatum;
-  isLocked: boolean;
   onEdit: () => void;
   onClockOut: () => void;
   hideTypeChip?: boolean;
@@ -20,7 +19,6 @@ export interface TimeEntryRowCompactProps {
 
 export function TimeEntryRowCompact({
   entry,
-  isLocked,
   onEdit,
   onClockOut,
   hideTypeChip = false,
@@ -29,7 +27,6 @@ export function TimeEntryRowCompact({
     <TimesheetEntryCard
       variant="job-row"
       entry={entry}
-      isLocked={isLocked}
       onEdit={onEdit}
       onClockOut={onClockOut}
       hideTypeChip={hideTypeChip}

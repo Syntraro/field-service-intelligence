@@ -116,8 +116,10 @@ describe("CDH alert — typed descriptor, no ReactNode headerAlert prop", () => 
     expect(cdhSrc).toMatch(/AlertIcon/);
   });
 
-  it("CDH ALERT_TONE_CLASS maps warning to text-amber-700", () => {
-    expect(cdhSrc).toMatch(/warning.*text-amber-700/);
+  it("CDH ALERT_TONE_CLASS maps warning to text-warning-foreground (semantic token, WCAG AA)", () => {
+    // 2026-05-09 Phase 3.1: replaced text-amber-700 (2.18:1, inaccessible) with
+    // text-warning-foreground (~4.88:1, passes WCAG AA on light backgrounds).
+    expect(cdhSrc).toMatch(/warning.*text-warning-foreground/);
   });
 });
 
@@ -469,9 +471,9 @@ describe("CDH final parity — Job, Quote, Lead uniform identity model", () => {
     expect(leadCardSrc).not.toMatch(/mode.*"saved"[\s\S]{0,500}onBack\s*:/);
   });
 
-  // Job: no addressLabel, has phone + email from location
-  it("JobDetailPage CDH call has no addressLabel prop", () => {
-    expect(jobPageCode).not.toMatch(/addressLabel=/);
+  // Job: has addressLabel="Service Address" (added in parity pass 2026-05-10), phone + email from location
+  it("JobDetailPage CDH call passes addressLabel=\"Service Address\"", () => {
+    expect(jobPageSrc).toMatch(/addressLabel="Service Address"/);
   });
 
   it("JobDetailPage CDH call passes phone from job.location", () => {
@@ -952,5 +954,43 @@ describe("CDH address container typography — text-list-body (2026-05-09)", () 
     const { readFileSync: rfs } = require("fs");
     const cchSrc = rfs(CREATE_HEADER_PATH, "utf-8");
     expect(cchSrc).not.toMatch(/addressLines/);
+  });
+
+  it("DetailHeaderItem.editNode has JSDoc escape-hatch contract", () => {
+    // Check raw source — JSDoc is a block comment, stripped in cdhCode
+    expect(cdhSrc).toMatch(/Escape hatch for structured controls/);
+    expect(cdhSrc).toMatch(/text-row/);
+    expect(cdhSrc).toMatch(/h-7/);
+  });
+});
+
+describe("Tier 1 dead-code removal", () => {
+  const { readFileSync: rfs } = require("fs");
+  const invoiceSrc: string = rfs(resolve(ROOT, "client/src/pages/InvoiceDetailPage.tsx"), "utf-8");
+  const quoteSrc: string = rfs(resolve(ROOT, "client/src/pages/QuoteDetailPage.tsx"), "utf-8");
+  const quoteCardSrc: string = rfs(resolve(ROOT, "client/src/components/QuoteHeaderCard.tsx"), "utf-8");
+
+  it("InvoiceDetailPage has no actionBarDropdown variable", () => {
+    expect(invoiceSrc).not.toMatch(/\bactionBarDropdown\b/);
+  });
+
+  it("InvoiceDetailPage still has actionBarItems (feeds CDH overflowActions)", () => {
+    expect(invoiceSrc).toMatch(/\bactionBarItems\b/);
+  });
+
+  it("QuoteHeaderCard interface has no statusInfo prop", () => {
+    expect(quoteCardSrc).not.toMatch(/statusInfo/);
+  });
+
+  it("QuoteDetailPage does not pass statusInfo to QuoteHeaderCard", () => {
+    expect(quoteSrc).not.toMatch(/statusInfo/);
+  });
+
+  it("Invoice editNode widgets use text-row not raw text-sm", () => {
+    const editNodeBlocks = [...invoiceSrc.matchAll(/editNode:\s*metaDraft[\s\S]*?undefined,/g)].map((m) => m[0]);
+    expect(editNodeBlocks.length).toBeGreaterThan(0);
+    for (const block of editNodeBlocks) {
+      expect(block).not.toMatch(/\btext-sm\b/);
+    }
   });
 });

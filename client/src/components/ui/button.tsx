@@ -30,6 +30,11 @@ const buttonVariants = cva(
         sm: "min-h-8 rounded-md px-3 text-xs",
         lg: "min-h-10 rounded-md px-8",
         icon: "h-9 w-9",
+        // 28px header actions — lightweight CTAs in detail-page header top rows.
+        // Intentionally smaller than sm (32px). Footer commit controls use sm.
+        "header-action": "h-7 px-3 text-xs rounded-md",
+        // 36px icon-only header controls (pencil, overflow). Matches size="icon".
+        "header-icon": "h-9 w-9",
       },
     },
     defaultVariants: {

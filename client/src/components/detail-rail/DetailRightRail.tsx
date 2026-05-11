@@ -1,81 +1,67 @@
 /**
- * DetailRightRail (2026-05-07)
+ * DetailRightRail (2026-05-07, top-tab layout 2026-05-11)
  *
- * Canonical vertical-icon-strip + expandable-panel primitive for the
- * right side of a detail page. Extracted from `ClientDetailPage`'s
- * `<UtilityRail>` so that JobDetailPage / InvoiceDetailPage / future
- * QuoteDetailPage can mount the same chrome with their own tab
- * registries.
+ * Canonical top-tab-navigation + expandable-panel primitive for the
+ * right side of a detail page. Shared by ClientDetailPage /
+ * JobDetailPage / InvoiceDetailPage / QuoteDetailPage / LeadDetailPage.
  *
- * Visual contract (ClientDetailPage parity):
+ * Visual contract (top-tab layout):
  *
- *   ┌──────────┬───────────────────────────────────────┐
- *   │ ▌ icon₁ │  PANEL HEADER  [action]  [close X]    │
- *   │   icon₂ ├───────────────────────────────────────┤
- *   │   icon₃ │                                       │
- *   │    …    │   PANEL BODY (scrollable)             │
- *   │   iconₙ │                                       │
- *   └──────────┴───────────────────────────────────────┘
+ *   ┌───────────────────────────────────────────────────────────────┐
+ *   │ [Tab₁] [Tab₂] [Tab₃]           [action]  [close X]          │
+ *   ├───────────────────────────────────────────────────────────────┤
+ *   │                                                               │
+ *   │   PANEL BODY (scrollable)                                     │
+ *   │                                                               │
+ *   └───────────────────────────────────────────────────────────────┘
  *
- *   - Vertical icon strip on the left (76px wide, slate-50/60 surface).
- *   - Active item carries a green accent bar + `aria-pressed=true`.
- *   - Clicking the active item again closes the panel (toggle).
- *   - Panel section renders only when an item is active.
- *   - Panel header carries the tab label + an optional caller-supplied
- *     action node (e.g. `+ Add Note`) + the close-X.
- *   - Panel body is scrollable (`overflow-y-auto`).
+ *   - Top horizontal tab strip inside the panel header.
+ *   - Active tab: green underline accent + `text-brand`; no bg change.
+ *   - Inactive tabs: `text-slate-600`, neutral.
+ *   - Close button anchored to the right of the header row.
+ *   - Panel body scrollable below the header.
+ *
+ * Collapsed / minimized state (activeTabId === null, after close animation):
+ *
+ *   ┌──────────────────┐
+ *   │  [←]            │
+ *   │  Summary        │   ← last-active or first tab label
+ *   └──────────────────┘
+ *
+ *   A compact strip (no full vertical menu) showing the last-active
+ *   section label (vertical text) and an expand button. The strip is
+ *   ~48px wide (controlled by the page-level CSS variable).
  *
  * Stateless / controlled — caller owns `activeTabId`. The primitive
- * does NOT own:
- *
- *   - Outer wrapper styling (aside vs card vs column cell)
- *   - Width state / drag-resize / localStorage persistence
- *     (page-specific; ClientDetailPage keeps its own resizing chrome)
- *   - Per-tab body data fetching or imperative refs
- *
- * Why stateless? Each detail page already owns its tab data + per-tab
- * mutations + (sometimes) per-tab refs that bridge to the panel header
- * `action` slot. Pushing the active state up keeps the primitive
- * deterministic and trivially testable, and lets callers persist or
- * deep-link the active tab on their own terms.
+ * does NOT own width state, drag-resize, or localStorage persistence.
  *
  * Test-id contract:
  *
- *   data-testid={`${testIdPrefix}-rail`}              — the inner <nav>
+ *   data-testid={`${testIdPrefix}-utility-rail`}          — outer container
+ *   data-testid={`${testIdPrefix}-rail`}                  — the inner <nav>
+ *                                                           (inside expanded panel)
  *   data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
- *                                                      — each tab button
- *   data-testid={`${testIdPrefix}-panel-${tab.id}`}    — panel section
- *   data-testid={`${testIdPrefix}-panel-header-${tab.id}`}
- *                                                      — panel header
- *   data-testid={`${testIdPrefix}-panel-body-${tab.id}`}
- *                                                      — panel body
- *   data-testid={`${testIdPrefix}-panel-close`}        — close X
- *   data-testid={`${testIdPrefix}-panel-empty`}        — for the optional
- *                                                       <DetailRightRailEmpty>
- *                                                       helper exported below
- *
- * ClientDetailPage uses `testIdPrefix="client-side"` so the rendered
- * DOM testids continue to read `client-side-rail`, `client-side-panel-*`,
- * `client-side-panel-close` byte-for-byte. JobDetailPage will use
- * `testIdPrefix="job-side"`.
+ *                                                          — each tab button
+ *   data-testid={`${testIdPrefix}-panel-${tab.id}`}        — panel section
+ *   data-testid={`${testIdPrefix}-panel-header-${tab.id}`} — panel header
+ *   data-testid={`${testIdPrefix}-panel-body-${tab.id}`}   — panel body
+ *   data-testid={`${testIdPrefix}-panel-close`}            — close X
+ *   data-testid={`${testIdPrefix}-collapsed`}              — collapsed strip
+ *   data-testid={`${testIdPrefix}-rail-expand`}            — expand button in strip
+ *   data-testid={`${testIdPrefix}-panel-empty`}            — optional empty-state
  */
 
 import { type ComponentType, type ReactNode, useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { X, ChevronLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
  * 2026-05-07 RALPH — canonical right-rail open/close transition.
- *
  * Single source of truth for the rail's slide-in / slide-out feel.
- * Pages that own the rail's width state (ClientDetailPage's
- * `--client-rail-width`, JobDetailPage's `--job-rail-width`) apply
- * this class string to the wrapper div that carries the width binding
- * so the width changes animate instead of snapping. The duration
- * matches the close half of the main-header Activity drawer
- * (`<Sheet>` primitive: `data-[state=closed]:duration-300`) so the
- * two surfaces feel consistent. `motion-reduce:transition-none` opts
- * users with `prefers-reduced-motion` out of the animation entirely.
+ * Pages that own the rail's width state apply this class string to the
+ * wrapper div that carries the width binding. Duration matches the
+ * Activity drawer Sheet close (300ms). `motion-reduce:transition-none`
+ * opts users with prefers-reduced-motion out of the animation entirely.
  */
 export const RAIL_WIDTH_TRANSITION =
   "transition-[width] duration-300 ease-in-out motion-reduce:transition-none";
@@ -83,48 +69,11 @@ export const RAIL_WIDTH_TRANSITION =
 /**
  * 2026-05-07 — canonical structural class string for buttons rendered
  * into the panel header `action` slot ("+ Add", "Edit", "+ Time", etc.).
- *
- * The action slot is caller-controlled JSX, but the structural chrome
- * (hit target, padding, hover, focus ring) should stay consistent
- * across every page that mounts this primitive. Bakes:
- *
- *   - inline-flex / items-center / gap-1   (icon + label layout)
- *   - h-7 px-2 rounded                     (28px hit target, compact)
- *   - hover:bg-slate-100                   (neutral hover affordance)
- *   - focus-visible:ring-2 focus-visible:ring-[#76B054]/40 (canonical
- *                                          green focus ring)
- *
- * Typography + color are deliberately NOT baked — callers compose with
- * `text-helper` (canonical 13px secondary-navigation scale, matches the
- * corrected rail-tab scale) plus their chosen color (`text-brand` for
- * primary "+ Add" affordances; `text-slate-700` / `text-text-secondary`
- * for neutral edit affordances). Keeping typography at the call site
- * follows the Phase H1 pattern and keeps the canonical typography
- * guard happy (the guard forbids local typography constants in feature
- * components — by NOT baking `text-helper` into this constant, we let
- * the role token live at the consumer where it's most visible).
- *
- * Earlier drift this constant retires:
- *   - JobDetailPage rail action buttons used
- *     `text-caption font-medium text-[#76B054]` — heavier weight,
- *     larger size (14px), and an arbitrary literal hex instead of
- *     the canonical `text-brand` token.
- *   - ClientDetailPage's `RAIL_ACTION_BTN_CLASS` constant used
- *     `text-caption font-medium text-slate-700` — heavier weight
- *     and a larger size than the corrected rail-tab scale.
- *
- * Canonical caller pattern:
- *   `${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`
- *   `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`
+ * Structural chrome only — typography and color are at the call site.
  */
 export const RAIL_HEADER_ACTION_CLASS =
   "inline-flex items-center gap-1 h-7 px-2 rounded hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40";
 
-/** Internal — kept in sync with `RAIL_WIDTH_TRANSITION`'s duration so
- *  the panel section's deferred unmount waits exactly long enough for
- *  the parent's width animation to finish before the panel disappears
- *  from the DOM. Two milliseconds of slack guard against the timer
- *  firing one frame early. */
 const RAIL_TRANSITION_MS = 300;
 const RAIL_UNMOUNT_DELAY_MS = RAIL_TRANSITION_MS + 20;
 
@@ -132,45 +81,40 @@ export interface DetailRailTab {
   /** Stable key. Used as the active tab id and (with the prefix) as
    *  the default testid suffix when `testId` is not supplied. */
   id: string;
-  /** Visible label below the icon AND inside the panel header. */
+  /** Visible label in the horizontal top-tab navigation. */
   label: string;
-  /** Lucide-style icon component. Receives `className`. */
+  /** Lucide-style icon component. Kept for backward compatibility and
+   *  used in the collapsed strip's active-section indicator. Not shown
+   *  in the expanded top-tab header. */
   icon: ComponentType<{ className?: string }>;
-  /** Optional badge / count to display next to the icon label. When
-   *  `undefined` no badge is rendered. `0` IS rendered (callers that
-   *  want to hide a zero-count badge should pass `undefined`). */
+  /** Optional badge / count to display next to the tab label. When
+   *  `undefined` no badge is rendered. `0` IS rendered. */
   count?: number;
   /** Optional element (typically a `<button>`) rendered in the panel
-   *  header between the title and the close-X. Use this for the
-   *  per-tab action button (`+ Add Note`, `Edit`, etc.). */
+   *  header between the tabs and the close-X. */
   action?: ReactNode;
   /** Panel body content. Mounted only when `id === activeTabId`. */
   content: ReactNode;
   /** Optional override for the tab button's `data-testid`. Defaults
-   *  to `${testIdPrefix}-tab-${id}`. ClientDetailPage uses this to
-   *  preserve its existing `rail-item-contacts` / `rail-item-notes`
-   *  / etc. selectors. */
+   *  to `${testIdPrefix}-tab-${id}`. */
   testId?: string;
 }
 
 export interface DetailRightRailProps {
-  /** Tabs displayed in the icon strip (in order). */
+  /** Tabs in order. */
   tabs: DetailRailTab[];
-  /** Currently-active tab id. `null` means no panel is open and the
-   *  rail shows just the icon strip. */
+  /** Currently-active tab id. `null` means the panel is closed
+   *  (minimized/collapsed strip shown). */
   activeTabId: string | null;
-  /** Setter for the active tab. Pass `null` to close the panel.
-   *  Clicking the already-active tab also fires this with `null`. */
+  /** Setter. Pass `null` to close. Re-clicking the active tab also
+   *  fires this with `null` (toggle). */
   onActiveTabChange: (id: string | null) => void;
-  /** When false the close-X is hidden — rare; only useful when the
-   *  rail is the page's only navigation surface. Defaults to true. */
+  /** When false the close-X is hidden. Defaults to true. */
   showClose?: boolean;
   /** Stable prefix for `data-testid` values. Defaults to
-   *  `"detail-rail"`. ClientDetailPage passes `"client-side"`,
-   *  JobDetailPage passes `"job-side"`. */
+   *  `"detail-rail"`. */
   testIdPrefix?: string;
-  /** Aria label for the icon strip nav. Defaults to `"Detail rail"`.
-   *  ClientDetailPage passes `"Client information rail"`. */
+  /** Aria label for the tab navigation nav. Defaults to `"Detail rail"`. */
   ariaLabel?: string;
   /** Optional className appended to the outer container. */
   className?: string;
@@ -191,17 +135,10 @@ export function DetailRightRail({
   //
   // The panel section lags `activeTabId` on close so the slide-out can
   // complete before the section disappears. On open / tab-switch we
-  // sync immediately (the section needs to mount NOW so its content is
-  // there as the parent wrapper's width animates from 80px →  panel
-  // width). On close we hold the previous tab for `RAIL_UNMOUNT_DELAY_MS`
-  // before clearing it so the section keeps rendering while the width
-  // animation runs. Toggling rapidly cancels the pending timer.
-  //
-  // The `data-state="open" | "closed"` attribute on the section is
-  // driven by `activeTab` (immediate), NOT `displayedTab` (lagged), so
-  // the opacity transition kicks in the moment the user clicks close.
-  // The lag is purely about keeping the DOM mounted long enough for
-  // the parent width animation to finish.
+  // sync immediately. On close we hold the previous tab for
+  // `RAIL_UNMOUNT_DELAY_MS` before clearing it. `data-state` is
+  // driven by `activeTab` (immediate) so the opacity transition kicks
+  // in the moment the user clicks close.
   const [displayedActiveId, setDisplayedActiveId] = useState<string | null>(
     activeTabId,
   );
@@ -218,118 +155,49 @@ export function DetailRightRail({
   }, [activeTabId]);
   const displayedTab = tabs.find((t) => t.id === displayedActiveId) ?? null;
 
+  // Track last-active tab id so the collapsed strip can show the
+  // relevant section label after the panel closes.
+  const [lastActiveTabId, setLastActiveTabId] = useState<string | null>(
+    activeTabId,
+  );
+  useEffect(() => {
+    if (activeTabId !== null) {
+      setLastActiveTabId(activeTabId);
+    }
+  }, [activeTabId]);
+  const collapsedTab =
+    tabs.find((t) => t.id === (lastActiveTabId ?? tabs[0]?.id)) ??
+    tabs[0] ??
+    null;
+
+  const handleExpand = () => {
+    onActiveTabChange(lastActiveTabId ?? tabs[0]?.id ?? null);
+  };
+
   return (
-    // Outer chrome mirrors the prior `<UtilityRail>` wrapper exactly:
-    // white surface, left border, full height, horizontal flex so the
-    // icon strip + panel sit side-by-side.
+    // Outer container: full height, white surface, left border.
+    // `flex-col` stacks the expanded panel (header + body) or the
+    // collapsed strip vertically.
     //
-    // 2026-05-07 collapsed-state fix: when no panel is open
-    // (`activeTabId === null`) we add `w-fit` so the flex container
-    // shrinks to its only child — the 76px nav. Without this the
-    // container stretches to fill its parent's width and renders a
-    // blank-white rectangle to the right of the icon strip on any
-    // page that doesn't externally constrain rail width (e.g.
-    // JobDetailPage's grid cell). ClientDetailPage's page-level aside
-    // already shrinks via the `--client-rail-width` CSS variable, so
-    // the change is a no-op there. When a panel IS open, default flex
-    // stretch returns and the panel's `flex-1` works as before.
-    //
-    // 2026-05-07 RALPH animation — `w-fit` is gated on `displayedTab`
-    // (lagged), NOT `activeTab` (immediate). During the close
-    // animation the wrapper width is mid-transition (e.g. 200px) and
-    // the panel is still mounted; if `w-fit` flipped on synchronously
-    // with the user's click the primitive would snap to 76px wide and
-    // expose a white gap inside the wrapper. Holding `w-fit` off until
-    // the section unmounts keeps the primitive flush with the wrapper
-    // throughout the slide.
+    // 2026-05-07 collapsed-state fix: `w-fit` shrinks the container
+    // to its content width when no panel is open. Gated on
+    // `displayedTab` (lagged) so the width doesn't snap during the
+    // close animation — see rail-animation.test.ts for rationale.
     <div
       className={cn(
-        "h-full flex overflow-hidden bg-white border-l border-slate-200",
+        "h-full flex flex-col overflow-hidden bg-white border-l border-slate-200",
         !displayedTab && "w-fit",
         className,
       )}
       data-testid={`${testIdPrefix}-utility-rail`}
       data-panel-open={activeTab ? "true" : "false"}
     >
-      {/* ── Vertical icon strip ────────────────────────────────── */}
-      <nav
-        aria-label={ariaLabel}
-        className="w-[76px] shrink-0 border-r border-slate-200 bg-slate-50/60 flex flex-col py-2 gap-1"
-        data-testid={`${testIdPrefix}-rail`}
-      >
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTabId === tab.id;
-          // Toggle: re-clicking the active tab closes the panel.
-          const handleClick = () =>
-            onActiveTabChange(isActive ? null : tab.id);
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={handleClick}
-              aria-pressed={isActive}
-              className={cn(
-                "relative w-full px-1 py-2 flex flex-col items-center justify-center gap-0.5",
-                // 2026-05-07 rail tab typography correction: regular-weight
-                // text-helper (canonical 13px non-uppercase). The earlier
-                // `font-medium` modifier read "button copy" rather than
-                // "secondary navigation" and made the strip feel oversized
-                // relative to panel content. Active emphasis now lives in
-                // color + bg + the left accent bar — not in font weight.
-                // text-label was rejected because its uppercase tracking
-                // overflows the 76px column on "MAINTENANCE".
-                "text-helper transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
-                isActive
-                  ? "text-brand bg-white"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-white",
-              )}
-              data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
-            >
-              {/* Active accent bar — left edge, canonical green. */}
-              {isActive && (
-                <span
-                  aria-hidden="true"
-                  className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-[#76B054]"
-                />
-              )}
-              <Icon className="h-4 w-4" />
-              {/* 2026-05-08 text-nav-compact — purpose-built compact-navigation
-                  token (12px / 14px LH / 500). Replaces the text-label visual
-                  experiment which caused overflow on "MAINTENANCE" in the 68px
-                  effective column width (UPPERCASE + 0.04em tracking pushed
-                  ~93px needed). No uppercase, no aggressive tracking. */}
-              <span className="text-nav-compact leading-tight">{tab.label}</span>
-              {typeof tab.count === "number" && (
-                <span
-                  // 2026-05-07: count chip rides the same typography scale
-                  // as the tab label (regular-weight text-helper) so the
-                  // two reads as one navigation row, not a label + emphasized
-                  // numeric chip. Visual emphasis on active tabs comes from
-                  // text-brand color via the parent button, not weight.
-                  className="text-helper text-slate-500 tabular-nums leading-none"
-                  data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
-                >
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* ── Expandable panel ───────────────────────────────────── */}
+      {/* ── Expanded panel with top-tab navigation ─────────────── */}
       {/*
-        2026-05-07 RALPH animation — the section renders based on
-        `displayedTab` (lagged) so it stays mounted through the close
-        animation, but reads its content + identity from whichever tab
-        is currently being shown. `data-state` is driven by `activeTab`
-        (immediate) so the opacity transition kicks in the moment the
-        user clicks close — `data-[state=closed]:opacity-0` fades the
-        content out while the wrapper width animates down. Once the
-        deferred-unmount timer fires (≈320ms), `displayedTab` clears
-        and the section leaves the DOM.
+        Section renders based on `displayedTab` (lagged) so it stays
+        mounted through the close animation. `data-state` is driven by
+        `activeTab` (immediate) so the opacity transition fires the
+        moment the user clicks close.
       */}
       {displayedTab && (
         <section
@@ -343,25 +211,67 @@ export function DetailRightRail({
           aria-label={`${displayedTab.label} panel`}
           aria-hidden={activeTab ? undefined : true}
         >
+          {/* ── Panel header: horizontal tabs + action + close ─── */}
           <header
-            className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 min-w-0"
+            className="flex items-center border-b border-slate-200 px-1 min-w-0"
             data-testid={`${testIdPrefix}-panel-header-${displayedTab.id}`}
           >
-            <span className="text-label text-text-secondary flex-shrink-0">
-              {displayedTab.label}
-            </span>
-            <span className="flex-1" />
-            {displayedTab.action}
+            {/* Horizontal tab navigation */}
+            <nav
+              aria-label={ariaLabel}
+              className="flex items-center flex-1 overflow-hidden min-w-0"
+              data-testid={`${testIdPrefix}-rail`}
+            >
+              {tabs.map((tab) => {
+                const isActive = activeTabId === tab.id;
+                const handleClick = () =>
+                  onActiveTabChange(isActive ? null : tab.id);
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={handleClick}
+                    aria-pressed={isActive}
+                    className={cn(
+                      "flex-shrink-0 inline-flex items-center gap-1",
+                      // 2026-05-11 top-tab typography: regular-weight
+                      // text-helper (canonical 13px). Active emphasis
+                      // lives in color + bottom-border underline — not
+                      // font weight. `-mb-px` overlaps the header's
+                      // 1px border-b so the active 2px green underline
+                      // renders flush at the panel separator.
+                      "px-2.5 py-2 text-helper transition-colors",
+                      "border-b-2 -mb-px",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
+                      isActive
+                        ? "text-brand border-[#76B054]"
+                        : "text-slate-600 hover:text-slate-900 border-transparent",
+                    )}
+                    data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
+                  >
+                    {tab.label}
+                    {typeof tab.count === "number" && (
+                      <span
+                        className="text-helper text-slate-500 tabular-nums leading-none"
+                        data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
+                      >
+                        {tab.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+            {/* Close button */}
             {showClose && (
               <button
                 type="button"
                 onClick={() => onActiveTabChange(null)}
-                className="h-6 w-6 inline-flex items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+                className="flex-shrink-0 ml-1 h-6 w-6 inline-flex items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
                 aria-label="Close panel"
                 data-testid={`${testIdPrefix}-panel-close`}
-                // While the close animation is in-flight the section is
-                // visually fading; disable the close button so a second
-                // click can't fire `onActiveTabChange(null)` against an
+                // Disabled during close animation so a second click
+                // can't fire onActiveTabChange(null) against an
                 // already-closed state.
                 tabIndex={activeTab ? 0 : -1}
               >
@@ -370,13 +280,56 @@ export function DetailRightRail({
             )}
           </header>
 
+          {/* ── Panel body ────────────────────────────────────── */}
           <div
             className="flex-1 min-h-0 overflow-y-auto p-3"
             data-testid={`${testIdPrefix}-panel-body-${displayedTab.id}`}
           >
+            {/* Optional per-tab action affordance (+ Add / Edit).
+                Rendered flush with the body edges via negative margins so
+                it spans full-width as a subtle separator row. */}
+            {displayedTab.action && (
+              <div className="flex justify-end -mx-3 -mt-3 mb-3 px-3 py-1.5 border-b border-slate-100">
+                {displayedTab.action}
+              </div>
+            )}
             {displayedTab.content}
           </div>
         </section>
+      )}
+
+      {/* ── Minimized / collapsed strip ─────────────────────────── */}
+      {/*
+        Shown when no panel is open (after the close animation unmounts
+        the section). Compact strip — does NOT recreate the full
+        vertical tab menu. Shows only:
+          - an expand / re-open button
+          - the last-active section label (e.g. "Summary")
+
+        The strip is ~48px wide (matches the page-level CSS variable value
+        when collapsed).
+      */}
+      {!displayedTab && collapsedTab && (
+        <div
+          className="flex flex-col items-center pt-2 gap-1.5 px-1 w-12"
+          data-testid={`${testIdPrefix}-collapsed`}
+        >
+          <button
+            type="button"
+            onClick={handleExpand}
+            aria-label={`Open ${collapsedTab.label} panel`}
+            data-testid={`${testIdPrefix}-rail-expand`}
+            className="h-7 w-full inline-flex items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <span
+            className="[writing-mode:vertical-rl] rotate-180 text-nav-compact text-slate-500 leading-tight select-none"
+            aria-hidden="true"
+          >
+            {collapsedTab.label}
+          </span>
+        </div>
       )}
     </div>
   );
@@ -384,8 +337,7 @@ export function DetailRightRail({
 
 /**
  * Optional small helper for the canonical empty-state inside a panel
- * body. Mirrors the prior `RailEmptyState` ClientDetailPage component.
- * Test-id is parameterized so each page can keep its own selector.
+ * body. Test-id is parameterized so each page can keep its own selector.
  */
 export function DetailRightRailEmpty({
   message,

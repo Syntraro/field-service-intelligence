@@ -87,7 +87,13 @@ export default function WeekStackPage() {
   const isManager = !!(user && (MANAGER_ROLES as readonly string[]).includes(user.role));
 
   const [weekStart, setWeekStart] = useState<string>(() => getMonday(new Date()));
-  const [techId, setTechId] = useState<string>("");
+  // Seed from ?tech= URL param so technician selection survives Day↔Week
+  // view switches. PayrollPage threads the tech ID via URL when navigating
+  // back to the week view; this picks it up before the technician list loads.
+  const [techId, setTechId] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("tech") ?? "";
+  });
   const [calOpen, setCalOpen] = useState(false);
 
   const weekEnd = useMemo(
@@ -107,7 +113,11 @@ export default function WeekStackPage() {
   });
 
   useEffect(() => {
-    if (!techId && technicians.length > 0) setTechId(technicians[0].id);
+    if (technicians.length === 0) return;
+    // No selection yet → default to first technician.
+    if (!techId) { setTechId(technicians[0].id); return; }
+    // URL-seeded tech no longer exists in the list → fall back gracefully.
+    if (!technicians.find((t) => t.id === techId)) setTechId(technicians[0].id);
   }, [techId, technicians]);
 
   const { data: weekData, isLoading: weekLoading } = useQuery<WeekResponse>({
@@ -577,7 +587,6 @@ function DayStackCard({
             locationName={r.locationName}
             jobSummary={r.jobSummary}
             hasOpenEntry={r.hasOpenEntry}
-            isUnallocated={r.isUnallocated}
           />
         ))}
       </div>

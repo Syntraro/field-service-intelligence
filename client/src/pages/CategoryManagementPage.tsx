@@ -5,279 +5,422 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { FormField, FormLabel } from "@/components/ui/form-field";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalSecondaryAction,
+  ModalPrimaryAction,
+  ConfirmModal,
+} from "@/components/ui/modal";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { ArrowLeft, Pencil, Trash2, Loader2, FolderOpen } from "lucide-react";
-import type { Item } from "@shared/schema";
+  EntityListTable,
+  type EntityListColumn,
+} from "@/components/lists/EntityListTable";
+import { ArrowLeft, Pencil, Trash2, Loader2, Plus } from "lucide-react";
 
-interface Part {
+// ── Row types ──────────────────────────────────────────────────────────────────
+
+interface RealCategory {
+  _type: "category";
   id: string;
-  category?: string | null;
-}
-
-
-
-interface CategoryInfo {
   name: string;
+  isSystem: boolean;
   count: number;
-  isDefault?: boolean;
 }
 
-const DEFAULT_CATEGORIES = [
-  "Belts",
-  "Electrical",
-  "Filters",
-  "Labour",
-  "HVAC Parts",
-  "Refrigeration",
-  "Plumbing",
-  "Controls",
-  "Sheet Metal",
-  "Other",
-];
+interface UncategorizedRow {
+  _type: "uncategorized";
+  count: number;
+}
+
+type CategoryRow = RealCategory | UncategorizedRow;
+
+// ── API shape ──────────────────────────────────────────────────────────────────
+
+interface ApiCategory {
+  id: string;
+  name: string;
+  isSystem: boolean;
+  count: number;
+}
+
+interface CategoryListResponse {
+  categories: ApiCategory[];
+  uncategorizedCount: number;
+}
+
+const CATEGORY_QUERY_KEY = ["/api/item-categories"];
+
+// ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function CategoryManagementPage() {
   const { toast } = useToast();
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [editingCategory, setEditingCategory] = useState<CategoryInfo | null>(null);
-  const [editedName, setEditedName] = useState("");
-  const [categoryToDelete, setCategoryToDelete] = useState<CategoryInfo | null>(null);
 
-  const { data: partsItems, isLoading } = useQuery<Item[]>({
-    queryKey: ["/api/items", { limit: 200 }],
-    queryFn: async () => {
-      const res = await fetch("/api/items?limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch parts");
-      const json = await res.json();
-      return Array.isArray(json) ? json : json.data || json.items || [];
-    },
+  // Modal state
+  const [addOpen, setAddOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [targetCategory, setTargetCategory] = useState<RealCategory | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [nameError, setNameError] = useState("");
+
+  const { data, isLoading } = useQuery<CategoryListResponse>({
+    queryKey: CATEGORY_QUERY_KEY,
+    queryFn: () => apiRequest<CategoryListResponse>("/api/item-categories"),
   });
 
-  const categories = useMemo(() => {
-    const catMap = new Map<string, { count: number; isDefault: boolean }>();
-    DEFAULT_CATEGORIES.forEach((cat) => {
-      catMap.set(cat, { count: 0, isDefault: true });
-    });
-    (partsItems ?? []).forEach((p) => {
-      const cat = p.category || "Uncategorized";
-      const existing = catMap.get(cat);
-      if (existing) {
-        existing.count += 1;
+  // Build unified row array: real categories + optional Uncategorized pseudo-row
+  const rows = useMemo<CategoryRow[]>(() => {
+    const cats: CategoryRow[] = (data?.categories ?? []).map((c) => ({
+      _type: "category",
+      ...c,
+    }));
+    if ((data?.uncategorizedCount ?? 0) > 0) {
+      cats.push({ _type: "uncategorized", count: data!.uncategorizedCount });
+    }
+    return cats;
+  }, [data]);
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
+
+  const createMutation = useMutation({
+    mutationFn: (name: string) =>
+      apiRequest("/api/item-categories", { method: "POST", body: JSON.stringify({ name }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: CATEGORY_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      toast({ title: "Category added." });
+      closeAdd();
+    },
+    onError: (err: any) => {
+      if (err?.status === 409) {
+        setNameError("A category with this name already exists.");
       } else {
-        catMap.set(cat, { count: 1, isDefault: false });
+        toast({ title: "Error", description: "Failed to add category.", variant: "destructive" });
       }
-    });
-    return Array.from(catMap.entries())
-      .map(([name, { count, isDefault }]) => ({ name, count, isDefault }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [partsItems]);
-
-  const renameCategoryMutation = useMutation({
-    mutationFn: async ({ oldName, newName }: { oldName: string; newName: string }) => {
-      const partsToUpdate = (partsItems ?? []).filter(
-        (p) => (p.category || "Uncategorized") === oldName
-      );
-      const promises = partsToUpdate.map((p) =>
-        apiRequest(`/api/items/${p.id}`, { method: "PUT", body: JSON.stringify({ category: newName }) })
-      );
-      await Promise.all(promises);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
-      toast({ title: "Success", description: "Category renamed." });
-      setEditDialogOpen(false);
-      setEditingCategory(null);
-      setEditedName("");
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to rename category.", variant: "destructive" });
     },
   });
 
-  const deleteCategoryMutation = useMutation({
-    mutationFn: async (categoryName: string) => {
-      const partsToUpdate = (partsItems ?? []).filter(
-        (p) => (p.category || "Uncategorized") === categoryName
-      );
-      const promises = partsToUpdate.map((p) =>
-        apiRequest(`/api/items/${p.id}`, { method: "PUT", body: JSON.stringify({ category: null }) })
-      );
-      await Promise.all(promises);
-    },
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      apiRequest(`/api/item-categories/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: CATEGORY_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
-      toast({ title: "Deleted", description: "Category removed. Items moved to Uncategorized." });
-      setDeleteDialogOpen(false);
-      setCategoryToDelete(null);
+      toast({ title: "Category renamed." });
+      closeRename();
+    },
+    onError: (err: any) => {
+      if (err?.status === 409) {
+        setNameError("A category with this name already exists.");
+      } else {
+        toast({ title: "Error", description: "Failed to rename category.", variant: "destructive" });
+      }
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiRequest(`/api/item-categories/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: CATEGORY_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      toast({ title: "Category deleted. Items moved to Uncategorized." });
+      setDeleteOpen(false);
+      setTargetCategory(null);
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to delete category.", variant: "destructive" });
     },
   });
 
-  const handleEditClick = (cat: CategoryInfo) => {
-    setEditingCategory(cat);
-    setEditedName(cat.name);
-    setEditDialogOpen(true);
-  };
+  // ── Dialog helpers ─────────────────────────────────────────────────────────
 
-  const handleSaveEdit = () => {
-    if (!editedName.trim()) {
-      toast({ title: "Error", description: "Category name is required.", variant: "destructive" });
-      return;
-    }
-    if (editingCategory && editedName !== editingCategory.name) {
-      renameCategoryMutation.mutate({ oldName: editingCategory.name, newName: editedName.trim() });
-    } else {
-      setEditDialogOpen(false);
-    }
-  };
+  function openAdd() {
+    setNameInput("");
+    setNameError("");
+    setAddOpen(true);
+  }
 
-  const handleDeleteClick = (cat: CategoryInfo) => {
-    setCategoryToDelete(cat);
-    setDeleteDialogOpen(true);
-  };
+  function closeAdd() {
+    setAddOpen(false);
+    setNameInput("");
+    setNameError("");
+  }
 
-  const handleConfirmDelete = () => {
-    if (categoryToDelete) {
-      deleteCategoryMutation.mutate(categoryToDelete.name);
-    }
-  };
+  function openRename(cat: RealCategory) {
+    setTargetCategory(cat);
+    setNameInput(cat.name);
+    setNameError("");
+    setRenameOpen(true);
+  }
+
+  function closeRename() {
+    setRenameOpen(false);
+    setTargetCategory(null);
+    setNameInput("");
+    setNameError("");
+  }
+
+  function openDelete(cat: RealCategory) {
+    setTargetCategory(cat);
+    setDeleteOpen(true);
+  }
+
+  // ── Submit handlers ────────────────────────────────────────────────────────
+
+  function handleAddSubmit() {
+    const trimmed = nameInput.trim();
+    if (!trimmed) { setNameError("Category name is required."); return; }
+    setNameError("");
+    createMutation.mutate(trimmed);
+  }
+
+  function handleRenameSubmit() {
+    const trimmed = nameInput.trim();
+    if (!trimmed) { setNameError("Category name is required."); return; }
+    if (!targetCategory) return;
+    if (trimmed === targetCategory.name) { closeRename(); return; }
+    setNameError("");
+    renameMutation.mutate({ id: targetCategory.id, name: trimmed });
+  }
+
+  // ── Column definitions ─────────────────────────────────────────────────────
+
+  const columns: EntityListColumn<CategoryRow>[] = useMemo(() => [
+    {
+      id: "name",
+      kind: "primary",
+      header: "Category Name",
+      ratio: 2,
+      cell: {
+        type: "customRender",
+        reason: "CONDITIONAL — real categories use entity-primary text; Uncategorized pseudo-row uses muted italic fallback treatment with secondary helper line",
+        render: (row) => {
+          if (row._type === "uncategorized") {
+            return (
+              <div className="min-w-0" data-testid="row-category-uncategorized">
+                <div className="text-list-body text-muted-foreground italic truncate">
+                  Uncategorized
+                </div>
+                <div className="text-helper text-muted-foreground truncate">
+                  Fallback — items with no assigned category
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div className="min-w-0 truncate" data-testid={`row-category-${row.name}`}>
+              <span className="text-list-primary">{row.name}</span>
+            </div>
+          );
+        },
+      },
+    },
+    {
+      id: "items",
+      kind: "text",
+      header: "Items",
+      ratio: 0.6,
+      minWidthPx: 72,
+      cell: {
+        type: "entity-text",
+        value: (row) => `${row.count} ${row.count === 1 ? "item" : "items"}`,
+      },
+    },
+    {
+      id: "actions",
+      kind: "body",
+      header: "",
+      ratio: 0.7,
+      minWidthPx: 88,
+      align: "right",
+      cell: {
+        type: "customRender",
+        reason: "ACTION_BUTTON — edit (rename) and delete icon buttons with per-row pending state; Uncategorized pseudo-row has no actions",
+        render: (row) => {
+          if (row._type === "uncategorized") return null;
+          return (
+            <div className="flex items-center justify-end gap-0.5">
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={(e) => { e.stopPropagation(); openRename(row); }}
+                title="Rename category"
+                data-testid={`button-rename-${row.name}`}
+                className="h-7 w-7"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={(e) => { e.stopPropagation(); openDelete(row); }}
+                title="Delete category"
+                data-testid={`button-delete-${row.name}`}
+                className="h-7 w-7 text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          );
+        },
+      },
+    },
+  ], []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex items-center gap-3">
+      {/* Page header */}
+      <div className="flex items-start gap-3">
         <Link href="/settings/products">
-          <Button variant="ghost" size="icon" data-testid="button-back">
+          <Button variant="ghost" size="icon" className="mt-0.5 shrink-0" data-testid="button-back">
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>
-        <div className="flex-1">
-          <h1 className="text-xl font-semibold" data-testid="text-title">Category Management</h1>
-          <p className="text-sm text-muted-foreground">View and rename categories. New categories are created by typing them when adding products.</p>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-title" data-testid="text-title">Category Management</h1>
+          <p className="text-caption text-muted-foreground mt-0.5">
+            Organize your products and services. Deleting a category will not delete any items
+            — items will be moved to Uncategorized automatically.
+          </p>
         </div>
+        <Button
+          onClick={openAdd}
+          size="sm"
+          className="shrink-0"
+          data-testid="button-add-category"
+        >
+          <Plus className="h-4 w-4 mr-1.5" />
+          Add Category
+        </Button>
       </div>
 
-      <div className="border rounded-md">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : categories.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <FolderOpen className="h-12 w-12 mx-auto mb-3 opacity-30" />
-            <p>No categories found</p>
-            <p className="text-sm mt-1">Add a category to organize your products.</p>
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr className="border-b">
-                <th className="px-4 py-2 text-left font-medium">Category Name</th>
-                <th className="px-4 py-2 text-left font-medium">Items</th>
-                <th className="px-4 py-2 w-24 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categories.map((cat) => (
-                <tr key={cat.name} className="border-b hover:bg-muted/30" data-testid={`row-category-${cat.name}`}>
-                  <td className="px-4 py-3">
-                    <span className="font-medium">{cat.name}</span>
-                    {cat.isDefault && <span className="ml-2 text-xs text-muted-foreground">(default)</span>}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{cat.count} item{cat.count !== 1 ? "s" : ""}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => handleEditClick(cat)}
-                        disabled={cat.count === 0}
-                        title={cat.count === 0 ? "No items to rename" : "Rename category"}
-                        data-testid={`button-edit-${cat.name}`}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => handleDeleteClick(cat)}
-                        disabled={cat.name === "Uncategorized" || cat.count === 0}
-                        title={cat.count === 0 ? "No items to delete" : "Remove category from items"}
-                        data-testid={`button-delete-${cat.name}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {/* Category list */}
+      <EntityListTable
+        rows={rows}
+        columns={columns}
+        rowKey={(row) => row._type === "category" ? row.id : "__uncategorized__"}
+        loadingState={isLoading}
+        emptyState={{
+          kind: "empty",
+          title: "No categories yet",
+          description: "Use \"Add Category\" above, or type a category name when adding products.",
+        }}
+        data-testid="category-table"
+      />
 
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename Category</DialogTitle>
-            <DialogDescription>This will update the category for all {editingCategory?.count} item(s).</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Category Name</Label>
-              <Input
-                value={editedName}
-                onChange={(e) => setEditedName(e.target.value)}
-                data-testid="input-edit-category"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSaveEdit} disabled={renameCategoryMutation.isPending} data-testid="button-save-rename">
-              {renameCategoryMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ── Add Category modal ─────────────────────────────────────── */}
+      <ModalShell
+        open={addOpen}
+        onOpenChange={(o) => { if (!o) closeAdd(); }}
+        className="sm:max-w-sm"
+        data-testid="modal-add-category"
+      >
+        <ModalHeader>
+          <ModalTitle>Add Category</ModalTitle>
+          <ModalDescription>
+            Create a new category to organize your products and services.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
+          <FormField>
+            <FormLabel srOnly htmlFor="add-category-name">Category Name</FormLabel>
+            <Input
+              id="add-category-name"
+              placeholder="e.g. Refrigerants"
+              value={nameInput}
+              onChange={(e) => { setNameInput(e.target.value); setNameError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAddSubmit(); }}
+              autoFocus
+              data-testid="input-add-category"
+            />
+            {nameError && (
+              <p className="text-helper text-destructive mt-1" role="alert">{nameError}</p>
+            )}
+          </FormField>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={closeAdd}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleAddSubmit}
+            disabled={createMutation.isPending}
+            data-testid="button-confirm-add"
+          >
+            {createMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+            Add Category
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Category?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Remove "{categoryToDelete?.name}" category? The {categoryToDelete?.count} item(s) will be moved to "Uncategorized".
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmDelete} className="bg-destructive text-destructive-foreground">
-              {deleteCategoryMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* ── Rename modal ───────────────────────────────────────────── */}
+      <ModalShell
+        open={renameOpen}
+        onOpenChange={(o) => { if (!o) closeRename(); }}
+        className="sm:max-w-sm"
+        data-testid="modal-rename-category"
+      >
+        <ModalHeader>
+          <ModalTitle>Rename Category</ModalTitle>
+          <ModalDescription>
+            {targetCategory?.count
+              ? `${targetCategory.count} item${targetCategory.count !== 1 ? "s" : ""} will be updated to the new name.`
+              : "All items in this category will be updated automatically."}
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
+          <FormField>
+            <FormLabel srOnly htmlFor="rename-category-name">Category Name</FormLabel>
+            <Input
+              id="rename-category-name"
+              value={nameInput}
+              onChange={(e) => { setNameInput(e.target.value); setNameError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleRenameSubmit(); }}
+              autoFocus
+              data-testid="input-rename-category"
+            />
+            {nameError && (
+              <p className="text-helper text-destructive mt-1" role="alert">{nameError}</p>
+            )}
+          </FormField>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={closeRename}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleRenameSubmit}
+            disabled={renameMutation.isPending}
+            data-testid="button-confirm-rename"
+          >
+            {renameMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+            Save
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
+
+      {/* ── Delete confirm ─────────────────────────────────────────── */}
+      <ConfirmModal
+        open={deleteOpen}
+        onOpenChange={(o) => { if (!o) { setDeleteOpen(false); setTargetCategory(null); } }}
+        title="Delete Category?"
+        description={
+          targetCategory?.count
+            ? `${targetCategory.count} item${targetCategory.count !== 1 ? "s" : ""} in "${targetCategory?.name}" will be moved to Uncategorized. No items will be deleted.`
+            : `"${targetCategory?.name}" will be removed. No items will be deleted.`
+        }
+        emphasis="Deleting a category will not delete any products or services."
+        confirmLabel="Delete Category"
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => targetCategory && deleteMutation.mutate(targetCategory.id)}
+        testIdPrefix="delete-category"
+      />
     </div>
   );
 }

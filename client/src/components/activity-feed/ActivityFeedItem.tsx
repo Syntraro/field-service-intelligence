@@ -42,32 +42,40 @@ interface ActivityFeedItemProps {
 }
 
 /**
- * Resolve a deep link for the entity referenced by an event. Returns null
- * when no canonical detail page exists (timesheet/note today).
+ * Resolve a deep link for a feed event. Returns null for any event that
+ * does not map to a confirmed supported detail route — those rows render
+ * as non-interactive divs with no hover affordance.
+ *
+ * Allowlist (explicit — add entries only when the route is confirmed valid):
+ *   job.created  + entityType=job     → /jobs/:entityId
+ *   quote.created + entityType=quote  → /quotes/:entityId
+ *   entityType=invoice                → /invoices/:entityId
+ *   entityType=lead                   → /leads/:entityId
+ *   visit.completed + meta.jobId      → /jobs/:jobId
+ *
+ * Intentionally NOT linked: timesheet.clocked_in/out, tech.arrived,
+ * visit.started, visit.on_route, note.created, payment events.
  */
 function resolveEntityHref(item: ActivityFeedItemData): string | null {
   const meta = item.meta as Record<string, unknown> | null;
-  const jobId = (meta?.jobId as string | undefined) ?? null;
 
-  switch (item.entityType) {
-    case "visit":
-      return jobId ? `/jobs/${jobId}` : null;
-    case "job":
-      return `/jobs/${item.entityId}`;
-    case "quote":
-      return `/quotes/${item.entityId}`;
-    case "invoice":
-      return `/invoices/${item.entityId}`;
-    case "payment":
-      return meta?.invoiceId ? `/invoices/${String(meta.invoiceId)}` : null;
-    case "technician":
-      return `/team-hub`;
-    case "client":
-    case "location":
-      return `/clients/${item.entityId}`;
-    default:
-      return null;
+  if (item.eventType === "job.created" && item.entityType === "job" && item.entityId) {
+    return `/jobs/${item.entityId}`;
   }
+  if (item.eventType === "quote.created" && item.entityType === "quote" && item.entityId) {
+    return `/quotes/${item.entityId}`;
+  }
+  if (item.entityType === "invoice" && item.entityId) {
+    return `/invoices/${item.entityId}`;
+  }
+  if (item.entityType === "lead" && item.entityId) {
+    return `/leads/${item.entityId}`;
+  }
+  if (item.eventType === "visit.completed") {
+    const jobId = (meta?.jobId as string | undefined) ?? null;
+    return jobId ? `/jobs/${jobId}` : null;
+  }
+  return null;
 }
 
 export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
@@ -81,7 +89,7 @@ export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
 
   const body = (
     <div
-      className="flex items-start gap-3 px-4 py-2.5 hover-elevate active-elevate-2 transition-colors"
+      className="flex items-start gap-3 px-4 py-2.5 transition-colors"
       data-testid={`activity-feed-item-${item.eventType}`}
     >
       <div
@@ -113,7 +121,7 @@ export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
 
         {display.subtitle && (
           <div
-            className="mt-0.5 truncate text-helper text-muted-foreground"
+            className="mt-0.5 truncate text-helper font-medium text-foreground/75"
             data-testid="activity-feed-item-subtitle"
           >
             {display.subtitle}
@@ -144,7 +152,7 @@ export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
       <Link
         href={href}
         onClick={onNavigate}
-        className="block border-b border-border/60 last:border-b-0 no-underline text-current"
+        className="block border-b border-border/60 last:border-b-0 no-underline text-current cursor-pointer hover:bg-accent transition-colors"
       >
         {body}
       </Link>

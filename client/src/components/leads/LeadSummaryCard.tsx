@@ -227,6 +227,8 @@ export function LeadSummaryCard(props: LeadSummaryCardProps) {
             onCancel: onHeaderCancel ?? (() => {}),
             isSaving: isHeaderSaving,
             error: headerError,
+            saveTestId: "button-header-save",
+            cancelTestId: "button-header-cancel",
           }
         : undefined;
 
@@ -249,6 +251,7 @@ export function LeadSummaryCard(props: LeadSummaryCardProps) {
         clientName={companyDisplay ?? undefined}
         contactName={lead.location?.contactName ?? undefined}
         addressLines={addressLine ? [addressLine] : undefined}
+        addressLabel="Location"
         phone={lead.location?.phone ?? undefined}
         email={lead.location?.email ?? undefined}
         editCapability={{
@@ -265,6 +268,7 @@ export function LeadSummaryCard(props: LeadSummaryCardProps) {
                 value: headerDescDraft ?? "",
                 onChange: onHeaderDescChange,
                 maxLength: 600,
+                testId: "textarea-lead-description",
               }
             : undefined
         }

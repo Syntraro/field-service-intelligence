@@ -48,19 +48,6 @@ export type SortDirection = "asc" | "desc";
 export type StatusFilter = "all" | "active" | "archived";
 export type TypeFilter = "all" | "product" | "service";
 
-export const DEFAULT_CATEGORY_OPTIONS = [
-  "Belts",
-  "Electrical",
-  "Filters",
-  "Labour",
-  "HVAC Parts",
-  "Refrigeration",
-  "Plumbing",
-  "Controls",
-  "Sheet Metal",
-  "Other",
-];
-
 export const defaultFormData: ProductFormData = {
   type: "product",
   name: "",

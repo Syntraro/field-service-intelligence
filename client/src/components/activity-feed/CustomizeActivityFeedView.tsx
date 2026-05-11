@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ACTIVITY_FEED_CATEGORIES,
+  DEFAULT_ENABLED_EVENT_TYPES,
   categoriesFromEventTypes,
   eventTypesFromCategories,
   type ActivityFeedCategory,
@@ -29,15 +30,12 @@ export function CustomizeActivityFeedView() {
   const update = useUpdateActivityPreferences();
 
   // Local state mirrors the category projection of the server set.
-  // Optimistic updates apply immediately; the mutation persists.
-  const [local, setLocal] = useState<Record<ActivityFeedCategory, boolean>>(() => ({
-    visit_updates: false,
-    technician_updates: false,
-    quote_updates: false,
-    invoice_updates: false,
-    payment_updates: false,
-    notes: false,
-  }));
+  // Seeded from registry defaults so the placeholder matches what the
+  // server returns for users with no saved preferences. Overwritten by
+  // useEffect once the server response arrives.
+  const [local, setLocal] = useState<Record<ActivityFeedCategory, boolean>>(
+    () => categoriesFromEventTypes(DEFAULT_ENABLED_EVENT_TYPES),
+  );
 
   useEffect(() => {
     if (data?.enabledEventTypes) {

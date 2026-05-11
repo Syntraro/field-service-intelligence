@@ -5,6 +5,7 @@
  */
 import { format, parseISO } from "date-fns";
 import { Chip, type ChipTone } from "@/components/ui/chip";
+import { formatDurationHm } from "@/lib/timeDuration";
 import { type EntryCategory } from "./categoryMap";
 import {
   TimesheetSummaryStrip,
@@ -28,13 +29,6 @@ export interface DaySummaryCardProps {
   categoryTotals: Record<EntryCategory, number>;
   formatMemberName: (member: DayTeamMember) => string;
   onSelectMember: (memberId: string) => void;
-}
-
-function formatMinutes(minutes: number): string {
-  if (minutes === 0) return "0h 0m";
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hrs}h ${mins}m`;
 }
 
 function formatMinutesShort(minutes: number): string {
@@ -108,7 +102,7 @@ export function DaySummaryCard({
       dateLabel={selected ? format(parseISO(date), "EEE, MMM d, yyyy") : undefined}
       chips={chips}
       hasRunning={hasRunning}
-      totalFormatted={selected ? formatMinutes(totalMinutes) : null}
+      totalFormatted={selected ? formatDurationHm(totalMinutes) : null}
       containerTestId="day-summary-card"
       selectorTestId="day-employee-select"
       totalTestId="day-total"

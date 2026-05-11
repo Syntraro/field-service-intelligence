@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { AlertCircle, UserPlus } from "lucide-react";
+import { FormHelperText } from "@/components/ui/form-field";
 
 interface Role {
   id: string;
@@ -192,7 +193,7 @@ export function AddMemberDialog({ open, onOpenChange }: AddMemberDialogProps) {
           <div className="flex items-center justify-between pt-2">
             <div>
               <Label htmlFor="add-enabled">Account Enabled</Label>
-              <p className="text-xs text-muted-foreground">Disabled accounts cannot log in</p>
+              <FormHelperText>Disabled accounts cannot log in</FormHelperText>
             </div>
             <Switch
               id="add-enabled"

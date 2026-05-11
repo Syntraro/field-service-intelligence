@@ -176,23 +176,37 @@ describe("ProductServiceFormDialog — exposes archive and delete actions", () =
   });
 });
 
-// ── 7. Confirm dialogs use canonical ConfirmModal ────────────────────────────
+// ── 7. Confirm dialogs: destructive → AlertDialog; neutral → ConfirmModal ────
+//
+// 2026-05-10 (Phase 1 taxonomy): DeleteConfirmDialog and BulkDeleteDialog
+// corrected back to AlertDialog (CLAUDE.md rule #1). ArchiveConfirmDialog
+// stays on ConfirmModal (neutral, reversible).
 
-describe("Confirmation dialogs still use ConfirmModal", () => {
-  it("DeleteConfirmDialog uses ConfirmModal", () => {
-    expect(deleteSrc).toMatch(/ConfirmModal/);
-    expect(deleteSrc).not.toMatch(/<AlertDialog/);
-  });
-
-  it("ArchiveConfirmDialog uses ConfirmModal", () => {
-    expect(deleteSrc).toMatch(/ConfirmModal/);
-  });
-
-  it("BulkDeleteDialog uses ConfirmModal", () => {
+describe("Confirmation dialogs — correct taxonomy primitives", () => {
+  it("DeleteConfirmDialog uses AlertDialog (destructive rule #1)", () => {
     const code = stripComments(deleteSrc);
-    // Three ConfirmModal usages: Delete, Archive, BulkDelete
-    const count = (code.match(/ConfirmModal/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(3);
+    expect(code).toMatch(/<AlertDialog/);
+  });
+
+  it("DeleteConfirmDialog does NOT use ConfirmModal for delete branch", () => {
+    // ConfirmModal is still present for ArchiveConfirmDialog — check that
+    // the delete-item testIdPrefix is not passed to ConfirmModal.
+    expect(deleteSrc).not.toMatch(/testIdPrefix="delete-item"/);
+  });
+
+  it("BulkDeleteDialog uses AlertDialog (destructive rule #1)", () => {
+    const code = stripComments(deleteSrc);
+    const count = (code.match(/<AlertDialog[\s>]/g) ?? []).length;
+    expect(count).toBeGreaterThanOrEqual(2);
+  });
+
+  it("BulkDeleteDialog does NOT use ConfirmModal for bulk-delete branch", () => {
+    expect(deleteSrc).not.toMatch(/testIdPrefix="bulk-delete"/);
+  });
+
+  it("ArchiveConfirmDialog still uses ConfirmModal (neutral, reversible)", () => {
+    expect(deleteSrc).toMatch(/ConfirmModal/);
+    expect(deleteSrc).toMatch(/variant="neutral"/);
   });
 });
 

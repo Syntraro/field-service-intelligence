@@ -63,7 +63,7 @@ describe("JobDetailPage — canonical right rail", () => {
   it("the rail mount lives inside the page-level `data-testid=\"job-detail-rail-column\"` aside (not the body grid)", () => {
     // 2026-05-07 layout v4: the rail moved out of the body grid's
     // 35% right column into a page-level <aside> sibling so the
-    // closed icon strip pins to the FAR RIGHT edge of the page (mirrors
+    // collapsed strip pins to the FAR RIGHT edge of the page (mirrors
     // ClientDetailPage). The aside testid `job-detail-rail-column`
     // anchors the new structure.
     const idx = jobDetailSrc.indexOf('data-testid="job-detail-rail-column"');
@@ -107,7 +107,7 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     );
   });
 
-  it("has exactly THREE tabs (Equipment + Notes + Labour) — no Files / History", () => {
+  it("has exactly FOUR tabs (Summary + Notes + Labour + Equipment) — no Files / History", () => {
     // Count `id: "<key>"` entries inside the jobRailTabs array.
     const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
     expect(arrStart).toBeGreaterThan(-1);
@@ -115,15 +115,16 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     expect(arrEnd).toBeGreaterThan(arrStart);
     const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
     const idMatches = arrSlice.match(/\bid:\s*"\w+"/g) ?? [];
-    expect(idMatches.length).toBe(3);
-    expect(arrSlice).toMatch(/id:\s*"equipment"/);
+    expect(idMatches.length).toBe(4);
+    expect(arrSlice).toMatch(/id:\s*"summary"/);
     expect(arrSlice).toMatch(/id:\s*"notes"/);
     expect(arrSlice).toMatch(/id:\s*"labour"/);
+    expect(arrSlice).toMatch(/id:\s*"equipment"/);
     expect(arrSlice).not.toMatch(/id:\s*"files"/);
     expect(arrSlice).not.toMatch(/id:\s*"history"/);
   });
 
-  it("rail tab order is Notes, Labour, Equipment (per spec)", () => {
+  it("rail tab order is Summary, Notes, Labour, Equipment (2026-05-09 spec)", () => {
     const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
     const arrEnd = jobDetailSrc.indexOf("];", arrStart);
     const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
@@ -131,12 +132,12 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     const re = /\bid:\s*"(\w+)"/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(arrSlice)) !== null) idOrder.push(m[1]);
-    expect(idOrder).toEqual(["notes", "labour", "equipment"]);
+    expect(idOrder).toEqual(["summary", "notes", "labour", "equipment"]);
   });
 
-  it("the default open tab is Notes", () => {
+  it("the default open tab is Summary (2026-05-09)", () => {
     expect(jobDetailSrc).toMatch(
-      /useState<JobRailTab\s*\|\s*null>\(\s*"notes"\s*\)/,
+      /useState<JobRailTab\s*\|\s*null>\(\s*"summary"\s*\)/,
     );
   });
 

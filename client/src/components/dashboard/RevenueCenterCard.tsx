@@ -20,7 +20,6 @@ import {
   AlertOctagon,
   CheckCircle2,
   Calendar,
-  ChevronRight,
   DollarSign,
 } from "lucide-react";
 import { resolveDashboardNav } from "@/lib/dashboardNavigation";
@@ -30,6 +29,7 @@ import {
   CardShellTitle,
   CardShellAction,
 } from "@/components/ui/card";
+import { DashboardMetricRow } from "@/components/dashboard/DashboardMetricRow";
 
 interface RevenueCenterCardProps {
   readyToInvoiceCount: number;
@@ -46,7 +46,7 @@ interface RevenueRow {
   label: string;
   description: string;
   count: number;
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string }>;
   iconColor: string;
   destination: string;
   urgent?: boolean;
@@ -158,38 +158,22 @@ export function RevenueCenterCard({
         ) : (
           <ul>
             {visibleRows.map((row, i) => {
-              const Icon = row.icon;
               const isLast = i === visibleRows.length - 1;
               return (
                 <li key={row.key}>
-                  <button
-                    type="button"
-                    onClick={() => setLocation(row.destination)}
-                    data-testid={`revenue-row-${row.key}`}
-                    className={`w-full flex items-center justify-between gap-3 px-4 py-2 text-left transition-colors group ${
-                      row.urgent && row.count > 0
-                        ? "bg-red-50/60 hover:bg-red-50"
-                        : "hover:bg-primary/5"
-                    } ${!isLast ? "border-b border-card-border" : ""}`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Icon className={`h-3.5 w-3.5 shrink-0 ${row.urgent && row.count > 0 ? "text-red-600" : row.iconColor}`} />
-                      <div className="min-w-0">
-                        <div className={`text-helper font-semibold truncate ${row.urgent && row.count > 0 ? "text-red-600" : "text-foreground"}`}>
-                          {row.label}
-                        </div>
-                        <div className="text-helper text-muted-foreground truncate">
-                          {row.description}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className={`text-row font-bold tabular-nums ${row.urgent && row.count > 0 ? "text-red-600" : "text-foreground"}`}>
-                        {row.count}
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
-                    </div>
-                  </button>
+                  <DashboardMetricRow
+                    icon={row.icon}
+                    iconColor={row.iconColor}
+                    label={row.label}
+                    description={row.description}
+                    count={row.count}
+                    tone={row.urgent ? "danger" : "default"}
+                    density="default"
+                    showChevron
+                    onSelect={() => setLocation(row.destination)}
+                    isLast={isLast}
+                    testId={`revenue-row-${row.key}`}
+                  />
                 </li>
               );
             })}

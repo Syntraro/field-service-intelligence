@@ -9,7 +9,6 @@ import {
   SortDirection,
   StatusFilter,
   TypeFilter,
-  DEFAULT_CATEGORY_OPTIONS,
   defaultFormData,
 } from "@/components/products-services/types";
 
@@ -40,6 +39,15 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Fetch item categories (for dropdown completeness — includes user-added
+  // categories that have no items yet)
+  const { data: categoriesData } = useQuery<{ categories: { name: string }[] }>({
+    queryKey: ["/api/item-categories"],
+    queryFn: () => apiRequest("/api/item-categories"),
+    staleTime: 60_000,
+    refetchIntervalInBackground: false,
+  });
 
   // Fetch items
   const { data: partsData, isLoading, refetch } = useQuery<Part[]>({
@@ -126,14 +134,15 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     return filtered;
   }, [allParts, debouncedSearch, typeFilter, categoryFilter, statusFilter, sortField, sortDirection]);
 
-  // Unique categories
+  // Unique categories — union of tenant item-categories (user-created, may have
+  // no items yet) and actual item.category values on existing parts.
+  // HVAC-specific defaults were removed 2026-05-09; only tenant-created categories appear.
   const uniqueCategories = useMemo(() => {
-    const cats = new Set<string>(DEFAULT_CATEGORY_OPTIONS);
-    allParts.forEach((p: Part) => {
-      if (p.category) cats.add(p.category);
-    });
+    const cats = new Set<string>();
+    (categoriesData?.categories ?? []).forEach((c) => { if (c.name) cats.add(c.name); });
+    allParts.forEach((p: Part) => { if (p.category) cats.add(p.category); });
     return Array.from(cats).sort();
-  }, [allParts]);
+  }, [allParts, categoriesData]);
 
   // Mutations
   const createMutation = useMutation({

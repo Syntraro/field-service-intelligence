@@ -42,6 +42,7 @@ import { CardShell } from "@/components/ui/card";
 import { StatusChip } from "@/components/ui/chip";
 import type { ChipTone } from "@/lib/chipVariants";
 import type { DashboardActionMode } from "@/components/DashboardActionModal";
+import { DashboardMetricRow } from "@/components/dashboard/DashboardMetricRow";
 
 /**
  * 2026-04-25 (Financial Dashboard layout refinement): row keys are now
@@ -84,7 +85,7 @@ interface AlertRow {
   key: OperationalAlertRowKey;
   label: string;
   count: number;
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string }>;
   iconColor: string;
   mode: DashboardActionMode;
   urgent?: boolean;
@@ -233,62 +234,20 @@ export function OperationalAlertsCard({
             <ul>
               {rows.map((row, idx) => {
                 const isLast = idx === rows.length - 1;
-                const Icon = row.icon;
                 const muted = row.count === 0;
                 return (
                   <li key={row.key}>
-                    {/*
-                      2026-04-30 micro-polish: row geometry mirrors
-                      `<RevenueCenterFinancialCard>` exactly —
-                      `px-3 py-1.5 gap-2`, `h-3 w-3` icon, label
-                      `text-xs font-medium`, count
-                      `text-sm font-semibold tabular-nums`. Click
-                      affordance comes from the hover background, same
-                      as Revenue.
-                    */}
-                    <button
-                      type="button"
-                      onClick={() => onOpenActionModal(row.mode)}
-                      data-testid={`alert-row-${row.key}`}
-                      disabled={muted}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-                        !isLast ? "border-b border-card-border" : ""
-                      } ${
-                        row.urgent
-                          ? "bg-red-50/40 hover:bg-red-50"
-                          : muted
-                            ? "cursor-default"
-                            : "hover:bg-primary/5"
-                      }`}
-                    >
-                      <Icon
-                        className={`h-3 w-3 shrink-0 ${
-                          muted ? "text-slate-300" : row.iconColor
-                        }`}
-                      />
-                      <span
-                        className={`flex-1 text-helper font-medium truncate ${
-                          muted
-                            ? "text-slate-400"
-                            : row.urgent
-                              ? "text-red-700"
-                              : "text-slate-700 dark:text-gray-200"
-                        }`}
-                      >
-                        {row.label}
-                      </span>
-                      <span
-                        className={`text-row font-semibold tabular-nums shrink-0 ${
-                          muted
-                            ? "text-slate-400"
-                            : row.urgent
-                              ? "text-red-700"
-                              : "text-foreground"
-                        }`}
-                      >
-                        {row.count}
-                      </span>
-                    </button>
+                    <DashboardMetricRow
+                      icon={row.icon}
+                      iconColor={row.iconColor}
+                      label={row.label}
+                      count={row.count}
+                      tone={row.urgent ? "danger" : muted ? "muted" : "default"}
+                      density="compact"
+                      onSelect={() => onOpenActionModal(row.mode)}
+                      isLast={isLast}
+                      testId={`alert-row-${row.key}`}
+                    />
                   </li>
                 );
               })}

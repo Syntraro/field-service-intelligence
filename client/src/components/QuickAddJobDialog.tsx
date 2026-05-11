@@ -10,7 +10,7 @@
  */
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { CompactFormField, CompactColHeader } from "@/components/ui/compact-form-field";
 // 2026-05-04 client-create flow rewire: the dropdown's "Add new client /
 // location" affordance now opens the canonical CreateClientModal instead
 // of the prior inline one-shot create call. The modal owns the full
@@ -2060,17 +2060,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               results that expanded the modal while typing) to a Service-style
               Popover+Command combobox. Results overlay; modal shell stays
               stable. */}
-          <div>
-            {/* 2026-04-30 (embedded compact pass): drop the visible "Location *"
-                label when rendered inside CreateNewDialog — placeholder
-                copy is sufficient. Edit flows (non-embedded) keep the
-                explicit label. The `sr-only` Label preserves the field's
-                accessible name. */}
-            {embedded ? (
-              <Label htmlFor="qa-location" className="sr-only">Location</Label>
-            ) : (
-              <Label className="text-xs font-medium mb-0.5 block">Location *</Label>
-            )}
+          {/* 2026-04-30 (embedded compact pass): drop the visible "Location *"
+              label when rendered inside CreateNewDialog — placeholder
+              copy is sufficient. Edit flows (non-embedded) keep the
+              explicit label. */}
+          <CompactFormField
+            label={embedded ? "Location" : "Location *"}
+            labelClassName={embedded ? "sr-only" : undefined}
+          >
             <LocationCombobox
               value={selectedLocation}
               searchText={locationSearch}
@@ -2092,7 +2089,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               disabled={isPending}
               compact={isCompact}
             />
-          </div>
+          </CompactFormField>
 
           {/* ── Service + Equipment row ──
               2026-04-26 polish v3: paired side-by-side on desktop/tablet,
@@ -2111,11 +2108,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                    cards underneath. Add multiple, sum duration, " + "-join
                    summary auto-fill. Keeps the dialog state local; persists
                    to /api/jobs/:id/parts after the job is created. */}
-              <div>
-                <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
-                  <Wrench className="h-3 w-3 text-muted-foreground" />
-                  Service (optional)
-                </Label>
+              <CompactFormField
+                label={
+                  <span className="flex items-center gap-1.5">
+                    <Wrench className="h-3 w-3 text-muted-foreground" />
+                    Service (optional)
+                  </span>
+                }
+              >
                 <ServicesMultiSelect
                   services={services}
                   selected={selectedServices}
@@ -2132,31 +2132,33 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   createPending={createServiceQuickMutation.isPending}
                   disabled={isPending}
                 />
-              </div>
-              <div>
-                <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
-                  <Wrench className="h-3 w-3 text-muted-foreground" />
-                  Equipment (optional)
-                </Label>
+              </CompactFormField>
+              <CompactFormField
+                label={
+                  <span className="flex items-center gap-1.5">
+                    <Wrench className="h-3 w-3 text-muted-foreground" />
+                    Equipment (optional)
+                  </span>
+                }
+              >
                 <EquipmentCombobox
                   locationId={formData.locationId || null}
                   selectedIds={selectedEquipmentIds}
                   onChange={setSelectedEquipmentIds}
                   disabled={isPending}
                 />
-              </div>
+              </CompactFormField>
             </div>
           )}
 
           {/* ── Summary ── */}
-          <div>
-            {/* 2026-04-30 (embedded compact pass): drop visible label in
-                embedded; placeholder is descriptive enough. */}
-            {embedded ? (
-              <Label htmlFor="summary" className="sr-only">Summary</Label>
-            ) : (
-              <Label htmlFor="summary" className="text-xs font-medium mb-0.5 block">Summary *</Label>
-            )}
+          {/* 2026-04-30 (embedded compact pass): drop visible label in
+              embedded; placeholder is descriptive enough. */}
+          <CompactFormField
+            htmlFor="summary"
+            label={embedded ? "Summary" : "Summary *"}
+            labelClassName={embedded ? "sr-only" : undefined}
+          >
             <Input
               id="summary"
               value={formData.summary}
@@ -2178,7 +2180,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               )}
               data-testid="input-summary"
             />
-          </div>
+          </CompactFormField>
 
           {/* ── + Add instructions (embedded only) ──
               2026-05-01 (refinement v2): inline add/remove pattern.
@@ -2196,9 +2198,9 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             };
             return instructionsShowing ? (
               <div className="flex items-start gap-2">
-                <Label htmlFor="description-emb" className="sr-only">
+                <label htmlFor="description-emb" className="sr-only">
                   Team instructions
-                </Label>
+                </label>
                 <Textarea
                   id="description-emb"
                   value={formData.description}
@@ -2243,10 +2245,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 onCheckedChange={setIsRecurring}
                 data-testid="switch-make-recurring"
               />
-              <Label htmlFor="make-recurring" className="text-xs font-medium cursor-pointer flex items-center gap-1.5">
+              <label htmlFor="make-recurring" className="text-xs font-medium cursor-pointer flex items-center gap-1.5">
                 <Repeat className="h-3.5 w-3.5" />
                 Make Recurring
-              </Label>
+              </label>
             </div>
           )}
 
@@ -2258,8 +2260,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             <div className="space-y-2 rounded-md border p-2.5 bg-muted/30">
               {/* Row: Preset + Start date + End date */}
               <div className="flex items-start gap-3">
-                <div className="flex-1">
-                  <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
+                <CompactFormField label="Recurrence" className="flex-1" labelClassName="mb-1">
                   <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
                     <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
                       <SelectValue />
@@ -2270,18 +2271,16 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="flex-1">
-                  <Label className="text-xs font-medium mb-1 block">Start date *</Label>
+                </CompactFormField>
+                <CompactFormField label="Start date *" className="flex-1" labelClassName="mb-1">
                   <CanonicalDatePicker
                     value={recurringStartDate}
                     onChange={(next) => setRecurringStartDate(next ?? "")}
                     className="w-full h-9 text-xs"
                     data-testid="input-recurring-start"
                   />
-                </div>
-                <div className="flex-1">
-                  <Label className="text-xs font-medium mb-1 block">End date</Label>
+                </CompactFormField>
+                <CompactFormField label="End date" className="flex-1" labelClassName="mb-1">
                   <CanonicalDatePicker
                     value={recurringEndDate}
                     onChange={(next) => setRecurringEndDate(next ?? "")}
@@ -2290,15 +2289,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     className="w-full h-9 text-xs"
                     data-testid="input-recurring-end"
                   />
-                </div>
+                </CompactFormField>
               </div>
 
               {/* Custom controls — only shown when preset is "custom" */}
               {recurrencePreset === "custom" && (
                 <>
                   <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <Label className="text-xs font-medium mb-1 block">Frequency</Label>
+                    <CompactFormField label="Frequency" className="flex-1" labelClassName="mb-1">
                       <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
                         <SelectTrigger className="h-9 text-xs">
                           <SelectValue />
@@ -2308,9 +2306,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                           <SelectItem value="monthly">Monthly</SelectItem>
                         </SelectContent>
                       </Select>
-                    </div>
-                    <div className="w-20">
-                      <Label className="text-xs font-medium mb-1 block">Every</Label>
+                    </CompactFormField>
+                    <CompactFormField label="Every" className="w-20" labelClassName="mb-1">
                       <Input
                         type="number"
                         min={1}
@@ -2320,14 +2317,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         className="h-9 text-xs"
                         data-testid="input-recurring-interval"
                       />
-                    </div>
+                    </CompactFormField>
                     <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
                   </div>
 
                   {/* Weekly: day-of-week buttons */}
                   {recurringKind === "weekly" && (
-                    <div>
-                      <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                    <CompactFormField label="Days" labelClassName="mb-1.5">
                       <div className="flex gap-1">
                         {DAYS_OF_WEEK.map((day) => {
                           const selected = recurringDaysOfWeek.includes(day.value);
@@ -2353,13 +2349,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                           );
                         })}
                       </div>
-                    </div>
+                    </CompactFormField>
                   )}
 
                   {/* Monthly: day-of-month selector */}
                   {recurringKind === "monthly" && (
-                    <div className="w-24">
-                      <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                    <CompactFormField label="Day of month" className="w-24" labelClassName="mb-1">
                       <Input
                         type="number"
                         min={1}
@@ -2369,15 +2364,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         className="h-9 text-xs"
                         data-testid="input-day-of-month"
                       />
-                    </div>
+                    </CompactFormField>
                   )}
                 </>
               )}
 
               {/* Weekly day-of-week for non-custom weekly presets */}
               {recurrencePreset !== "custom" && recurringKind === "weekly" && (
-                <div>
-                  <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                <CompactFormField label="Days" labelClassName="mb-1.5">
                   <div className="flex gap-1">
                     {DAYS_OF_WEEK.map((day) => {
                       const selected = recurringDaysOfWeek.includes(day.value);
@@ -2403,13 +2397,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                       );
                     })}
                   </div>
-                </div>
+                </CompactFormField>
               )}
 
               {/* Monthly day-of-month for non-custom monthly presets */}
               {recurrencePreset !== "custom" && recurringKind === "monthly" && (
-                <div className="w-24">
-                  <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                <CompactFormField label="Day of month" className="w-24" labelClassName="mb-1">
                   <Input
                     type="number"
                     min={1}
@@ -2419,7 +2412,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     className="h-9 text-xs"
                     data-testid="input-day-of-month"
                   />
-                </div>
+                </CompactFormField>
               )}
             </div>
           )}
@@ -2434,7 +2427,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           {!isEditMode && !isRecurring && (
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <Label className="text-xs font-medium">Schedule</Label>
+              <span className="text-xs font-medium text-foreground">Schedule</span>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <Checkbox
                   checked={scheduleValue.unscheduled}
@@ -2453,7 +2446,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             >
               {/* Date */}
               <div className="space-y-0.5 min-w-0">
-                <Label className="text-[11px] font-medium text-muted-foreground">Date</Label>
+                <CompactColHeader>Date</CompactColHeader>
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -2490,7 +2483,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   Manual edits flip startTimeDirty=true so subsequent date
                   changes never silently overwrite the user's pick. */}
               <div className="space-y-0.5 min-w-0">
-                <Label className="text-[11px] font-medium text-muted-foreground">Start</Label>
+                <CompactColHeader>Start</CompactColHeader>
                 <Input
                   type="time"
                   step={900}
@@ -2513,7 +2506,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   scheduleValue.durationMinutes; an effect in the inner
                   component re-syncs the draft string). */}
               <div className="space-y-0.5 min-w-0">
-                <Label className="text-[11px] font-medium text-muted-foreground">Duration</Label>
+                <CompactColHeader>Duration</CompactColHeader>
                 <DurationHoursInput
                   durationMinutes={scheduleValue.durationMinutes}
                   onChange={(minutes) => {
@@ -2535,7 +2528,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   the grid column on narrow widths and never forces the
                   modal to sideways-scroll. */}
               <div className="space-y-0.5 min-w-0">
-                <Label className="text-[11px] font-medium text-muted-foreground">Assigned</Label>
+                <CompactColHeader>Assigned</CompactColHeader>
                 <TechnicianSelector
                   mode="multi"
                   value={scheduleValue.assignedTechnicianIds}
@@ -2619,7 +2612,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 defaultBufferMinutes,
               );
               return summary ? (
-                <p className="text-xs text-muted-foreground" data-testid="text-buffer-hint">
+                <p className="text-helper text-muted-foreground" data-testid="text-buffer-hint">
                   {summary}
                 </p>
               ) : null;
@@ -2904,8 +2897,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               Non-embedded edit / standalone flows keep the textarea
               here unchanged. */}
           {!embedded && (
-            <div>
-              <Label htmlFor="description" className="text-xs font-medium mb-0.5 block">Team Instructions</Label>
+            <CompactFormField htmlFor="description" label="Team Instructions">
               <Textarea
                 id="description"
                 value={formData.description}
@@ -2915,7 +2907,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 className="text-sm resize-none h-[40px] bg-white"
                 data-testid="input-description"
               />
-            </div>
+            </CompactFormField>
           )}
 
           {/* ── Embedded-only bottom block (2026-04-30 reorder pass) ──
@@ -3067,8 +3059,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     <div className="w-full flex items-start gap-2">
                       <div className="flex-1 min-w-0 space-y-2">
                         <div className="flex items-start gap-3">
-                          <div className="flex-1">
-                            <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
+                          <CompactFormField label="Recurrence" className="flex-1" labelClassName="mb-1">
                             <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
                               <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
                                 <SelectValue />
@@ -3079,18 +3070,16 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                 ))}
                               </SelectContent>
                             </Select>
-                          </div>
-                          <div className="flex-1">
-                            <Label className="text-xs font-medium mb-1 block">Start date *</Label>
+                          </CompactFormField>
+                          <CompactFormField label="Start date *" className="flex-1" labelClassName="mb-1">
                             <CanonicalDatePicker
                               value={recurringStartDate}
                               onChange={(next) => setRecurringStartDate(next ?? "")}
                               className="w-full h-9 text-xs"
                               data-testid="input-recurring-start"
                             />
-                          </div>
-                          <div className="flex-1">
-                            <Label className="text-xs font-medium mb-1 block">End date</Label>
+                          </CompactFormField>
+                          <CompactFormField label="End date" className="flex-1" labelClassName="mb-1">
                             <CanonicalDatePicker
                               value={recurringEndDate}
                               onChange={(next) => setRecurringEndDate(next ?? "")}
@@ -3099,13 +3088,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                               className="w-full h-9 text-xs"
                               data-testid="input-recurring-end"
                             />
-                          </div>
+                          </CompactFormField>
                         </div>
                         {recurrencePreset === "custom" && (
                           <>
                             <div className="flex items-center gap-3">
-                              <div className="flex-1">
-                                <Label className="text-xs font-medium mb-1 block">Frequency</Label>
+                              <CompactFormField label="Frequency" className="flex-1" labelClassName="mb-1">
                                 <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
                                   <SelectTrigger className="h-9 text-xs">
                                     <SelectValue />
@@ -3115,9 +3103,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                     <SelectItem value="monthly">Monthly</SelectItem>
                                   </SelectContent>
                                 </Select>
-                              </div>
-                              <div className="w-20">
-                                <Label className="text-xs font-medium mb-1 block">Every</Label>
+                              </CompactFormField>
+                              <CompactFormField label="Every" className="w-20" labelClassName="mb-1">
                                 <Input
                                   type="number"
                                   min={1}
@@ -3127,12 +3114,11 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                   className="h-9 text-xs"
                                   data-testid="input-recurring-interval"
                                 />
-                              </div>
+                              </CompactFormField>
                               <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
                             </div>
                             {recurringKind === "weekly" && (
-                              <div>
-                                <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                              <CompactFormField label="Days" labelClassName="mb-1.5">
                                 <div className="flex gap-1">
                                   {DAYS_OF_WEEK.map((day) => {
                                     const selected = recurringDaysOfWeek.includes(day.value);
@@ -3158,11 +3144,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                     );
                                   })}
                                 </div>
-                              </div>
+                              </CompactFormField>
                             )}
                             {recurringKind === "monthly" && (
-                              <div>
-                                <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                              <CompactFormField label="Day of month" labelClassName="mb-1">
                                 <Input
                                   type="number"
                                   min={1}
@@ -3172,7 +3157,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                   className="h-9 w-20 text-xs"
                                   data-testid="input-recurring-day-of-month"
                                 />
-                              </div>
+                              </CompactFormField>
                             )}
                           </>
                         )}

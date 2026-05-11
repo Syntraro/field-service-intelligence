@@ -166,20 +166,20 @@ describe("ProductServiceFormDialog — form sections preserved verbatim", () => 
     expect(src).toMatch(/<SelectItem\s+value="service">Service<\/SelectItem>/);
   });
 
-  it("Row B: Name input with duplicate-check error message + red border", () => {
+  it("Row B: Name InlineInput with error prop + FormErrorText for duplicate check", () => {
     expect(src).toMatch(/data-testid="input-name"/);
+    // inline-label correction: shell error prop drives the border (not className on <Input>)
     expect(src).toMatch(
-      /<Input[\s\S]*?value=\{formData\.name\}[\s\S]*?className=\{checkDuplicate\s*\?\s*"border-destructive"\s*:\s*""\}/,
+      /<InlineInput[\s\S]*?label="Name"[\s\S]*?error=\{!!checkDuplicate\}/,
     );
-    // Phase 2C: raw <p className="text-xs text-destructive"> replaced by <FormErrorText>
     expect(src).toMatch(
       /\{checkDuplicate\s*&&\s*\(\s*<FormErrorText>An item named "\{checkDuplicate\.name\}" already exists<\/FormErrorText>/,
     );
   });
 
-  it("Row C: Description Textarea (rows={2})", () => {
+  it("Row C: Description InlineTextarea (rows={2}) — label inside the bordered shell", () => {
     expect(src).toMatch(
-      /<Textarea[\s\S]*?value=\{formData\.description\}[\s\S]*?rows=\{2\}[\s\S]*?data-testid="input-description"/,
+      /<InlineTextarea[\s\S]*?label="Description"[\s\S]*?value=\{formData\.description\}[\s\S]*?rows=\{2\}[\s\S]*?data-testid="input-description"/,
     );
   });
 
@@ -236,19 +236,18 @@ describe("ProductServiceFormDialog — auto-calculation handlers preserved", () 
     );
   });
 
-  it("Cost input wires to handleCostChange; Markup input wires to handleMarkupChange", () => {
+  it("Cost InlineInput wires to handleCostChange; Markup InlineInput wires to handleMarkupChange", () => {
     expect(src).toMatch(
-      /<Input[\s\S]*?value=\{formData\.cost\}[\s\S]*?onChange=\{handleCostChange\}/,
+      /<InlineInput[\s\S]*?value=\{formData\.cost\}[\s\S]*?onChange=\{handleCostChange\}/,
     );
     expect(src).toMatch(
-      /<Input[\s\S]*?value=\{formData\.markupPercent\}[\s\S]*?onChange=\{handleMarkupChange\}/,
+      /<InlineInput[\s\S]*?value=\{formData\.markupPercent\}[\s\S]*?onChange=\{handleMarkupChange\}/,
     );
   });
 
-  it("Price input is manually editable (overrides auto-calculation when the user types directly)", () => {
-    // Phase 2C: setFormField renamed to setField
+  it("Price InlineInput is manually editable (overrides auto-calculation when the user types directly)", () => {
     expect(src).toMatch(
-      /<Input[\s\S]*?value=\{formData\.unitPrice\}[\s\S]*?onChange=\{\(e\)\s*=>\s*setField\("unitPrice",\s*e\.target\.value\)\}/,
+      /<InlineInput[\s\S]*?value=\{formData\.unitPrice\}[\s\S]*?onChange=\{\(e\)\s*=>\s*setField\("unitPrice",\s*e\.target\.value\)\}/,
     );
   });
 });
@@ -272,6 +271,94 @@ describe("ProductServiceFormDialog — submit gating + loading state preserved",
     expect(src).toMatch(
       /<Button\s+variant="outline"\s+onClick=\{onCancel\}>\s*Cancel\s*<\/Button>/,
     );
+  });
+});
+
+// ── 8. True in-field labels (2026-05-10 correction) ─────────────────
+//
+// The previous FormInlineField (2026-05-09) placed labels ABOVE the
+// input using a space-y-1 wrapper — not inside the field box.
+// This section pins the corrected canonical primitives:
+//   InlineInput / InlineTextarea / InlineSelectTrigger
+// Each owns its bordered shell so the label lives inside the field.
+
+describe("ProductServiceFormDialog — true in-field labels (InlineInput / InlineTextarea / InlineSelectTrigger)", () => {
+  it("imports InlineInput, InlineTextarea, InlineSelectTrigger from form-field", () => {
+    expect(src).toMatch(/InlineInput/);
+    expect(src).toMatch(/InlineTextarea/);
+    expect(src).toMatch(/InlineSelectTrigger/);
+    expect(src).toMatch(/from\s+["']@\/components\/ui\/form-field["']/);
+  });
+
+  it("does NOT use the old FormInlineField (label-above primitive removed)", () => {
+    expect(codeOnly).not.toMatch(/FormInlineField/);
+  });
+
+  it("does NOT use srOnly (no hidden labels — all labels visible inside the shell)", () => {
+    expect(codeOnly).not.toMatch(/srOnly/);
+  });
+
+  it("does NOT use absolute-positioned $ prefix span (unit annotation is in label text)", () => {
+    expect(codeOnly).not.toMatch(/absolute\s+left-3[\s\S]{0,80}\$/);
+  });
+
+  it("does NOT use absolute-positioned % suffix span (unit annotation is in label text)", () => {
+    expect(codeOnly).not.toMatch(/absolute\s+right-3[\s\S]{0,80}%/);
+  });
+
+  it("pricing fields carry unit annotation in label: Cost ($), Markup (%), Unit Price ($)", () => {
+    expect(src).toMatch(/label="Cost \(\$\)"/);
+    expect(src).toMatch(/label="Markup \(%\)"/);
+    expect(src).toMatch(/label="Unit Price \(\$\)"/);
+  });
+
+  it("SKU label indicates optional", () => {
+    expect(src).toMatch(/label="SKU \(optional\)"/);
+  });
+
+  it("Name is InlineInput with required + error prop", () => {
+    expect(src).toMatch(/<InlineInput[\s\S]*?label="Name"[\s\S]*?required/);
+    expect(src).toMatch(/<InlineInput[\s\S]*?error=\{!!checkDuplicate\}/);
+  });
+
+  it("Description is InlineTextarea with label inside the shell", () => {
+    expect(src).toMatch(/<InlineTextarea[\s\S]*?label="Description"/);
+  });
+
+  it("Duration is InlineInput with label inside the shell", () => {
+    expect(src).toMatch(/<InlineInput[\s\S]*?label="Duration \(minutes\)"/);
+  });
+
+  it("Type select uses InlineSelectTrigger with required", () => {
+    expect(src).toMatch(/<InlineSelectTrigger[\s\S]*?label="Type"[\s\S]*?required/);
+    expect(src).toMatch(/data-testid="select-type"/);
+  });
+
+  it("Category select uses InlineSelectTrigger", () => {
+    expect(src).toMatch(/<InlineSelectTrigger[\s\S]*?label="Category"/);
+    expect(src).toMatch(/data-testid="select-category"/);
+  });
+});
+
+// ── 9. Category source — tenant-created only (2026-05-09) ─────────
+
+describe("ProductServiceFormDialog — category source (tenant-created only)", () => {
+  it("types.ts does NOT export DEFAULT_CATEGORY_OPTIONS (HVAC defaults removed)", () => {
+    const typesSrc = readFileSync(
+      resolve(__dirname, "../client/src/components/products-services/types.ts"),
+      "utf-8",
+    );
+    expect(typesSrc).not.toMatch(/DEFAULT_CATEGORY_OPTIONS/);
+    expect(typesSrc).not.toMatch(/HVAC Parts/);
+    expect(typesSrc).not.toMatch(/"Belts"/);
+  });
+
+  it("useProductsServices does NOT import or seed from DEFAULT_CATEGORY_OPTIONS", () => {
+    const hookSrc = readFileSync(
+      resolve(__dirname, "../client/src/hooks/useProductsServices.ts"),
+      "utf-8",
+    );
+    expect(hookSrc).not.toMatch(/DEFAULT_CATEGORY_OPTIONS/);
   });
 });
 

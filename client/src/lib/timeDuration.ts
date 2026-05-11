@@ -30,3 +30,15 @@ export function formatTimeOfDay(iso: string | null): string {
   if (!iso) return "—";
   return format(parseISO(iso), "h:mm a");
 }
+
+/**
+ * Prose H+M duration — "0h 0m", "0h 30m", "1h 0m", "1h 30m".
+ * Used for group-level totals (JobTimeGroupCard header, DaySummaryCard total).
+ * Distinct from formatDurationCompact which omits the zero component ("30m", "1h").
+ */
+export function formatDurationHm(minutes: number): string {
+  if (minutes === 0) return "0h 0m";
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hrs}h ${mins}m`;
+}

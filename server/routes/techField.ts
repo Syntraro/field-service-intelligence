@@ -54,6 +54,7 @@ import { notificationPreferencesRepository } from "../storage/notificationPrefer
 // 2026-04-26 geofence start prompt: read-only tenant config endpoint gates on
 // the canonical entitlement resolver.
 import { entitlementService } from "../services/entitlementService";
+import { getTodayCapacity } from "../storage/capacity";
 
 const router = Router();
 
@@ -232,6 +233,45 @@ router.get(
       count: visits.length,
       scope: rawScope === "all" && requestedTechIds.length === 0 ? "all" : "custom",
       technicianIds: techIds,
+    });
+  })
+);
+
+// ============================================================================
+// GET /api/tech/availability — Canonical per-tech open slots for today.
+//
+// Requires schedule.all.view (same gate as GET /api/tech/visits/today?scope=all).
+// Internally reuses getTodayCapacity — the same canonical source used by the
+// dashboard's "Today's Capacity" card — so gap math (pre-first-visit, post-last-
+// visit, time-off clips) is always consistent between surfaces.
+//
+// Returns technicians[] with openSlots (all ≥30-min remaining gaps today).
+// The dashboard uses only the primary slot; the tech app needs all gaps for
+// the "Open" filter mode that shows bookable slots across the team.
+// ============================================================================
+
+router.get(
+  "/availability",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const allowed = await userHasPermission(userId, SCOPE_ALL_VIEW_PERMISSION);
+    if (!allowed) throw createError(403, "schedule.all.view permission required");
+
+    const capacity = await getTodayCapacity(companyId, new Date());
+
+    res.json({
+      date: new Date().toLocaleDateString("en-CA"),
+      timezone: capacity.timezone,
+      technicians: capacity.technicians.map(t => ({
+        technicianId: t.technicianId,
+        name: t.name,
+        state: t.state,
+        workday: t.workday,
+        openSlots: t.allOpenSlots,
+      })),
     });
   })
 );
@@ -1307,12 +1347,21 @@ const techCreateJobSchema = z.object({
   durationMinutes: z.number().int().min(15).optional(),
 });
 
+// Permission key for job creation — matches catalog definition:
+// "jobs.edit" = "Create and modify jobs".
+const JOBS_CREATE_PERMISSION = "jobs.edit";
+
 router.post(
   "/jobs",
   requireSchedulable,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const userId = req.user!.id;
+
+    const canCreate = await userHasPermission(userId, JOBS_CREATE_PERMISSION);
+    if (!canCreate) {
+      throw createError(403, "You do not have permission to create jobs");
+    }
 
     const data = validateSchema(techCreateJobSchema, req.body);
 

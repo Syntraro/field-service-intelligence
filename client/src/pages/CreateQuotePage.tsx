@@ -963,7 +963,7 @@ export default function CreateQuotePage() {
             "border-t lg:border-t-0 lg:border-l border-slate-200",
           )}
           style={{
-            ["--create-quote-rail-width" as any]: `${quoteRailTab === null ? 80 : 380}px`,
+            ["--create-quote-rail-width" as any]: `${quoteRailTab === null ? 48 : 380}px`,
           }}
           data-testid="create-quote-detail-rail-column"
           data-panel-open={quoteRailTab === null ? "false" : "true"}

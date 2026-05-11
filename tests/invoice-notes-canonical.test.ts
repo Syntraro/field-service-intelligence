@@ -198,6 +198,13 @@ describe("Invoice notes — InvoiceDetailPage canonical wiring", () => {
     path.join(repoRoot, "client", "src", "pages", "InvoiceDetailPage.tsx"),
     "utf-8",
   );
+  // 2026-05-10: EntityNotesPanel is now hosted inside InvoiceActivityPanel
+  // (the Activity rail tab). The page-level guard now checks the activity
+  // panel component instead.
+  const activityPanelSource = fs.readFileSync(
+    path.join(repoRoot, "client", "src", "components", "invoice", "InvoiceActivityPanel.tsx"),
+    "utf-8",
+  );
 
   it("no longer imports DraftNotesCard", () => {
     expect(source).not.toMatch(
@@ -214,10 +221,12 @@ describe("Invoice notes — InvoiceDetailPage canonical wiring", () => {
     // from `EntityNotesSection` to `EntityNotesPanel`. The
     // `writeEntityId` indirection retired in 2026-05-03 stays
     // forbidden.
-    const block = source.match(
+    // 2026-05-10: EntityNotesPanel is now in InvoiceActivityPanel (the
+    // Activity rail tab) rather than directly in InvoiceDetailPage.
+    const block = activityPanelSource.match(
       /<EntityNotesPanel[\s\S]+?\/>/,
     );
-    expect(block, "EntityNotesPanel mount must exist on InvoiceDetailPage").not.toBeNull();
+    expect(block, "EntityNotesPanel mount must exist in InvoiceActivityPanel").not.toBeNull();
     expect(block![0]).toMatch(/entityType="invoice"/);
     expect(block![0]).toMatch(/entityId=\{invoiceId\}/);
     expect(block![0]).not.toMatch(/writeEntityId=/);

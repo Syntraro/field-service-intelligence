@@ -38,6 +38,7 @@ export interface TodayVisit {
   address: string;
   phone: string | null;
   scheduledStartRaw: string | null;
+  scheduledEndRaw: string | null;
   scheduledTime: string;     // "8:00 AM"
   scheduledEnd: string;      // "9:30 AM"
   status: string;
@@ -104,6 +105,7 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
     phone: v.location?.phone ?? null,
     scheduledStartRaw: v.scheduledStart ?? null,
+    scheduledEndRaw: v.scheduledEnd ?? null,
     scheduledTime: formatClockTime(v.scheduledStart),
     scheduledEnd: formatClockTime(v.scheduledEnd),
     status: v.status,

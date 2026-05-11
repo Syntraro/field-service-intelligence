@@ -7,7 +7,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose, DialogDescription } from "@/components/ui/dialog";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Trash2, Loader2, Wrench, Info, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -455,81 +462,77 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
           </div>
         </CollapsibleContent>
 
-      <Dialog open={isAddDialogOpen} onOpenChange={handleAddDialogChange}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Equipment to Job</DialogTitle>
-            <DialogDescription>
-              Select existing equipment or create new equipment at this location.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {availableEquipment.length > 0 ? (
-              <div className="space-y-2">
-                <Label>Select Existing Equipment</Label>
-                <Select
-                  value={selectedEquipmentId}
-                  onValueChange={setSelectedEquipmentId}
-                >
-                  <SelectTrigger data-testid="select-job-equipment">
-                    <SelectValue placeholder="Select equipment..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableEquipment.map(eq => (
-                      <SelectItem key={eq.id} value={eq.id}>
-                        {eq.name} ({getEquipmentTypeLabel(eq.equipmentType)})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {locationEquipment.length === 0
-                  ? "No equipment registered at this location."
-                  : "All location equipment is already linked to this job."}
-              </p>
-            )}
-            {availableEquipment.length > 0 && (
-              <div className="space-y-2">
-                <Label>Notes (optional)</Label>
-                <Textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Service notes for this equipment..."
-                  data-testid="input-job-equipment-notes"
-                />
-              </div>
-            )}
-            {/* Create new equipment — always visible so user can add to location */}
-            <div className="border-t pt-3">
-              <Button
-                variant="outline" size="sm" className="w-full text-xs"
-                onClick={() => setIsCreateDialogOpen(true)}
-                data-testid="button-create-new-equipment"
+      <ModalShell open={isAddDialogOpen} onOpenChange={handleAddDialogChange}>
+        <ModalHeader>
+          <ModalTitle>Add Equipment to Job</ModalTitle>
+          <ModalDescription>
+            Select existing equipment or create new equipment at this location.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody className="space-y-4">
+          {availableEquipment.length > 0 ? (
+            <div className="space-y-2">
+              <Label>Select Existing Equipment</Label>
+              <Select
+                value={selectedEquipmentId}
+                onValueChange={setSelectedEquipmentId}
               >
-                <Plus className="h-3.5 w-3.5 mr-1" />
-                Create New Equipment
-              </Button>
+                <SelectTrigger data-testid="select-job-equipment">
+                  <SelectValue placeholder="Select equipment..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableEquipment.map(eq => (
+                    <SelectItem key={eq.id} value={eq.id}>
+                      {eq.name} ({getEquipmentTypeLabel(eq.equipmentType)})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button variant="outline" data-testid="button-cancel-job-equipment">Cancel</Button>
-            </DialogClose>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {locationEquipment.length === 0
+                ? "No equipment registered at this location."
+                : "All location equipment is already linked to this job."}
+            </p>
+          )}
+          {availableEquipment.length > 0 && (
+            <div className="space-y-2">
+              <Label>Notes (optional)</Label>
+              <Textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Service notes for this equipment..."
+                data-testid="input-job-equipment-notes"
+              />
+            </div>
+          )}
+          {/* Create new equipment — always visible so user can add to location */}
+          <div className="border-t pt-3">
             <Button
-              onClick={handleAddEquipment}
-              disabled={!selectedEquipmentId || addMutation.isPending}
-              data-testid="button-save-job-equipment"
+              variant="outline" size="sm" className="w-full text-xs"
+              onClick={() => setIsCreateDialogOpen(true)}
+              data-testid="button-create-new-equipment"
             >
-              {addMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-1" />
-              ) : null}
-              Add to Job
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              Create New Equipment
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="outline" onClick={() => handleAddDialogChange(false)} data-testid="button-cancel-job-equipment">Cancel</Button>
+          <Button
+            onClick={handleAddEquipment}
+            disabled={!selectedEquipmentId || addMutation.isPending}
+            data-testid="button-save-job-equipment"
+          >
+            {addMutation.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-1" />
+            ) : null}
+            Add to Job
+          </Button>
+        </ModalFooter>
+      </ModalShell>
 
       {/* Canonical equipment creation dialog — creates at location level */}
       {locationId && (

@@ -233,6 +233,37 @@ describe("Form canonical drift — no banned raw patterns in migrated files", ()
   }
 });
 
+// ─── FormHelperText / FormErrorText usage in migrated files ──────────────────
+//
+// Positive assertions: confirm that files migrated in the helper/error text sweep
+// (2026-05-10) import and use the canonical primitives. The drift guard above
+// ensures the banned raw patterns are gone; this section ensures the
+// canonical replacements are actually present.
+
+const MIGRATED_HELPER_FILES = [
+  "client/src/components/portal/SendPaymentLinkDialog.tsx",
+  "client/src/components/team-hub/AddMemberDialog.tsx",
+  "client/src/components/invoice/EmbeddedStripeCardForm.tsx",
+  "client/src/components/team-hub/InviteMemberDialog.tsx",
+] as const;
+
+describe("Form canonical drift — FormHelperText / FormErrorText in migrated files", () => {
+  for (const rel of MIGRATED_HELPER_FILES) {
+    const src = readFileSync(resolve(ROOT, rel), "utf-8");
+    it(`${rel} — imports FormHelperText from form-field`, () => {
+      expect(src).toContain('from "@/components/ui/form-field"');
+      expect(src).toContain("FormHelperText");
+    });
+    it(`${rel} — uses <FormHelperText> (not raw <p>)`, () => {
+      expect(src).toContain("<FormHelperText>");
+      expect(src).not.toMatch(/<p\s+className="text-xs text-muted-foreground"/);
+    });
+    it(`${rel} — no raw <p className="text-xs text-destructive">`, () => {
+      expect(src).not.toMatch(/<p\s+className="text-xs text-destructive"/);
+    });
+  }
+});
+
 // ─── Allowlist Integrity ───────────────────────────────────────────────────────
 //
 // Ensures every ALLOWLIST entry still refers to an existing consumer file.

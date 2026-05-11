@@ -1,6 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
@@ -11,6 +9,14 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 
 interface FeedbackDialogProps {
   open: boolean;
@@ -62,17 +68,17 @@ export default function FeedbackDialog({ open, onOpenChange }: FeedbackDialogPro
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[550px]" data-testid="dialog-feedback">
-        <DialogHeader>
-          <DialogTitle>Send Feedback</DialogTitle>
-          <DialogDescription>
-            Share your recommendations, questions, or report issues with the app.
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={onOpenChange} className="sm:max-w-[550px]" data-testid="dialog-feedback">
+      <ModalHeader>
+        <ModalTitle>Send Feedback</ModalTitle>
+        <ModalDescription>
+          Share your recommendations, questions, or report issues with the app.
+        </ModalDescription>
+      </ModalHeader>
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)}>
+          <ModalBody className="space-y-4">
             <FormField
               control={form.control}
               name="category"
@@ -116,27 +122,27 @@ export default function FeedbackDialog({ open, onOpenChange }: FeedbackDialogPro
                 </FormItem>
               )}
             />
+          </ModalBody>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-                data-testid="button-cancel-feedback"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={createMutation.isPending}
-                data-testid="button-submit-feedback"
-              >
-                {createMutation.isPending ? "Submitting..." : "Submit Feedback"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+          <ModalFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              data-testid="button-cancel-feedback"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={createMutation.isPending}
+              data-testid="button-submit-feedback"
+            >
+              {createMutation.isPending ? "Submitting..." : "Submit Feedback"}
+            </Button>
+          </ModalFooter>
+        </form>
+      </Form>
+    </ModalShell>
   );
 }
