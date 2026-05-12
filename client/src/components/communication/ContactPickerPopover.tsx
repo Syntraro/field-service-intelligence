@@ -1,10 +1,9 @@
 /**
  * ContactPickerPopover (2026-04-14)
  *
- * Searchable dropdown of system contacts for the Send Invoice modal's
- * To / CC fields. Data source is `/api/invoices/:id/email-contacts`,
- * which reuses the canonical `clientContactRepository` (getLocationContacts
- * + getCompanyDirectory). Contacts already selected are hidden. Clicking
+ * Searchable dropdown of system contacts for Send modals (invoice, statement).
+ * Data source is the caller-supplied `contactsPath` endpoint, which must return
+ * `{ contacts: ContactOption[] }`. Contacts already selected are hidden. Clicking
  * a row emits the email via `onSelect`; the parent adds it as a chip.
  *
  * Purely presentation — no selection state lives here; the caller owns
@@ -22,8 +21,8 @@ export interface ContactOption {
 }
 
 interface ContactPickerPopoverProps {
-  /** Invoice id — drives the endpoint. */
-  invoiceId: string;
+  /** API path that returns `{ contacts: ContactOption[] }`. */
+  contactsPath: string;
   /** Lowercased emails already chosen (hidden from the list). */
   selectedEmails: readonly string[];
   onSelect: (email: string) => void;
@@ -32,7 +31,7 @@ interface ContactPickerPopoverProps {
 }
 
 export function ContactPickerPopover({
-  invoiceId,
+  contactsPath,
   selectedEmails,
   onSelect,
   filterText = "",
@@ -46,9 +45,7 @@ export function ContactPickerPopover({
     setLoading(true);
     setError(null);
     setContacts([]);
-    apiRequest<{ contacts: ContactOption[] }>(
-      `/api/invoices/${invoiceId}/email-contacts`,
-    )
+    apiRequest<{ contacts: ContactOption[] }>(contactsPath)
       .then((res) => {
         if (!cancelled) setContacts(res.contacts ?? []);
       })
@@ -70,7 +67,7 @@ export function ContactPickerPopover({
     return () => {
       cancelled = true;
     };
-  }, [invoiceId]);
+  }, [contactsPath]);
 
   const selectedSet = useMemo(
     () => new Set(selectedEmails.map((e) => e.toLowerCase())),

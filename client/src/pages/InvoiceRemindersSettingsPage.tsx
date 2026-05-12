@@ -228,10 +228,10 @@ export default function InvoiceRemindersSettingsPage() {
                     <Label htmlFor="enabled">
                       Enable automatic reminders
                     </Label>
-                    <p className="text-xs text-muted-foreground mt-0.5">
+                    <FormHelperText className="mt-0.5">
                       Turn off to stop all new reminders. Manual "Send reminder
                       now" on an invoice still works.
-                    </p>
+                    </FormHelperText>
                   </div>
                   <Switch
                     id="enabled"

@@ -998,7 +998,7 @@ export default function JobDetailPage() {
   // tab is `notes` — Notes is the most-frequent surface a dispatcher
   // hits on a Job page, and starting with Notes mirrors the reading
   // order ClientDetailPage uses.
-  type JobRailTab = "summary" | "notes" | "labour" | "equipment";
+  type JobRailTab = "summary" | "notes" | "labour";
   const [jobRailTab, setJobRailTab] = useState<JobRailTab | null>("summary");
 
   // 2026-05-07 controlled add-note trigger: incrementing this counter
@@ -1732,6 +1732,50 @@ export default function JobDetailPage() {
             panel={buildJobSummaryPanelDescriptor()}
             testIdPrefix="job-summary"
           />
+          {/* Equipment compact card — below Associated Visits per spec */}
+          <div
+            className="mt-3 rounded-md border border-slate-200 bg-white shadow-sm"
+            data-testid="job-summary-equipment-card"
+          >
+            <div className="flex items-center justify-between px-3 py-2.5">
+              <h4 className="text-row-emphasis text-text-primary">Equipment</h4>
+              <button
+                type="button"
+                onClick={() => setShowAddEquipmentDialog(true)}
+                className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
+                data-testid="button-add-equipment-summary"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {equipmentCount === 0 && (
+              <p
+                className="text-helper text-text-secondary px-3 pb-2.5"
+                data-testid="job-summary-equipment-empty"
+              >
+                No equipment added yet.
+              </p>
+            )}
+            {/* Always-mounted section drives equipmentCount via onCountChange;
+                hidden while loading or empty so the compact state shows instead. */}
+            <div
+              className={
+                equipmentCount != null && equipmentCount > 0 ? undefined : "hidden"
+              }
+            >
+              <JobEquipmentSection
+                jobId={job.id}
+                locationId={job.locationId}
+                defaultOpen={true}
+                hideHeader={true}
+                hideAddButton={true}
+                cardStyle={true}
+                externalAddOpen={showAddEquipmentDialog}
+                onExternalAddOpenChange={setShowAddEquipmentDialog}
+                onCountChange={setEquipmentCount}
+              />
+            </div>
+          </div>
         </div>
       ),
     },
@@ -1825,45 +1869,6 @@ export default function JobDetailPage() {
               testIdPrefix="job-side"
             />
           )}
-        </div>
-      ),
-    },
-    {
-      id: "equipment",
-      label: "Equipment",
-      icon: Wrench,
-      testId: "job-rail-tab-equipment",
-      count: equipmentCount ?? undefined,
-      // Terse "+ Add" label per spec.
-      action: (
-        <button
-          type="button"
-          onClick={() => setShowAddEquipmentDialog(true)}
-          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
-          data-testid="button-add-equipment-rail"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add
-        </button>
-      ),
-      content: (
-        <div data-testid="card-equipment">
-          <JobEquipmentSection
-            jobId={job.id}
-            locationId={job.locationId}
-            defaultOpen={true}
-            // Suppress JobEquipmentSection's internal trigger header
-            // (icon + "Equipment" + chevron + add) — the rail panel
-            // header already provides title + action.
-            hideHeader={true}
-            hideAddButton={true}
-            // 2026-05-07: opt into the canonical rail card chrome so
-            // each equipment row matches the Notes + Labour cards.
-            cardStyle={true}
-            externalAddOpen={showAddEquipmentDialog}
-            onExternalAddOpenChange={setShowAddEquipmentDialog}
-            onCountChange={setEquipmentCount}
-          />
         </div>
       ),
     },

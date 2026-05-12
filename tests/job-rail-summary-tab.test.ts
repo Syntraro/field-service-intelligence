@@ -256,7 +256,7 @@ describe("JobDetailPage Summary tab — Associated Visits date/time/tech", () =>
 
 // ── 7. Existing tabs unaffected ────────────────────────────────────
 
-describe("JobDetailPage Summary tab — existing tabs unaffected", () => {
+describe("JobDetailPage Summary tab — other tabs and Equipment card", () => {
   it("Notes tab still present with EntityNotesPanel", () => {
     expect(jobDetailSrc).toMatch(/id:\s*"notes"[\s\S]{0,3000}?<EntityNotesPanel/);
   });
@@ -266,15 +266,31 @@ describe("JobDetailPage Summary tab — existing tabs unaffected", () => {
     expect(jobDetailSrc).toMatch(/buildJobLabourPanelDescriptor/);
   });
 
-  it("Equipment tab still present with JobEquipmentSection", () => {
-    expect(jobDetailSrc).toMatch(/id:\s*"equipment"[\s\S]{0,3000}?<JobEquipmentSection/);
+  it("Equipment is NOT a rail tab (relocated to Summary compact card)", () => {
+    const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
+    const arrEnd = jobDetailSrc.indexOf("];", arrStart);
+    const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
+    expect(arrSlice).not.toMatch(/id:\s*"equipment"/);
   });
 
-  it("tab count is FOUR (Summary + Notes + Labour + Equipment)", () => {
+  it("tab count is THREE (Summary + Notes + Labour)", () => {
     const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
     const arrEnd = jobDetailSrc.indexOf("];", arrStart);
     const idMatches = jobDetailSrc.slice(arrStart, arrEnd).match(/\bid:\s*"\w+"/g) ?? [];
-    expect(idMatches.length).toBe(4);
+    expect(idMatches.length).toBe(3);
+  });
+
+  it("Equipment card renders inside Summary tab content (compact card with plus button)", () => {
+    const summaryTabIdx = jobDetailSrc.indexOf('id: "summary"');
+    const notesTabIdx = jobDetailSrc.indexOf('id: "notes"', summaryTabIdx);
+    const summarySlice = jobDetailSrc.slice(summaryTabIdx, notesTabIdx);
+    expect(summarySlice).toMatch(/data-testid="job-summary-equipment-card"/);
+    expect(summarySlice).toMatch(/data-testid="button-add-equipment-summary"/);
+  });
+
+  it("Equipment compact empty state shows 'No equipment added yet.' (not a large illustration)", () => {
+    expect(jobDetailSrc).toMatch(/No equipment added yet\./);
+    expect(jobDetailSrc).toMatch(/data-testid="job-summary-equipment-empty"/);
   });
 });
 

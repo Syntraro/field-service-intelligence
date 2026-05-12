@@ -94,17 +94,20 @@ describe("FinancialDashboard — retired card definitions/mounts removed", () =>
 // ── Today's Schedule header capacity indicators ──
 
 describe("Today's Schedule — compact capacity indicators in header", () => {
-  it("renders the indicator container with the canonical testid", () => {
+  it("renders the unscheduled indicator with canonical testid", () => {
+    // Booked % was removed in 2026-05-12 semantic cleanup — it was
+    // unreliable once tasks were included as booked minutes.
     expect(dashSrc).toMatch(/data-testid="todays-schedule-capacity-indicators"/);
-    expect(dashSrc).toMatch(/data-testid="capacity-indicator-booked"/);
     expect(dashSrc).toMatch(/data-testid="capacity-indicator-unscheduled"/);
   });
 
-  it("computes bookedPercent from real capacity data (no faked values)", () => {
-    // The percent comes from a useMemo over `techs[].scheduleBlocks`.
-    expect(dashSrc).toMatch(/const bookedPercent = useMemo/);
-    expect(dashSrc).toMatch(/b\.kind === "booked"/);
-    expect(dashSrc).toMatch(/b\.durationMinutes/);
+  it("does NOT render a Booked % indicator", () => {
+    // Booked % was removed: no testid, no JSX text "Booked", no useMemo.
+    expect(dashSrc).not.toMatch(/data-testid="capacity-indicator-booked"/);
+    // Narrow to JSX text node, not variable names / comments.
+    expect(dashSrc).not.toMatch(/>\s*Booked\s*</);
+    expect(dashSrc).not.toMatch(/{bookedPercent}%/);
+    expect(dashSrc).not.toMatch(/const bookedPercent\s*=/);
   });
 
   it("threads unscheduledJobsCount as a prop (not re-fetched in the card)", () => {
@@ -113,9 +116,6 @@ describe("Today's Schedule — compact capacity indicators in header", () => {
   });
 
   it("does NOT render an Overbooked indicator (no reliable backend data yet)", () => {
-    // Per spec: "Only show 'Z Overbooked' if backed by reliable backend data.
-    // Do not add overbooked from guesses." Until /api/dashboard/capacity
-    // surfaces per-tech workday minutes, the indicator must be absent.
     expect(dashSrc).not.toMatch(/data-testid="capacity-indicator-overbooked"/);
     expect(dashSrc).not.toMatch(/Overbooked/);
   });

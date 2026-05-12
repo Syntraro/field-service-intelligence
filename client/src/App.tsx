@@ -197,7 +197,6 @@ import { ActivityFeedButton } from "@/components/activity-feed/ActivityFeedButto
 import { MessagesHeaderButton } from "@/components/communications/MessagesHeaderButton";
 import CommunicationsHub from "@/pages/CommunicationsHub";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
 import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield, Moon, Sun } from "lucide-react";
 import { ActionMenu } from "@/components/ui/action-menu";
@@ -1132,9 +1131,9 @@ function AppContent() {
             translucent border-bottom stays as a Tailwind alpha utility
             (`border-white/[0.06]`) — it's an alpha overlay, not a color
             that belongs in the token set. */}
-        <header className="flex items-center gap-3 px-3 h-16 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
+        <header className="flex items-center gap-2 px-3 h-16 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
           {/* Left: Logo + company greeting */}
-          <Link href="/" className="flex items-center gap-4 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
+          <Link href="/" className="flex items-center gap-2 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
             <img src={syntaroLogo} alt={BRAND.full} className="h-12 w-auto object-contain shrink-0" />
             {!isTechnicianPage && companyDisplayName && (
               <div className="flex flex-col justify-center min-w-0">
@@ -1164,9 +1163,41 @@ function AppContent() {
               exclusively under the header "+ New" dropdown below. */}
           <UniversalSearch />
 
-          {/* Right: Tasks popover + Quick Create dropdown + More menu */}
+          {/* Create — primary action anchored to search, not the utility
+              cluster. The green button reads as "what you do after you
+              find or browse to something" and sits flush with the search
+              component at header gap-3 (12px). align="start" keeps the
+              dropdown menu opening below-right under the button edge. */}
           {!isTechnicianPage && (
-            <div className="flex items-center gap-3 shrink-0">
+            <ActionMenu
+              header="CREATE NEW"
+              items={makeCreateMenuItems({
+                openCreate,
+                openAddClient: () => setAddClientModalOpen(true),
+                openCreatePm: () => setCreatePmDialogOpen(true),
+                navigate: setLocation,
+              })}
+              itemClassName="py-2"
+              align="start"
+              contentClassName="w-48"
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  data-testid="button-create-header"
+                  aria-label="Create new"
+                  title="Create new"
+                  className="h-8 w-8 bg-brand hover:bg-brand-hover text-white rounded-md border-0"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              }
+            />
+          )}
+
+          {/* Right utility cluster: activity · messages · tasks · help · overflow */}
+          {!isTechnicianPage && (
+            <div className="flex items-center gap-1.5 shrink-0">
               {/* 2026-05-07 — Global Activity Feed trigger. Sits next to
                   Tasks because both surface time-sensitive operational
                   signal. Active state uses the brand green so the open
@@ -1176,13 +1207,11 @@ function AppContent() {
                 onClick={() => setActivityFeedOpen((prev) => !prev)}
               />
 
-              {/* 2026-05-07 — Communications Hub triggers. Two icon-only
-                  Single Communications button — replaces the former
-                  separate Messages + Phone triggers. Default click opens
-                  the inbox; calls remain accessible via the hub rail.
-                  Active when the user is anywhere inside /communications.
-                  Phase 1 unread count is 0 (mocked); Phase 2 will add
-                  a real unread hook. */}
+              {/* 2026-05-07 — Communications Hub trigger. Default click
+                  opens the inbox; calls remain accessible via the hub
+                  rail. Active when the user is anywhere inside
+                  /communications. Phase 1 unread count is 0 (mocked);
+                  Phase 2 will add a real unread hook. */}
               <MessagesHeaderButton
                 active={location.startsWith("/communications")}
                 unreadCount={0}
@@ -1209,23 +1238,18 @@ function AppContent() {
                     // dark-tonal utility button that sits beside the header
                     // hue without competing with the primary (green) New
                     // button. Tonal family matches the header.
-                    className="relative gap-1.5 h-8 px-3 text-sm font-medium bg-slate-800/60 border-slate-700 text-slate-100 hover:bg-slate-700 hover:text-white"
+                    className="relative h-8 w-8 p-0 inline-flex items-center justify-center bg-slate-800/60 border-slate-700 text-slate-100 hover:bg-slate-700 hover:text-white"
                     aria-label={`Tasks${activeTaskCount > 0 ? ` (${activeTaskCount} active)` : ""}`}
                   >
                     <ClipboardList className="h-4 w-4" />
-                    <span className="hidden sm:inline">Tasks</span>
                     {activeTaskCount > 0 && (
-                      <Badge
-                        variant="secondary"
-                        className="h-5 min-w-5 px-1.5 text-xs rounded-full bg-brand text-white border-transparent"
+                      <span
+                        className="absolute -top-1 -right-1 inline-flex items-center justify-center rounded-full bg-brand text-white border border-header-bg h-4 min-w-4 px-1 text-helper"
                         data-testid="badge-tasks-count"
+                        aria-hidden
                       >
-                        {/* Presentation cap only — underlying count is
-                            unchanged. >20 renders as "20+" so the badge
-                            stays compact and precision beyond 20 isn't
-                            implied when it isn't needed. */}
                         {activeTaskCount > 20 ? "20+" : activeTaskCount}
-                      </Badge>
+                      </span>
                     )}
                   </Button>
                 </PopoverTrigger>
@@ -1239,37 +1263,6 @@ function AppContent() {
                   <TasksPanel onRequestClose={() => setTasksPopoverOpen(false)} />
                 </PopoverContent>
               </Popover>
-
-              {/* 2026-05-09 — Compact green Create button.
-                  Icon-only square matching the height/shape of other
-                  header icon buttons. Opens the same canonical dropdown
-                  as the sidebar Create nav item — both use
-                  makeCreateMenuItems so item order and testIds stay
-                  in sync. align="end" so the menu opens below-left. */}
-              <ActionMenu
-                header="CREATE NEW"
-                items={makeCreateMenuItems({
-                  openCreate,
-                  openAddClient: () => setAddClientModalOpen(true),
-                  openCreatePm: () => setCreatePmDialogOpen(true),
-                  navigate: setLocation,
-                })}
-                itemClassName="py-2"
-                align="end"
-                contentClassName="w-48"
-                trigger={
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    data-testid="button-create-header"
-                    aria-label="Create new"
-                    title="Create new"
-                    className="h-8 w-8 bg-brand hover:bg-brand-hover text-white rounded-md border-0"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                }
-              />
 
               {/* 2026-04-15 — Help global popover. Sits between Tasks
                   and the More menu so it reads as a utility control,
@@ -1319,7 +1312,7 @@ function AppContent() {
               {/* More menu — Settings, Feedback, Logout */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="text-slate-400 hover:text-white hover:bg-white/10">
+                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="h-8 w-8 text-slate-400 hover:text-white hover:bg-white/10">
                     <MoreHorizontal className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>

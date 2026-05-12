@@ -10,6 +10,7 @@ import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { StatusChip } from "@/components/ui/chip";
 import type { ChipTone } from "@/lib/chipVariants";
 import type { JobStatusEvent } from "@shared/schema";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 
 interface JobStatusTimelineProps {
   jobId: string;
@@ -141,7 +142,7 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
         <CollapsibleContent>
           <div className="border-t px-4 pb-4 pt-3">
             {!hasEvents ? (
-              <p className="text-xs text-muted-foreground">No status changes recorded yet.</p>
+              <RailContentCardMeta>No status changes recorded yet.</RailContentCardMeta>
             ) : (
               <ul className="space-y-3">
                 {displayEvents.map((event) => (

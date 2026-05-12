@@ -5,7 +5,7 @@
  * Outside-window indicators are rendered as a non-scrolling overlay.
  */
 import { useRef, useEffect, useMemo, useState, useCallback } from "react";
-import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, DispatchLeadVisit, Technician } from "./dispatchPreviewTypes";
 import { TIMELINE_HOURS, HOUR_WIDTH_PX, LANE_HEIGHT_PX, DIVIDER_HEIGHT_PX, formatHour, BUSINESS_START_HOUR, TIMELINE_START_HOUR } from "./dispatchPreviewUtils";
 import DispatchLaneRow from "./DispatchLaneRow";
 import { countItemsBefore, countItemsAfter, EarlyIndicator, LateIndicator } from "./DispatchOutsideWindowIndicators";
@@ -58,6 +58,9 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
+  /** Per-tech lead visits for day-view lane rendering. */
+  leadVisitsByTech?: Map<string, DispatchLeadVisit[]>;
+  onSelectLeadVisit?: (lead: DispatchLeadVisit) => void;
 };
 
 /** Goal 2: Strengthened red "now" indicator line — wider stroke, subtle glow for visibility on busy boards */
@@ -89,6 +92,8 @@ export default function DispatchTimeline({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
+  leadVisitsByTech,
+  onSelectLeadVisit,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null);
   const scrollRef = timelineScrollRef ?? localRef;
@@ -183,6 +188,8 @@ export default function DispatchTimeline({
                           tech={t}
                           visits={visitsByTech.get(t.id) ?? EMPTY_VISITS}
                           tasks={tasksByTech?.get(t.id) ?? EMPTY_TASKS}
+                          leadVisits={leadVisitsByTech?.get(t.id) ?? []}
+                          onSelectLeadVisit={onSelectLeadVisit}
                           timeOff={timeOffByTech?.get(t.id)}
                           dayDateISO={dayDateISO}
                           isLast={i === working.length - 1 && offShift.length === 0}

@@ -15,6 +15,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -214,37 +215,39 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
         )}
 
         {hasToken && !isActive && (
-          <div className="flex items-center justify-between gap-3 p-3 rounded-md border border-amber-200 bg-amber-50/50">
-            <div className="flex items-start gap-2 min-w-0">
-              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-900">
-                Calendar link is disabled. Any external calendar subscribed to the previous URL
-                will stop receiving updates.
-              </p>
-            </div>
-            <div className="flex gap-2 shrink-0">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => enableMutation.mutate()}
-                disabled={busy}
-                data-testid="calendar-sync-enable"
-              >
-                Re-enable
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => rotateMutation.mutate()}
-                disabled={busy}
-                data-testid="calendar-sync-rotate-from-disabled"
-              >
-                <RefreshCcw className="h-3.5 w-3.5 mr-1" />
-                Regenerate
-              </Button>
-            </div>
-          </div>
+          <Alert variant="warning" className="p-3">
+            <AlertDescription className="flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2 min-w-0">
+                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-xs">
+                  Calendar link is disabled. Any external calendar subscribed to the previous URL
+                  will stop receiving updates.
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => enableMutation.mutate()}
+                  disabled={busy}
+                  data-testid="calendar-sync-enable"
+                >
+                  Re-enable
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => rotateMutation.mutate()}
+                  disabled={busy}
+                  data-testid="calendar-sync-rotate-from-disabled"
+                >
+                  <RefreshCcw className="h-3.5 w-3.5 mr-1" />
+                  Regenerate
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
         )}
 
         {hasToken && isActive && feedUrl && (

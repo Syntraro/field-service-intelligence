@@ -2,7 +2,7 @@
  * Dispatch Board preview utilities.
  * Pure helpers — no side effects, no external dependencies.
  */
-import type { DispatchVisit, Technician, VisitStatus } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchLeadVisit, Technician, VisitStatus } from "./dispatchPreviewTypes";
 
 // Hours displayed on the timeline (5 AM – 10 PM default, 0–24 in expanded mode)
 // Item 3: Extended from 6–20 to 5–22 for early/late scheduling support
@@ -183,6 +183,20 @@ export function getVisitPosition(visit: DispatchVisit, timelineStartHour = TIMEL
   const left = Math.max(0, offsetHours * HOUR_WIDTH_PX);
   const clippedStart = Math.max(0, -offsetHours * HOUR_WIDTH_PX);
   const width = Math.max(totalWidth - clippedStart, 40);
+  return { left, width };
+}
+
+/** Get pixel position for a lead visit block on the day-view timeline.
+ *  Mirrors getTaskPosition. Handles nullable durationMinutes by
+ *  defaulting to 30 min (the server-side normalizeVisitSchedule minimum). */
+export function getLeadVisitPosition(lead: DispatchLeadVisit, timelineStartHour = TIMELINE_START_HOUR): { left: number; width: number } | null {
+  if (!lead.scheduledStart) return null;
+  const start = new Date(lead.scheduledStart);
+  const startHour = start.getHours() + start.getMinutes() / 60;
+  const offsetHours = startHour - timelineStartHour;
+  if (offsetHours < 0) return null;
+  const left = offsetHours * HOUR_WIDTH_PX;
+  const width = Math.max(((lead.durationMinutes ?? 30) / 60) * HOUR_WIDTH_PX, 40);
   return { left, width };
 }
 

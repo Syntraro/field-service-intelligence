@@ -869,3 +869,212 @@ describe("InvoicesListPage — QBO sync filter migrated to canonical FilterChip"
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────
+// PHASE 4 (2026-05-12) — App-wide semantic pill drift audit.
+// Migrated files: InvoiceDetailPage, SelectJobsForInvoiceModal,
+// TenantDangerZone, DispatchTechnicianSidebar, DispatchDetailPanel.
+// ─────────────────────────────────────────────────────────────────
+
+// ── 12. InvoiceDetailPage StatusPill → StatusChip ────────────────
+
+describe("InvoiceDetailPage — StatusPill migrated to canonical StatusChip", () => {
+  const PATH = resolve(
+    __dirname,
+    "../client/src/pages/InvoiceDetailPage.tsx",
+  );
+  const src = readFileSync(PATH, "utf-8");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  it("imports StatusChip from the canonical chip module", () => {
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bStatusChip\b[^}]*\}\s*from\s*["']@\/components\/ui\/chip["']/,
+    );
+  });
+
+  it("StatusPill renders <StatusChip> with data-testid invoice-status-pill", () => {
+    expect(src).toMatch(
+      /<StatusChip\s+tone=\{tone\}[\s\S]*?data-testid="invoice-status-pill"/,
+    );
+  });
+
+  it("does NOT keep the ad-hoc bg-rose-100 / bg-teal-50 / bg-amber-50 / bg-emerald-50 / bg-stone-200 pill classes", () => {
+    // Scope to the StatusPill function body (between the export function
+    // declaration and the closing brace of the return statement).
+    const fnMatch = code.match(
+      /export function StatusPill[\s\S]*?return\s*\(\s*<StatusChip[\s\S]*?<\/StatusChip>\s*\)\s*;?\s*\}/,
+    );
+    expect(fnMatch).not.toBeNull();
+    const fnBody = fnMatch![0];
+    expect(fnBody).not.toMatch(/bg-rose-100/);
+    expect(fnBody).not.toMatch(/bg-teal-50/);
+    expect(fnBody).not.toMatch(/bg-amber-50/);
+    expect(fnBody).not.toMatch(/bg-emerald-50/);
+    expect(fnBody).not.toMatch(/bg-stone-200/);
+  });
+
+  it("tone map covers danger/info/warning/success/neutral (all invoice lifecycle states)", () => {
+    // Check each tone literal is present in the StatusPill context. The
+    // `as const` suffix confirms these are tone-literal assignments, not
+    // unrelated string values elsewhere in the file.
+    expect(src).toMatch(/tone: "danger"\s+as const/);
+    expect(src).toMatch(/tone: "info"\s+as const/);
+    expect(src).toMatch(/tone: "warning"\s+as const/);
+    expect(src).toMatch(/tone: "success"\s+as const/);
+    expect(src).toMatch(/tone: "neutral"\s+as const/);
+  });
+});
+
+// ── 13. SelectJobsForInvoiceModal — statusTone() → StatusChip ────
+
+describe("SelectJobsForInvoiceModal — statusTone() removed, StatusChip used for job status", () => {
+  const PATH = resolve(
+    __dirname,
+    "../client/src/components/invoice/SelectJobsForInvoiceModal.tsx",
+  );
+  const src = readFileSync(PATH, "utf-8");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  it("imports StatusChip from the canonical chip module", () => {
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bStatusChip\b[^}]*\}\s*from\s*["']@\/components\/ui\/chip["']/,
+    );
+  });
+
+  it("does NOT define a local statusTone() helper that returns bg/text class strings", () => {
+    expect(code).not.toMatch(/function statusTone\s*\(/);
+  });
+
+  it("does NOT keep the ad-hoc bg-emerald-50 / bg-teal-50 / bg-stone-100 pill classes on job status cells", () => {
+    expect(code).not.toMatch(/bg-emerald-50.*text-emerald-700/);
+    expect(code).not.toMatch(/bg-teal-50.*text-teal-700/);
+  });
+
+  it("renders job status pill as <StatusChip> with data-testid pill-status-*", () => {
+    expect(src).toMatch(
+      /<StatusChip\s+tone=\{jobMeta\.tone\}\s+data-testid=\{`pill-status-\$\{job\.id\}`\}/,
+    );
+  });
+});
+
+// ── 14. TenantDangerZone — statusTone()/Badge → StatusChip ───────
+
+describe("TenantDangerZone — statusTone()/Badge removed, StatusChip used for request status", () => {
+  const PATH = resolve(
+    __dirname,
+    "../client/src/pages/platform/TenantDangerZone.tsx",
+  );
+  const src = readFileSync(PATH, "utf-8");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  it("imports StatusChip from the canonical chip module", () => {
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bStatusChip\b[^}]*\}\s*from\s*["']@\/components\/ui\/chip["']/,
+    );
+  });
+
+  it("does NOT import Badge from @/components/ui/badge (replaced by StatusChip)", () => {
+    expect(code).not.toMatch(
+      /import\s*\{[^}]*\bBadge\b[^}]*\}\s*from\s*["']@\/components\/ui\/badge["']/,
+    );
+  });
+
+  it("does NOT define a local statusTone() helper that returns badge class strings", () => {
+    expect(code).not.toMatch(/function statusTone\s*\(/);
+  });
+
+  it("does NOT keep the ad-hoc bg-amber-100 / bg-orange-100 / bg-red-100 / bg-zinc-200 badge classes", () => {
+    expect(code).not.toMatch(/bg-amber-100\s+text-amber-800/);
+    expect(code).not.toMatch(/bg-orange-100\s+text-orange-800/);
+    expect(code).not.toMatch(/bg-red-100\s+text-red-800/);
+    expect(code).not.toMatch(/bg-zinc-200\s+text-zinc-700/);
+  });
+
+  it("requestStatusMeta maps pending/approved→warning, executing/failed→danger, completed/cancelled/expired→neutral", () => {
+    // The function body contains tone literals as right-hand values; spot-check
+    // via patterns that are unique to requestStatusMeta in this file.
+    expect(src).toMatch(/case "pending":\s*return \{ tone: "warning"/);
+    expect(src).toMatch(/case "executing":\s*return \{ tone: "danger"/);
+    expect(src).toMatch(/case "completed":\s*return \{ tone: "neutral"/);
+    expect(src).toMatch(/case "failed":\s*return \{ tone: "danger"/);
+  });
+});
+
+// ── 15. DispatchTechnicianSidebar — liveStateChipClasses() → StatusChip ─
+
+describe("DispatchTechnicianSidebar — liveStateChipClasses() removed, StatusChip for live state + time-off", () => {
+  const PATH = resolve(
+    __dirname,
+    "../client/src/components/dispatch/DispatchTechnicianSidebar.tsx",
+  );
+  const src = readFileSync(PATH, "utf-8");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  it("imports StatusChip from the canonical chip module", () => {
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bStatusChip\b[^}]*\}\s*from\s*["']@\/components\/ui\/chip["']/,
+    );
+  });
+
+  it("does NOT define a local liveStateChipClasses() helper that returns class strings", () => {
+    expect(code).not.toMatch(/function liveStateChipClasses\s*\(/);
+  });
+
+  it("does NOT keep the ad-hoc bg-yellow-50 / bg-lime-50 / bg-amber-50 / bg-emerald-50 chip classes", () => {
+    expect(code).not.toMatch(/bg-yellow-50\s+text-yellow-800/);
+    expect(code).not.toMatch(/bg-lime-50\s+text-lime-800/);
+    expect(code).not.toMatch(/bg-amber-50\s+text-amber-700/);
+    expect(code).not.toMatch(/bg-emerald-50\s+text-emerald-700/);
+  });
+
+  it("live state chip renders <StatusChip> with tech-live-state testid", () => {
+    expect(src).toMatch(
+      /<StatusChip[\s\S]*?tone=\{liveStateTone\(liveState\)\}[\s\S]*?data-testid=\{`tech-live-state-\$\{t\.id\}`\}/,
+    );
+  });
+
+  it("time-off pill renders <StatusChip tone=\"warning\"> with tech-time-off-pill testid", () => {
+    expect(src).toMatch(
+      /<StatusChip[\s\S]*?tone="warning"[\s\S]*?data-testid=\{`tech-time-off-pill-\$\{t\.id\}`\}/,
+    );
+  });
+});
+
+// ── 16. DispatchDetailPanel — task status span → StatusChip ──────
+
+describe("DispatchDetailPanel — task status pill migrated to canonical StatusChip", () => {
+  const PATH = resolve(
+    __dirname,
+    "../client/src/components/dispatch/DispatchDetailPanel.tsx",
+  );
+  const src = readFileSync(PATH, "utf-8");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  it("imports StatusChip from the canonical chip module", () => {
+    expect(src).toMatch(
+      /import\s*\{[^}]*\bStatusChip\b[^}]*\}\s*from\s*["']@\/components\/ui\/chip["']/,
+    );
+  });
+
+  it("does NOT keep the ad-hoc border-blue-200 bg-blue-50 text-blue-700 task status span", () => {
+    expect(code).not.toMatch(
+      /border-blue-200\s+bg-blue-50[\s\S]*?text-blue-700\s+capitalize/,
+    );
+  });
+
+  it("task status renders <StatusChip status={task.status}>", () => {
+    expect(src).toMatch(
+      /<StatusChip\s+status=\{task\.status\}/,
+    );
+  });
+});

@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { and, eq, isNull, isNotNull, gte, lte, desc, or, asc, sql, ne } from "drizzle-orm";
-import { tasks, timeEntries, supplierVisitDetails, suppliers, supplierLocations } from "@shared/schema";
+import { tasks, timeEntries, supplierVisitDetails, suppliers, supplierLocations, users } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
 import { sanitizeSchedulingTimestamps } from "../utils/allDaySanitizer";
 
@@ -179,17 +179,34 @@ export class TaskRepository extends BaseRepository {
     const offset = clampOffset(filters.offset ?? 0);
     const limit = clampLimit(filters.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
 
-    // Fetch limit + 1 to determine hasMore
+    // Fetch limit + 1 to determine hasMore; left-join users to hydrate assignedUser.
     const rows = await db
-      .select()
+      .select({
+        task: tasks,
+        assignedUser: {
+          id: users.id,
+          fullName: users.fullName,
+          firstName: users.firstName,
+          lastName: users.lastName,
+        },
+      })
       .from(tasks)
+      .leftJoin(users, eq(tasks.assignedToUserId, users.id))
       .where(and(...where))
-      .orderBy(desc(tasks.createdAt), desc(tasks.id)) // Stable ordering
+      .orderBy(desc(tasks.createdAt), desc(tasks.id))
       .limit(limit + 1)
       .offset(offset);
 
     const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => {
+      const au = r.assignedUser;
+      return {
+        ...r.task,
+        assignedUser: au && au.id
+          ? { id: au.id, fullName: au.fullName, firstName: au.firstName, lastName: au.lastName }
+          : null,
+      };
+    });
 
     return { items, hasMore };
   }

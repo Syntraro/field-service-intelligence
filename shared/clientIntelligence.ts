@@ -34,12 +34,14 @@ export interface ClientIntelligenceData {
   // Financial Performance
   last30Days: {
     grossRevenue: number;
+    netRevenue: number;
     invoiceCount: number;
     avgInvoiceValue: number | null;
     grossMarginPct: number | null;
   };
   last12Months: {
     grossRevenue: number;
+    netRevenue: number;
     invoiceCount: number;
     avgInvoiceValue: number | null;
     grossMarginPct: number | null;
@@ -47,15 +49,24 @@ export interface ClientIntelligenceData {
   };
   revenueTrend: { month: string; gross: number }[];
 
-  // Payment Behavior
+  // Payment Behavior (kept for Insights card logic)
   pctInvoicesOverdue: number | null;
   largestOverdueAmount: number | null;
   paymentTrend: { month: string; avgDays: number }[];
 
-  // Revenue Categories
+  // Revenue Categories (kept for backwards compat — no longer rendered)
   revenueByCategory: { category: string; amount: number; pct: number }[];
 
-  // At A Glance
+  // Top Items Sold
+  topItemsSold: Array<{
+    itemId: string | null;
+    name: string;
+    quantity: number;
+    revenue: number;
+    percentOfRevenue: number;
+  }>;
+
+  // At A Glance (kept for backwards compat — no longer rendered)
   mostCommonJobType: string | null;
   totalEquipment: number;
   openQuotesValue: number;

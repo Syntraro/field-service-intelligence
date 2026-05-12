@@ -94,6 +94,7 @@ export async function getClientIntelligence(
     equipmentRow,
     openQuotesRow,
     visitCompletionRow,
+    topItemsSoldRows,
     lastServiceRows,
   ] = await Promise.all([
     // customerSinceDate
@@ -256,12 +257,13 @@ export async function getClientIntelligence(
         gross: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS numeric)), 0)::text`,
         count: sql<number>`COUNT(*)::int`,
         lineRevenue: sql<string>`COALESCE(SUM(CAST(il.line_total AS numeric)), 0)::text`,
+        lineSubtotal: sql<string>`COALESCE(SUM(CAST(il.line_subtotal_sum AS numeric)), 0)::text`,
         lineCost: sql<string>`COALESCE(SUM(CAST(il.line_cost_sum AS numeric)), 0)::text`,
         hasCost: sql<boolean>`BOOL_OR(il.has_cost)`,
       })
       .from(invoices)
       .leftJoin(
-        sql`(SELECT invoice_id, SUM(CAST(line_total AS numeric)) AS line_total, SUM(CAST(quantity AS numeric) * CAST(unit_cost AS numeric)) AS line_cost_sum, BOOL_OR(unit_cost IS NOT NULL AND CAST(unit_cost AS numeric) > 0) AS has_cost FROM invoice_lines WHERE company_id = ${companyId} GROUP BY invoice_id) il`,
+        sql`(SELECT invoice_id, SUM(CAST(line_total AS numeric)) AS line_total, SUM(CAST(line_subtotal AS numeric)) AS line_subtotal_sum, SUM(CAST(quantity AS numeric) * CAST(unit_cost AS numeric)) AS line_cost_sum, BOOL_OR(unit_cost IS NOT NULL AND CAST(unit_cost AS numeric) > 0) AS has_cost FROM invoice_lines WHERE company_id = ${companyId} GROUP BY invoice_id) il`,
         sql`il.invoice_id = ${invoices.id}`,
       )
       .where(
@@ -278,12 +280,13 @@ export async function getClientIntelligence(
         gross: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS numeric)), 0)::text`,
         count: sql<number>`COUNT(*)::int`,
         lineRevenue: sql<string>`COALESCE(SUM(CAST(il.line_total AS numeric)), 0)::text`,
+        lineSubtotal: sql<string>`COALESCE(SUM(CAST(il.line_subtotal_sum AS numeric)), 0)::text`,
         lineCost: sql<string>`COALESCE(SUM(CAST(il.line_cost_sum AS numeric)), 0)::text`,
         hasCost: sql<boolean>`BOOL_OR(il.has_cost)`,
       })
       .from(invoices)
       .leftJoin(
-        sql`(SELECT invoice_id, SUM(CAST(line_total AS numeric)) AS line_total, SUM(CAST(quantity AS numeric) * CAST(unit_cost AS numeric)) AS line_cost_sum, BOOL_OR(unit_cost IS NOT NULL AND CAST(unit_cost AS numeric) > 0) AS has_cost FROM invoice_lines WHERE company_id = ${companyId} GROUP BY invoice_id) il`,
+        sql`(SELECT invoice_id, SUM(CAST(line_total AS numeric)) AS line_total, SUM(CAST(line_subtotal AS numeric)) AS line_subtotal_sum, SUM(CAST(quantity AS numeric) * CAST(unit_cost AS numeric)) AS line_cost_sum, BOOL_OR(unit_cost IS NOT NULL AND CAST(unit_cost AS numeric) > 0) AS has_cost FROM invoice_lines WHERE company_id = ${companyId} GROUP BY invoice_id) il`,
         sql`il.invoice_id = ${invoices.id}`,
       )
       .where(
@@ -455,6 +458,32 @@ export async function getClientIntelligence(
           )
       : Promise.resolve([{ totalVisits: 0, completedVisits: 0 }]),
 
+    // top items sold: last 12 months, grouped by stable key, top 5 by revenue.
+    // productId and description are both aggregated because GROUP BY uses COALESCE(productId, description)
+    // not a direct column reference — PostgreSQL requires non-grouped columns to be in aggregate functions.
+    db
+      .select({
+        itemId: sql<string | null>`MAX(${invoiceLines.productId})`,
+        name: sql<string>`MAX(${invoiceLines.description})`,
+        quantity: sql<string>`COALESCE(SUM(CAST(${invoiceLines.quantity} AS numeric)), 0)::text`,
+        revenue: sql<string>`COALESCE(SUM(CAST(${invoiceLines.lineSubtotal} AS numeric)), 0)::text`,
+      })
+      .from(invoiceLines)
+      .innerJoin(invoices, eq(invoiceLines.invoiceId, invoices.id))
+      .where(
+        and(
+          eq(invoiceLines.companyId, companyId),
+          eq(invoices.companyId, companyId),
+          eq(invoices.customerCompanyId, customerCompanyId),
+          sql`${invoices.issueDate} >= CURRENT_DATE - INTERVAL '12 months'`,
+          sql`${invoices.status} <> 'voided'`,
+          sql`${invoiceLines.lineItemType} <> 'discount'`,
+        ),
+      )
+      .groupBy(sql`COALESCE(${invoiceLines.productId}, ${invoiceLines.description})`)
+      .orderBy(desc(sql`COALESCE(SUM(CAST(${invoiceLines.lineSubtotal} AS numeric)), 0)`))
+      .limit(5),
+
     // last service date: most recent job closedAt or visit completedAt
     locationIds.length > 0
       ? db
@@ -555,10 +584,12 @@ export async function getClientIntelligence(
   const l30Gross = Number(l30?.gross ?? 0);
   const l30Count = Number(l30?.count ?? 0);
   const l30Revenue = Number(l30?.lineRevenue ?? 0);
+  const l30NetRevenue = Number(l30?.lineSubtotal ?? 0);
   const l30Cost = Number(l30?.lineCost ?? 0);
   const l30HasCost = Boolean(l30?.hasCost);
   const last30Days = {
     grossRevenue: l30Gross,
+    netRevenue: l30NetRevenue,
     invoiceCount: l30Count,
     avgInvoiceValue: l30Count > 0 ? l30Gross / l30Count : null,
     grossMarginPct: l30HasCost ? grossMarginPct(l30Revenue, l30Cost) : null,
@@ -569,11 +600,13 @@ export async function getClientIntelligence(
   const l12Gross = Number(l12?.gross ?? 0);
   const l12Count = Number(l12?.count ?? 0);
   const l12Revenue = Number(l12?.lineRevenue ?? 0);
+  const l12NetRevenue = Number(l12?.lineSubtotal ?? 0);
   const l12Cost = Number(l12?.lineCost ?? 0);
   const l12HasCost = Boolean(l12?.hasCost);
   const prev12Gross = Number(prev12Row[0]?.gross ?? 0);
   const last12Months = {
     grossRevenue: l12Gross,
+    netRevenue: l12NetRevenue,
     invoiceCount: l12Count,
     avgInvoiceValue: l12Count > 0 ? l12Gross / l12Count : null,
     grossMarginPct: l12HasCost ? grossMarginPct(l12Revenue, l12Cost) : null,
@@ -626,6 +659,19 @@ export async function getClientIntelligence(
   const avgJobValueRaw = invoicesRow[0]?.avgValue ?? null;
   const avgJobValue = avgJobValueRaw != null && avgJobValueRaw !== "" ? Number(avgJobValueRaw) : null;
 
+  // Top items sold
+  const totalL12Revenue = l12NetRevenue > 0 ? l12NetRevenue : (l12Gross > 0 ? l12Gross : 1);
+  const topItemsSold = (topItemsSoldRows as any[]).map((r) => {
+    const rev = Number(r.revenue ?? 0);
+    return {
+      itemId: r.itemId ?? null,
+      name: String(r.name ?? ""),
+      quantity: Math.round(Number(r.quantity ?? 0)),
+      revenue: rev,
+      percentOfRevenue: totalL12Revenue > 0 ? (rev / totalL12Revenue) * 100 : 0,
+    };
+  });
+
   return {
     avgDaysToPay,
     companyAvgDaysToPay,
@@ -659,6 +705,8 @@ export async function getClientIntelligence(
     paymentTrend,
 
     revenueByCategory,
+
+    topItemsSold,
 
     mostCommonJobType,
     totalEquipment,

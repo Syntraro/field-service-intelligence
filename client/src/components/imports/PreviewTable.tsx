@@ -4,6 +4,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, AlertTriangle, XCircle, Download } from "lucide-react";
@@ -97,17 +98,19 @@ export function PreviewTable<T, D>({ preview, renderDetails }: PreviewTableProps
       </div>
 
       {systemicLegendEntries.length > 0 && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          <div className="font-semibold mb-1">Warning legend</div>
-          <div className="space-y-0.5">
-            {systemicLegendEntries.map(([code, msg]) => (
-              <div key={code}>
-                <span className="font-mono text-[10px] bg-amber-200 px-1 rounded mr-2">W{code}</span>
-                {msg}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Alert variant="warning" className="px-3 py-2 text-xs">
+          <AlertDescription>
+            <div className="font-semibold mb-1">Warning legend</div>
+            <div className="space-y-0.5">
+              {systemicLegendEntries.map(([code, msg]) => (
+                <div key={code}>
+                  <span className="font-mono text-[10px] bg-amber-200 px-1 rounded mr-2">W{code}</span>
+                  {msg}
+                </div>
+              ))}
+            </div>
+          </AlertDescription>
+        </Alert>
       )}
 
       <div className="border border-[#e2e8f0] rounded-md overflow-hidden">

@@ -261,6 +261,9 @@ describe("GET /api/clients/:clientId/pricing-history — HTTP contract", () => {
     // Date is ISO 8601.
     expect(typeof item.date).toBe("string");
     expect(item.date).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    // Service location — seeded with companyName only, no address.
+    expect(item.serviceLocationName).toBe(`${TEST_PREFIX}LocA`);
+    expect(item.serviceLocationAddress).toBeNull();
   });
 
   it("200 — empty history returns { items: [] }", async () => {

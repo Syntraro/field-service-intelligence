@@ -28,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useInlineEdit } from "@/components/forms/InlineEditableText";
+import { InlineActionRow } from "@/components/ui/form-field";
 
 type SavedProps = {
   mode: "saved";
@@ -98,7 +99,7 @@ function SavedDescription({ value, onSave, isSaving, inline }: SavedProps) {
         }}
         data-testid="input-quote-description"
       />
-      <div className="flex items-center justify-end gap-2">
+      <InlineActionRow>
         <Button
           variant="ghost"
           size="sm"
@@ -116,7 +117,7 @@ function SavedDescription({ value, onSave, isSaving, inline }: SavedProps) {
           {saving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
           Save
         </Button>
-      </div>
+      </InlineActionRow>
     </div>
   );
 

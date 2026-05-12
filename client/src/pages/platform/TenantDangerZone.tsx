@@ -29,7 +29,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -156,22 +157,15 @@ function fmtRelative(ms: number): string {
   return `${hr}h ${remMin}m`;
 }
 
-function statusTone(status: RequestStatus): { badge: string; label: string } {
+function requestStatusMeta(status: RequestStatus): { tone: ChipTone; label: string } {
   switch (status) {
-    case "pending":
-      return { badge: "bg-amber-100 text-amber-800 border-amber-200", label: "Pending approval" };
-    case "approved":
-      return { badge: "bg-orange-100 text-orange-800 border-orange-200", label: "Approved — execution scheduled" };
-    case "executing":
-      return { badge: "bg-red-100 text-red-800 border-red-200", label: "Executing now" };
-    case "completed":
-      return { badge: "bg-zinc-200 text-zinc-700 border-zinc-300", label: "Completed" };
-    case "cancelled":
-      return { badge: "bg-zinc-100 text-zinc-600 border-zinc-200", label: "Cancelled" };
-    case "expired":
-      return { badge: "bg-zinc-100 text-zinc-600 border-zinc-200", label: "Expired" };
-    case "failed":
-      return { badge: "bg-red-100 text-red-800 border-red-200", label: "Failed" };
+    case "pending":   return { tone: "warning", label: "Pending approval" };
+    case "approved":  return { tone: "warning", label: "Approved — execution scheduled" };
+    case "executing": return { tone: "danger",  label: "Executing now" };
+    case "completed": return { tone: "neutral", label: "Completed" };
+    case "cancelled": return { tone: "neutral", label: "Cancelled" };
+    case "expired":   return { tone: "neutral", label: "Expired" };
+    case "failed":    return { tone: "danger",  label: "Failed" };
   }
 }
 
@@ -310,7 +304,7 @@ function ActiveRequestPanel({
   onCancel: () => void;
 }) {
   void tenantId;
-  const tone = statusTone(request.status);
+  const meta = requestStatusMeta(request.status);
   const isInitiator = currentUserId && request.initiatedByUserId === currentUserId;
 
   // Live countdown — to expiresAt while pending, to executionScheduledAt
@@ -342,7 +336,7 @@ function ActiveRequestPanel({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Badge className={`border ${tone.badge}`}>{tone.label}</Badge>
+            <StatusChip tone={meta.tone}>{meta.label}</StatusChip>
             {countdownMs !== null && (
               <span className="inline-flex items-center text-xs text-zinc-600">
                 <Clock className="h-3 w-3 mr-1" />
@@ -436,7 +430,7 @@ function HistoryPanel({ history }: { history: DeletionRequestRow[] }) {
       </summary>
       <ul className="mt-2 space-y-2">
         {history.map((r) => {
-          const tone = statusTone(r.status);
+          const rMeta = requestStatusMeta(r.status);
           return (
             <li
               key={r.id}
@@ -444,7 +438,7 @@ function HistoryPanel({ history }: { history: DeletionRequestRow[] }) {
               data-testid={`teardown-history-row-${r.id}`}
             >
               <div className="flex items-center justify-between gap-2">
-                <Badge className={`border ${tone.badge}`}>{tone.label}</Badge>
+                <StatusChip tone={rMeta.tone}>{rMeta.label}</StatusChip>
                 <span className="font-mono text-muted-foreground">{r.id.slice(0, 8)}…</span>
               </div>
               <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5">

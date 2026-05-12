@@ -110,15 +110,13 @@ describe("Client Detail layout — right utility region spans full content heigh
 
 // ── Rail items registry ─────────────────────────────────────────────
 
-describe("Client Detail rail — registry of seven items", () => {
+describe("Client Detail rail — registry of three items (2026-05-12 RALPH consolidation)", () => {
+  // 2026-05-12: 7 tabs → 3. Summary (Billing + Maintenance + Activity),
+  // Notes, Equip & Parts (Equipment + Parts). Contacts removed from rail.
   const expected = [
-    { testId: "rail-item-contacts", label: "Contacts" },
+    { testId: "rail-item-summary", label: "Summary" },
     { testId: "rail-item-notes", label: "Notes" },
-    { testId: "rail-item-billing", label: "Billing" },
-    { testId: "rail-item-equipment", label: "Equipment" },
-    { testId: "rail-item-parts", label: "Parts" },
-    { testId: "rail-item-maintenance", label: "Maintenance" },
-    { testId: "rail-item-activity", label: "Activity" },
+    { testId: "rail-item-equipment-parts", label: "Equip & Parts" },
   ];
 
   for (const item of expected) {
@@ -127,6 +125,12 @@ describe("Client Detail rail — registry of seven items", () => {
       expect(pageSrc).toContain(`label: "${item.label}"`);
     });
   }
+
+  it("does NOT include standalone Contacts / Billing / Equipment / Parts / Maintenance / Activity tabs", () => {
+    for (const id of ["contacts", "billing", "equipment", "parts", "maintenance", "activity"]) {
+      expect(pageSrc).not.toMatch(new RegExp(`testId:\\s*"rail-item-${id}"`));
+    }
+  });
 
   it("does NOT include a Files item", () => {
     expect(pageSrc).not.toMatch(/testId:\s*"rail-item-files"/);
@@ -207,109 +211,44 @@ describe("Client Detail panel header — single canonical row, no scope chip", (
 });
 
 describe("Client Detail panel header actions — per-tab action slots", () => {
-  it("Contacts panel header has '+ Add' action with stable testId", () => {
-    expect(pageSrc).toMatch(/data-testid="client-side-panel-action-add-contact"/);
-  });
-
   it("Notes panel header has '+ Add Note' action with stable testId", () => {
     expect(pageSrc).toMatch(/data-testid="client-side-panel-action-add-note"/);
   });
 
-  it("Billing panel header has 'Edit' action wired to setEditClientDialogOpen", () => {
+  it("Summary panel header has 'Edit' action wired to setEditClientDialogOpen (billing edit)", () => {
     expect(pageSrc).toMatch(/data-testid="client-side-panel-action-edit-billing"/);
-    // The Billing tab's action button opens the Edit Client dialog
-    // directly (the legacy `onEditBilling` callback indirection is
-    // gone now that the action is inlined per tab).
     expect(pageSrc).toMatch(
       /onClick=\{\(\)\s*=>\s*setEditClientDialogOpen\(true\)\}[\s\S]{0,400}?data-testid="client-side-panel-action-edit-billing"/,
     );
   });
 
-  it("Equipment panel header has '+ Add Equipment' action (location scope)", () => {
+  it("Equip & Parts panel header has '+ Add Equipment' and '+ Add Part' actions (location scope)", () => {
+    // Both buttons live inside the equipment-parts tab action slot,
+    // gated behind a scopeType === "location" ? ... : null guard.
     expect(pageSrc).toMatch(/data-testid="client-side-panel-action-add-equipment"/);
-  });
-
-  it("Maintenance panel header has '+ Add Plan' action (location scope) routing to /pm/new wizard", () => {
-    expect(pageSrc).toMatch(/data-testid="client-side-panel-action-add-maintenance"/);
-    // The Maintenance tab's `action` slot is wrapped in a
-    // `scopeType === "location" ? <button …> : null` guard inside the
-    // tabs array so it only renders at location scope (mirrors
-    // Equipment '+ Add Equipment' rule).
-    expect(pageSrc).toMatch(
-      /id:\s*"maintenance"[\s\S]{0,2000}?action:\s*scopeType\s*===\s*"location"\s*\?/,
-    );
-  });
-
-  it("Activity tab has no `+ Add` action (its tab spec omits the `action` slot)", () => {
-    // Activity is the only tab in the canonical `clientRailTabs` array
-    // that doesn't carry an `action:` slot. Pin the absence so a
-    // future refactor can't accidentally add one without an explicit
-    // spec change.
-    const startIdx = pageSrc.indexOf('id: "activity"');
-    expect(startIdx).toBeGreaterThan(-1);
-    const endIdx = pageSrc.indexOf("];", startIdx);
-    expect(endIdx).toBeGreaterThan(startIdx);
-    const activityEntry = pageSrc.slice(startIdx, endIdx);
-    expect(activityEntry).not.toMatch(/\baction:\s*</);
-    expect(activityEntry).not.toMatch(/\baction:\s*scopeType/);
-  });
-
-  it("Parts panel header action ('+ Add Part') stays gated to location scope (legacy fall-through preserved)", () => {
-    // The Parts tab's action slot is wrapped in a
-    // `scopeType === "location" ? <button> : null` guard inside the
-    // tabs array so the affordance only renders at location scope.
-    expect(pageSrc).toMatch(
-      /id:\s*"parts"[\s\S]{0,2000}?action:\s*scopeType\s*===\s*"location"\s*\?/,
-    );
     expect(pageSrc).toMatch(/data-testid="client-side-panel-action-add-part"/);
+    expect(pageSrc).toMatch(
+      /id:\s*"equipment-parts"[\s\S]{0,2000}?action:\s*scopeType\s*===\s*"location"\s*\?/,
+    );
+  });
+
+  it("no standalone Contacts / Maintenance / Activity action testIds remain", () => {
+    expect(pageSrc).not.toMatch(/data-testid="client-side-panel-action-add-contact"/);
+    expect(pageSrc).not.toMatch(/data-testid="client-side-panel-action-add-maintenance"/);
   });
 });
 
-// ── Contacts panel: no duplicate heading, no Primary/Other ──────────
+// ── Contacts: no standalone rail tab (2026-05-12 RALPH) ─────────────
 
-describe("Client Detail Contacts panel — flat list, no duplicate headings", () => {
-  it("contacts components hide their internal `<h3>Contacts</h3>` header when mounted in the rail panel", () => {
-    // Both compact components declare a `hideHeader?: boolean` prop;
-    // the panel passes `hideHeader` so the only "CONTACTS" string
-    // visible is the panel-header label (not duplicated in the body).
-    expect(pageSrc).toMatch(
-      /<CompanyContactsCompact[\s\S]{0,200}?hideHeader/,
-    );
-    expect(pageSrc).toMatch(
-      /<LocContactsCompact[\s\S]{0,200}?hideHeader/,
-    );
-    // Internal h3 is conditionally rendered behind !hideHeader so it
-    // never shows in the rail panel.
-    expect(pageSrc).toMatch(
-      /\{!hideHeader\s*&&\s*\([\s\S]{0,400}?<h3[\s\S]{0,80}?>Contacts<\/h3>/,
-    );
+describe("Client Detail Contacts — removed from rail tab bar", () => {
+  it("no standalone contacts tab exists in clientRailTabs", () => {
+    expect(pageSrc).not.toContain('id: "contacts"');
+    expect(pageSrc).not.toContain('testId: "rail-item-contacts"');
   });
 
   it("contacts panel body never renders 'Primary Contacts' or 'Other Contacts' section headers", () => {
-    // These headings were never present in the prior compact bodies,
-    // but the spec calls them out explicitly — pin against them so a
-    // future refactor that adds them fails.
     expect(pageSrc).not.toMatch(/Primary\s+Contacts/);
     expect(pageSrc).not.toMatch(/Other\s+Contacts/);
-  });
-
-  it("contacts panel does NOT mount <EntityNotesPanel> (notes content must be Notes-panel-only)", () => {
-    // 2026-05-08 Tier 4 Notes canonicalization — primitive renamed
-    // from <NotesPanel> to <EntityNotesPanel>. Same isolation rule:
-    // the contacts tab's content slot must not render any notes
-    // surface.
-    const contactsStart = pageSrc.indexOf('id: "contacts"');
-    const notesStart = pageSrc.indexOf('id: "notes"');
-    expect(contactsStart).toBeGreaterThan(-1);
-    expect(notesStart).toBeGreaterThan(contactsStart);
-    const contactsBranchSlice = pageSrc.slice(contactsStart, notesStart);
-    expect(contactsBranchSlice).not.toMatch(/<EntityNotesPanel/);
-    expect(contactsBranchSlice).not.toMatch(/<NotesPanel/);
-  });
-
-  it("Add-contact dispatches via imperative ref (not via duplicate header button)", () => {
-    expect(pageSrc).toMatch(/companyContactsRef\.current\?\.startAdding\(\)/);
-    expect(pageSrc).toMatch(/locContactsRef\.current\?\.startAdding\(\)/);
   });
 });
 
@@ -344,10 +283,11 @@ describe("Client Detail Notes panel — notes only, empty-state copy preserved",
 // ── Billing panel: real data, not a shortcut ─────────────────────────
 
 describe("Client Detail Billing panel — real billing data + edit action", () => {
-  it("Billing tab's content slot mounts the canonical ClientBillingPanelBody (not a shortcut)", () => {
+  it("Summary tab's content slot mounts ClientSummaryTabContent which includes ClientBillingPanelBody", () => {
     expect(pageSrc).toMatch(
-      /id:\s*"billing"[\s\S]{0,2000}?<ClientBillingPanelBody/,
+      /id:\s*"summary"[\s\S]{0,2000}?<ClientSummaryTabContent/,
     );
+    expect(pageSrc).toMatch(/<ClientBillingPanelBody/);
   });
 
   it("ClientBillingPanelBody renders payment terms / outstanding / lifetime / billing address", () => {
@@ -367,10 +307,11 @@ describe("Client Detail Billing panel — real billing data + edit action", () =
 // ── Equipment panel: real data ───────────────────────────────────────
 
 describe("Client Detail Equipment panel — compact equipment cards", () => {
-  it("Equipment tab's content slot mounts ClientEquipmentPanelBody with the locationEquipment prop", () => {
+  it("Equip & Parts tab's content slot mounts ClientEquipmentPartsPanelBody with equipment prop", () => {
     expect(pageSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,2000}?<ClientEquipmentPanelBody[\s\S]{0,400}?equipment=\{locationEquipment\}/,
+      /id:\s*"equipment-parts"[\s\S]{0,2000}?<ClientEquipmentPartsPanelBody[\s\S]{0,400}?equipment=\{locationEquipment\}/,
     );
+    expect(pageSrc).toMatch(/<ClientEquipmentPanelBody/);
   });
 
   it("ClientEquipmentPanelBody empty-state matches the spec copy", () => {
@@ -473,10 +414,11 @@ describe("Client Detail Equipment panel — compact equipment cards", () => {
 // ── Parts panel: real PM-parts data + canonical add flow ─────────────
 
 describe("Client Detail Parts panel — real PM-parts data + canonical add flow", () => {
-  it("Parts tab's content slot mounts ClientPartsPanelBody with scopeType + pmParts props", () => {
+  it("Equip & Parts tab's content slot includes ClientPartsPanelBody (via ClientEquipmentPartsPanelBody)", () => {
     expect(pageSrc).toMatch(
-      /id:\s*"parts"[\s\S]{0,2000}?<ClientPartsPanelBody[\s\S]{0,400}?scopeType=\{scopeType\}[\s\S]{0,200}?pmParts=\{pmParts\}/,
+      /id:\s*"equipment-parts"[\s\S]{0,2000}?<ClientEquipmentPartsPanelBody[\s\S]{0,400}?pmParts=\{pmParts\}/,
     );
+    expect(pageSrc).toMatch(/<ClientPartsPanelBody[\s\S]{0,400}?scopeType=\{scopeType\}/);
   });
 
   it("ClientPartsPanelBody renders the canonical company-scope hint when no location is picked", () => {
@@ -557,9 +499,11 @@ describe("Client Detail Parts panel — real PM-parts data + canonical add flow"
 // ── Maintenance panel: real recurring templates ──────────────────────
 
 describe("Client Detail Maintenance panel — real recurring templates", () => {
-  it("Maintenance tab's content slot mounts ClientMaintenancePanelBody (not a shortcut)", () => {
+  it("Summary tab mounts ClientSummaryTabContent which includes ClientMaintenancePanelBody", () => {
+    // Maintenance is now a section inside the Summary tab, not a standalone tab.
+    expect(pageSrc).toMatch(/<ClientMaintenancePanelBody/);
     expect(pageSrc).toMatch(
-      /id:\s*"maintenance"[\s\S]{0,2000}?<ClientMaintenancePanelBody/,
+      /id:\s*"summary"[\s\S]{0,2000}?<ClientSummaryTabContent/,
     );
   });
 
@@ -791,9 +735,11 @@ describe("Client Detail Maintenance panel — real recurring templates", () => {
 // ── Activity panel: real events feed, replaces History ───────────────
 
 describe("Client Detail Activity panel — real events feed (replaces History)", () => {
-  it("Activity tab's content slot mounts ClientActivityPanelBody (not a shortcut)", () => {
+  it("Summary tab mounts ClientSummaryTabContent which includes ClientActivityPanelBody", () => {
+    // Activity is now a section inside the Summary tab, not a standalone tab.
+    expect(pageSrc).toMatch(/<ClientActivityPanelBody/);
     expect(pageSrc).toMatch(
-      /id:\s*"activity"[\s\S]{0,2000}?<ClientActivityPanelBody/,
+      /id:\s*"summary"[\s\S]{0,2000}?<ClientSummaryTabContent/,
     );
   });
 
@@ -917,7 +863,7 @@ describe("Client Detail rail — collapsed state still shows the icon menu", () 
   it("the canonical primitive's top-tab nav iterates `tabs.map` inside the expanded panel section", () => {
     // The horizontal tab nav is inside the expanded section (rendered
     // only when a panel is open). The page passes `clientRailTabs`
-    // (always length 7); length enforced at page level via the
+    // (always length 3); length enforced at page level via the
     // registry test above.
     expect(railSrc).toMatch(
       /\{displayedTab\s*&&[\s\S]{0,1500}?aria-label=\{ariaLabel\}[\s\S]{0,600}?tabs\.map/,
@@ -928,13 +874,20 @@ describe("Client Detail rail — collapsed state still shows the icon menu", () 
 // ── 2026-05-07 v3: center workspace tabs reduced ────────────────────
 
 describe("Client Detail center workspace tabs — Equipment / PM / Parts moved to the rail", () => {
-  it("WorkspaceTab union is exactly: active | jobs | invoices | quotes | pricing", () => {
-    // Pin against any of the dropped keys appearing in the union
-    // declaration block (the wording note in the comment doesn't
-    // appear inside the type alias itself).
+  it("WorkspaceTab union is exactly: overview | active | jobs | invoices | quotes (pricing removed)", () => {
+    // 2026-05-12: pricing removed from WorkspaceTab — Historical Pricing
+    // is now rendered inside the Overview tab via HistoricalPricingSection.
     expect(pageSrc).toMatch(
-      /type WorkspaceTab\s*=\s*\|\s*"active"\s*\|\s*"jobs"\s*\|\s*"invoices"\s*\|\s*"quotes"\s*\|\s*"pricing";/,
+      /type WorkspaceTab\s*=/,
     );
+    expect(pageSrc).not.toMatch(
+      /type WorkspaceTab[\s\S]{0,400}?"pricing"/,
+    );
+    expect(pageSrc).toContain('"overview"');
+    expect(pageSrc).toContain('"active"');
+    expect(pageSrc).toContain('"jobs"');
+    expect(pageSrc).toContain('"invoices"');
+    expect(pageSrc).toContain('"quotes"');
   });
 
   it("COMPANY_TABS does NOT include Equipment / Parts entries", () => {
@@ -958,16 +911,18 @@ describe("Client Detail center workspace tabs — Equipment / PM / Parts moved t
     expect(slice).not.toMatch(/key:\s*"parts"/);
   });
 
-  it("the COMPANY_TABS + LOCATION_TABS arrays still include Active / Jobs / Invoices / Quotes / Pricing", () => {
+  it("COMPANY_TABS + LOCATION_TABS include Overview / Active / Jobs / Invoices / Quotes and NOT Pricing", () => {
+    // 2026-05-12: pricing removed from both tab arrays.
     for (const arrayName of ["const COMPANY_TABS:", "const LOCATION_TABS:"]) {
       const startIdx = pageSrc.indexOf(arrayName);
       const endIdx = pageSrc.indexOf("];", startIdx);
       const slice = pageSrc.slice(startIdx, endIdx);
+      expect(slice).toMatch(/key:\s*"overview"/);
       expect(slice).toMatch(/key:\s*"active"/);
       expect(slice).toMatch(/key:\s*"jobs"/);
       expect(slice).toMatch(/key:\s*"invoices"/);
       expect(slice).toMatch(/key:\s*"quotes"/);
-      expect(slice).toMatch(/key:\s*"pricing"/);
+      expect(slice).not.toMatch(/key:\s*"pricing"/);
     }
   });
 
@@ -982,65 +937,35 @@ describe("Client Detail center workspace tabs — Equipment / PM / Parts moved t
 
 describe("Client Detail rail — Equipment / Maintenance no longer route to deleted workspace tabs", () => {
   it("the Equipment panel '+ Add Equipment' header action opens the page-level AddEquipmentDialog", () => {
-    // The Equipment tab's `action:` slot is an inline button calling
-    // setEquipmentModalOpen(true) directly (legacy
-    // `onAddEquipment={onRequestAddEquipment}` indirection is gone).
+    // Now inside the equipment-parts tab action slot (2026-05-12 RALPH).
     expect(pageSrc).toMatch(
       /onClick=\{\(\)\s*=>\s*setEquipmentModalOpen\(true\)\}[\s\S]{0,400}?data-testid="client-side-panel-action-add-equipment"/,
     );
   });
 
   it("the Equipment panel does NOT route to the workspace 'equipment' tab anywhere", () => {
-    // The prior `onJumpToWorkspaceTab("equipment")` calls in the
-    // RailHeaderAction + the equipment "View all" footer are gone
-    // — comments mentioning the historical name are allowed but
-    // active call expressions (`onJumpToWorkspaceTab(<args>)` with
-    // the literal "equipment") must not exist.
     expect(pageSrc).not.toMatch(/onJumpToWorkspaceTab\(\s*"equipment"\s*\)\s*[;,)}]/);
-  });
-
-  it("the Equipment overflow row is plain text (no 'View all' jump link)", () => {
-    // The overflow indicator is now `<p data-testid="...-overflow">+ N more …</p>`,
-    // not a button that routes to the workspace.
-    expect(pageSrc).toMatch(/data-testid="client-equipment-panel-overflow"/);
-    expect(pageSrc).not.toMatch(/data-testid="client-equipment-panel-view-all"/);
   });
 
   it("the Maintenance panel does NOT route to the deleted 'pm' workspace tab", () => {
     expect(pageSrc).not.toMatch(/onJumpToWorkspaceTab\(\s*"pm"\s*\)\s*[;,)}]/);
   });
 
-  it("the Maintenance '+ Add Plan' header action routes to the canonical /pm/new wizard with locationId prefill", () => {
-    // The page-level handler builds `/pm/new?locationId=…` when a
-    // location is selected, falling back to `/pm/new` (no prefill)
-    // otherwise. PMWizardPage already supports the documented
-    // `?locationId=` query param (PMWizardPage.tsx:14, 1274).
-    expect(pageSrc).toMatch(
-      /const\s+onRequestAddMaintenance\s*=\s*\(\)\s*=>\s*\{[\s\S]{0,400}?`\/pm\/new\?locationId=\$\{selectedLocationId\}`[\s\S]{0,400}?setLocation\(url\)/,
-    );
+  it("no standalone Maintenance / Parts tabs remain — both are now sections inside composed tabs", () => {
+    // 2026-05-12 RALPH: Maintenance moved into Summary; Parts moved
+    // into Equip & Parts. Neither appears as a top-level tab entry.
+    expect(pageSrc).not.toContain('id: "maintenance"');
+    expect(pageSrc).not.toContain('id: "parts"');
+    // The onRequestAddMaintenance helper is also removed since no rail
+    // tab action slot calls it any more.
+    expect(pageSrc).not.toMatch(/const\s+onRequestAddMaintenance\s*=/);
   });
 
-  it("the Maintenance tab's action slot dispatches onRequestAddMaintenance directly (no callback indirection)", () => {
-    // The Maintenance tab's `action:` slot is an inline button
-    // calling onRequestAddMaintenance directly. The legacy
-    // `onAddMaintenance={onRequestAddMaintenance}` UtilityRail
-    // prop indirection is gone.
-    expect(pageSrc).toMatch(
-      /id:\s*"maintenance"[\s\S]{0,2000}?onClick=\{onRequestAddMaintenance\}[\s\S]{0,400}?data-testid="client-side-panel-action-add-maintenance"/,
-    );
-  });
-
-  it("the Parts tab's content slot does NOT route to the workspace 'pricing' tab from its body", () => {
-    // Parts body is the empty-state ClientPartsPanelBody — no jump
-    // helpers leak into the tab's `content:` slot. Slice between
-    // the canonical `id: "parts"` tab entry and the next tab entry
-    // (`id: "maintenance"`) and assert no `onJumpToWorkspaceTab(`
-    // call inside.
-    const startIdx = pageSrc.indexOf('id: "parts"');
-    const endIdx = pageSrc.indexOf('id: "maintenance"', startIdx);
+  it("Equip & Parts tab content slot does NOT route to any deleted workspace tab", () => {
+    const startIdx = pageSrc.indexOf('id: "equipment-parts"');
     expect(startIdx).toBeGreaterThan(-1);
-    expect(endIdx).toBeGreaterThan(startIdx);
-    const slice = pageSrc.slice(startIdx, endIdx);
+    const endIdx = pageSrc.indexOf("];", startIdx);
+    const slice = pageSrc.slice(startIdx, endIdx > 0 ? endIdx : startIdx + 3000);
     expect(slice).not.toMatch(/onJumpToWorkspaceTab\(/);
   });
 });

@@ -1756,6 +1756,9 @@ export const jobNotes = pgTable("job_notes", {
   equipmentId: varchar("equipment_id").references(() => locationEquipment.id, { onDelete: "set null" }),
   noteText: text("note_text").notNull(),
   imageUrl: text("image_url"),
+  // Offline replay idempotency — set by the client for queued notes, null otherwise.
+  // DB enforces uniqueness per (company_id, idempotency_key) WHERE NOT NULL.
+  idempotencyKey: varchar("idempotency_key", { length: 64 }),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -5563,7 +5566,10 @@ export const timeEntries = pgTable("time_entries", {
   visitIdx: index("time_entries_visit_idx").on(table.companyId, table.visitId),
   // Index for finding uninvoiced entries
   invoiceIdx: index("time_entries_invoice_idx").on(table.companyId, table.invoiceId),
-  // Partial index for finding running entries (endAt IS NULL) - enforced in code
+  // Non-partial scan index for running entries; the DB-level uniqueness backstop
+  // (time_entries_one_running_per_tech WHERE end_at IS NULL) is a partial unique
+  // index added in 2026_05_12_timer_data_integrity_backstops.sql — Drizzle does
+  // not support partial unique indexes, so it is migration-only.
   runningIdx: index("time_entries_running_idx").on(table.companyId, table.technicianId),
   // Index for finding locked entries by invoice
   lockedByInvoiceIdx: index("time_entries_locked_by_invoice_idx").on(table.lockedByInvoiceId),
@@ -6595,6 +6601,7 @@ export type EventActorType = (typeof eventActorTypeEnum)[number];
 export const eventEntityTypeEnum = [
   "job", "invoice", "quote", "client", "location", "payment", "item",
   "visit", "task", "technician", // Phase 4B.1: milestone events (2026-03-05)
+  "customer_company", // collections-level events (statement sends, account-level activity)
   "other",
 ] as const;
 export type EventEntityType = (typeof eventEntityTypeEnum)[number];

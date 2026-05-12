@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from "express";
 import { z } from "zod";
-import { eq, and, inArray, asc, desc, isNull, sql } from "drizzle-orm";
+import { eq, and, or, inArray, asc, desc, isNull, sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
@@ -19,11 +19,16 @@ import { logEventAsync } from "../lib/events";
 import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
 import { getClientIntelligence } from "../storage/clientIntelligence";
 import { db } from "../db";
-import { clientLocations, customerCompanies, invoices } from "@shared/schema";
+import { clientLocations, customerCompanies, invoices, invoiceNotes, events, users } from "@shared/schema";
 import {
   INVALID_EMAIL_MESSAGE,
   isValidOptionalEmail,
 } from "@shared/lib/emailValidation";
+import { generateStatementPdf, computeAgingBands } from "../services/statementPdfService";
+import type { StatementPdfData, StatementInvoiceItem } from "../services/statementPdfService";
+import { companyTaxRegistrationRepository } from "../storage/companyTaxRegistrations";
+import { getResendClient, formatFromHeader, isPlausibleEmail } from "../resendClient";
+import { normalizeEmailList } from "../services/recipientResolverService";
 
 /**
  * Phase 3: Validate that all locationIds belong to the given customerCompany.
@@ -87,9 +92,9 @@ router.get(
     const { companyId } = req;
     const { customerCompanyId } = req.params;
 
-    // AR_INVOICE_STATUSES: invoices eligible for AR collections view.
-    // Includes draft so in-progress invoices with balance show up; excludes paid + voided.
-    const AR_INVOICE_STATUSES = ["draft", "awaiting_payment", "sent", "partial_paid"] as const;
+    // AR_INVOICE_STATUSES: actionable receivables only. Draft and void excluded —
+    // drafts are not yet issued and add noise; void invoices are settled.
+    const AR_INVOICE_STATUSES = ["awaiting_payment", "sent", "partial_paid"] as const;
 
     const ctx = getQueryCtx(req);
 
@@ -108,6 +113,8 @@ router.get(
           billingStreet: customerCompanies.billingStreet,
           billingCity: customerCompanies.billingCity,
           billingProvince: customerCompanies.billingProvince,
+          paymentTermsDays: customerCompanies.paymentTermsDays,
+          createdAt: customerCompanies.createdAt,
         })
         .from(customerCompanies)
         .where(
@@ -156,9 +163,11 @@ router.get(
 
       getClientBillingSummary(ctx, { customerCompanyId }),
 
-      // Service locations: primary first, then oldest. Used for contact name + location count.
+      // Service locations: primary first, then oldest. Used for contact name, location count,
+      // and primaryLocationId (the canonical /clients/:id profile route target).
       db
         .select({
+          id: clientLocations.id,
           contactName: clientLocations.contactName,
           address: clientLocations.address,
           city: clientLocations.city,
@@ -281,7 +290,12 @@ router.get(
         useCompanyAsPrimary: ccRow.useCompanyAsPrimary,
         billingAddress,
         primaryContactName,
+        // Primary location ID — used by the modal to build /clients/:id links
+        // (same route as the Clients list page).
+        primaryLocationId: primaryLocation?.id ?? null,
         serviceLocationCount,
+        paymentTermsDays: ccRow.paymentTermsDays ?? null,
+        createdAt: toISOOrNull(ccRow.createdAt),
       },
       totals: {
         totalOutstanding: sumBalance(mapped),
@@ -296,6 +310,885 @@ router.get(
       pastDueInvoices,
       currentInvoices,
     });
+  }),
+);
+
+// ─── Service locations endpoint ──────────────────────────────────────────────
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/service-locations
+ * Returns the list of active service locations for a customer.
+ * Used by the statement scope picker to let the user choose full-account vs one location.
+ */
+router.get(
+  "/:customerCompanyId/service-locations",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    const ccRow = await db
+      .select({ id: customerCompanies.id })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.id, customerCompanyId),
+          eq(customerCompanies.companyId, companyId!),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!ccRow) throw createError(404, "Customer company not found");
+
+    const locs = await db
+      .select({
+        id: clientLocations.id,
+        location: clientLocations.location,
+        companyName: clientLocations.companyName,
+        address: clientLocations.address,
+        city: clientLocations.city,
+        province: clientLocations.province,
+      })
+      .from(clientLocations)
+      .where(
+        and(
+          eq(clientLocations.companyId, companyId!),
+          eq(clientLocations.parentCompanyId, customerCompanyId),
+          isNull(clientLocations.deletedAt),
+        ),
+      )
+      .orderBy(desc(clientLocations.isPrimary), asc(clientLocations.location));
+
+    const locations = locs.map((l) => ({
+      id: l.id,
+      name: l.location?.trim() || l.companyName?.trim() || "Service Location",
+      address: [l.address, l.city, l.province].filter(Boolean).join(", "),
+    }));
+
+    res.json({ locations });
+  }),
+);
+
+// ─── Statement helpers ────────────────────────────────────────────────────────
+
+const STATEMENT_INVOICE_STATUSES = [
+  "awaiting_payment", "sent", "partial_paid",
+] as const;
+
+/**
+ * Builds all data required to render a customer statement PDF.
+ * Tenant-isolated: all queries filter by companyId (tenant) AND customerCompanyId.
+ *
+ * @param locationId  When provided, scopes the statement to a single service location.
+ *                    Must belong to the same customerCompanyId and tenant; throws 400 otherwise.
+ */
+async function buildStatementData(
+  companyId: string,
+  customerCompanyId: string,
+  locationId?: string | null,
+): Promise<StatementPdfData> {
+  const invoiceWhere = and(
+    eq(invoices.companyId, companyId),
+    eq(invoices.customerCompanyId, customerCompanyId),
+    inArray(invoices.status, STATEMENT_INVOICE_STATUSES as unknown as string[]),
+    sql`CAST(${invoices.balance} AS numeric) > 0`,
+    ...(locationId ? [eq(invoices.locationId, locationId)] : []),
+  );
+
+  const [ccRow, rawInvoices, company, taxRegistrations, locRow] = await Promise.all([
+    db
+      .select({
+        id: customerCompanies.id,
+        name: customerCompanies.name,
+        firstName: customerCompanies.firstName,
+        lastName: customerCompanies.lastName,
+        useCompanyAsPrimary: customerCompanies.useCompanyAsPrimary,
+        phone: customerCompanies.phone,
+        email: customerCompanies.email,
+        billingStreet: customerCompanies.billingStreet,
+        billingCity: customerCompanies.billingCity,
+        billingProvince: customerCompanies.billingProvince,
+        billingPostalCode: customerCompanies.billingPostalCode,
+      })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.id, customerCompanyId),
+          eq(customerCompanies.companyId, companyId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+
+    db
+      .select({
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        dueDate: invoices.dueDate,
+        balance: invoices.balance,
+        summary: invoices.summary,
+        workDescription: invoices.workDescription,
+        locationSite: clientLocations.location,
+        locationCompanyName: clientLocations.companyName,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+        locationProvince: clientLocations.province,
+      })
+      .from(invoices)
+      .leftJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
+      .where(invoiceWhere)
+      .orderBy(asc(clientLocations.location), asc(invoices.dueDate))
+      .limit(500),
+
+    storage.getCompanyById(companyId),
+    companyTaxRegistrationRepository.list(companyId),
+
+    // When locationId is provided: validate it belongs to this customer + tenant.
+    locationId
+      ? db
+          .select({
+            id: clientLocations.id,
+            location: clientLocations.location,
+            companyName: clientLocations.companyName,
+            address: clientLocations.address,
+            city: clientLocations.city,
+            province: clientLocations.province,
+          })
+          .from(clientLocations)
+          .where(
+            and(
+              eq(clientLocations.id, locationId),
+              eq(clientLocations.companyId, companyId),
+              eq(clientLocations.parentCompanyId, customerCompanyId),
+              isNull(clientLocations.deletedAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
+
+  if (!ccRow) throw createError(404, "Customer company not found");
+  if (!company) throw createError(500, "Company not found");
+  if (locationId && !locRow) {
+    throw createError(400, "Location not found or does not belong to this customer");
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  function computeIsPastDue(status: string | null, dueDate: string | null, balance: string | null): boolean {
+    if (!status || status === "paid" || status === "voided") return false;
+    const bal = parseFloat(balance ?? "0");
+    if (bal <= 0 || !dueDate) return false;
+    const due = new Date(dueDate);
+    due.setHours(0, 0, 0, 0);
+    return due < today;
+  }
+
+  // Flat invoice list (location name/address embedded on each row)
+  const flatInvoices: StatementInvoiceItem[] = rawInvoices.map((r) => {
+    const locName = r.locationSite?.trim() || r.locationCompanyName?.trim() || "Service Location";
+    const locAddress = [r.locationAddress, r.locationCity, r.locationProvince]
+      .filter(Boolean).join(", ");
+    const description = r.summary?.trim() || r.workDescription?.trim()?.slice(0, 80) || null;
+    return {
+      invoiceNumber: r.invoiceNumber ?? null,
+      dueDate: r.dueDate ?? null,
+      description,
+      status: r.status ?? "awaiting_payment",
+      balance: r.balance ?? "0.00",
+      isPastDue: computeIsPastDue(r.status, r.dueDate, r.balance),
+      locationName: locName,
+      locationAddress: locAddress,
+    };
+  });
+
+  // Totals
+  const totalOutstanding = flatInvoices
+    .reduce((s, i) => s + parseFloat(i.balance ?? "0"), 0).toFixed(2);
+  const pastDueTotal = flatInvoices
+    .filter((i) => i.isPastDue)
+    .reduce((s, i) => s + parseFloat(i.balance ?? "0"), 0).toFixed(2);
+  const currentTotal = flatInvoices
+    .filter((i) => !i.isPastDue)
+    .reduce((s, i) => s + parseFloat(i.balance ?? "0"), 0).toFixed(2);
+
+  const aging = computeAgingBands(flatInvoices, today);
+
+  // Customer display name
+  const customerName = (() => {
+    if (ccRow.useCompanyAsPrimary && ccRow.name) return ccRow.name;
+    const person = [ccRow.firstName, ccRow.lastName].filter(Boolean).join(" ");
+    return person || ccRow.name || "Customer";
+  })();
+
+  const billingParts = [
+    ccRow.billingStreet,
+    [ccRow.billingCity, ccRow.billingProvince, ccRow.billingPostalCode]
+      .filter(Boolean).join(", "),
+  ].filter(Boolean);
+  const billingAddress = billingParts.length > 0 ? billingParts.join(", ") : null;
+
+  // Scope label: null for full account; location display name for scoped
+  const scopeLabel = locationId
+    ? (locRow!.location?.trim() || locRow!.companyName?.trim() ||
+       locRow!.address?.trim() || "Service Location")
+    : null;
+
+  // Statement date = today; pay-by = today + 30 days
+  const statementDate = today.toISOString().slice(0, 10);
+  const payByDate = new Date(today.getTime() + 30 * 86400_000).toISOString().slice(0, 10);
+
+  return {
+    company: {
+      name: company.name,
+      address: company.address,
+      city: company.city,
+      provinceState: company.provinceState,
+      postalCode: company.postalCode,
+      email: company.email,
+      phone: company.phone,
+      taxName: company.taxName,
+    },
+    taxRegistrations,
+    customer: {
+      name: customerName,
+      billingAddress,
+      phone: ccRow.phone ?? null,
+      email: ccRow.email ?? null,
+    },
+    statementDate,
+    payByDate,
+    invoices: flatInvoices,
+    totals: { totalOutstanding, pastDueTotal, currentTotal },
+    aging,
+    scopeLabel,
+  };
+}
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/statement-recipients
+ *
+ * Billing-first default recipient resolution for the statement send modal.
+ * Mirrors the invoice billing-first strategy but applied at the customer-company
+ * level (no single invoice location to anchor from).
+ *
+ * Priority:
+ *   1. Billing-role contacts across all company locations + company directory.
+ *   2. Primary contact (isPrimary = true) from the company directory.
+ *   3. First valid location contact (primary location first).
+ *   4. First valid company directory contact.
+ *   5. customerCompanies.email scalar (legacy fallback).
+ *
+ * Returns { recipients: string[] } — same shape as invoice email-recipients.
+ * Normalized (trim + lowercase) and deduplicated (first-occurrence, case-insensitive).
+ */
+router.get(
+  "/:customerCompanyId/statement-recipients",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    const ccRow = await db
+      .select({ email: customerCompanies.email })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.id, customerCompanyId),
+          eq(customerCompanies.companyId, companyId!),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!ccRow) throw createError(404, "Customer company not found");
+
+    const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    function cleanEmail(raw: string | null | undefined): string | null {
+      const s = (raw ?? "").trim().toLowerCase();
+      return s && EMAIL_SHAPE.test(s) ? s : null;
+    }
+
+    // Load company directory + primary location contacts in parallel.
+    const primaryLocationRow = await db
+      .select({ id: clientLocations.id })
+      .from(clientLocations)
+      .where(
+        and(
+          eq(clientLocations.companyId, companyId!),
+          eq(clientLocations.parentCompanyId, customerCompanyId),
+          isNull(clientLocations.deletedAt),
+        ),
+      )
+      .orderBy(desc(clientLocations.isPrimary), asc(clientLocations.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    let companyDirectory: Awaited<ReturnType<typeof clientContactRepository.getCompanyDirectory>> = [];
+    let primaryLocationContacts: Awaited<ReturnType<typeof clientContactRepository.getLocationContacts>> = [];
+
+    await Promise.all([
+      clientContactRepository.getCompanyDirectory(companyId!, customerCompanyId)
+        .then((d) => { companyDirectory = d; })
+        .catch(() => {}),
+      primaryLocationRow
+        ? clientContactRepository.getLocationContacts(companyId!, primaryLocationRow.id)
+            .then((c) => { primaryLocationContacts = c; })
+            .catch(() => {})
+        : Promise.resolve(),
+    ]);
+
+    const seen = new Set<string>();
+    const push = (raw: string | null | undefined): boolean => {
+      const e = cleanEmail(raw);
+      if (!e || seen.has(e)) return false;
+      seen.add(e);
+      return true;
+    };
+
+    const candidates: string[] = [];
+
+    // 1. Billing-role contacts (location first, then company directory).
+    const billingEmails: string[] = [];
+    for (const c of primaryLocationContacts) {
+      const roles: string[] = Array.isArray((c.assignment as any)?.roles) ? (c.assignment as any).roles : [];
+      if (roles.some((r) => r.toLowerCase() === "billing")) {
+        const e = cleanEmail(c.email);
+        if (e) billingEmails.push(e);
+      }
+    }
+    for (const p of companyDirectory) {
+      const isBilling = (p.assignments ?? []).some((a: any) =>
+        Array.isArray(a.roles) && a.roles.some((r: string) => r.toLowerCase() === "billing"),
+      );
+      if (isBilling) {
+        const e = cleanEmail(p.email);
+        if (e) billingEmails.push(e);
+      }
+    }
+
+    if (billingEmails.length > 0) {
+      for (const e of billingEmails) push(e) && candidates.push(e);
+      res.json({ recipients: candidates });
+      return;
+    }
+
+    // 2. Primary contacts from company directory (isPrimary = true).
+    for (const p of companyDirectory) {
+      if (p.isPrimary) {
+        const e = cleanEmail(p.email);
+        if (e && push(e)) { candidates.push(e); break; }
+      }
+    }
+    if (candidates.length > 0) { res.json({ recipients: candidates }); return; }
+
+    // 3. First valid primary-location contact.
+    for (const c of primaryLocationContacts) {
+      const e = cleanEmail(c.email);
+      if (e && push(e)) { candidates.push(e); break; }
+    }
+    if (candidates.length > 0) { res.json({ recipients: candidates }); return; }
+
+    // 4. First valid company directory contact.
+    for (const p of companyDirectory) {
+      const e = cleanEmail(p.email);
+      if (e && push(e)) { candidates.push(e); break; }
+    }
+    if (candidates.length > 0) { res.json({ recipients: candidates }); return; }
+
+    // 5. customerCompanies.email scalar (legacy fallback).
+    const scalarEmail = cleanEmail(ccRow.email);
+    if (scalarEmail) candidates.push(scalarEmail);
+
+    res.json({ recipients: candidates });
+  }),
+);
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/statement-contacts
+ *
+ * Rich contact list for the To/CC picker in the statement send modal.
+ * Returns the same { contacts: [{name, email, roles, source}] } shape
+ * as GET /api/invoices/:id/email-contacts so ContactPickerPopover works unchanged.
+ *
+ * Sources (deduped by email, case-insensitive):
+ *   1. Primary location contacts (source: "location")
+ *   2. Company directory contacts (source: "company")
+ *   3. customerCompanies.email scalar if not already in the list (source: "company")
+ *
+ * Tenant-isolated: all lookups filter by session companyId.
+ */
+router.get(
+  "/:customerCompanyId/statement-contacts",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    const ccRow = await db
+      .select({ email: customerCompanies.email })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.id, customerCompanyId),
+          eq(customerCompanies.companyId, companyId!),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!ccRow) throw createError(404, "Customer company not found");
+
+    const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    type ContactOption = {
+      name: string;
+      email: string;
+      roles: string[];
+      source: "location" | "company";
+    };
+    const seen = new Set<string>();
+    const contacts: ContactOption[] = [];
+
+    const pushIf = (
+      raw: { firstName?: string | null; lastName?: string | null; email?: string | null },
+      roles: string[],
+      source: "location" | "company",
+    ) => {
+      const email = (raw.email ?? "").trim().toLowerCase();
+      if (!email || !EMAIL_SHAPE.test(email) || seen.has(email)) return;
+      seen.add(email);
+      const name = `${raw.firstName ?? ""} ${raw.lastName ?? ""}`.trim() || email;
+      contacts.push({ name, email, roles, source });
+    };
+
+    // Primary location contacts
+    const primaryLocationRow = await db
+      .select({ id: clientLocations.id })
+      .from(clientLocations)
+      .where(
+        and(
+          eq(clientLocations.companyId, companyId!),
+          eq(clientLocations.parentCompanyId, customerCompanyId),
+          isNull(clientLocations.deletedAt),
+        ),
+      )
+      .orderBy(desc(clientLocations.isPrimary), asc(clientLocations.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (primaryLocationRow) {
+      try {
+        const locationContacts = await clientContactRepository.getLocationContacts(
+          companyId!,
+          primaryLocationRow.id,
+        );
+        for (const c of locationContacts) {
+          const roles = Array.isArray((c.assignment as any)?.roles)
+            ? (c.assignment as any).roles as string[]
+            : [];
+          pushIf(c, roles, "location");
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // Company directory contacts
+    try {
+      const companyDir = await clientContactRepository.getCompanyDirectory(
+        companyId!,
+        customerCompanyId,
+      );
+      for (const p of companyDir) {
+        const roles = Array.from(
+          new Set(
+            (p.assignments ?? []).flatMap((a: any) =>
+              Array.isArray(a?.roles) ? (a.roles as string[]) : [],
+            ),
+          ),
+        );
+        pushIf(p, roles, "company");
+      }
+    } catch { /* best-effort */ }
+
+    // customerCompanies.email scalar (last resort so it appears at the end)
+    if (ccRow.email) {
+      pushIf({ firstName: null, lastName: null, email: ccRow.email }, [], "company");
+    }
+
+    res.json({ contacts });
+  }),
+);
+
+/**
+ * POST /api/customer-companies/:customerCompanyId/statement-preview
+ * Returns the default email subject and body for the send modal.
+ * Body: { locationId?: string | null }
+ */
+router.post(
+  "/:customerCompanyId/statement-preview",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+    const locationId = (req.body?.locationId ?? null) as string | null;
+
+    // Reuse buildStatementData to get accurate scoped totals and scopeLabel
+    const statementData = await buildStatementData(companyId!, customerCompanyId, locationId);
+
+    const customerName = statementData.customer.name;
+    const companyName = statementData.company.name;
+    const totalOutstanding = statementData.totals.totalOutstanding;
+    const pastDueTotal = statementData.totals.pastDueTotal;
+    const hasPastDue = parseFloat(pastDueTotal) > 0;
+    const scopeLabel = statementData.scopeLabel;
+
+    const subject = `Statement from ${companyName}`;
+    const body = [
+      `Dear ${customerName},`,
+      "",
+      scopeLabel
+        ? `Please find attached the statement for ${scopeLabel}.`
+        : `Please find attached your account statement from ${companyName}.`,
+      "",
+      `Total Amount Due: $${totalOutstanding}`,
+      ...(hasPastDue ? [`Past Due Amount: $${pastDueTotal}`] : []),
+      "",
+      "If you have any questions about your account, please don't hesitate to reach out.",
+      "",
+      "Thank you for your business.",
+      "",
+      companyName,
+    ].join("\n");
+
+    res.json({ subject, body });
+  }),
+);
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/statement.pdf
+ * Generates and streams the customer statement PDF.
+ * Query: ?locationId=<uuid>  (optional; scopes to a single location)
+ */
+router.get(
+  "/:customerCompanyId/statement.pdf",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+    const locationId = (req.query.locationId as string | undefined) || null;
+
+    const statementData = await buildStatementData(companyId!, customerCompanyId, locationId);
+    const pdfBuffer = await generateStatementPdf(statementData);
+
+    const safeName = statementData.customer.name.replace(/[^a-zA-Z0-9_\- ]/g, "").trim() || "Customer";
+    const filename = `Statement-${safeName}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", pdfBuffer.length);
+    res.send(pdfBuffer);
+  }),
+);
+
+/**
+ * POST /api/customer-companies/:customerCompanyId/send-statement
+ * Sends the customer statement email with the generated PDF attached.
+ *
+ * Body: { recipients: string[], cc?: string[], subjectOverride?: string, bodyOverride?: string }
+ */
+router.post(
+  "/:customerCompanyId/send-statement",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    const parsed = z.object({
+      recipients: z.array(z.string()).min(1, "At least one recipient required"),
+      cc: z.array(z.string()).optional(),
+      subjectOverride: z.string().nullable().optional(),
+      bodyOverride: z.string().nullable().optional(),
+      locationId: z.string().nullable().optional(),
+    }).safeParse(req.body);
+
+    if (!parsed.success) {
+      throw createError(400, parsed.error.errors[0]?.message ?? "Invalid request body");
+    }
+
+    const { subjectOverride, bodyOverride, locationId } = parsed.data;
+
+    const normalizedRecipients = normalizeEmailList(parsed.data.recipients);
+    if (normalizedRecipients.length === 0) {
+      throw createError(400, "No valid recipient email addresses provided");
+    }
+    const toSet = new Set(normalizedRecipients);
+    const ccList = normalizeEmailList(parsed.data.cc ?? []).filter((e) => !toSet.has(e));
+
+    const statementData = await buildStatementData(companyId!, customerCompanyId, locationId ?? null);
+
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = await generateStatementPdf(statementData);
+    } catch (err: any) {
+      throw createError(500, `Statement PDF generation failed: ${err?.message ?? "unknown error"}`);
+    }
+
+    const customerName = statementData.customer.name;
+    const companyName = statementData.company.name;
+    const subject = subjectOverride?.trim() || `Statement from ${companyName}`;
+    const scopeLabelSend = statementData.scopeLabel;
+    const bodyText = bodyOverride?.trim() || [
+      `Dear ${customerName},`,
+      "",
+      scopeLabelSend
+        ? `Please find attached the statement for ${scopeLabelSend}.`
+        : `Please find attached your account statement from ${companyName}.`,
+      "",
+      `Total Amount Due: $${statementData.totals.totalOutstanding}`,
+      ...(parseFloat(statementData.totals.pastDueTotal) > 0
+        ? [`Past Due Amount: $${statementData.totals.pastDueTotal}`]
+        : []),
+      "",
+      "If you have any questions about your account, please don't hesitate to reach out.",
+      "",
+      "Thank you for your business.",
+      "",
+      companyName,
+    ].join("\n");
+
+    const htmlBody = bodyText
+      .split("\n")
+      .map((line) => (line.trim() === "" ? "<br>" : `<p style="margin:0 0 4px 0">${line}</p>`))
+      .join("\n");
+
+    const safeName = customerName.replace(/[^a-zA-Z0-9_\- ]/g, "").trim() || "Customer";
+    const pdfFilename = `Statement-${safeName}.pdf`;
+
+    const resend = await getResendClient();
+    const cName = statementData.company.name.trim() || null;
+    const cEmail = statementData.company.email?.trim() ?? null;
+    const from = cName ? formatFromHeader(cName, resend.fromEmail) : resend.defaultFromHeader;
+    const replyTo = isPlausibleEmail(cEmail) ? cEmail! : resend.defaultReplyTo;
+
+    let sendResult: Awaited<ReturnType<typeof resend.client.emails.send>> | undefined;
+    try {
+      sendResult = await resend.client.emails.send({
+        from,
+        ...(replyTo ? { replyTo } : {}),
+        to: normalizedRecipients,
+        ...(ccList.length > 0 ? { cc: ccList } : {}),
+        subject,
+        html: htmlBody,
+        attachments: [{ filename: pdfFilename, content: pdfBuffer }],
+      });
+    } catch (err: any) {
+      throw createError(500, `Email delivery failed: ${err?.message ?? "unknown error"}`);
+    }
+
+    if (sendResult?.error) {
+      throw createError(500, `Email delivery failed: ${JSON.stringify(sendResult.error)}`);
+    }
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "statement.sent",
+      entityType: "customer_company",
+      entityId: customerCompanyId,
+      summary: `Statement sent to ${normalizedRecipients.join(", ")}`,
+      meta: {
+        recipients: normalizedRecipients,
+        locationId: locationId ?? null,
+        scopeLabel: statementData.scopeLabel ?? null,
+        customerName: statementData.customer.name,
+      },
+    });
+
+    res.json({ success: true });
+  }),
+);
+
+/**
+ * GET /api/customer-companies/ar-queue
+ * Ordered list of customer companies that have an outstanding AR balance,
+ * sorted by past-due total descending then total outstanding descending.
+ * Used by the Collections workspace queue rail.
+ * Must be defined BEFORE the /:companyId wildcard to prevent route shadowing.
+ */
+router.get("/ar-queue", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId } = req;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().slice(0, 10);
+
+  const rows = await db.execute(sql`
+    SELECT
+      cc.id               AS customer_company_id,
+      cc.name,
+      cc.first_name,
+      cc.last_name,
+      cc.use_company_as_primary,
+      cl.id               AS primary_location_id,
+      SUM(CAST(i.balance AS numeric))::text                           AS total_outstanding,
+      SUM(
+        CASE WHEN i.due_date::date < ${todayStr}::date
+                  AND CAST(i.balance AS numeric) > 0
+             THEN CAST(i.balance AS numeric) ELSE 0 END
+      )::text                                                         AS past_due_total,
+      COUNT(i.id)::int                                                AS invoice_count,
+      COUNT(
+        CASE WHEN i.due_date::date < ${todayStr}::date
+                  AND CAST(i.balance AS numeric) > 0 THEN 1 END
+      )::int                                                          AS past_due_count,
+      MAX(
+        CASE WHEN i.due_date::date < ${todayStr}::date
+             THEN (${todayStr}::date - i.due_date::date) END
+      )::int                                                          AS max_days_overdue
+    FROM invoices i
+    JOIN customer_companies cc
+      ON cc.id = i.customer_company_id
+      AND cc.company_id = ${companyId}
+    LEFT JOIN client_locations cl
+      ON cl.parent_company_id = cc.id
+      AND cl.company_id = ${companyId}
+      AND cl.is_primary = true
+      AND cl.deleted_at IS NULL
+    WHERE i.company_id = ${companyId}
+      AND i.status IN ('awaiting_payment', 'sent', 'partial_paid')
+      AND CAST(i.balance AS numeric) > 0
+    GROUP BY
+      cc.id, cc.name, cc.first_name, cc.last_name, cc.use_company_as_primary, cl.id
+    ORDER BY
+      SUM(CASE WHEN i.due_date::date < ${todayStr}::date
+                    AND CAST(i.balance AS numeric) > 0
+               THEN CAST(i.balance AS numeric) ELSE 0 END) DESC,
+      SUM(CAST(i.balance AS numeric)) DESC
+    LIMIT 200
+  `);
+
+  function queueDisplayName(row: Record<string, unknown>): string {
+    if (row.use_company_as_primary && row.name) return row.name as string;
+    const person = ([row.first_name, row.last_name] as (string | null)[])
+      .filter(Boolean)
+      .join(" ");
+    return person || (row.name as string) || "Customer";
+  }
+
+  const items = (rows.rows as Record<string, unknown>[]).map((row) => ({
+    customerCompanyId: row.customer_company_id as string,
+    displayName: queueDisplayName(row),
+    primaryLocationId: (row.primary_location_id as string | null) ?? null,
+    totalOutstanding: (row.total_outstanding as string) ?? "0.00",
+    pastDueTotal: (row.past_due_total as string) ?? "0.00",
+    invoiceCount: Number(row.invoice_count),
+    pastDueCount: Number(row.past_due_count),
+    maxDaysOverdue: row.max_days_overdue != null ? Number(row.max_days_overdue) : null,
+  }));
+
+  res.json({ items });
+}));
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/collections-activity
+ *
+ * Combined activity feed for the collections workspace right rail.
+ * Returns events where:
+ *   - entityType='customer_company' AND entityId=customerCompanyId (statement sends, etc.)
+ *   - OR entityType='invoice' AND entityId IN (open AR invoices for this customer)
+ *
+ * Ordered by createdAt DESC, limit 20.
+ */
+router.get(
+  "/:customerCompanyId/collections-activity",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+    const limit = req.query.limit ? Math.min(parseInt(String(req.query.limit), 10), 50) : 20;
+
+    // Fetch open AR invoice IDs for this customer to include invoice-level events.
+    const openInvoiceRows = await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.companyId, companyId!),
+          eq(invoices.customerCompanyId, customerCompanyId),
+          inArray(invoices.status as any, ["awaiting_payment", "sent", "partial_paid"]),
+        ),
+      )
+      .limit(100);
+
+    const openInvoiceIds = openInvoiceRows.map((r) => r.id);
+
+    const conditions = [eq(events.tenantId, companyId!)];
+    if (openInvoiceIds.length > 0) {
+      conditions.push(
+        or(
+          and(eq(events.entityType, "customer_company"), eq(events.entityId, customerCompanyId)),
+          and(eq(events.entityType, "invoice"), inArray(events.entityId, openInvoiceIds)),
+        ) as any,
+      );
+    } else {
+      conditions.push(
+        and(eq(events.entityType, "customer_company"), eq(events.entityId, customerCompanyId)) as any,
+      );
+    }
+
+    const rows = await db
+      .select({
+        id: events.id,
+        entityType: events.entityType,
+        entityId: events.entityId,
+        eventType: events.eventType,
+        severity: events.severity,
+        summary: events.summary,
+        meta: events.meta,
+        actorType: events.actorType,
+        createdAt: events.createdAt,
+        actorName: users.fullName,
+      })
+      .from(events)
+      .leftJoin(users, eq(events.actorUserId, users.id))
+      .where(and(...conditions))
+      .orderBy(desc(events.createdAt))
+      .limit(limit);
+
+    res.json({ items: rows });
+  }),
+);
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/ar-invoice-notes
+ *
+ * Human-entered invoice notes for all open AR invoices belonging to this customer.
+ * Used in the collections workspace "Invoice Notes" right rail section.
+ * Only returns notes for actionable (unpaid/overdue/partial) invoices.
+ */
+router.get(
+  "/:customerCompanyId/ar-invoice-notes",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    const rows = await db
+      .select({
+        id: invoiceNotes.id,
+        invoiceId: invoiceNotes.invoiceId,
+        noteText: invoiceNotes.noteText,
+        createdAt: invoiceNotes.createdAt,
+        invoiceNumber: invoices.invoiceNumber,
+        authorName: users.fullName,
+      })
+      .from(invoiceNotes)
+      .innerJoin(invoices, eq(invoiceNotes.invoiceId, invoices.id))
+      .leftJoin(users, eq(invoiceNotes.userId, users.id))
+      .where(
+        and(
+          eq(invoiceNotes.companyId, companyId!),
+          eq(invoices.customerCompanyId, customerCompanyId),
+          inArray(invoices.status as any, ["awaiting_payment", "sent", "partial_paid"]),
+        ),
+      )
+      .orderBy(desc(invoiceNotes.createdAt))
+      .limit(50);
+
+    res.json({ items: rows });
   }),
 );
 

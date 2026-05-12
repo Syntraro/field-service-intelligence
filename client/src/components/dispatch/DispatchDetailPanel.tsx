@@ -27,6 +27,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { DispatchVisit, DispatchTask, VisitStatus, Technician } from "./dispatchPreviewTypes";
+import { StatusChip } from "@/components/ui/chip";
 import { visitStatusColor, formatDuration, isCompletedStatus, normalizeVisitStatusForDisplay, SNAP_MINUTES, TIMELINE_START_HOUR, TIMELINE_END_HOUR, jobStateColor, jobStateLabel } from "./dispatchPreviewUtils";
 import { visitStatusLabel } from "@/lib/visitStatusDisplay";
 import { clampResizeEnd, findNearestValidSlot } from "./dispatchOverlapUtils";
@@ -220,9 +221,9 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
 
       <div className={mode === "popover" ? "px-3 py-2 overflow-y-auto" : "flex-1 overflow-y-auto px-3 py-2"}>
         <div className="flex items-center gap-2 mb-2 pb-2 border-b">
-          <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 capitalize">
+          <StatusChip status={task.status}>
             {task.status.replace("_", " ")}
-          </span>
+          </StatusChip>
         </div>
 
         {isScheduled && technicians && technicians.length > 0 && onRescheduleTask && (

@@ -36,7 +36,9 @@ function descriptorBuilderSlice(): string {
 function labourTabContentSlice(): string {
   const start = pageSrc.indexOf('id: "labour"');
   expect(start).toBeGreaterThan(-1);
-  const end = pageSrc.indexOf('id: "equipment"', start);
+  // Labour is now the last tab — use the jobRailTabs array closing `];`.
+  const tabsStart = pageSrc.indexOf("const jobRailTabs:");
+  const end = pageSrc.indexOf("];", tabsStart);
   expect(end).toBeGreaterThan(start);
   return pageSrc.slice(start, end);
 }

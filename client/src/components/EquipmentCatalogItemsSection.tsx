@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Plus, Pencil, Trash2, Loader2, Package } from "lucide-react";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -215,7 +216,7 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
       </div>
 
       {associations.length === 0 ? (
-        <p className="text-xs text-muted-foreground pl-6">No catalog items associated yet.</p>
+        <RailContentCardMeta className="pl-6">No catalog items associated yet.</RailContentCardMeta>
       ) : (
         <div className="space-y-1 pl-6">
           {associations.map(row => (

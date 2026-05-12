@@ -668,41 +668,39 @@ function MapStepNotice({
 
   if (preset) {
     return (
-      <div
-        className="rounded-md border border-emerald-200 bg-emerald-50 p-3 space-y-2"
-        data-testid="preset-applied-notice"
-      >
-        <div className="flex items-start gap-2">
-          <Info className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
-          <div className="min-w-0 text-sm text-emerald-900">
-            <div className="font-semibold">Preset applied: {preset.label}</div>
-            <div className="text-xs mt-0.5">{preset.description}</div>
+      <Alert variant="success" className="p-3 space-y-2" data-testid="preset-applied-notice">
+        <AlertDescription>
+          <div className="flex items-start gap-2">
+            <Info className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+            <div className="min-w-0 text-sm">
+              <div className="font-semibold">Preset applied: {preset.label}</div>
+              <div className="text-xs mt-0.5">{preset.description}</div>
+            </div>
           </div>
-        </div>
-        {preset.limitations && preset.limitations.length > 0 && (
-          <ul className="text-[11px] text-slate-600 list-disc list-inside space-y-0.5 pl-6">
-            {preset.limitations.map((l, i) => (
-              <li key={i}>{l}</li>
-            ))}
-          </ul>
-        )}
-      </div>
+          {preset.limitations && preset.limitations.length > 0 && (
+            <ul className="text-[11px] text-slate-600 list-disc list-inside space-y-0.5 pl-6">
+              {preset.limitations.map((l, i) => (
+                <li key={i}>{l}</li>
+              ))}
+            </ul>
+          )}
+        </AlertDescription>
+      </Alert>
     );
   }
 
   // Source picked but no preset for this (source, entity) yet.
   const sourceLabel = source === "housecall_pro" ? "Housecall Pro" : "Jobber";
   return (
-    <div
-      className="rounded-md border border-slate-200 bg-slate-50 p-3 flex items-start gap-2"
-      data-testid="preset-unavailable-notice"
-    >
-      <Info className="h-4 w-4 text-slate-500 shrink-0 mt-0.5" />
-      <div className="text-sm text-slate-700">
-        <span className="font-semibold">Preset mapping for {sourceLabel} is not available yet for this import type.</span>{" "}
-        Continue with manual mapping below — your file will still import normally.
-      </div>
-    </div>
+    <Alert variant="neutral" className="p-3" data-testid="preset-unavailable-notice">
+      <AlertDescription className="flex items-start gap-2">
+        <Info className="h-4 w-4 text-slate-500 shrink-0 mt-0.5" />
+        <div className="text-sm">
+          <span className="font-semibold">Preset mapping for {sourceLabel} is not available yet for this import type.</span>{" "}
+          Continue with manual mapping below — your file will still import normally.
+        </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 

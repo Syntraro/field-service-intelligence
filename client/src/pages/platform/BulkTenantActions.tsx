@@ -19,6 +19,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -613,19 +614,18 @@ function BulkActionDialog({
 
           {/* Progress strip during live execution. */}
           {applyMutation.isPending && (
-            <div
-              className="rounded border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2 text-xs"
-              data-testid="bulk-apply-progress"
-            >
-              <Loader2 className="h-4 w-4 animate-spin text-amber-700" />
-              <span className="font-medium text-amber-900">
-                Applying to {tenantIds.length} tenant{tenantIds.length === 1 ? "" : "s"}…
-              </span>
-              <span className="text-muted-foreground">
-                canonical writers run in a bounded worker pool, so large batches complete in
-                parallel.
-              </span>
-            </div>
+            <Alert variant="warning" className="px-3 py-2" data-testid="bulk-apply-progress">
+              <AlertDescription className="flex items-center gap-2 text-xs">
+                <Loader2 className="h-4 w-4 animate-spin text-amber-700" />
+                <span className="font-medium">
+                  Applying to {tenantIds.length} tenant{tenantIds.length === 1 ? "" : "s"}…
+                </span>
+                <span className="text-muted-foreground">
+                  canonical writers run in a bounded worker pool, so large batches complete in
+                  parallel.
+                </span>
+              </AlertDescription>
+            </Alert>
           )}
         </div>
 

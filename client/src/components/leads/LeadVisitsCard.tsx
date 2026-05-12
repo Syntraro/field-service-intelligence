@@ -119,14 +119,10 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
   }
 
   const cancelMutation = useMutation({
-    mutationFn: async (visitId: string) => {
-      const res = await fetch(`/api/leads/${leadId}/visits/${visitId}/cancel`, {
+    mutationFn: (visitId: string) =>
+      apiRequest(`/api/leads/${leadId}/visits/${visitId}/cancel`, {
         method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to cancel visit");
-      return res.json();
-    },
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
@@ -142,14 +138,10 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
   });
 
   const archiveMutation = useMutation({
-    mutationFn: async (visitId: string) => {
-      const res = await fetch(`/api/leads/${leadId}/visits/${visitId}`, {
+    mutationFn: (visitId: string) =>
+      apiRequest(`/api/leads/${leadId}/visits/${visitId}`, {
         method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to archive visit");
-      return res.json();
-    },
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });

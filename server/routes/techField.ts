@@ -720,6 +720,8 @@ router.post(
 const addNoteSchema = z.object({
   text: z.string().min(1).max(2000),
   equipmentId: z.string().uuid().nullable().optional(),
+  // Offline replay idempotency — omitted for normal online creates.
+  idempotencyKey: z.string().max(64).nullable().optional(),
 });
 
 router.post(
@@ -732,10 +734,11 @@ router.post(
 
     if (!visit) throw createError(404, "Visit not found or not assigned to you");
 
-    const { text, equipmentId } = validateSchema(addNoteSchema, req.body);
+    const { text, equipmentId, idempotencyKey } = validateSchema(addNoteSchema, req.body);
 
-    // Route through canonical storage method — equipmentId validated against job in repository
-    const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim(), equipmentId ?? null);
+    // Route through canonical storage method — equipmentId validated against job in repository.
+    // idempotencyKey enables crash-safe offline replay: duplicate sends return the existing note.
+    const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim(), equipmentId ?? null, idempotencyKey ?? null);
 
     // Realtime: notify office surfaces (Job Detail notes panel) about new note
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });

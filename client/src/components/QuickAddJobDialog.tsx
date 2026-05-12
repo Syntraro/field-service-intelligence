@@ -8,6 +8,7 @@
  * - Scheduling controls inline in a single row (date, time, duration, techs)
  * - Unscheduled toggle hides time controls cleanly
  */
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompactFormField, CompactColHeader } from "@/components/ui/compact-form-field";
@@ -2871,17 +2872,20 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 today only, recomputes on assignee/date/start/duration change.
                 Renders only — never gates the Create button. */}
             {!isScheduleDisabled && conflictWarning && (
-              <div
-                className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900"
+              <Alert
+                variant="warning"
+                className="px-2.5 py-1.5 text-xs"
                 role="status"
                 data-testid="conflict-warning"
               >
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                <span>
-                  This overlaps another scheduled visit for{" "}
-                  <span className="font-medium">{conflictWarning.techName}</span>. Review dispatch board.
-                </span>
-              </div>
+                <AlertDescription className="flex items-start gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    This overlaps another scheduled visit for{" "}
+                    <span className="font-medium">{conflictWarning.techName}</span>. Review dispatch board.
+                  </span>
+                </AlertDescription>
+              </Alert>
             )}
           </div>
           )}

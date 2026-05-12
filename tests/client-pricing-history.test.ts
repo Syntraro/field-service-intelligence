@@ -357,6 +357,9 @@ describe("clientPricingHistoryService — derived read", () => {
     expect(oldLine?.sourceNumber).toBe("INV-PH-001");
     expect(oldLine?.sourceId).toBe(invoiceA1);
     expect(oldLine?.category).toBe("Filters");
+    // Service location — seeded with companyName only, no address.
+    expect(oldLine?.serviceLocationName).toBe(`${TEST_PREFIX}LocA1`);
+    expect(oldLine?.serviceLocationAddress).toBeNull();
 
     const noProductLine = invoiceItems.find((i) => i.itemName === "Premium service charge");
     expect(noProductLine).toBeDefined();

@@ -13,6 +13,8 @@ import type { Technician } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { LANE_HEIGHT_PX, DIVIDER_HEIGHT_PX } from "./dispatchPreviewUtils";
 import { useTechnicianLiveStates, type TechnicianLiveState } from "@/hooks/useTechnicians";
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 
 type Props = {
   technicians: Technician[];
@@ -25,27 +27,15 @@ type Props = {
   techsOnTimeOff?: Set<string>;
 };
 
-/**
- * Color mapping for the live-state chip. Reuses the same palette family the
- * dispatch board already uses for visit status (visitStatusColor in
- * dispatchPreviewUtils.ts) so En Route/On Site/Paused render in identical
- * colors at the tech level and the visit level.
- */
-function liveStateChipClasses(state: TechnicianLiveState | undefined): string {
-  if (!state) return "bg-slate-100 text-slate-500 border-slate-200";
+function liveStateTone(state: TechnicianLiveState | undefined): ChipTone {
+  if (!state) return "neutral";
   switch (state.activityStatus) {
-    case "paused":
-      return "bg-yellow-50 text-yellow-800 border-yellow-200";
-    case "on_site":
-      return "bg-lime-50 text-lime-800 border-lime-300";
-    case "en_route":
-      return "bg-amber-50 text-amber-700 border-amber-200";
+    case "paused":   return "warning";
+    case "on_site":  return "success";
+    case "en_route": return "warning";
     case "idle":
     default:
-      // No active visit — fall back to attendance.
-      return state.attendanceStatus === "clocked_in"
-        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-        : "bg-slate-100 text-slate-500 border-slate-200";
+      return state.attendanceStatus === "clocked_in" ? "success" : "neutral";
   }
 }
 
@@ -116,27 +106,27 @@ export default function DispatchTechnicianSidebar({
               <p className={`truncate text-xs font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-slate-900"}`}>{t.name}</p>
               <div className="mt-0.5 flex flex-wrap items-center gap-1">
                 {!isUnassigned && liveState && (
-                  <span
-                    className={`inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
+                  <StatusChip
+                    tone={liveStateTone(liveState)}
                     data-testid={`tech-live-state-${t.id}`}
                     data-state={liveState.activityStatus === "idle" ? liveState.attendanceStatus : liveState.activityStatus}
                     title={liveState.label}
                   >
                     {liveState.label}
-                  </span>
+                  </StatusChip>
                 )}
                 {/* 2026-05-07 RALPH (technician time off): amber Off
                     pill whenever any time-off entry overlaps the
                     visible day. Sits next to the live-state chip so
                     both signals read on the same row. */}
                 {!isUnassigned && techsOnTimeOff?.has(t.id) && (
-                  <span
-                    className="inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none bg-amber-100 text-amber-700 border-amber-300"
+                  <StatusChip
+                    tone="warning"
                     data-testid={`tech-time-off-pill-${t.id}`}
                     title="Off today"
                   >
                     Off
-                  </span>
+                  </StatusChip>
                 )}
               </div>
             </div>

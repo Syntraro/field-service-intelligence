@@ -23,7 +23,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { format } from "date-fns";
@@ -48,6 +47,8 @@ export interface PricingHistoryItem {
   quantity: string;
   total: string;
   date: string;
+  serviceLocationName: string | null;
+  serviceLocationAddress: string | null;
 }
 
 interface PricingHistoryResponse {
@@ -67,6 +68,9 @@ function formatDateString(raw: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return "";
   return format(d, "MMM dd, yyyy");
 }
+
+// Date | Invoice # | Service Location | Item | Qty | Unit Price
+const GRID = "grid-cols-[88px_104px_160px_minmax(0,1fr)_56px_88px]";
 
 export default function LocPricingTab({
   locationId,
@@ -104,14 +108,16 @@ export default function LocPricingTab({
 
   const headerRow = useMemo(
     () => (
-      <div className="grid grid-cols-[88px_72px_88px_minmax(0,1fr)_56px_88px_96px] items-center gap-2 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-slate-500 border-b border-slate-200">
+      <div
+        className={`grid ${GRID} items-center gap-2 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-slate-500 border-b border-slate-200`}
+        data-testid="pricing-table-header"
+      >
         <span>Date</span>
-        <span>Source</span>
-        <span>#</span>
+        <span data-testid="col-invoice-number">Invoice #</span>
+        <span data-testid="col-service-location">Service Location</span>
         <span>Item</span>
         <span className="text-right">Qty</span>
-        <span className="text-right">Unit</span>
-        <span className="text-right">Total</span>
+        <span className="text-right">Unit Price</span>
       </div>
     ),
     [],
@@ -180,25 +186,40 @@ function PricingRow({
   const targetPath = row.sourceType === "invoice"
     ? `/invoices/${row.sourceId}`
     : `/quotes/${row.sourceId}`;
-  const sourceLabel = row.sourceType === "invoice" ? "Invoice" : "Quote";
+
   const sourceNumberLabel = row.sourceNumber
     ? row.sourceNumber
     : `${row.sourceType === "invoice" ? "INV" : "Q"}-${row.sourceId.slice(0, 6)}`;
 
+  const locationDisplay =
+    row.serviceLocationName ?? row.serviceLocationAddress ?? "—";
+
   return (
     <div
-      className="grid grid-cols-[88px_72px_88px_minmax(0,1fr)_56px_88px_96px] items-center gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+      className={`grid ${GRID} items-center gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors`}
       onClick={() => onNavigate(targetPath)}
       data-testid={`pricing-row-${row.sourceType}-${row.sourceId}`}
     >
       <span className="text-slate-500 tabular-nums">{formatDateString(row.date)}</span>
-      <Badge
-        variant={row.sourceType === "invoice" ? "secondary" : "outline"}
-        className="text-[10px] capitalize w-fit justify-self-start"
+
+      {/* Invoice # — styled as a link; row click already handles navigation */}
+      <span
+        className="text-blue-600 hover:text-blue-800 hover:underline font-medium tabular-nums truncate"
+        data-testid="pricing-invoice-link"
+        title={sourceNumberLabel}
       >
-        {sourceLabel}
-      </Badge>
-      <span className="text-slate-700 font-medium tabular-nums truncate">{sourceNumberLabel}</span>
+        {sourceNumberLabel}
+      </span>
+
+      {/* Service Location */}
+      <span
+        className="text-slate-600 truncate"
+        data-testid="pricing-service-location"
+        title={locationDisplay}
+      >
+        {locationDisplay}
+      </span>
+
       <span className="min-w-0 truncate text-slate-700">
         {row.itemName || "—"}
         {row.category && (
@@ -207,9 +228,6 @@ function PricingRow({
       </span>
       <span className="text-right tabular-nums text-slate-600">{row.quantity}</span>
       <span className="text-right tabular-nums text-slate-600">{formatMoneyString(row.unitPrice)}</span>
-      <span className="text-right tabular-nums font-medium text-slate-700">
-        {formatMoneyString(row.total)}
-      </span>
     </div>
   );
 }

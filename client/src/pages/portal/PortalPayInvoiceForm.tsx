@@ -27,6 +27,7 @@
 
 import { useEffect, useState } from "react";
 import { PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 
@@ -141,26 +142,25 @@ export function PortalPayInvoiceForm({
         options={{ wallets: { link: "never", applePay: "auto", googlePay: "auto" } }}
       />
       {readyTimedOut && !isReady && (
-        <div
-          className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-2"
-          data-testid="portal-pay-ready-timeout"
-        >
-          <p className="text-sm text-amber-900 leading-snug">
-            Payment form could not load. Refresh the page or try again.
-          </p>
-          {onRetry && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onRetry}
-              className="h-9"
-              data-testid="portal-pay-retry"
-            >
-              Try again
-            </Button>
-          )}
-        </div>
+        <Alert variant="warning" className="p-3 space-y-2" data-testid="portal-pay-ready-timeout">
+          <AlertDescription>
+            <p className="text-sm leading-snug">
+              Payment form could not load. Refresh the page or try again.
+            </p>
+            {onRetry && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+                className="h-9 mt-2"
+                data-testid="portal-pay-retry"
+              >
+                Try again
+              </Button>
+            )}
+          </AlertDescription>
+        </Alert>
       )}
       {error && (
         <p

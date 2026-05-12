@@ -190,6 +190,24 @@ export function formatActivityEvent(item: ActivityFeedItem): ActivityEventDispla
         subtitle: joinDot([invoiceNumber ? `Invoice #${invoiceNumber}` : null, clientName]),
       };
 
+    // ── Collections / AR ────────────────────────────────────────────
+    case "statement.sent": {
+      const scopeLabel = trimToNull(meta.scopeLabel);
+      return {
+        title: "Statement sent",
+        subtitle: scopeLabel ?? undefined,
+      };
+    }
+    case "invoice.batch_send": {
+      const successCount = typeof meta.successCount === "number" ? meta.successCount : null;
+      const invoiceIds = Array.isArray(meta.invoiceIds) ? meta.invoiceIds : null;
+      const count = successCount ?? (invoiceIds ? invoiceIds.length : null);
+      const label = count !== null
+        ? `${count} invoice${count !== 1 ? "s" : ""} sent`
+        : "Invoices sent";
+      return { title: "Reminder sent", subtitle: label };
+    }
+
     // ── Notes ───────────────────────────────────────────────────────
     case "note.created": {
       const preview =

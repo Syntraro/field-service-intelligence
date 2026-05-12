@@ -62,6 +62,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatusChip, type ChipTone } from "@/components/ui/chip";
+import { CardShellFooter } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 // ── Shared types ──────────────────────────────────────────────────────
@@ -841,8 +842,8 @@ export function CanonicalDetailHeader({
 
       {/* ── Edit controls footer — CDH owns border-t chrome ─────────── */}
       {editControls && (
-        <div
-          className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3"
+        <CardShellFooter
+          className="px-5 py-3"
           data-testid={`${testId}-footer`}
         >
           {editControls.error && (
@@ -871,7 +872,7 @@ export function CanonicalDetailHeader({
           >
             {editControls.isSaving ? "Saving…" : (editControls.saveLabel ?? "Save")}
           </Button>
-        </div>
+        </CardShellFooter>
       )}
     </div>
   );

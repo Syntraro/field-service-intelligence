@@ -33,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { FormHelperText } from "@/components/ui/form-field";
+import { FormHelperText, InlineActionRow } from "@/components/ui/form-field";
 
 interface EmbeddedStripeCardFormProps {
   /** Called once Stripe confirms (succeeded or processing). The parent
@@ -121,7 +121,7 @@ export function EmbeddedStripeCardForm({
           {error}
         </p>
       )}
-      <div className="flex items-center justify-end gap-2">
+      <InlineActionRow>
         {showCancel && onCancel && (
           <Button
             type="button"
@@ -148,7 +148,7 @@ export function EmbeddedStripeCardForm({
             submitLabel
           )}
         </Button>
-      </div>
+      </InlineActionRow>
     </form>
   );
 }

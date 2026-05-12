@@ -28,6 +28,7 @@ import type {
 } from "@shared/communicationsTypes";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 import {
   Phone,
   Mail,
@@ -295,9 +296,9 @@ function DetailsBody({
         <h3 className="text-label text-muted-foreground mb-1.5">Communication History</h3>
         <div className="rounded-md border border-border/60 divide-y divide-border/60">
           {timeline.length === 0 ? (
-            <div className="px-2.5 py-2 text-helper text-muted-foreground">
+            <RailContentCardMeta className="px-2.5 py-2">
               No history yet.
-            </div>
+            </RailContentCardMeta>
           ) : (
             timeline.map((entry) => {
               const Icon = TIMELINE_ICONS[entry.kind];

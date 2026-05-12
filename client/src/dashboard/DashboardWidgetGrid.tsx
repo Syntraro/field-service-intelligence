@@ -287,7 +287,7 @@ export function DashboardWidgetGrid({
 
   const gridContent = (
     <div
-      className={`grid grid-cols-12 grid-flow-row-dense gap-3 ${className ?? ""}`.trim()}
+      className={`grid grid-cols-12 grid-flow-row-dense gap-2.5 ${className ?? ""}`.trim()}
       data-testid={testId ?? "dashboard-widget-grid"}
     >
       {rows.flatMap((row, rowIndex) =>

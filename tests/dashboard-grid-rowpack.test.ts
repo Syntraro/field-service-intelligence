@@ -216,17 +216,17 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
     expect(rows[1]).toHaveLength(1);
   });
 
-  it("packs the canonical financial layout into the brief's 2 clean rows", () => {
-    // 2026-05-07: the standalone Needs Attention card was retired and
-    // its single row absorbed into Operational Alerts. Default layout:
-    //   row 1: TS(2) + Pipeline(1)
-    //   row 2: Collections(1) + Scheduled Revenue(1) + Operational Alerts(1)
-    // (No row 3 — NA is gone.)
+  it("packs the canonical financial layout into 3 clean rows", () => {
+    // 2026-05-07: NA retired; 2026-05-12: tasks_overview added (third).
+    // Default layout:
+    //   row 1: TS(2) + Pipeline(1) = 3 units
+    //   row 2: Collections(1) + Scheduled Revenue(1) + Operational Alerts(1) = 3 units
+    //   row 3: Tasks(1) = 1 unit
     const widgets = FINANCIAL_DASHBOARD_WIDGETS.map((d) =>
       w(d.key, d.sizePreset),
     );
     const rows = packDashboardRows(widgets);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0].map((x) => x.widgetKey)).toEqual([
       "todays_schedule",
       "pipeline_snapshot",
@@ -236,6 +236,7 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
       "scheduled_revenue",
       "operational_alerts",
     ]);
+    expect(rows[2].map((x) => x.widgetKey)).toEqual(["tasks_overview"]);
     // Inverse pin: the retired widget MUST NOT reappear in the packed rows.
     const flatKeys = rows.flat().map((r) => r.widgetKey);
     expect(flatKeys).not.toContain("needs_attention");
@@ -243,9 +244,9 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
 
   it("respects width overrides during packing (TS at 1 unit)", () => {
     // Today's Schedule shrunk to 1 unit (only 1 visible team member).
-    // The five canonical widgets (TS + 4 thirds) pack into:
+    // The six canonical widgets (TS + 5 thirds) pack into:
     //   row 1: TS(1) + Pipeline(1) + Collections(1) = 3 units
-    //   row 2: Scheduled(1) + OA(1) = 2 units (slack 1/3)
+    //   row 2: Scheduled(1) + OA(1) + Tasks(1) = 3 units
     const widgets = FINANCIAL_DASHBOARD_WIDGETS.map((d) =>
       w(d.key, d.sizePreset),
     );
@@ -259,6 +260,7 @@ describe("packDashboardRows — greedy 3-unit packing", () => {
     expect(rows[1].map((x) => x.widgetKey)).toEqual([
       "scheduled_revenue",
       "operational_alerts",
+      "tasks_overview",
     ]);
   });
 });
@@ -327,7 +329,10 @@ describe("spanClassFor — every widget always renders at its natural width", ()
         "col-span-12 md:col-span-6 xl:col-span-4",
       );
     }
-    expect(rows[1].map((x) => x.widgetKey)).toEqual(["operational_alerts"]);
+    expect(rows[1].map((x) => x.widgetKey)).toEqual([
+      "operational_alerts",
+      "tasks_overview",
+    ]);
     for (const widget of rows[1]) {
       expect(spanClassFor(widget, rows[1])).toBe(
         "col-span-12 md:col-span-6 xl:col-span-4",
@@ -348,6 +353,7 @@ describe("spanClassFor — every widget always renders at its natural width", ()
     expect(rows[1].map((x) => x.widgetKey)).toEqual([
       "collections_overview",
       "scheduled_revenue",
+      "tasks_overview",
     ]);
     for (const widget of rows[1]) {
       expect(spanClassFor(widget, rows[1])).toBe(
@@ -519,9 +525,10 @@ describe("TodaysScheduleCard — compact-mode header (1-column)", () => {
     expect(code).toMatch(/!compact\s*&&\s*scopeHeaderSuffix/);
   });
 
-  it("suppresses the Booked% / Unscheduled chip when compact", () => {
+  it("suppresses the Unscheduled chip when compact", () => {
+    // Booked% was removed; only Unscheduled remains.
     expect(code).toMatch(
-      /!compact\s*&&\s*\(bookedPercent\s*!==\s*null\s*\|\|\s*unscheduledJobsCount\s*>\s*0\)/,
+      /!compact\s*&&\s*unscheduledJobsCount\s*>\s*0/,
     );
   });
 

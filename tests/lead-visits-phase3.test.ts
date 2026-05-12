@@ -76,9 +76,15 @@ describe("Dispatch — lead visits merged client-side (no SQL UNION)", () => {
     expect(previewData).toMatch(/rangeData\.leadVisits/);
   });
 
-  it("DispatchPreview renders LeadVisitsStrip on day view only", () => {
-    expect(dispatchPreview).toMatch(/activeView === "day" && leadVisits\.length > 0/);
+  it("DispatchPreview renders LeadVisitsStrip on day view only (overflow surface)", () => {
+    // Strip is now filtered to unassigned/unscheduled overflow only —
+    // assigned+scheduled lead visits are routed to technician lanes instead.
+    expect(dispatchPreview).toMatch(/activeView === "day"/);
     expect(dispatchPreview).toMatch(/<LeadVisitsStrip/);
+    // Strip receives filtered visits, not the raw leadVisits array.
+    expect(dispatchPreview).toMatch(
+      /lv\.technicianIds\.length === 0 \|\| !lv\.scheduledStart/,
+    );
   });
 
   it("LeadVisitsStrip click handler routes to /leads/:leadId (not a job route)", () => {

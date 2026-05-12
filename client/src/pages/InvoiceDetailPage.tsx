@@ -61,6 +61,7 @@ import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
 import { Badge } from "@/components/ui/badge";
+import { StatusChip } from "@/components/ui/chip";
 // Canonical notes section. Invoice surface reads from
 // /api/invoices/:id/notes (so the invoice-specific show_on_invoices
 // flag is honored) and writes through /api/jobs/:jobId/notes
@@ -257,27 +258,22 @@ export const MONO = "font-mono tabular-nums";
 // the same canonical pill with `status="draft"` instead of a one-off
 // inline span. Live behavior unchanged — purely an additive `export`.
 export function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
-  // Map canonical invoice status (+ derived isPastDue) to the design's tones.
-  // Display label is the user-friendly form. `getInvoiceStatusBadge` is the
-  // canonical owner of label/variant; we re-derive here only for the dot+bg
-  // colors the design uses.
-  const tone = (() => {
-    if (isPastDue) return { label: "PAST DUE", bg: "bg-rose-100", text: "text-rose-700", dot: "bg-rose-600" };
+  const { label, tone } = (() => {
+    if (isPastDue) return { label: "PAST DUE",          tone: "danger"  as const };
     switch (status) {
-      case "draft":           return { label: "Draft — not sent", bg: "bg-stone-200",  text: "text-stone-700",  dot: "bg-stone-500" };
+      case "draft":           return { label: "Draft — not sent", tone: "neutral" as const };
       case "awaiting_payment":
-      case "sent":            return { label: "AWAITING PAYMENT", bg: "bg-teal-50",    text: "text-teal-700",   dot: "bg-teal-600" };
-      case "partial_paid":    return { label: "PARTIALLY PAID",   bg: "bg-amber-50",   text: "text-amber-700",  dot: "bg-amber-600" };
-      case "paid":            return { label: "PAID IN FULL",     bg: "bg-emerald-50", text: "text-emerald-700",dot: "bg-emerald-600" };
-      case "voided":          return { label: "VOIDED",           bg: "bg-stone-200",  text: "text-stone-600",  dot: "bg-stone-500" };
-      default:                return { label: status.toUpperCase(),bg: "bg-stone-200", text: "text-stone-700",  dot: "bg-stone-500" };
+      case "sent":            return { label: "AWAITING PAYMENT", tone: "info"    as const };
+      case "partial_paid":    return { label: "PARTIALLY PAID",   tone: "warning" as const };
+      case "paid":            return { label: "PAID IN FULL",     tone: "success" as const };
+      case "voided":          return { label: "VOIDED",           tone: "neutral" as const };
+      default:                return { label: status.toUpperCase(),tone: "neutral" as const };
     }
   })();
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide ${tone.bg} ${tone.text}`} data-testid="invoice-status-pill">
-      <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
-      {tone.label}
-    </span>
+    <StatusChip tone={tone} data-testid="invoice-status-pill">
+      {label}
+    </StatusChip>
   );
 }
 

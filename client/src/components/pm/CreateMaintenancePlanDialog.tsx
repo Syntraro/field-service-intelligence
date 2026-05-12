@@ -46,6 +46,7 @@ import {
   Loader2,
 } from "lucide-react";
 import type { PmTemplate, RecurringJobTemplate } from "@shared/schema";
+import { PickerShell } from "@/components/ui/picker-shell";
 
 // ============================================================================
 // Types
@@ -262,7 +263,7 @@ function TemplatePicker({
         />
       </div>
 
-      <div className="max-h-[360px] overflow-y-auto rounded-md border divide-y">
+      <PickerShell className="max-h-[360px]">
         {filtered.length === 0 ? (
           <div className="text-center text-sm text-muted-foreground py-6">
             No templates match "{search}".
@@ -301,7 +302,7 @@ function TemplatePicker({
             );
           })
         )}
-      </div>
+      </PickerShell>
     </div>
   );
 }
@@ -369,7 +370,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
         />
       </div>
 
-      <div className="max-h-[360px] overflow-y-auto rounded-md border divide-y">
+      <PickerShell className="max-h-[360px]">
         {filtered.length === 0 ? (
           <div className="text-center text-sm text-muted-foreground py-6">
             No plans match "{search}".
@@ -414,7 +415,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
             );
           })
         )}
-      </div>
+      </PickerShell>
     </div>
   );
 }

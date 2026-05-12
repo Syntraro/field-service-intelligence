@@ -12,6 +12,7 @@ import { Clock, ChevronRight, ChevronDown, Calendar, User } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 
 interface ScheduleHistoryEntry {
   id: string;
@@ -97,9 +98,9 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
                 ))}
               </div>
             ) : error ? (
-              <p className="text-xs text-muted-foreground">Failed to load history</p>
+              <RailContentCardMeta>Failed to load history</RailContentCardMeta>
             ) : history.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No scheduling changes recorded</p>
+              <RailContentCardMeta>No scheduling changes recorded</RailContentCardMeta>
             ) : (
               <ul className="space-y-3">
                 {history.map((entry) => (
@@ -107,7 +108,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
                     <span className="mt-1.5 h-2 w-2 rounded-full bg-blue-500 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium">{entry.changeSummary}</div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                      <RailContentCardMeta className="flex items-center gap-2 flex-wrap mt-0">
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
                           {format(new Date(entry.createdAt), "MMM d, yyyy h:mm a")}
@@ -122,7 +123,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
                             via {formatContextLabel(entry.contextLabel)}
                           </span>
                         )}
-                      </div>
+                      </RailContentCardMeta>
                     </div>
                   </li>
                 ))}

@@ -270,7 +270,25 @@ describe("EntityNotesPanel — visibility chips use canonical EntityChip", () =>
   });
 });
 
-// ── 7. Page-level rail tab descriptors own title / count / +Add ─────
+// ── 7. Create-success UX: no redundant toast, modal closes ──────────
+
+describe("EntityNoteDialog — create-success UX (no redundant toast)", () => {
+  it('does not fire a "Note added" success toast on create', () => {
+    // Note appears in the rail immediately; a toast is redundant noise.
+    expect(dialogSrc).not.toMatch(/title:\s*["']Note added["']/);
+  });
+
+  it("calls onOpenChange(false) in the success path so the modal closes automatically", () => {
+    expect(dialogSrc).toMatch(/onOpenChange\(false\)/);
+  });
+
+  it("still fires a toast for edit-mode saves", () => {
+    // Silent edits are hard to confirm; keep the "Note updated" toast.
+    expect(dialogSrc).toMatch(/title:\s*["']Note updated["']/);
+  });
+});
+
+// ── 8. Page-level rail tab descriptors own title / count / +Add ─────
 
 describe("Notes rail tab descriptors own title + count + +Add (panel never owns chrome)", () => {
   it.each(PAGES)(

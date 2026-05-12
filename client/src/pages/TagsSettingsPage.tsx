@@ -30,6 +30,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { toast } from "@/hooks/use-toast";
 import { ListSurface } from "@/components/ui/list-surface";
+import { FormField, FormLabel, FormErrorText } from "@/components/ui/form-field";
 // TablePageShell replaced with inline layout + back button (2026-04-04)
 import type { ClientTag } from "@shared/schema";
 
@@ -206,10 +207,8 @@ export default function TagsSettingsPage() {
       </div>
       {/* Create new tag form */}
       <div className="flex items-end gap-3 flex-wrap">
-        <div className="space-y-1">
-          <label htmlFor="new-tag-name" className="text-form-label text-muted-foreground">
-            Tag name
-          </label>
+        <FormField>
+          <FormLabel srOnly htmlFor="new-tag-name">Tag name</FormLabel>
           <Input
             id="new-tag-name"
             placeholder="New tag name..."
@@ -224,11 +223,14 @@ export default function TagsSettingsPage() {
             className="w-56"
             data-testid="input-new-tag-name"
           />
-        </div>
-        <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">Color</span>
+          {nameExists && newName.trim() && (
+            <FormErrorText>Name already exists</FormErrorText>
+          )}
+        </FormField>
+        <FormField>
+          <FormLabel>Color</FormLabel>
           <ColorPicker value={newColor} onChange={setNewColor} />
-        </div>
+        </FormField>
         <Button
           onClick={handleCreate}
           disabled={!canCreate || createMutation.isPending}
@@ -237,9 +239,6 @@ export default function TagsSettingsPage() {
           <Plus className="h-4 w-4 mr-1" />
           Create Tag
         </Button>
-        {nameExists && newName.trim() && (
-          <span className="text-xs text-destructive">Name already exists</span>
-        )}
       </div>
 
       {/* Tags table */}

@@ -24,7 +24,8 @@ export function TimezoneSetupBanner() {
 
   return (
     <Alert
-      className="rounded-none border-x-0 border-t-0 bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800"
+      variant="warning"
+      className="rounded-none border-x-0 border-t-0"
       data-testid="banner-timezone-setup"
     >
       <Globe className="h-4 w-4 text-amber-600" />

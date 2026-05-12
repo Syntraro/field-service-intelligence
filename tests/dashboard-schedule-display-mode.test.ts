@@ -312,7 +312,10 @@ describe("Today's Schedule — open-slot click handler still wires onOpenSlot", 
   });
 
   it("the per-row buttons carry their canonical schedule-block test ids", () => {
-    expect(code).toMatch(/data-testid=\{?`?schedule-block-/);
+    // After task integration the testid uses a conditional:
+    //   isTask ? `schedule-block-task-...` : isTimeOff ? `...` : `schedule-block-${visitId}`
+    // Match the presence of schedule-block- strings regardless of the surrounding expression.
+    expect(code).toMatch(/schedule-block-\$\{/);
   });
 });
 

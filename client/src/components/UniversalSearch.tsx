@@ -185,6 +185,9 @@ export default function UniversalSearch() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Compact/expanded for tablet + medium-desktop widths. 2xl:w-72 always
+  // wins at ≥ 1536px, so this state only has a visual effect below that.
+  const [isExpanded, setIsExpanded] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const paletteRef = useRef<HTMLDivElement>(null);
 
@@ -276,8 +279,25 @@ export default function UniversalSearch() {
     setResults([]);
     setSelectedIndex(0);
     setLoading(false);
+    setIsExpanded(false);
     inputRef.current?.blur();
   }, []);
+
+  // ------ Focus / blur for compact expansion ------
+  const handleFocus = useCallback(() => {
+    setOpen(true);
+    setIsExpanded(true);
+  }, []);
+
+  // Collapse back to compact only when query is empty and focus leaves the
+  // entire palette container. Keeps the input wide while the user browses
+  // results with the mouse (relatedTarget stays inside paletteRef).
+  const handleBlur = useCallback((e: React.FocusEvent) => {
+    if (paletteRef.current?.contains(e.relatedTarget as Node)) return;
+    if (!query.trim()) {
+      setIsExpanded(false);
+    }
+  }, [query]);
 
   // ------ Execute a palette item ------
   const executeItem = useCallback((item: PaletteItem) => {
@@ -346,6 +366,7 @@ export default function UniversalSearch() {
           closePalette();
         } else {
           setOpen(true);
+          setIsExpanded(true);
           requestAnimationFrame(() => inputRef.current?.focus());
         }
       }
@@ -491,23 +512,45 @@ export default function UniversalSearch() {
     (navItems.length > 0 || hasSearchResults || (query.trim().length >= 2));
 
   return (
-    <div ref={paletteRef} className="relative">
+    // Three-step responsive width — shrink-0 keeps declared widths exact:
+    //   <md  (< 768px):    w-8     — icon-only
+    //   md→2xl (768–1535px): md:w-24 — compact pill, placeholder "Search"
+    //   2xl+ (≥ 1536px):  2xl:w-72 — full input, full placeholder
+    // isExpanded overrides to w-72 at any breakpoint when the user is
+    // actively searching; 2xl:w-72 always wins at true-wide desktop.
+    <div
+      ref={paletteRef}
+      data-expanded={isExpanded}
+      data-testid="universal-search-wrapper"
+      className={cn(
+        "relative shrink-0 transition-[width] duration-200 ease-in-out",
+        isExpanded ? "w-72" : "w-8 md:w-24 2xl:w-72",
+      )}
+    >
       {/* Header search input — always visible */}
       <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#9CA3AF]" />
-        {loading && (
+        {/* pointer-events-none: clicks on the icon pass through to the input */}
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#9CA3AF] pointer-events-none" />
+        {/* Spinner only renders when expanded — no room in compact pill */}
+        {loading && isExpanded && (
           <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#9CA3AF] animate-spin" />
         )}
         <input
           ref={inputRef}
           type="text"
-          placeholder="Search jobs, clients, invoices..."
+          placeholder={isExpanded ? "Search jobs, clients, invoices..." : "Search"}
           value={query}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
-          onFocus={() => setOpen(true)}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
           data-testid="universal-search-input"
-          className="h-8 w-72 rounded-md border border-white/20 pl-8 pr-8 text-sm text-[#111827] placeholder:text-[#9CA3AF] bg-white/90 focus-visible:outline-none focus-visible:border-[#76B054] focus-visible:ring-2 focus-visible:ring-[rgba(118,176,84,0.25)] focus-visible:bg-white"
+          className={cn(
+            "h-8 w-full rounded-md border border-white/20 pl-8 text-sm text-[#111827] placeholder:text-[#9CA3AF] bg-white/90",
+            "focus-visible:outline-none focus-visible:border-[#76B054] focus-visible:ring-2 focus-visible:ring-[rgba(118,176,84,0.25)] focus-visible:bg-white",
+            // pr-8 when expanded (room for spinner); pr-2 compact (no spinner)
+            isExpanded ? "pr-8 cursor-text" : "pr-2 cursor-pointer 2xl:cursor-text",
+          )}
         />
       </div>
 

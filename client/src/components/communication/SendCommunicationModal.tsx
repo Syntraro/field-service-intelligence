@@ -45,13 +45,16 @@ export interface SendCommunicationModalProps {
   onClose: () => void;
   onSuccess?: () => void;
   title?: string;
+  /** For statement type: scope the PDF + email to a single service location. */
+  locationId?: string | null;
 }
 
 function defaultTitle(entityType: CommunicationEntityType): string {
   switch (entityType) {
-    case "invoice": return "Send Invoice";
-    case "quote":   return "Send Quote";
-    case "job":     return "Send Email";
+    case "invoice":   return "Send Invoice";
+    case "quote":     return "Send Quote";
+    case "job":       return "Send Email";
+    case "statement": return "Send Statement";
   }
 }
 
@@ -64,7 +67,7 @@ function defaultTitle(entityType: CommunicationEntityType): string {
 const CLIENT_MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 export function SendCommunicationModal(props: SendCommunicationModalProps) {
-  const { entityType, entityId, isOpen, onClose, onSuccess, title } = props;
+  const { entityType, entityId, isOpen, onClose, onSuccess, title, locationId } = props;
   const {
     recipients, cc, subject, body,
     attachPdf, attachments,
@@ -79,6 +82,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
     entityType,
     entityId,
     isOpen,
+    locationScopeId: locationId,
     onSuccess: () => {
       onSuccess?.();
       onClose();
@@ -91,10 +95,11 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
   const [ccFocused, setCcFocused] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
 
-  // Contact picker is invoice-only today (endpoint is invoice-scoped). CC
-  // and To share the same contact source — which field gets the selection
-  // is determined by which is focused.
-  const showContactPicker = entityType === "invoice";
+  const showContactPicker = entityType === "invoice" || entityType === "statement";
+  const contactsPath =
+    entityType === "invoice"
+      ? `/api/invoices/${entityId}/email-contacts`
+      : `/api/customer-companies/${entityId}/statement-contacts`;
 
   const tryAdd = (value: string, add: (email: string) => void, reset: (v: string) => void) => {
     const parts = value.trim().split(/[\s,;]+/).filter(Boolean);
@@ -208,7 +213,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
             </CompactField>
             {showContactPicker && toFocused && (
               <ContactPickerPopover
-                invoiceId={entityId}
+                contactsPath={contactsPath}
                 selectedEmails={recipients}
                 onSelect={(email) => {
                   addRecipient(email);
@@ -261,7 +266,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
             </CompactField>
             {showContactPicker && ccFocused && (
               <ContactPickerPopover
-                invoiceId={entityId}
+                contactsPath={contactsPath}
                 selectedEmails={[...recipients, ...cc]}
                 onSelect={(email) => {
                   addCc(email);
@@ -418,7 +423,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
           </Button>
         </DialogFooter>
       </DialogContent>
-      {showContactPicker && (
+      {entityType === "invoice" && (
         <SystemImagePickerDialog
           invoiceId={entityId}
           open={imagePickerOpen}

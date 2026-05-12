@@ -42,6 +42,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -62,6 +63,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { EmbeddedStripeCardForm } from "@/components/invoice/EmbeddedStripeCardForm";
+import { PickerShell } from "@/components/ui/picker-shell";
 
 type PaymentMethod = "cash" | "credit" | "debit" | "e-transfer" | "cheque" | "other";
 
@@ -589,16 +591,16 @@ export function CollectPaymentDialog({
                 Loading…
               </div>
             ) : contextError ? (
-              <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                Failed to load outstanding invoices.
-              </div>
+              <Alert variant="error" className="px-3 py-2">
+                <AlertDescription className="text-xs">Failed to load outstanding invoices.</AlertDescription>
+              </Alert>
             ) : !context || context.invoices.length === 0 ? (
-              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                No outstanding invoices for this account.
-              </div>
+              <Alert variant="neutral" className="px-3 py-2">
+                <AlertDescription className="text-xs">No outstanding invoices for this account.</AlertDescription>
+              </Alert>
             ) : (
-              <div
-                className="border rounded-md divide-y divide-slate-100 max-h-[240px] overflow-y-auto"
+              <PickerShell
+                className="divide-slate-100 max-h-[240px]"
                 data-testid="collect-payment-invoices-list"
               >
                 {context.invoices.map((inv) => {
@@ -664,7 +666,7 @@ export function CollectPaymentDialog({
                     </div>
                   );
                 })}
-              </div>
+              </PickerShell>
             )}
 
             {validationError && (
@@ -688,31 +690,36 @@ export function CollectPaymentDialog({
                 Charge total {formatCurrency(totalAmount)} to a card
               </div>
               {cardSucceeded ? (
-                <div
-                  className="flex items-start gap-2 rounded bg-emerald-50 border border-emerald-200 px-3 py-2"
+                <Alert
+                  variant="success"
+                  className="px-3 py-2"
                   data-testid="collect-payment-card-success"
                 >
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <div className="text-xs">
-                    <p className="font-semibold text-emerald-900">Card charged</p>
-                    <p className="text-emerald-800 leading-snug">
-                      Updating invoice balances — the payment record posts automatically once
-                      Stripe confirms.
-                    </p>
-                  </div>
-                </div>
+                  <AlertDescription className="flex items-start gap-2 text-xs">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold">Card charged</p>
+                      <p className="leading-snug">
+                        Updating invoice balances — the payment record posts automatically once
+                        Stripe confirms.
+                      </p>
+                    </div>
+                  </AlertDescription>
+                </Alert>
               ) : !cardIntent ? (
                 <>
                   {cardIntentError ? (
-                    <div className="flex items-start gap-2 rounded bg-rose-50 border border-rose-200 px-3 py-2">
-                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
-                      <p
-                        className="text-xs text-rose-700"
-                        data-testid="collect-payment-card-error"
-                      >
-                        {cardIntentError}
-                      </p>
-                    </div>
+                    <Alert variant="error" className="px-3 py-2">
+                      <AlertDescription className="flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                        <p
+                          className="text-xs"
+                          data-testid="collect-payment-card-error"
+                        >
+                          {cardIntentError}
+                        </p>
+                      </AlertDescription>
+                    </Alert>
                   ) : cardIntentMutation.isPending ? (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />

@@ -25,6 +25,7 @@ import { teamRepository } from "./team";
 import { businessHoursRepository } from "./businessHours";
 import { companyRepository } from "./company";
 import { technicianTimeOffRepository } from "./technicianTimeOff";
+import { taskRepository } from "./tasks";
 import {
   DEFAULT_TIMEZONE,
   filterSchedulableTechnicians,
@@ -65,7 +66,7 @@ export type CapacityState =
  * the same "operationally meaningful" view.
  */
 export interface ScheduleBlock {
-  kind: "booked" | "open" | "time_off";
+  kind: "booked" | "open" | "time_off" | "task";
   startISO: string;
   endISO: string;
   durationMinutes: number;
@@ -82,6 +83,8 @@ export interface ScheduleBlock {
   visitId?: string;
   jobId?: string;
   visitStatus?: string;
+  /** Task id. Present on task blocks only. */
+  taskId?: string;
   /**
    * 2026-05-07 RALPH (technician time off): present on time_off blocks
    * only. Reason is the validated string union from
@@ -186,9 +189,13 @@ export interface CapacitySummary {
  * aggregate) does NOT consider these rows; they are display-only.
  */
 export interface OffRosterAssignment {
-  visitId: string;
-  jobId: string;
-  /** Customer-facing label — customerCompanyName ?? locationName. */
+  /** Set for visit rows. Absent for task rows. */
+  visitId?: string;
+  /** Set for visit rows. Absent for task rows. */
+  jobId?: string;
+  /** Set for task rows. Absent for visit rows. */
+  taskId?: string;
+  /** Customer-facing label — customerCompanyName ?? locationName for visits; task title for tasks. */
   title: string;
   /** Customer company name when present (separate from `title` so the UI
    *  can format it independently). */
@@ -241,6 +248,29 @@ interface VisitForBlocks {
   visitId: string;
   jobId: string;
   visitStatus: string;
+}
+
+interface TaskForBlocks {
+  start: number;
+  end: number;
+  title: string;
+  taskId: string;
+  taskStatus: string;
+}
+
+function buildTaskBlocks(taskItems: TaskForBlocks[]): ScheduleBlock[] {
+  return taskItems
+    .slice()
+    .sort((a, b) => a.start - b.start)
+    .map(t => ({
+      kind: "task" as const,
+      startISO: new Date(t.start).toISOString(),
+      endISO: new Date(t.end).toISOString(),
+      durationMinutes: Math.round((t.end - t.start) / 60_000),
+      title: t.title,
+      taskId: t.taskId,
+      visitStatus: t.taskStatus,
+    }));
 }
 
 /**
@@ -393,14 +423,23 @@ function buildScheduleBlocks(
   workEndMs: number,
   visits: VisitForBlocks[],
   timeOff: TimeOffForBlocks[] = [],
+  taskItems: TaskForBlocks[] = [],
 ): ScheduleBlock[] {
   const booked = buildBookedBlocks(visits);
+  const taskBlocks = buildTaskBlocks(taskItems);
   const timeOffBlocks = buildTimeOffBlocks(workStartMs, workEndMs, timeOff);
-  // Open gaps are computed against booked + time-off as a unified
-  // "busy" set so a tech on time-off doesn't show open slots inside
-  // their blocked window.
+  // Open gaps are computed against booked + task + time-off as a unified
+  // "busy" set so scheduled tasks block open slots correctly.
   const busyForGaps: VisitForBlocks[] = [
     ...visits,
+    ...taskItems.map((t) => ({
+      start: t.start,
+      end: t.end,
+      title: "",
+      visitId: "",
+      jobId: "",
+      visitStatus: "",
+    })),
     ...timeOff.map((t) => ({
       start: t.start,
       end: t.end,
@@ -411,14 +450,13 @@ function buildScheduleBlocks(
     })),
   ];
   const gaps = buildOpenGapBlocks(workStartMs, workEndMs, busyForGaps);
-  return [...booked, ...timeOffBlocks, ...gaps].sort((a, b) => {
+  return [...booked, ...taskBlocks, ...timeOffBlocks, ...gaps].sort((a, b) => {
     const aStart = Date.parse(a.startISO);
     const bStart = Date.parse(b.startISO);
     if (aStart !== bStart) return aStart - bStart;
-    // booked first, then time_off, then open — so a tech with a
-    // booked visit overlapping a time-off entry reads correctly.
+    // booked first, then task, then time_off, then open.
     const kindRank = (k: ScheduleBlock["kind"]) =>
-      k === "booked" ? 0 : k === "time_off" ? 1 : 2;
+      k === "booked" ? 0 : k === "task" ? 1 : k === "time_off" ? 2 : 3;
     if (a.kind !== b.kind) return kindRank(a.kind) - kindRank(b.kind);
     return Date.parse(a.endISO) - Date.parse(b.endISO);
   });
@@ -784,6 +822,98 @@ export async function getTodayCapacity(
     }
   }
 
+  // --- Scheduled tasks for today ------------------------------------------
+  // Tasks with a scheduledStartAt within today's window are treated like
+  // visits for two purposes: (a) they block availability in busyByTech so
+  // open-slot math excludes their time window, and (b) they appear as
+  // kind:"task" schedule blocks in the tech tile. Tasks assigned to
+  // non-schedulable / unassigned users surface in offRosterAssignments
+  // under the "Unassigned" column — same classification logic as visits.
+  //
+  // Exclusion rules (matching visit conventions):
+  //   - allDay tasks → skipped (no time window to block)
+  //   - cancelled    → skipped entirely
+  //   - completed    → shown in tile (full-day view), NOT added to busyByTech
+  //   - pending / in_progress → added to busyByTech + tile
+  const tasksByTech = new Map<string, TaskForBlocks[]>();
+  try {
+    const { items: todaysTasks } = await taskRepository.listTasks({
+      companyId,
+      scheduledFromDate: dayStart,
+      scheduledToDate: dayEnd,
+      limit: 200,
+    });
+    for (const task of todaysTasks) {
+      if (task.allDay) continue;
+      if (task.status === "cancelled") continue;
+      if (!task.scheduledStartAt) continue;
+
+      const start = new Date(task.scheduledStartAt as any).getTime();
+      let end: number;
+      if (task.scheduledEndAt) {
+        end = new Date(task.scheduledEndAt as any).getTime();
+      } else {
+        const fallbackMin = Math.max(task.estimatedDurationMinutes ?? 60, 30);
+        end = start + fallbackMin * 60_000;
+      }
+      if (!(end > start)) continue;
+
+      const clippedStart = Math.max(start, dayStartMs);
+      const clippedEnd = Math.min(end, dayEndMs);
+      if (clippedEnd <= clippedStart) continue;
+
+      const taskMeta: TaskForBlocks = {
+        start: clippedStart,
+        end: clippedEnd,
+        title: task.title,
+        taskId: task.id,
+        taskStatus: task.status,
+      };
+
+      const techId = task.assignedToUserId ?? null;
+      if (techId && schedulableIds.has(techId)) {
+        const arr = tasksByTech.get(techId) ?? [];
+        arr.push(taskMeta);
+        tasksByTech.set(techId, arr);
+        // Only non-completed tasks block remaining capacity.
+        if (task.status !== "completed") {
+          const busyArr = busyByTech.get(techId) ?? [];
+          busyArr.push({ start: clippedStart, end: clippedEnd });
+          busyByTech.set(techId, busyArr);
+        }
+      } else {
+        // Non-schedulable / unassigned → secondary list alongside visits.
+        let technicianName: string;
+        if (techId) {
+          const excludedName = excludedTechNames.get(techId);
+          technicianName = excludedName !== undefined ? excludedName : "Removed user";
+        } else {
+          technicianName = "Unassigned";
+        }
+        offRosterAssignments.push({
+          taskId: task.id,
+          title: task.title,
+          companyName: null,
+          technicianName,
+          scheduledStart: new Date(clippedStart).toISOString(),
+          scheduledEnd: new Date(clippedEnd).toISOString(),
+          status: task.status,
+        });
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(`[capacity] task query failed; treating as empty. ${msg}`);
+  }
+  // Re-sort after task rows are appended so chronological order is stable
+  // across both visits (sorted above) and newly added task rows.
+  offRosterAssignments.sort((a, b) => {
+    const t = Date.parse(a.scheduledStart) - Date.parse(b.scheduledStart);
+    if (t !== 0) return t;
+    return a.technicianName.localeCompare(b.technicianName);
+  });
+
   // --- Per-tech capacity --------------------------------------------------
   const technicians: TechnicianCapacity[] = schedulable.map((member, idx) => {
     const name = resolveTechnicianName(member as any);
@@ -834,7 +964,10 @@ export async function getTodayCapacity(
     // the tech "(off shift)" while still rendering the blocks.
     // 2026-05-07 RALPH: time-off blocks are emitted alongside booked
     // visits via the same `buildScheduleBlocks` helper.
+    // 2026-05-12 RALPH: scheduled tasks are now passed as a fifth arg so
+    // they surface as kind:"task" blocks and block open-slot math.
     const techTimeOff = timeOffByTech.get(member.id) ?? [];
+    const techTasks = tasksByTech.get(member.id) ?? [];
     const scheduleBlocks: ScheduleBlock[] = (() => {
       if (hasValidWorkday) {
         return buildScheduleBlocks(
@@ -842,20 +975,23 @@ export async function getTodayCapacity(
           dayStartMs + workEndMin! * 60_000,
           techVisits,
           techTimeOff,
+          techTasks,
         );
       }
-      if (techVisits.length === 0 && techTimeOff.length === 0) return [];
-      // No workday but there ARE assigned visits or time-off entries —
+      if (techVisits.length === 0 && techTimeOff.length === 0 && techTasks.length === 0) return [];
+      // No workday but there ARE assigned visits, time-off, or tasks —
       // derive a window from those so buildScheduleBlocks has bounds.
       // Clamp at the calendar day so a runaway entry doesn't produce a
       // malformed window.
       const allStarts: number[] = [
         ...techVisits.map((v) => v.start),
         ...techTimeOff.map((t) => t.start),
+        ...techTasks.map((t) => t.start),
       ];
       const allEnds: number[] = [
         ...techVisits.map((v) => v.end),
         ...techTimeOff.map((t) => t.end),
+        ...techTasks.map((t) => t.end),
       ];
       const minStart = Math.min(...allStarts);
       const maxEnd = Math.max(...allEnds);
@@ -868,6 +1004,7 @@ export async function getTodayCapacity(
         windowEnd,
         techVisits,
         techTimeOff,
+        techTasks,
       );
     })();
 

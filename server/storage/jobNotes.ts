@@ -96,6 +96,11 @@ export class JobNotesRepository extends BaseRepository {
    * Create a job note with optional equipment linkage.
    * If equipmentId is provided, it is validated against the job's equipment
    * (via job_equipment junction) to prevent cross-job equipment linking.
+   *
+   * idempotencyKey: when supplied (offline replay path), the server checks for
+   * an existing note with the same (companyId, idempotencyKey) before inserting.
+   * If one exists it is returned as-is — no duplicate is created. A racing
+   * duplicate insert is caught via the unique index and resolved the same way.
    */
   async createJobNote(
     companyId: string,
@@ -103,10 +108,42 @@ export class JobNotesRepository extends BaseRepository {
     userId: string,
     noteText: string,
     equipmentId?: string | null,
+    idempotencyKey?: string | null,
   ) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
     this.validateUUID(userId, "userId");
+
+    // Fast-path: if the client already has an idempotency key, check for an
+    // existing note before doing any further validation or insert.
+    if (idempotencyKey) {
+      const [existing] = await db
+        .select({
+          id: jobNotes.id,
+          jobId: jobNotes.jobId,
+          equipmentId: jobNotes.equipmentId,
+          noteText: jobNotes.noteText,
+          createdAt: jobNotes.createdAt,
+          updatedAt: jobNotes.updatedAt,
+          user: {
+            id: users.id,
+            email: users.email,
+            fullName: users.fullName,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          },
+        })
+        .from(jobNotes)
+        .leftJoin(users, eq(jobNotes.userId, users.id))
+        .where(
+          and(
+            eq(jobNotes.companyId, companyId),
+            eq(jobNotes.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (existing) return existing;
+    }
 
     // Verify job exists and belongs to company
     const [job] = await db
@@ -137,16 +174,53 @@ export class JobNotesRepository extends BaseRepository {
       }
     }
 
-    const [note] = await db
-      .insert(jobNotes)
-      .values({
-        companyId,
-        jobId,
-        userId,
-        noteText,
-        equipmentId: equipmentId ?? null,
-      })
-      .returning();
+    let noteId: string;
+    try {
+      const [note] = await db
+        .insert(jobNotes)
+        .values({
+          companyId,
+          jobId,
+          userId,
+          noteText,
+          equipmentId: equipmentId ?? null,
+          idempotencyKey: idempotencyKey ?? null,
+        })
+        .returning({ id: jobNotes.id });
+      noteId = note.id;
+    } catch (err: any) {
+      // Unique violation on (company_id, idempotency_key) — a concurrent replay
+      // beat us to the insert. Fetch and return the winner.
+      if (err?.code === "23505" && idempotencyKey) {
+        const [existing] = await db
+          .select({
+            id: jobNotes.id,
+            jobId: jobNotes.jobId,
+            equipmentId: jobNotes.equipmentId,
+            noteText: jobNotes.noteText,
+            createdAt: jobNotes.createdAt,
+            updatedAt: jobNotes.updatedAt,
+            user: {
+              id: users.id,
+              email: users.email,
+              fullName: users.fullName,
+              firstName: users.firstName,
+              lastName: users.lastName,
+            },
+          })
+          .from(jobNotes)
+          .leftJoin(users, eq(jobNotes.userId, users.id))
+          .where(
+            and(
+              eq(jobNotes.companyId, companyId),
+              eq(jobNotes.idempotencyKey, idempotencyKey),
+            ),
+          )
+          .limit(1);
+        if (existing) return existing;
+      }
+      throw err;
+    }
 
     // Get note with user information
     const [noteWithUser] = await db
@@ -167,7 +241,7 @@ export class JobNotesRepository extends BaseRepository {
       })
       .from(jobNotes)
       .leftJoin(users, eq(jobNotes.userId, users.id))
-      .where(eq(jobNotes.id, note.id));
+      .where(eq(jobNotes.id, noteId));
 
     return noteWithUser;
   }

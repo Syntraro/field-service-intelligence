@@ -20,6 +20,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function RequestReset() {
   const [, setLocation] = useLocation();
@@ -59,18 +60,15 @@ export default function RequestReset() {
         <CardContent className="space-y-4">
           {submitted ? (
             <>
-              <div
-                className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
-                data-testid="request-reset-success"
-              >
-                <div className="flex items-start gap-2">
+              <Alert variant="success" className="p-3" data-testid="request-reset-success">
+                <AlertDescription className="flex items-start gap-2 text-sm">
                   <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
                   <div>
                     If an account exists for <strong>{email.trim()}</strong>, a
                     reset link has been sent. The link expires in 60 minutes.
                   </div>
-                </div>
-              </div>
+                </AlertDescription>
+              </Alert>
               <Button
                 variant="outline"
                 className="w-full"

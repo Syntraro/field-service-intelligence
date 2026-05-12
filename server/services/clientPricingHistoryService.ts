@@ -65,6 +65,10 @@ export interface PricingHistoryItem {
   /** Display name of the client/location — populated by getItemPricingContext,
    *  null in getClientPricingHistory (all results are the same client). */
   locationName: string | null;
+  /** Site/company name for the service location (location.location ?? location.companyName). */
+  serviceLocationName: string | null;
+  /** Formatted service address ("Address, City") or null when not set. */
+  serviceLocationAddress: string | null;
   itemId: string | null;
   itemName: string;
   category: string | null;
@@ -178,10 +182,15 @@ export async function getClientPricingHistory(
           createdAt: invoices.createdAt,
           itemCategory: items.category,
           itemName: items.name,
+          locationSiteName: clientLocations.location,
+          locationCompanyName: clientLocations.companyName,
+          locationAddress: clientLocations.address,
+          locationCity: clientLocations.city,
         })
         .from(invoiceLines)
         .innerJoin(invoices, eq(invoiceLines.invoiceId, invoices.id))
         .leftJoin(items, eq(invoiceLines.productId, items.id))
+        .leftJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
         .where(
           and(
             eq(invoices.companyId, ctx.tenantId),
@@ -215,10 +224,15 @@ export async function getClientPricingHistory(
           createdAt: quotes.createdAt,
           itemCategory: items.category,
           itemName: items.name,
+          locationSiteName: clientLocations.location,
+          locationCompanyName: clientLocations.companyName,
+          locationAddress: clientLocations.address,
+          locationCity: clientLocations.city,
         })
         .from(quoteLines)
         .innerJoin(quotes, eq(quoteLines.quoteId, quotes.id))
         .leftJoin(items, eq(quoteLines.productId, items.id))
+        .leftJoin(clientLocations, eq(quotes.locationId, clientLocations.id))
         .where(
           and(
             eq(quotes.companyId, ctx.tenantId),
@@ -245,6 +259,12 @@ export async function getClientPricingHistory(
       clientId,
       locationId: row.locationId ?? null,
       locationName: null,
+      serviceLocationName: row.locationSiteName ?? row.locationCompanyName ?? null,
+      serviceLocationAddress: row.locationAddress
+        ? row.locationCity
+          ? `${row.locationAddress}, ${row.locationCity}`
+          : row.locationAddress
+        : null,
       itemId: row.productId ?? null,
       itemName: row.description ?? row.itemName ?? "",
       category: row.itemCategory ?? null,
@@ -264,6 +284,12 @@ export async function getClientPricingHistory(
       clientId,
       locationId: row.locationId ?? null,
       locationName: null,
+      serviceLocationName: row.locationSiteName ?? row.locationCompanyName ?? null,
+      serviceLocationAddress: row.locationAddress
+        ? row.locationCity
+          ? `${row.locationAddress}, ${row.locationCity}`
+          : row.locationAddress
+        : null,
       itemId: row.productId ?? null,
       itemName: row.description ?? row.itemName ?? "",
       category: row.itemCategory ?? null,
@@ -373,6 +399,8 @@ export async function getItemPricingContext(
       clientId: r.locationId ?? "",
       locationId: r.locationId ?? null,
       locationName: r.locationName ?? null,
+      serviceLocationName: r.locationName ?? null,
+      serviceLocationAddress: null,
       itemId: r.productId ?? null,
       itemName: r.description ?? r.itemName ?? "",
       category: r.itemCategory ?? null,
@@ -391,6 +419,8 @@ export async function getItemPricingContext(
       clientId: r.locationId ?? "",
       locationId: r.locationId ?? null,
       locationName: r.locationName ?? null,
+      serviceLocationName: r.locationName ?? null,
+      serviceLocationAddress: null,
       itemId: r.productId ?? null,
       itemName: r.description ?? r.itemName ?? "",
       category: r.itemCategory ?? null,

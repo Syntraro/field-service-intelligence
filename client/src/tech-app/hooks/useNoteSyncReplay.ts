@@ -56,6 +56,9 @@ async function sendOne(item: QueuedItem): Promise<void> {
     body: JSON.stringify({
       text: item.payload.text,
       equipmentId: item.payload.equipmentId,
+      // idempotencyKey lets the server return the existing note if this replay
+      // races with a prior send that already landed (crash-safe de-duplication).
+      idempotencyKey: item.payload.idempotencyKey,
     }),
   });
 }

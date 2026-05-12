@@ -51,10 +51,10 @@ import {
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
   Clock, Package, Tag, Building2, AlertTriangle, Archive, Loader2,
   ChevronLeft, ChevronRight, ChevronDown, Check,
-  // 2026-05-07 right-rail icons (Contacts / Notes / Billing / Equipment /
-  // Parts / Maintenance / Activity). Wrench + Package already imported
-  // above for other surfaces; reused unchanged.
-  Users, StickyNote, Wallet, CalendarClock, Activity, X,
+  // 2026-05-07 right-rail icons. Wrench already imported above; reused.
+  // 2026-05-12 RALPH: Users / Wallet / CalendarClock / Activity removed
+  // (tabs they backed are gone). LayoutDashboard added for Summary tab.
+  StickyNote, LayoutDashboard, X,
 } from "lucide-react";
 import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -90,6 +90,7 @@ import {
 // longer composes any rail-card slot primitive directly; the
 // `RailContentCard` import is intentionally absent.
 import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 import type {
   RailPanelDescriptor,
   RailCardDescriptor,
@@ -137,8 +138,8 @@ import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { getClientDisplayName } from "@shared/clientDisplayName";
+import { SectionLabel } from "@/components/ui/typography";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
-import { ClientKpiStrip } from "@/components/client-intelligence/ClientKpiStrip";
 import { ClientOverviewTab } from "@/pages/ClientOverviewTab";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -151,36 +152,29 @@ type ScopeType = "company" | "location";
  *  utility rail, not here. 2026-05-07 v3: dropped `equipment`, `pm`,
  *  `parts` from this union — the rail is now the canonical access
  *  point for those surfaces, and keeping center tabs for them was
- *  pure duplication. The underlying components / data / queries are
- *  preserved (see `LocEquipmentTab`, `LocPartsTab`, `<PMScheduleCard>`)
- *  so a future surface can re-mount them, but they no longer appear
- *  in the workspace tab bar. */
+ *  pure duplication. 2026-05-12: `pricing` removed — Historical
+ *  Pricing is now rendered inside the Overview tab via
+ *  `ClientOverviewTab` (no separate Pricing tab). */
 type WorkspaceTab =
   | "overview"
   | "active"
   | "jobs"
   | "invoices"
-  | "quotes"
-  | "pricing";
+  | "quotes";
 
 /** Utility-rail panels in the right sidebar.
  *  2026-05-02: dropped the "fields" tab (Reference-Fields). Data + APIs
  *  unchanged — the section is just no longer surfaced here.
  *  2026-05-07: layout switched from a horizontal `<Tabs>` row to a
- *  vertical icon rail + expandable panel. Items extended to cover the
- *  full client surface (was contacts/notes/billing); Equipment / Parts /
- *  Maintenance show a compact summary that links to the corresponding
- *  workspace tab (per spec — no duplicated data). Activity replaces
- *  the prior "history" notion. Files is intentionally omitted.
+ *  vertical icon rail + expandable panel.
+ *  2026-05-12 RALPH: consolidated from 7 tabs to 3. Summary stacks
+ *  Billing + Maintenance + Activity. Equip & Parts stacks Equipment +
+ *  Parts. Contacts removed from the rail (data + queries unchanged).
  *  `null` → no panel open (rail-only display). */
 type UtilityTab =
-  | "contacts"
+  | "summary"
   | "notes"
-  | "billing"
-  | "equipment"
-  | "parts"
-  | "maintenance"
-  | "activity";
+  | "equipment-parts";
 
 type UtilityPanel = UtilityTab | null;
 
@@ -257,7 +251,6 @@ const COMPANY_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
-  { key: "pricing", label: "Pricing" },
 ];
 
 const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
@@ -266,7 +259,6 @@ const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
-  { key: "pricing", label: "Pricing" },
 ];
 
 const WORKSPACE_TAB_KEYS = new Set(LOCATION_TABS.map(t => t.key));
@@ -464,7 +456,7 @@ export default function ClientDetailPage() {
   // 2026-05-07: `utilityTab` now models the active SIDE PANEL — null
   // means rail-only (no panel open). Defaults to "contacts" so the
   // page reads with a meaningful initial panel rather than empty space.
-  const [utilityTab, setUtilityTab] = useState<UtilityPanel>("contacts");
+  const [utilityTab, setUtilityTab] = useState<UtilityPanel>("summary");
   const [locationSearch, setLocationSearch] = useState("");
 
   // 2026-05-02 layout refactor: the persistent left "Locations" rail
@@ -1176,15 +1168,12 @@ export default function ClientDetailPage() {
   // `text-caption font-medium` (heavier weight + larger 14px size).
   const RAIL_ACTION_BTN_CLASS = `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`;
 
-  // 2026-05-07 canonical rail extraction: build the seven canonical
-  // rail tabs in a single place. Each tab carries its `id` (matches the
-  // legacy `UtilityPanel` enum), `label`, `icon`, the existing static
-  // `testId` (so `rail-item-*` selectors continue to render byte-for-
-  // byte), an optional `action` JSX (the panel-header `+ Add` /
-  // `Edit` button), and the panel `content` JSX. This is the single
-  // place that maps page state into the canonical rail; the legacy
-  // `UtilityRail`, `RailHeaderAction`, and `RailEmptyState` components
-  // are removed.
+  // 2026-05-12 RALPH: rail restructured from 7 separate tabs to 3
+  // consolidated tabs (Summary / Notes / Equip & Parts). Billing,
+  // Maintenance, and Activity are now stacked vertically inside the
+  // Summary tab. Equipment and Parts are stacked inside the Equip &
+  // Parts tab. Contacts is removed from the rail (data and queries
+  // are preserved unchanged).
   const ownerCompanyId = client.companyId || "";
   const billingPanelData = {
     lifetimeRevenue,
@@ -1199,57 +1188,36 @@ export default function ClientDetailPage() {
     billingProvince: parentCompany?.billingProvince ?? null,
     billingPostalCode: parentCompany?.billingPostalCode ?? null,
   };
-  const onRequestAddMaintenance = () => {
-    // 2026-05-07 v4: route to the canonical create-plan wizard.
-    // PMWizardPage reads `?locationId=…` and derives the customer
-    // from the location row, so no separate `?clientId=` is needed.
-    const url = selectedLocationId
-      ? `/pm/new?locationId=${selectedLocationId}`
-      : `/pm/new`;
-    setLocation(url);
-  };
   const clientRailTabs: DetailRailTab[] = [
     {
-      id: "contacts",
-      label: "Contacts",
-      icon: Users,
-      testId: "rail-item-contacts",
+      id: "summary",
+      label: "Summary",
+      icon: LayoutDashboard,
+      testId: "rail-item-summary",
       action: (
         <button
           type="button"
-          onClick={() => {
-            if (scopeType === "company") companyContactsRef.current?.startAdding();
-            else locContactsRef.current?.startAdding();
-          }}
+          onClick={() => setEditClientDialogOpen(true)}
           className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-add-contact"
+          data-testid="client-side-panel-action-edit-billing"
         >
-          <Plus className="h-3.5 w-3.5" />
-          Add
+          <Pencil className="h-3.5 w-3.5" />
+          Edit
         </button>
       ),
-      content: scopeType === "company" ? (
-        <CompanyContactsCompact
-          ref={companyContactsRef}
-          hideHeader
-          companyContacts={clientLevelContacts}
-          locationContacts={allLocationContacts}
-          locations={locations}
-          companyId={companyId}
-        />
-      ) : selectedLoc && selectedLocationId ? (
-        <LocContactsCompact
-          ref={locContactsRef}
-          hideHeader
-          locationContacts={locContacts}
-          companyContacts={locCompanyContacts}
+      content: (
+        <ClientSummaryTabContent
+          billing={billingPanelData}
+          paymentTermsDays={billingFields.paymentTermsDays}
+          billingStreet={billingFields.billingStreet}
+          billingCity={billingFields.billingCity}
+          billingProvince={billingFields.billingProvince}
+          billingPostalCode={billingFields.billingPostalCode}
+          companyId={companyId ?? null}
           locationId={selectedLocationId}
-          parentCompanyId={companyId}
-          locations={locations}
-          allLocationContacts={allLocationContacts}
+          scopeType={scopeType}
+          customerCompanyId={companyId ?? null}
         />
-      ) : (
-        <DetailRightRailEmpty message="No contacts." testIdPrefix="client-side" />
       ),
     },
     {
@@ -1296,111 +1264,40 @@ export default function ClientDetailPage() {
       ),
     },
     {
-      id: "billing",
-      label: "Billing",
-      icon: Wallet,
-      testId: "rail-item-billing",
-      action: (
-        <button
-          type="button"
-          onClick={() => setEditClientDialogOpen(true)}
-          className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-edit-billing"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          Edit
-        </button>
-      ),
-      content: (
-        <ClientBillingPanelBody
-          billing={billingPanelData}
-          paymentTermsDays={billingFields.paymentTermsDays}
-          billingStreet={billingFields.billingStreet}
-          billingCity={billingFields.billingCity}
-          billingProvince={billingFields.billingProvince}
-          billingPostalCode={billingFields.billingPostalCode}
-        />
-      ),
-    },
-    {
-      id: "equipment",
-      label: "Equipment",
+      id: "equipment-parts",
+      label: "Equip & Parts",
       icon: Wrench,
-      testId: "rail-item-equipment",
-      // 2026-05-07: location-scope only — at company scope there's no
-      // single location to scope an equipment add to, so the affordance
-      // hides (mirrors the prior RailHeaderAction switch).
+      testId: "rail-item-equipment-parts",
+      // Location-scope only: at company scope there is no single
+      // location to add equipment or parts to.
       action: scopeType === "location" ? (
-        <button
-          type="button"
-          onClick={() => setEquipmentModalOpen(true)}
-          className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-add-equipment"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add Equipment
-        </button>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={() => setEquipmentModalOpen(true)}
+            className={RAIL_ACTION_BTN_CLASS}
+            data-testid="client-side-panel-action-add-equipment"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Equipment
+          </button>
+          <button
+            type="button"
+            onClick={() => setPartsModalOpen(true)}
+            className={RAIL_ACTION_BTN_CLASS}
+            data-testid="client-side-panel-action-add-part"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Part
+          </button>
+        </div>
       ) : null,
       content: (
-        <ClientEquipmentPanelBody
+        <ClientEquipmentPartsPanelBody
           scopeType={scopeType}
           equipment={locationEquipment}
           onOpen={setDetailEquipment}
-        />
-      ),
-    },
-    {
-      id: "parts",
-      label: "Parts",
-      icon: Package,
-      testId: "rail-item-parts",
-      action: scopeType === "location" ? (
-        <button
-          type="button"
-          onClick={() => setPartsModalOpen(true)}
-          className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-add-part"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add Part
-        </button>
-      ) : null,
-      content: <ClientPartsPanelBody scopeType={scopeType} pmParts={pmParts} />,
-    },
-    {
-      id: "maintenance",
-      label: "Maintenance",
-      icon: CalendarClock,
-      testId: "rail-item-maintenance",
-      action: scopeType === "location" ? (
-        <button
-          type="button"
-          onClick={onRequestAddMaintenance}
-          className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-add-maintenance"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add Plan
-        </button>
-      ) : null,
-      content: (
-        <ClientMaintenancePanelBody
-          companyId={companyId ?? null}
-          locationId={selectedLocationId}
-          scopeType={scopeType}
-        />
-      ),
-    },
-    {
-      id: "activity",
-      label: "Activity",
-      icon: Activity,
-      testId: "rail-item-activity",
-      content: (
-        <ClientActivityPanelBody
-          scopeType={scopeType}
-          customerCompanyId={companyId ?? null}
-          locationId={selectedLocationId}
+          pmParts={pmParts}
         />
       ),
     },
@@ -1790,20 +1687,6 @@ export default function ClientDetailPage() {
             tell the user which location is selected. */}
       </div>
 
-      {/* ═══ KPI STRIP — 7 client intelligence tiles (2026-05-11) ═══
-           Rendered between the scope bar and the workspace body so it spans
-           the full content width at every breakpoint. Only mounted when the
-           company-level customerCompanyId is resolved. */}
-      {companyId && (
-        <div className="bg-white border-b border-slate-200 px-4 lg:px-6 py-3">
-          <ClientKpiStrip
-            customerCompanyId={companyId}
-            activeJobsCount={activeJobsCount}
-            onHoldJobsCount={onHoldJobsCount}
-          />
-        </div>
-      )}
-
       {/* ═══ BODY — workspace card + recent activity (LEFT-COLUMN portion only) ═══
            2026-05-07: the right utility rail was lifted to the page-
            level outer flex row above, so the body here is now a
@@ -1936,6 +1819,9 @@ export default function ClientDetailPage() {
                             customerCompanyId={companyId}
                             companyName={companyName}
                             onNavigate={setLocation}
+                            activeJobsCount={activeJobsCount}
+                            onHoldJobsCount={onHoldJobsCount}
+                            locationId={null}
                           />
                         )}
                         {workspaceTab === "active" && (
@@ -1951,20 +1837,6 @@ export default function ClientDetailPage() {
                         {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
                         {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
                         {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
-                        {/* 2026-05-07 v3: Equipment + Parts + PM tabs
-                            removed from the workspace bar. The right
-                            utility rail is the canonical access point
-                            for those surfaces. Underlying
-                            ScopeRequiredEmpty / LocEquipmentTab /
-                            LocPartsTab / PMScheduleCard components are
-                            preserved for future surfaces. */}
-                        {workspaceTab === "pricing" && (
-                          <ScopeRequiredEmpty
-                            icon={<Receipt className="h-5 w-5 text-slate-400" />}
-                            title="Pricing history is per-location"
-                            description="Pick a specific location from the scope selector above to view its invoice and quote pricing history."
-                          />
-                        )}
                       </>
                     ) : selectedLoc ? (
                       <>
@@ -1973,6 +1845,9 @@ export default function ClientDetailPage() {
                             customerCompanyId={companyId}
                             companyName={companyName}
                             onNavigate={setLocation}
+                            activeJobsCount={activeJobsCount}
+                            onHoldJobsCount={onHoldJobsCount}
+                            locationId={selectedLocationId}
                           />
                         )}
                         {workspaceTab === "active" && (
@@ -1988,10 +1863,6 @@ export default function ClientDetailPage() {
                         {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
                         {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
                         {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
-                        {/* 2026-05-07 v3: Equipment / PM / Parts moved to the right utility rail. */}
-                        {workspaceTab === "pricing" && (
-                          <LocPricingTab locationId={selectedLocationId!} onNavigate={setLocation} />
-                        )}
                       </>
                     ) : (
                       <p className="text-sm text-slate-400 text-center py-12">Select a location from the scope selector above.</p>
@@ -1999,18 +1870,6 @@ export default function ClientDetailPage() {
                   </div>
                 </div>
 
-                {/* ═══ RECENT ACTIVITY CARD (below workspace) ═══
-                    Activity feed is company-scoped; always shows parent
-                    company activity regardless of scopeType. */}
-                {companyId && (
-                  <div className="rounded-md border border-slate-200 bg-white p-4" data-testid="client-recent-activity">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Recent Activity</h3>
-                      <Clock className="h-3 w-3 text-slate-400" />
-                    </div>
-                    <ClientActivityCompact companyId={companyId} />
-                  </div>
-                )}
         </div>
 
       </div>
@@ -2467,7 +2326,7 @@ const CompanyContactsCompact = forwardRef<ContactsCompactRef, {
         </div>
       )}
       {companyContacts.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No contacts yet.</p>
+        <RailContentCardMeta className="mt-0">No contacts yet.</RailContentCardMeta>
       ) : (
         <div className="space-y-1">
           {companyContacts.map(c => (
@@ -3347,6 +3206,95 @@ function ClientActivityPanelBody({
       panel={buildClientActivityPanelDescriptor(feed?.items ?? [])}
       testIdPrefix="client-side"
     />
+  );
+}
+
+// ── Summary tab — stacks Billing / Maintenance / Activity ────────────
+
+interface ClientSummaryTabContentProps {
+  billing: RailBillingShape;
+  paymentTermsDays: number | null;
+  billingStreet: string | null;
+  billingCity: string | null;
+  billingProvince: string | null;
+  billingPostalCode: string | null;
+  companyId: string | null;
+  locationId: string | null;
+  scopeType: ScopeType;
+  customerCompanyId: string | null;
+}
+
+function ClientSummaryTabContent({
+  billing,
+  paymentTermsDays,
+  billingStreet,
+  billingCity,
+  billingProvince,
+  billingPostalCode,
+  companyId,
+  locationId,
+  scopeType,
+  customerCompanyId,
+}: ClientSummaryTabContentProps) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <SectionLabel className="mb-2">Billing</SectionLabel>
+        <ClientBillingPanelBody
+          billing={billing}
+          paymentTermsDays={paymentTermsDays}
+          billingStreet={billingStreet}
+          billingCity={billingCity}
+          billingProvince={billingProvince}
+          billingPostalCode={billingPostalCode}
+        />
+      </div>
+      <div>
+        <SectionLabel className="mb-2">Maintenance</SectionLabel>
+        <ClientMaintenancePanelBody
+          companyId={companyId}
+          locationId={locationId}
+          scopeType={scopeType}
+        />
+      </div>
+      <div>
+        <SectionLabel className="mb-2">Activity</SectionLabel>
+        <ClientActivityPanelBody
+          scopeType={scopeType}
+          customerCompanyId={customerCompanyId}
+          locationId={locationId}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Equipment & Parts tab — stacks Equipment / Parts ──────────────────
+
+interface ClientEquipmentPartsPanelBodyProps {
+  scopeType: ScopeType;
+  equipment: LocationEquipment[];
+  onOpen: (eq: LocationEquipment) => void;
+  pmParts: PMPartWithItem[];
+}
+
+function ClientEquipmentPartsPanelBody({
+  scopeType,
+  equipment,
+  onOpen,
+  pmParts,
+}: ClientEquipmentPartsPanelBodyProps) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <SectionLabel className="mb-2">Equipment</SectionLabel>
+        <ClientEquipmentPanelBody scopeType={scopeType} equipment={equipment} onOpen={onOpen} />
+      </div>
+      <div>
+        <SectionLabel className="mb-2">Parts</SectionLabel>
+        <ClientPartsPanelBody scopeType={scopeType} pmParts={pmParts} />
+      </div>
+    </div>
   );
 }
 

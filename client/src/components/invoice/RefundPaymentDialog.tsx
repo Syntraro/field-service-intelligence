@@ -33,6 +33,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -242,53 +243,61 @@ export function RefundPaymentDialog({
 
       <ModalBody className="space-y-3">
         {result?.kind === "reconciliation_pending" ? (
-          <div
-            className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2"
+          <Alert
+            variant="warning"
+            className="px-3 py-2"
             data-testid="refund-reconciliation-pending"
           >
-            <Clock3 className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
-            <div className="text-sm text-amber-900">
-              <p className="font-semibold">Refund issued — reconciliation pending</p>
-              <p className="text-xs opacity-90 mt-1 leading-relaxed">
-                Stripe accepted the refund. The local record will appear in the
-                payment history within a few seconds, when the webhook lands.
-                No further action is needed — retrying would not produce a
-                duplicate refund.
-              </p>
-            </div>
-          </div>
-        ) : result?.kind === "settled" ? (
-          <div
-            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-start gap-2"
-            data-testid="refund-settled"
-          >
-            <CheckCircle2 className="h-4 w-4 text-emerald-700 mt-0.5 shrink-0" />
-            <div className="text-sm text-emerald-900">
-              <p className="font-semibold">Refund recorded</p>
-              <p className="text-xs opacity-90 mt-1">
-                {formatCurrency(parseFloat(result.amount.replace("-", "")), currency)} attached
-                to the original payment.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs flex items-start gap-2">
-              <AlertTriangle className="h-3.5 w-3.5 text-slate-500 mt-0.5 shrink-0" />
+            <AlertDescription className="flex items-start gap-2 text-sm">
+              <Clock3 className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
               <div>
-                <p>
-                  Original: <span className="font-medium tabular-nums">{formatCurrency(parentAmount, currency)}</span>
-                  {" · "}Already refunded:{" "}
-                  <span className="font-medium tabular-nums">{formatCurrency(alreadyOffset, currency)}</span>
-                </p>
-                <p>
-                  Remaining refundable:{" "}
-                  <span className="font-semibold text-slate-900 tabular-nums">
-                    {formatCurrency(remainingRefundable, currency)}
-                  </span>
+                <p className="font-semibold">Refund issued — reconciliation pending</p>
+                <p className="text-xs opacity-90 mt-1 leading-relaxed">
+                  Stripe accepted the refund. The local record will appear in the
+                  payment history within a few seconds, when the webhook lands.
+                  No further action is needed — retrying would not produce a
+                  duplicate refund.
                 </p>
               </div>
-            </div>
+            </AlertDescription>
+          </Alert>
+        ) : result?.kind === "settled" ? (
+          <Alert
+            variant="success"
+            className="px-3 py-2"
+            data-testid="refund-settled"
+          >
+            <AlertDescription className="flex items-start gap-2 text-sm">
+              <CheckCircle2 className="h-4 w-4 text-emerald-700 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-semibold">Refund recorded</p>
+                <p className="text-xs opacity-90 mt-1">
+                  {formatCurrency(parseFloat(result.amount.replace("-", "")), currency)} attached
+                  to the original payment.
+                </p>
+              </div>
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <>
+            <Alert variant="neutral" className="px-3 py-2 text-xs">
+              <AlertDescription className="flex items-start gap-2">
+                <AlertTriangle className="h-3.5 w-3.5 text-slate-500 mt-0.5 shrink-0" />
+                <div>
+                  <p>
+                    Original: <span className="font-medium tabular-nums">{formatCurrency(parentAmount, currency)}</span>
+                    {" · "}Already refunded:{" "}
+                    <span className="font-medium tabular-nums">{formatCurrency(alreadyOffset, currency)}</span>
+                  </p>
+                  <p>
+                    Remaining refundable:{" "}
+                    <span className="font-semibold text-slate-900 tabular-nums">
+                      {formatCurrency(remainingRefundable, currency)}
+                    </span>
+                  </p>
+                </div>
+              </AlertDescription>
+            </Alert>
 
             <FormField>
               <InlineInput

@@ -476,9 +476,9 @@ export function EntityNoteDialog({
       }
 
       invalidateNotes();
-      toast({
-        title: mode === "create" ? "Note added" : "Note updated",
-      });
+      if (mode === "edit") {
+        toast({ title: "Note updated" });
+      }
       onOpenChange(false);
     } catch (err: any) {
       toast({

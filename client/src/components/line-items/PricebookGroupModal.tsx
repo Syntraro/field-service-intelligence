@@ -58,6 +58,7 @@ import {
   useUpdatePricebookGroup,
 } from "@/lib/pricebook/usePricebookGroups";
 import type { PricebookGroupSummaryDto } from "./pricebookHelpers";
+import { PickerShell } from "@/components/ui/picker-shell";
 
 export type PricebookGroupModalMode = "create" | "edit";
 
@@ -346,10 +347,11 @@ export function PricebookGroupModal({
             />
           </div>
 
-          <ul
-            className="mt-2 max-h-[260px] overflow-y-auto rounded-md border border-card-border bg-white divide-y divide-slate-100"
-            data-testid="pricebook-group-modal-items"
-          >
+          <PickerShell asChild>
+            <ul
+              className="mt-2 max-h-[260px] border-card-border bg-white divide-slate-100"
+              data-testid="pricebook-group-modal-items"
+            >
             {isLoading && children.size === 0 ? (
               <li className="p-2 space-y-1.5">
                 {[0, 1, 2, 3].map((i) => (
@@ -424,7 +426,8 @@ export function PricebookGroupModal({
                 );
               })
             )}
-          </ul>
+            </ul>
+          </PickerShell>
         </FormField>
 
         {activeMutation.isError ? (

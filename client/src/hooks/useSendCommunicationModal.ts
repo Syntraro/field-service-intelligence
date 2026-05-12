@@ -31,7 +31,7 @@ export interface SendModalAttachment {
 
 export const MAX_SEND_IMAGE_ATTACHMENTS = 5;
 
-export type CommunicationEntityType = "invoice" | "quote" | "job";
+export type CommunicationEntityType = "invoice" | "quote" | "job" | "statement";
 
 interface EntityEndpoints {
   recipientsPath: string;
@@ -60,6 +60,12 @@ function resolveEndpoints(entityType: CommunicationEntityType, entityId: string)
         previewPath:    `/api/jobs/${entityId}/render-email`,
         sendPath:       `/api/jobs/${entityId}/email`,
       };
+    case "statement":
+      return {
+        recipientsPath: `/api/customer-companies/${entityId}/statement-recipients`,
+        previewPath:    `/api/customer-companies/${entityId}/statement-preview`,
+        sendPath:       `/api/customer-companies/${entityId}/send-statement`,
+      };
   }
 }
 
@@ -77,6 +83,8 @@ export interface UseSendCommunicationModalOptions {
   entityId: string;
   isOpen: boolean;
   onSuccess?: () => void;
+  /** For statement type: scope the PDF + email to a single location. */
+  locationScopeId?: string | null;
 }
 
 export interface UseSendCommunicationModalResult {
@@ -134,7 +142,7 @@ function dedupe(list: string[]): string[] {
 export function useSendCommunicationModal(
   options: UseSendCommunicationModalOptions,
 ): UseSendCommunicationModalResult {
-  const { entityType, entityId, isOpen, onSuccess } = options;
+  const { entityType, entityId, isOpen, onSuccess, locationScopeId } = options;
   const endpoints = resolveEndpoints(entityType, entityId);
 
   const [recipients, setRecipients] = useState<string[]>([]);
@@ -171,7 +179,7 @@ export function useSendCommunicationModal(
   // Load recipients + preview when modal opens for a new entity.
   useEffect(() => {
     if (!isOpen) return;
-    const key = `${entityType}:${entityId}`;
+    const key = `${entityType}:${entityId}:${locationScopeId ?? ""}`;
     if (loadedForRef.current === key) return;
     loadedForRef.current = key;
 
@@ -181,11 +189,14 @@ export function useSendCommunicationModal(
 
     (async () => {
       try {
+        const previewBody = locationScopeId
+          ? { locationId: locationScopeId }
+          : {};
         const [defaults, preview] = await Promise.all([
           apiRequest<LoadedDefaults>(endpoints.recipientsPath),
           apiRequest<LoadedPreview>(endpoints.previewPath, {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify(previewBody),
           }),
         ]);
         if (cancelled) return;
@@ -202,7 +213,7 @@ export function useSendCommunicationModal(
     })();
 
     return () => { cancelled = true; };
-  }, [isOpen, entityType, entityId, endpoints.recipientsPath, endpoints.previewPath]);
+  }, [isOpen, entityType, entityId, locationScopeId, endpoints.recipientsPath, endpoints.previewPath]);
 
   const addRecipient = useCallback((email: string) => {
     const norm = normalizeEmail(email);
@@ -252,6 +263,9 @@ export function useSendCommunicationModal(
         if (attachments.length > 0) {
           payload.attachmentFileIds = attachments.map((a) => a.fileId);
         }
+      }
+      if (entityType === "statement" && locationScopeId) {
+        payload.locationId = locationScopeId;
       }
       return await apiRequest<{
         dispatch?: { emailId?: string | null };

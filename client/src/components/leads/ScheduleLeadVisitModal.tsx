@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -114,17 +114,10 @@ export function ScheduleLeadVisitModal({
         assignedTechnicianIds: techId ? [techId] : null,
         visitNotes: notes.trim() || null,
       };
-      const res = await fetch(`/api/leads/${leadId}/visits`, {
+      return apiRequest(`/api/leads/${leadId}/visits`, {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Failed to schedule visit");
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });

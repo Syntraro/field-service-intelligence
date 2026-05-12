@@ -262,6 +262,19 @@ export const FormRow = React.forwardRef<HTMLDivElement, FormRowProps>(
 );
 FormRow.displayName = "FormRow";
 
+// ── InlineActionRow ────────────────────────────────────────────────
+
+export interface InlineActionRowProps extends React.HTMLAttributes<HTMLDivElement> {}
+
+/** Right-aligned button pair for inline-edit footers (no border, no padding).
+ *  Use for cancel/save rows inside cards, panels, and embedded forms. */
+export const InlineActionRow = React.forwardRef<HTMLDivElement, InlineActionRowProps>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn("flex items-center justify-end gap-2", className)} {...props} />
+  ),
+);
+InlineActionRow.displayName = "InlineActionRow";
+
 // ── Shared inline-label helpers ────────────────────────────────────
 //
 // Used by InlineInput / InlineTextarea / InlineSelectTrigger to

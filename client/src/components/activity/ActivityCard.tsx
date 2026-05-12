@@ -24,6 +24,7 @@ import { Activity as ActivityIcon, ChevronDown, ChevronRight, Loader2 } from "lu
 import { apiRequest } from "@/lib/queryClient";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { CardShell } from "@/components/ui/card";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 
 interface ActivityItem {
   id: string;
@@ -177,17 +178,17 @@ export function ActivityCard({
         <CollapsibleContent>
           <div className="border-t border-card-border px-3 py-2">
             {isLoading ? (
-              <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
+              <RailContentCardMeta className="flex items-center gap-2 px-1 py-2">
                 <Loader2 className="h-3 w-3 animate-spin" /> Loading…
-              </div>
+              </RailContentCardMeta>
             ) : isError ? (
-              <div className="px-1 py-2 text-xs text-destructive">
+              <RailContentCardMeta className="px-1 py-2 text-destructive">
                 Could not load activity.
-              </div>
+              </RailContentCardMeta>
             ) : items.length === 0 ? (
-              <div className="px-1 py-3 text-xs text-muted-foreground">
+              <RailContentCardMeta className="px-1 py-3">
                 No activity yet.
-              </div>
+              </RailContentCardMeta>
             ) : (
               <ul className="space-y-2.5">
                 {items.map((it) => {

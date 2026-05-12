@@ -11,7 +11,6 @@ import { ArrowLeft, Save } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -309,9 +308,9 @@ export default function BusinessHoursSettingsPage() {
                     disabled={isLoading}
                     data-testid={`switch-open-${day.dayOfWeek}`}
                   />
-                  <Label className={`text-xs ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
+                  <span className={`text-xs ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
                     {day.isOpen ? "Open" : "Closed"}
-                  </Label>
+                  </span>
                 </div>
 
                 {/* Time pickers (only shown when open) */}

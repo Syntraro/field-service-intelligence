@@ -24,8 +24,10 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
 import { formatCurrency } from "@/lib/formatters";
+import { IconToneBadge } from "@/components/ui/icon-tone-badge";
+import { type IconTone } from "@/lib/iconToneVariants";
 
 type EventKind =
   | "created"
@@ -82,20 +84,20 @@ function iconForKind(kind: EventKind, statusLabel?: string) {
   }
 }
 
-function toneForKind(kind: EventKind, statusLabel?: string): string {
-  if (kind === "payment") return "bg-emerald-50 text-emerald-700";
-  if (kind === "refund") return "bg-red-50 text-red-700";
-  if (kind === "reversal") return "bg-amber-50 text-amber-700";
-  if (kind === "viewed") return "bg-sky-50 text-sky-700";
+function toneForKind(kind: EventKind, statusLabel?: string): IconTone {
+  if (kind === "payment") return "success";
+  if (kind === "refund") return "danger";
+  if (kind === "reversal") return "warning";
+  if (kind === "viewed") return "info";
   if (kind === "email") {
     if (statusLabel === "Bounced" || statusLabel === "Failed" || statusLabel === "Marked as spam") {
-      return "bg-red-50 text-red-700";
+      return "danger";
     }
-    if (statusLabel === "Opened") return "bg-sky-50 text-sky-700";
-    if (statusLabel === "Delivered") return "bg-emerald-50 text-emerald-700";
-    return "bg-slate-50 text-slate-700";
+    if (statusLabel === "Opened") return "info";
+    if (statusLabel === "Delivered") return "success";
+    return "neutral";
   }
-  return "bg-slate-50 text-slate-600";
+  return "neutral";
 }
 
 function statusBadgeVariant(statusLabel?: string): "default" | "secondary" | "destructive" | "outline" {
@@ -142,13 +144,13 @@ export function InvoiceTimelineCard({ invoiceId }: InvoiceTimelineCardProps) {
       </CardHeader>
       <CardContent className="pt-0">
         {isLoading ? (
-          <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <RailContentCardMeta className="flex items-center gap-1.5">
             <Loader2 className="h-3 w-3 animate-spin" /> Loading…
-          </p>
+          </RailContentCardMeta>
         ) : events.length === 0 ? (
-          <p className="text-xs text-muted-foreground" data-testid="empty-invoice-timeline">
+          <RailContentCardMeta className="mt-2" data-testid="empty-invoice-timeline">
             No activity yet.
-          </p>
+          </RailContentCardMeta>
         ) : (
           <div className="divide-y divide-slate-100">
             {events.map((e) => {
@@ -159,9 +161,9 @@ export function InvoiceTimelineCard({ invoiceId }: InvoiceTimelineCardProps) {
                   className="py-2 text-xs flex items-start gap-2"
                   data-testid={`timeline-event-${e.kind}-${e.id}`}
                 >
-                  <div className={cn("mt-0.5 shrink-0 rounded p-1", tone)}>
+                  <IconToneBadge tone={tone} className="mt-0.5">
                     {iconForKind(e.kind, e.meta?.statusLabel)}
-                  </div>
+                  </IconToneBadge>
                   <div className="flex-1 min-w-0 space-y-0.5">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-medium text-slate-900">{e.label}</span>

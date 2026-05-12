@@ -31,6 +31,7 @@ import { useEffect, useState } from "react";
 import { Tag, Percent, DollarSign, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InlineActionRow } from "@/components/ui/form-field";
 
 export type DiscountType = "PERCENT" | "AMOUNT" | null;
 
@@ -174,7 +175,7 @@ export function DiscountEditor({
           />
         </div>
       </div>
-      <div className="flex justify-end gap-2">
+      <InlineActionRow>
         {(percent || amount) && (
           <Button
             variant="ghost"
@@ -198,7 +199,7 @@ export function DiscountEditor({
         >
           {disabled ? "Saving..." : "Apply"}
         </Button>
-      </div>
+      </InlineActionRow>
     </div>
   );
 }

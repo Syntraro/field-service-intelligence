@@ -8,14 +8,15 @@
  */
 import { memo, useMemo, useCallback, useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
-import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, DispatchLeadVisit, Technician } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import type { DispatchDropData } from "./dispatchDndTypes";
-import { TIMELINE_HOURS, HOUR_WIDTH_PX, LANE_HEIGHT_PX, TIMELINE_START_HOUR, getVisitPosition } from "./dispatchPreviewUtils";
+import { TIMELINE_HOURS, HOUR_WIDTH_PX, LANE_HEIGHT_PX, TIMELINE_START_HOUR, getVisitPosition, getLeadVisitPosition } from "./dispatchPreviewUtils";
 import { getTaskPosition } from "./DispatchTaskBlock";
 import { checkOverlap } from "./dispatchOverlapUtils";
 import DispatchVisitBlock from "./DispatchVisitBlock";
 import DispatchTaskBlock from "./DispatchTaskBlock";
+import DispatchLeadVisitBlock from "./DispatchLeadVisitBlock";
 import { TimeOffOverlay } from "./TimeOffOverlay";
 
 /** 2026-05-07 RALPH (technician time off): one entry of off-time
@@ -62,6 +63,9 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
+  /** Pre-sales lead visits assigned to this technician for the visible day. */
+  leadVisits?: DispatchLeadVisit[];
+  onSelectLeadVisit?: (lead: DispatchLeadVisit) => void;
 };
 
 /** PERF-08: Memoized to skip re-renders for non-active lanes during drag
@@ -75,6 +79,8 @@ export default memo(function DispatchLaneRow({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
+  leadVisits = [],
+  onSelectLeadVisit,
 }: Props) {
   const dropData: DispatchDropData = { technicianId: tech.id };
 
@@ -89,27 +95,42 @@ export default memo(function DispatchLaneRow({
   // Exclude allDay items from timeline — allDay scheduling removed from product UX
   const timedVisits = useMemo(() => visits.filter(v => !v.isAllDay), [visits]);
   const timedTasks = useMemo(() => tasks.filter(t => !t.isAllDay), [tasks]);
+  // Lead visits: exclude all-day and unscheduled (no scheduledStart means no position).
+  const timedLeads = useMemo(
+    () => leadVisits.filter(lv => !lv.isAllDay && !!lv.scheduledStart),
+    [leadVisits],
+  );
 
   // Compute set of IDs that overlap another item in this lane
   const conflictIds = useMemo(() => {
     const ids = new Set<string>();
+    // Visit + task items — use durationMinutes directly (non-null by type).
     const allItems = [...timedVisits, ...timedTasks];
     for (const item of allItems) {
       if (!item.scheduledStart) continue;
       const s = new Date(item.scheduledStart);
       const startMin = s.getHours() * 60 + s.getMinutes();
       const endMin = startMin + item.durationMinutes;
-      // Check this item against all other items (exclude self)
       if (checkOverlap(startMin, endMin, timedVisits, item.id, timedTasks)) {
         ids.add(item.id);
       }
     }
+    // Lead visits — guard null durationMinutes with ?? 30 before arithmetic.
+    for (const lv of timedLeads) {
+      if (!lv.scheduledStart) continue;
+      const s = new Date(lv.scheduledStart);
+      const startMin = s.getHours() * 60 + s.getMinutes();
+      const endMin = startMin + (lv.durationMinutes ?? 30);
+      if (checkOverlap(startMin, endMin, timedVisits, lv.id, timedTasks)) {
+        ids.add(lv.id);
+      }
+    }
     return ids;
-  }, [timedVisits, timedTasks]);
+  }, [timedVisits, timedTasks, timedLeads]);
 
   // Goal 3: Compute occupancy rail segments (thin bar at lane bottom showing occupied periods)
   const occupancySegments = useMemo(() => {
-    const segments: { left: number; width: number; type: "visit" | "task" }[] = [];
+    const segments: { left: number; width: number; type: "visit" | "task" | "lead" }[] = [];
     for (const v of timedVisits) {
       const pos = getVisitPosition(v, startHour);
       if (pos) segments.push({ left: pos.left, width: pos.width, type: "visit" });
@@ -118,8 +139,12 @@ export default memo(function DispatchLaneRow({
       const tPos = getTaskPosition(t, startHour);
       if (tPos) segments.push({ left: tPos.left, width: tPos.width, type: "task" });
     }
+    for (const lv of timedLeads) {
+      const lvPos = getLeadVisitPosition(lv, startHour);
+      if (lvPos) segments.push({ left: lvPos.left, width: lvPos.width, type: "lead" });
+    }
     return segments;
-  }, [timedVisits, timedTasks, startHour]);
+  }, [timedVisits, timedTasks, timedLeads, startHour]);
 
   const totalWidth = hours.length * HOUR_WIDTH_PX;
 
@@ -274,7 +299,7 @@ export default memo(function DispatchLaneRow({
         {occupancySegments.map((seg, i) => (
           <div
             key={i}
-            className={`absolute top-0 h-full ${seg.type === "visit" ? "bg-emerald-400/50" : "bg-blue-400/40"}`}
+            className={`absolute top-0 h-full ${seg.type === "visit" ? "bg-emerald-400/50" : seg.type === "lead" ? "bg-amber-400/50" : "bg-blue-400/40"}`}
             style={{ left: seg.left, width: Math.max(seg.width, 2) }}
           />
         ))}
@@ -332,6 +357,22 @@ export default memo(function DispatchLaneRow({
           timelineEndHour={endHour}
         />
       ))}
+
+      {/* Lead visit blocks — read-only, no drag/resize */}
+      {timedLeads.map(lv => {
+        const pos = getLeadVisitPosition(lv, startHour);
+        if (!pos) return null;
+        return (
+          <DispatchLeadVisitBlock
+            key={`lead-visit-${lv.id}--${tech.id}`}
+            lead={lv}
+            left={pos.left}
+            width={pos.width}
+            hasConflict={conflictIds.has(lv.id)}
+            onSelect={onSelectLeadVisit}
+          />
+        );
+      })}
 
     </div>
   );

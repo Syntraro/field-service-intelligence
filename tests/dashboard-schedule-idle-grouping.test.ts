@@ -159,7 +159,8 @@ describe("Today's Schedule — grouped Available column", () => {
   });
 
   it('the grouped column header reads "Available"', () => {
-    expect(code).toMatch(/<span className="truncate">Available<\/span>/);
+    // Header is a div with truncate — match the text content, not the element type.
+    expect(code).toMatch(/className="[^"]*truncate[^"]*"[\s\S]{0,30}>[\s\n\r]*Available[\s\n\r]*</);
   });
 
   it("shows the idle-tech count next to the Available header", () => {
@@ -206,11 +207,12 @@ describe("Today's Schedule — active dedicated columns", () => {
   });
 
   it("renderColumn's isLastCol is computed against the rightmost RENDERED column", () => {
-    // When a grouped Available column is appended on the right,
-    // the last active column is no longer the rightmost — its
-    // border-right divider must keep painting.
+    // When a grouped Available and/or Unassigned column is appended
+    // on the right, the last active column is no longer the rightmost
+    // — its border-right divider must keep painting.
+    // Source: `!hasIdleGroup && !hasUnassigned && i === activeColumnsLastIdx`
     expect(codeNoComments).toMatch(
-      /!hasIdleGroup\s*&&\s*i\s*===\s*activeColumnsLastIdx/,
+      /!hasIdleGroup\s*&&\s*!hasUnassigned\s*&&\s*i\s*===\s*activeColumnsLastIdx/,
     );
   });
 });
@@ -247,10 +249,10 @@ describe("Today's Schedule — capacity math is upstream of grouping", () => {
   const code = read(PAGE_PATH);
   const codeNoComments = stripComments(code);
 
-  it("bookedPercent still iterates `techs` (the raw upstream slice)", () => {
-    expect(codeNoComments).toMatch(
-      /const bookedPercent\s*=\s*useMemo\([\s\S]*?for \(const t of techs\)/,
-    );
+  it("bookedPercent is removed (no longer rendered)", () => {
+    // Removed in 2026-05-12 semantic cleanup — was misleading after
+    // tasks were included as booked minutes.
+    expect(codeNoComments).not.toMatch(/const bookedPercent\s*=/);
   });
 
   it("activeTechs (the team-scope-filtered upstream slice) is untouched", () => {

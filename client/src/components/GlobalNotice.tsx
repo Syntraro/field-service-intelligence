@@ -62,7 +62,7 @@ export function GlobalNotice() {
       role={SEVERITY_ROLE[topNotice.severity]}
       aria-live={topNotice.severity === "critical" ? "assertive" : "polite"}
       className={cn(
-        "hidden md:flex items-center gap-2 min-w-0 max-w-[520px]",
+        "hidden md:flex items-center gap-2 min-w-0 max-w-[360px]",
         "h-8 px-3 rounded-md border bg-slate-800/60 backdrop-blur-sm",
         "text-[13px] text-slate-100",
         SEVERITY_BORDER[topNotice.severity],

@@ -26,6 +26,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ModalStateBody } from "@/components/ui/modal";
 import { formatCurrency } from "@/lib/formatters";
+import { StatusChip } from "@/components/ui/chip";
+import type { ChipTone } from "@/lib/chipVariants";
 
 export interface SelectableJob {
   id: string;
@@ -50,15 +52,14 @@ export interface SelectableJob {
 }
 
 /** Canonical job-status enum. Mirrors `shared/schema.ts:jobStatusEnum`
- *  (`open` / `completed` / `invoiced` / `archived`). Tones are kept
- *  subtle — single-tone backgrounds, no oversized pills. */
-function statusTone(status: string): { label: string; bg: string; text: string } {
+ *  (`open` / `completed` / `invoiced` / `archived`). */
+function jobStatusMeta(status: string): { label: string; tone: ChipTone } {
   switch (status) {
-    case "completed": return { label: "Ready",     bg: "bg-emerald-50", text: "text-emerald-700" };
-    case "open":      return { label: "Open",      bg: "bg-teal-50",    text: "text-teal-700" };
-    case "invoiced":  return { label: "Invoiced",  bg: "bg-stone-100",  text: "text-stone-700" };
-    case "archived":  return { label: "Archived",  bg: "bg-stone-100",  text: "text-stone-500" };
-    default:          return { label: status,      bg: "bg-stone-100",  text: "text-stone-700" };
+    case "completed": return { label: "Ready",    tone: "success" };
+    case "open":      return { label: "Open",     tone: "info" };
+    case "invoiced":  return { label: "Invoiced", tone: "neutral" };
+    case "archived":  return { label: "Archived", tone: "neutral" };
+    default:          return { label: status,     tone: "neutral" };
   }
 }
 
@@ -163,7 +164,7 @@ export function SelectJobsForInvoiceModal({
               <tbody>
                 {jobs.map((job) => {
                   const isChecked = selected.has(job.id);
-                  const tone = statusTone(job.status);
+                  const jobMeta = jobStatusMeta(job.status);
                   return (
                     <tr
                       key={job.id}
@@ -182,12 +183,9 @@ export function SelectJobsForInvoiceModal({
                         />
                       </td>
                       <td className="px-3 py-2 align-middle">
-                        <span
-                          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${tone.bg} ${tone.text}`}
-                          data-testid={`pill-status-${job.id}`}
-                        >
-                          {tone.label}
-                        </span>
+                        <StatusChip tone={jobMeta.tone} data-testid={`pill-status-${job.id}`}>
+                          {jobMeta.label}
+                        </StatusChip>
                       </td>
                       <td className="px-3 py-2 align-middle">
                         <div className="text-[13px] text-slate-900 min-w-0">

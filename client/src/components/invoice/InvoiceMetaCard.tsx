@@ -19,6 +19,7 @@
 import { type ReactNode } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { CardShellFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
@@ -486,7 +487,7 @@ export function InvoiceMetaCard({
         level "Save Invoice" button (Phase 6) submits the atomic POST.
       */}
       {editing && mode === "live" && (
-        <div className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3">
+        <CardShellFooter className="px-5 py-3">
           <Button
             variant="outline"
             size="sm"
@@ -504,7 +505,7 @@ export function InvoiceMetaCard({
           >
             {isSaving ? "Saving…" : "Save"}
           </Button>
-        </div>
+        </CardShellFooter>
       )}
     </div>
   );

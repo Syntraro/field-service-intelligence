@@ -112,6 +112,7 @@ describe("Shared widget registry — shape + canonical widget set", () => {
       "collections_overview",
       "scheduled_revenue",
       "operational_alerts",
+      "tasks_overview",
     ]);
     // Inverse pin: the retired key MUST NOT come back as a registry
     // entry — re-introducing it would remount an empty card on every

@@ -393,6 +393,31 @@ interface PipelineQuotesResponse {
   data: PipelineQuoteItem[];
 }
 
+// ── ModalSectionDivider ────────────────────────────────────────────
+// Sticky group-section divider used inside the modal body when a
+// configured mode renders rows from more than one source. Extracted
+// from 5 identical inline instances (renderSection / renderInvoiceSection
+// / renderLeadSection / renderQuoteSection / renderPMSection).
+function ModalSectionDivider({
+  label,
+  count,
+  action,
+}: {
+  label: string;
+  count: number;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+      <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
+        {label}
+        <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({count})</span>
+      </span>
+      {action}
+    </div>
+  );
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -1068,12 +1093,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     return (
       <div key={source}>
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
-              {SOURCE_SECTION_LABEL[source]}
-              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
-            </span>
-            {showViewAllJobs && (
+          <ModalSectionDivider
+            label={SOURCE_SECTION_LABEL[source]}
+            count={rows.length}
+            action={showViewAllJobs ? (
               <button
                 type="button"
                 onClick={() => { handleOpenChange(false); setLocation("/jobs"); }}
@@ -1083,8 +1106,8 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                 View all jobs
                 <ArrowUpRight className="h-3 w-3" />
               </button>
-            )}
-          </div>
+            ) : undefined}
+          />
         )}
         {/* 2026-04-26: rows render as white cards stacked on the grey
             body — `space-y-1.5` (tightened from `space-y-2`), individual
@@ -1256,12 +1279,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     return (
       <div key="unsent_invoices">
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
-              {SOURCE_SECTION_LABEL.unsent_invoices}
-              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
-            </span>
-          </div>
+          <ModalSectionDivider
+            label={SOURCE_SECTION_LABEL.unsent_invoices}
+            count={rows.length}
+          />
         )}
         <div className="px-3 py-1.5 space-y-1.5">
           {rows.map((row) => renderInvoiceRow(row))}
@@ -1434,12 +1455,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     return (
       <div key={source}>
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
-              {SOURCE_SECTION_LABEL[source]}
-              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
-            </span>
-          </div>
+          <ModalSectionDivider
+            label={SOURCE_SECTION_LABEL[source]}
+            count={rows.length}
+          />
         )}
         <div className="px-3 py-1.5 space-y-1.5">
           {rows.map((row) => renderLeadRow(row, source))}
@@ -1454,12 +1473,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     return (
       <div key={source}>
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
-              {SOURCE_SECTION_LABEL[source]}
-              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
-            </span>
-          </div>
+          <ModalSectionDivider
+            label={SOURCE_SECTION_LABEL[source]}
+            count={rows.length}
+          />
         )}
         <div className="px-3 py-1.5 space-y-1.5">
           {rows.map((row) => renderQuoteRow(row, source))}
@@ -1478,24 +1495,24 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
             "View PM" button. Header always renders for the PM section
             so the link is reachable even when on-hold has no rows. */}
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
-              {SOURCE_SECTION_LABEL.pm_due}
-              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenChange(false);
-                setLocation("/pm");
-              }}
-              className="text-helper font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
-              data-testid="pm-due-view-all"
-            >
-              View all Maintenance
-              <ArrowUpRight className="h-3 w-3" />
-            </button>
-          </div>
+          <ModalSectionDivider
+            label={SOURCE_SECTION_LABEL.pm_due}
+            count={rows.length}
+            action={
+              <button
+                type="button"
+                onClick={() => {
+                  handleOpenChange(false);
+                  setLocation("/pm");
+                }}
+                className="text-helper font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
+                data-testid="pm-due-view-all"
+              >
+                View all Maintenance
+                <ArrowUpRight className="h-3 w-3" />
+              </button>
+            }
+          />
         )}
         <div className="px-3 py-1.5 space-y-1.5">
           {rows.map((row, i) => renderPMRow(row, i === rows.length - 1))}

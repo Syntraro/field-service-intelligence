@@ -19,6 +19,9 @@ export interface QueuedJobNoteCreatePayload {
   visitId: string;
   text: string;
   equipmentId: string | null;
+  // Set once by enqueueJobNote; preserved across status updates and resetInFlightOnBoot.
+  // Sent to the server on replay so duplicate syncs return the existing note.
+  idempotencyKey: string;
 }
 
 export interface QueuedItem {
@@ -106,20 +109,25 @@ function uuid(): string {
     : `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function enqueueJobNote(params: QueuedJobNoteCreatePayload): Promise<QueuedItem> {
+// Callers pass everything except idempotencyKey — it is generated here and
+// baked into the payload so it survives status updates and resetInFlightOnBoot.
+type EnqueueJobNoteParams = Omit<QueuedJobNoteCreatePayload, "idempotencyKey">;
+
+export async function enqueueJobNote(params: EnqueueJobNoteParams): Promise<QueuedItem> {
   const now = Date.now();
+  const id = uuid();
+  const idempotencyKey = uuid();
   const item: QueuedItem = {
-    id: uuid(),
+    id,
     type: "job_note_create",
     visitId: params.visitId,
-    payload: params,
-    clientKey: "",
+    payload: { ...params, idempotencyKey },
+    clientKey: id,
     createdAt: now,
     deviceTimestamp: now,
     syncStatus: "pending",
     retryCount: 0,
   };
-  item.clientKey = item.id;
   await runTx("readwrite", (store) => promisifyRequest(store.add(item)));
   notify();
   return item;
@@ -175,8 +183,9 @@ export async function clearAll(): Promise<void> {
  * Migrate any row currently marked `syncing` back to `pending`. Called on
  * module load — if the app was closed mid-send, the item stays in IDB as
  * `syncing`; treating it as `pending` on next boot lets the drainer pick
- * it up. Without server idempotency this carries a narrow double-create
- * risk (documented in Section F).
+ * it up. The payload (including idempotencyKey) is preserved unchanged, so
+ * replay sends the same key and the server de-duplicates if the first send
+ * already landed.
  */
 export async function resetInFlightOnBoot(): Promise<void> {
   const all = await listAll();

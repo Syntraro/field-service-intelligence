@@ -659,6 +659,23 @@ export default function DispatchPreview() {
     return map;
   }, [visibleTechs, scheduledTasks]);
 
+  /** Multi-tech: place each assigned lead visit in every assigned technician's lane.
+   *  Mirrors the visitsByTech grouping pattern. Unassigned lead visits are omitted
+   *  here — they stay in the LeadVisitsStrip overflow surface. */
+  const leadVisitsByTech = useMemo(() => {
+    const map = new Map<string, DispatchLeadVisit[]>();
+    for (const t of visibleTechs) map.set(t.id, []);
+    for (const lv of leadVisits) {
+      if (lv.technicianIds.length === 0) continue;
+      for (const tid of lv.technicianIds) {
+        if (!selectedTechIds.has(tid)) continue;
+        const arr = map.get(tid);
+        if (arr) arr.push(lv);
+      }
+    }
+    return map;
+  }, [visibleTechs, leadVisits, selectedTechIds]);
+
   // ── Week view: filter weekDays and data by hideWeekends + tech/status filters ──
   const filteredWeekDays = useMemo(() => {
     if (!hideWeekends) return weekData.weekDays;
@@ -1734,18 +1751,21 @@ export default function DispatchPreview() {
           );
         })()}
 
-        {/* 2026-05-05 Phase 3: lead-visits strip — pre-sales onsite
-            appointments. Day view only (week / month views have their
-            own dense layouts; lead-visit surfacing in those is a
-            future polish). Renders below header, above the
-            technician timeline so it never disrupts dnd. Click →
-            /leads/:id. Lead visits NEVER assume job fields. */}
-        {activeView === "day" && leadVisits.length > 0 && (
-          <LeadVisitsStrip
-            visits={leadVisits}
-            onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
-          />
-        )}
+        {/* Lead visits strip — overflow surface for unassigned / unscheduled
+            pre-sales visits only. Assigned + scheduled lead visits are placed
+            in their technician lane via leadVisitsByTech → DispatchTimeline.
+            Click → /leads/:id. Lead visits NEVER assume job fields. */}
+        {activeView === "day" && (() => {
+          const stripLeadVisits = leadVisits.filter(
+            (lv) => lv.technicianIds.length === 0 || !lv.scheduledStart,
+          );
+          return stripLeadVisits.length > 0 ? (
+            <LeadVisitsStrip
+              visits={stripLeadVisits}
+              onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
+            />
+          ) : null;
+        })()}
 
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
@@ -1767,6 +1787,7 @@ export default function DispatchPreview() {
                 technicians={visibleTechs}
                 visitsByTech={visitsByTech}
                 tasksByTech={tasksByTech}
+                leadVisitsByTech={leadVisitsByTech}
                 timeOffByTech={timeOffByTech}
                 dayDateISO={selectedDate.toISOString()}
                 savingIds={savingIds}
@@ -1774,6 +1795,7 @@ export default function DispatchPreview() {
                 selectedTaskId={selectedTaskId}
                 onSelectVisit={handleSelectVisit}
                 onSelectTask={handleSelectTask}
+                onSelectLeadVisit={(lv) => setLocation(`/leads/${lv.leadId}`)}
                 onUnschedule={handleUnschedule}
                 onResize={handleResize}
                 onResizeTask={handleResizeTask}

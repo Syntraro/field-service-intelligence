@@ -83,8 +83,9 @@ describe("JobDetailPage — canonical right rail", () => {
     );
     expect(jobDetailSrc).toMatch(/data-testid="job-detail-left-column-shell"/);
     // The aside has the canonical width-via-CSS-variable contract.
+    // Collapsed strip: 48px (icon-only strip). Open: 380px.
     expect(jobDetailSrc).toMatch(
-      /jobRailTab === null \? 80 : 380/,
+      /jobRailTab === null \? 48 : 380/,
     );
     expect(jobDetailSrc).toMatch(
       /data-panel-open=\{jobRailTab === null \? "false" : "true"\}/,
@@ -98,7 +99,7 @@ describe("JobDetailPage — canonical right rail", () => {
   });
 });
 
-// ── 2. Tab registry — Equipment + Notes + Labour (per spec) ────────
+// ── 2. Tab registry — Summary + Notes + Labour only ────────────────
 
 describe("JobDetailPage — jobRailTabs registry", () => {
   it("declares a `jobRailTabs` array typed `DetailRailTab[]`", () => {
@@ -107,7 +108,7 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     );
   });
 
-  it("has exactly FOUR tabs (Summary + Notes + Labour + Equipment) — no Files / History", () => {
+  it("has exactly THREE tabs (Summary + Notes + Labour) — Equipment moved to Summary card", () => {
     // Count `id: "<key>"` entries inside the jobRailTabs array.
     const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
     expect(arrStart).toBeGreaterThan(-1);
@@ -115,16 +116,16 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     expect(arrEnd).toBeGreaterThan(arrStart);
     const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
     const idMatches = arrSlice.match(/\bid:\s*"\w+"/g) ?? [];
-    expect(idMatches.length).toBe(4);
+    expect(idMatches.length).toBe(3);
     expect(arrSlice).toMatch(/id:\s*"summary"/);
     expect(arrSlice).toMatch(/id:\s*"notes"/);
     expect(arrSlice).toMatch(/id:\s*"labour"/);
-    expect(arrSlice).toMatch(/id:\s*"equipment"/);
+    expect(arrSlice).not.toMatch(/id:\s*"equipment"/);
     expect(arrSlice).not.toMatch(/id:\s*"files"/);
     expect(arrSlice).not.toMatch(/id:\s*"history"/);
   });
 
-  it("rail tab order is Summary, Notes, Labour, Equipment (2026-05-09 spec)", () => {
+  it("rail tab order is Summary, Notes, Labour (2026-05-12 spec)", () => {
     const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
     const arrEnd = jobDetailSrc.indexOf("];", arrStart);
     const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
@@ -132,18 +133,12 @@ describe("JobDetailPage — jobRailTabs registry", () => {
     const re = /\bid:\s*"(\w+)"/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(arrSlice)) !== null) idOrder.push(m[1]);
-    expect(idOrder).toEqual(["summary", "notes", "labour", "equipment"]);
+    expect(idOrder).toEqual(["summary", "notes", "labour"]);
   });
 
-  it("the default open tab is Summary (2026-05-09)", () => {
+  it("the default open tab is Summary", () => {
     expect(jobDetailSrc).toMatch(
       /useState<JobRailTab\s*\|\s*null>\(\s*"summary"\s*\)/,
-    );
-  });
-
-  it("Equipment tab carries `label: \"Equipment\"` + Wrench icon + stable testId", () => {
-    expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,400}?label:\s*"Equipment"[\s\S]{0,400}?icon:\s*Wrench[\s\S]{0,400}?testId:\s*"job-rail-tab-equipment"/,
     );
   });
 
@@ -160,44 +155,58 @@ describe("JobDetailPage — jobRailTabs registry", () => {
   });
 });
 
-// ── 2b. Equipment tab — always present + AddEquipmentDialog wiring ─
+// ── 2b. Equipment in Summary tab — compact card + add flow ──────────
 
-describe("JobDetailPage Equipment tab — always present + canonical add flow", () => {
-  it("Equipment tab's content slot mounts <JobEquipmentSection> with the existing externalAddOpen wiring", () => {
+describe("JobDetailPage Equipment — relocated to Summary tab compact card", () => {
+  it("Equipment card renders inside Summary tab content (data-testid job-summary-equipment-card)", () => {
+    const summaryTabIdx = jobDetailSrc.indexOf('id: "summary"');
+    const notesTabIdx = jobDetailSrc.indexOf('id: "notes"', summaryTabIdx);
+    const summarySlice = jobDetailSrc.slice(summaryTabIdx, notesTabIdx);
+    expect(summarySlice).toMatch(/data-testid="job-summary-equipment-card"/);
+  });
+
+  it("Equipment card in Summary tab mounts <JobEquipmentSection> with externalAddOpen wiring", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?<JobEquipmentSection[\s\S]{0,800}?externalAddOpen=\{showAddEquipmentDialog\}[\s\S]{0,400}?onExternalAddOpenChange=\{setShowAddEquipmentDialog\}/,
+      /job-summary-equipment-card[\s\S]{0,2000}?<JobEquipmentSection[\s\S]{0,800}?externalAddOpen=\{showAddEquipmentDialog\}[\s\S]{0,400}?onExternalAddOpenChange=\{setShowAddEquipmentDialog\}/,
     );
   });
 
-  it("Equipment tab pipes onCountChange through to setEquipmentCount (count rendered as the rail badge)", () => {
+  it("Equipment card pipes onCountChange to setEquipmentCount", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?onCountChange=\{setEquipmentCount\}/,
-    );
-    expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?count:\s*equipmentCount/,
+      /job-summary-equipment-card[\s\S]{0,2000}?onCountChange=\{setEquipmentCount\}/,
     );
   });
 
-  it("Equipment tab's `action` slot is the terse `+ Add` button", () => {
+  it("Equipment card has a plus button wired to setShowAddEquipmentDialog (data-testid button-add-equipment-summary)", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?action:\s*\([\s\S]{0,800}?data-testid="button-add-equipment-rail"/,
+      /data-testid="button-add-equipment-summary"/,
     );
-    // Wires to the same setShowAddEquipmentDialog state the canonical
-    // AddEquipmentDialog (mounted at the page level) listens to.
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?onClick=\{\(\)\s*=>\s*setShowAddEquipmentDialog\(true\)\}/,
+      /button-add-equipment-summary[\s\S]{0,600}?setShowAddEquipmentDialog\(true\)|setShowAddEquipmentDialog\(true\)[\s\S]{0,600}?button-add-equipment-summary/,
     );
   });
 
-  it("the Equipment tab is NOT conditionally hidden when count is zero (always present)", () => {
-    // The legacy `equipment-card-wrapper` div toggled `hidden` when
-    // count was 0. The rail tab must always be visible so the user
-    // can always reach the `+ Add Equipment` action even on empty
-    // jobs. Pin against the legacy wrapper testid.
+  it("Equipment card has compact empty state text (no large illustration)", () => {
+    expect(jobDetailSrc).toMatch(/data-testid="job-summary-equipment-empty"/);
+    expect(jobDetailSrc).toMatch(/No equipment added yet\./);
+    // Compact empty state: a `<p>` element, not a centered Wrench illustration.
+    // Slice 200 chars before the testid to capture the opening tag.
+    const emptyIdx = jobDetailSrc.indexOf('"job-summary-equipment-empty"');
+    expect(emptyIdx).toBeGreaterThan(-1);
+    const slice = jobDetailSrc.slice(emptyIdx - 200, emptyIdx + 300);
+    expect(slice).toMatch(/<p\b/);
+    expect(slice).not.toMatch(/<Wrench/);
+  });
+
+  it("Equipment tab is NOT present in the rail tabs (no id: 'equipment')", () => {
+    const arrStart = jobDetailSrc.indexOf("const jobRailTabs:");
+    const arrEnd = jobDetailSrc.indexOf("];", arrStart);
+    const arrSlice = jobDetailSrc.slice(arrStart, arrEnd);
+    expect(arrSlice).not.toMatch(/id:\s*"equipment"/);
+  });
+
+  it("the legacy equipment-card-wrapper testid is gone", () => {
     expect(jobDetailSrc).not.toMatch(/data-testid="equipment-card-wrapper"/);
-    expect(jobDetailSrc).not.toMatch(
-      /equipmentCount === 0\s*\?\s*"hidden"/,
-    );
   });
 });
 
@@ -222,14 +231,8 @@ describe("JobDetailPage rail — terse panel-header action labels", () => {
     expect(slice).not.toMatch(/Time\s+Entry/);
   });
 
-  it("Equipment tab action label is `+ Add` (not `+ Add Equipment`)", () => {
-    const idx = jobDetailSrc.indexOf('data-testid="button-add-equipment-rail"');
-    expect(idx).toBeGreaterThan(-1);
-    const slice = jobDetailSrc.slice(idx, idx + 400);
-    expect(slice).toMatch(/<Plus[\s\S]{0,100}?\/>\s*Add\s*</);
-    expect(slice).not.toMatch(/Add\s+Equipment/);
-  });
 });
+
 
 // ── 3. Notes tab — suppress duplicated inner Notes header ──────────
 
@@ -288,24 +291,18 @@ describe("JobDetailPage Notes tab — canonical EntityNotesPanel mount", () => {
   });
 });
 
-// ── 3b. Equipment tab — suppress duplicated inner Equipment header ──
+// ── 3b. Equipment in Summary — suppresses its inner header ────────
 
-describe("JobDetailPage Equipment tab — no duplicated inner Equipment header", () => {
-  it("Equipment tab passes `hideHeader=true` to JobEquipmentSection", () => {
-    // The rail panel header provides the title + action; the section's
-    // own Collapsible trigger header (icon + "Equipment" + chevron +
-    // add) would visually duplicate it.
+describe("JobDetailPage Equipment (Summary card) — no duplicated inner Equipment header", () => {
+  it("JobEquipmentSection in Summary card passes hideHeader=true", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?hideHeader=\{true\}/,
+      /job-summary-equipment-card[\s\S]{0,2000}?hideHeader=\{true\}/,
     );
   });
 
-  it("Equipment tab opts into the canonical rail card styling via `cardStyle={true}`", () => {
-    // Each equipment row now renders inside `<RailContentCard>` with
-    // canonical typography tokens — visually matches the Notes +
-    // Labour rail cards.
+  it("JobEquipmentSection in Summary card uses cardStyle={true}", () => {
     expect(jobDetailSrc).toMatch(
-      /id:\s*"equipment"[\s\S]{0,3000}?cardStyle=\{true\}/,
+      /job-summary-equipment-card[\s\S]{0,2000}?cardStyle=\{true\}/,
     );
   });
 });
@@ -342,40 +339,46 @@ describe("JobDetailPage Labour tab — preserves content + Time action", () => {
   });
 
   it("Labour panel renders a TOTAL summary at the top (total hours + total amount)", () => {
-    // 2026-05-07: total summary moved above the per-entry list, with
-    // a Total label + total minutes + total cost. Pin the testid +
-    // bindings.
-    expect(jobDetailSrc).toMatch(/data-testid="labour-summary-totals"/);
-    const totalsIdx = jobDetailSrc.indexOf('data-testid="labour-summary-totals"');
-    expect(totalsIdx).toBeGreaterThan(-1);
-    const slice = jobDetailSrc.slice(Math.max(0, totalsIdx - 600), totalsIdx + 800);
-    expect(slice).toMatch(/Total/);
-    expect(slice).toMatch(/formatMinutes\(labourBuckets\.totalMinutes\)/);
-    expect(slice).toMatch(/formatCurrency\(labourBuckets\.totalCost\)/);
+    // 2026-05-07: total summary is now a `panelHeader` in the descriptor
+    // (rendered by RailPanelRenderer's RailGroupedPanelHeaderRow).
+    // The builder carries testId + label + two formatted values.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    // Descriptor property (not HTML attribute — renderer owns the data-testid).
+    expect(builderSlice).toMatch(/testId:\s*"labour-summary-totals"/);
+    expect(builderSlice).toMatch(/label:\s*"Total"/);
+    // The builder param is `buckets`; the call site passes `labourBuckets`.
+    expect(builderSlice).toMatch(/formatMinutes\(buckets\.totalMinutes\)/);
+    expect(builderSlice).toMatch(/formatCurrency\(buckets\.totalCost\)/);
+    // Call site: labourBuckets is the second arg passed to the builder.
+    expect(jobDetailSrc).toMatch(
+      /buildJobLabourPanelDescriptor\([\s\S]{0,200}?labourBuckets/,
+    );
   });
 
   it("Labour tab's content keeps the per-entry renderer + click-to-edit (tech → date → entries)", () => {
-    // The `labour-entries-list` testid wraps the renderer. After the
-    // 2026-05-07 v2 grouping pass, entries are nested:
-    //   tech group → date card → individual entries (still listed,
-    //   never merged).
-    expect(jobDetailSrc).toMatch(/data-testid="labour-entries-list"/);
-    // Per-tech wrapper.
-    expect(jobDetailSrc).toMatch(
-      /data-testid=\{`labour-tech-group-\$\{group\.technicianId\}`\}/,
+    // After the 2026-05-07 v2 grouping pass, entries are expressed via
+    // the descriptor system (testId fields in descriptor objects, not
+    // `data-testid=` JSX attributes — the renderer owns those).
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 4000);
+    // Grouped panel testId (rendered as data-testid by RailPanelRenderer).
+    expect(builderSlice).toMatch(/testId:\s*"labour-entries-list"/);
+    // Per-tech group testId in the descriptor.
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-tech-group-\$\{group\.technicianId\}`/,
     );
-    // Per-(tech, date) card wrapper — one per calendar date.
-    expect(jobDetailSrc).toMatch(
-      /testId=\{`labour-date-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`\}/,
+    // Per-(tech, date) card testId in the descriptor.
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-date-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`/,
     );
-    // Each individual entry inside a date card has its own clickable
-    // testid + click handler (the entry button is rendered directly
-    // inside the date card, not wrapped in another RailContentCard).
-    expect(jobDetailSrc).toMatch(
-      /data-testid=\{`labour-entry-\$\{entry\.id\}`\}/,
+    // Each individual entry sub-row testId in the descriptor.
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-entry-\$\{entry\.id\}`/,
     );
-    // Click any entry → TimeEntryModal in edit mode keyed on that
-    // specific entry.
+    // Click any entry → TimeEntryModal in edit mode.
     expect(jobDetailSrc).toMatch(
       /setTimeEntryModal\(\{\s*open:\s*true,\s*mode:\s*"edit",\s*entry,?\s*\}\)/,
     );
@@ -400,17 +403,17 @@ describe("JobDetailPage Labour tab — preserves content + Time action", () => {
   });
 
   it("each (tech, date) card heading shows per-date totals (duration + cost) on the right", () => {
-    // 2026-05-07 date-card visibility pass: the date-heading row now
-    // renders the per-(tech, date) totals next to the date label.
-    // The totals span carries a stable testid for layout regression
-    // pins.
-    expect(jobDetailSrc).toMatch(
-      /data-testid=\{`labour-date-totals-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`\}/,
+    // 2026-05-07 descriptor migration: per-date totals now in sectionHeader.value
+    // and the heading testId in sectionHeader.testId (descriptor property, not HTML attr).
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-date-heading-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`/,
     );
-    // Bindings: per-date `totalMinutes` + `totalCost` formatted via
-    // the existing `formatMinutes` / `formatCurrency` helpers.
-    expect(jobDetailSrc).toMatch(/formatMinutes\(dateBlock\.totalMinutes\)/);
-    expect(jobDetailSrc).toMatch(/formatCurrency\(dateBlock\.totalCost\)/);
+    // Per-date totals: formatMinutes + formatCurrency in the sectionHeader.value.
+    expect(builderSlice).toMatch(/formatMinutes\(dateBlock\.totalMinutes\)/);
+    expect(builderSlice).toMatch(/formatCurrency\(dateBlock\.totalCost\)/);
   });
 
   it("`LabourDateGroup` carries `totalMinutes` + `totalCost` accumulators per (tech, date)", () => {
@@ -426,43 +429,49 @@ describe("JobDetailPage Labour tab — preserves content + Time action", () => {
   });
 
   it("the GLOBAL Total summary at the top of the panel remains intact (cross-tech, cross-date)", () => {
-    // The panel still shows the unchanged top-of-panel total summary
-    // bound to `labourBuckets.totalMinutes` / `.totalCost`. This is
-    // the all-techs all-dates aggregate; the new per-date totals are
-    // additive and per-card, not replacing the global row.
-    expect(jobDetailSrc).toMatch(/data-testid="labour-summary-totals"/);
-    const globalIdx = jobDetailSrc.indexOf('data-testid="labour-summary-totals"');
-    expect(globalIdx).toBeGreaterThan(-1);
-    const slice = jobDetailSrc.slice(globalIdx, globalIdx + 1200);
-    expect(slice).toMatch(/formatMinutes\(labourBuckets\.totalMinutes\)/);
-    expect(slice).toMatch(/formatCurrency\(labourBuckets\.totalCost\)/);
+    // 2026-05-07 descriptor migration: the global total is now panelHeader in the
+    // descriptor (testId: "labour-summary-totals", label: "Total", values: [...]).
+    // Call site binds the page's `labourBuckets` aggregate to the builder's `buckets` param.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    // testId drives data-testid in the renderer output.
+    expect(builderSlice).toMatch(/testId:\s*"labour-summary-totals"/);
+    // Both totals via the `buckets` parameter (call site passes `labourBuckets`).
+    expect(builderSlice).toMatch(/formatMinutes\(buckets\.totalMinutes\)/);
+    expect(builderSlice).toMatch(/formatCurrency\(buckets\.totalCost\)/);
+    // Call site: labourBuckets is the aggregate bound to the second param.
+    expect(jobDetailSrc).toMatch(
+      /buildJobLabourPanelDescriptor\([\s\S]{0,200}?labourBuckets/,
+    );
   });
 
   it("date appears ONCE per (tech, date) card (the date heading), never repeated per entry row", () => {
-    // The old prefix `<dateLabel> · <timeRange>` on every entry row
-    // is gone. Pin the date heading inside the date card + the
-    // ABSENCE of a per-entry date prefix anywhere in the entry-row
-    // markup.
-    expect(jobDetailSrc).toMatch(
-      /data-testid=\{`labour-date-heading-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`\}/,
+    // 2026-05-07 descriptor migration: date heading is sectionHeader.testId +
+    // sectionHeader.label in the descriptor (not a JSX {dateBlock.dateLabel} expression).
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-date-heading-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`/,
     );
-    expect(jobDetailSrc).toMatch(
-      /\{dateBlock\.dateLabel\}/,
-    );
-    // The legacy "dateLabel · timeRange" prefix that repeated the
-    // date on every entry must not exist anymore.
+    // Label expressed as a descriptor property, not inline JSX.
+    expect(builderSlice).toMatch(/label:\s*dateBlock\.dateLabel/);
+    // The legacy "dateLabel · timeRange" prefix repeated on every entry row is gone.
     expect(jobDetailSrc).not.toMatch(
       /\{dateLabel\}\s*\n?\s*<span[^>]*>\s*·\s*<\/span>\s*\n?\s*\{timeRange\}/,
     );
   });
 
   it("entries on different dates render in SEPARATE date cards (tech grouping does NOT collapse dates)", () => {
-    // The dates array is built per-tech and rendered with a
-    // `group.dates.map(...)` that wraps each date in its own
-    // `<RailContentCard>`. Pin both.
+    // 2026-05-07 descriptor migration: group.dates.map(...) returns
+    // RailCardDescriptor objects with a stable testId. RailPanelRenderer
+    // wraps each in the canonical card chrome — no <RailContentCard> JSX in page.
     expect(jobDetailSrc).toMatch(/group\.dates\.map\(/);
-    expect(jobDetailSrc).toMatch(
-      /<RailContentCard[\s\S]{0,400}?testId=\{`labour-date-/,
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-date-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`/,
     );
   });
 
@@ -584,14 +593,10 @@ describe("JobDetailPage — legacy stacked Notes + Labour cards removed", () => 
     expect(codeOnly).not.toMatch(/data-testid="trigger-labour"/);
   });
 
-  it("the legacy standalone Equipment card wrapper is gone (Equipment moved into the rail Equipment tab)", () => {
-    // The 2026-05-07 layout-v4 change moves Equipment from a separate
-    // card above the rail into the canonical rail's Equipment tab
-    // (always present, with the AddEquipmentDialog wired through the
-    // tab's `action:` slot). Pin against the legacy wrapper testid.
+  it("the legacy standalone Equipment card wrapper is gone (Equipment relocated to the Summary tab compact card)", () => {
     expect(jobDetailSrc).not.toMatch(/data-testid="equipment-card-wrapper"/);
-    // <JobEquipmentSection> still mounts — but inside the Equipment
-    // tab's content slot, not as a sibling card.
+    // <JobEquipmentSection> still mounts — inside the Summary tab's
+    // compact equipment card, not as a separate rail tab.
     expect(jobDetailSrc).toMatch(/<JobEquipmentSection/);
   });
 
@@ -609,28 +614,30 @@ describe("JobDetailPage — legacy stacked Notes + Labour cards removed", () => 
 // ── 6. Canonical card styling — shared across all three rail panels ─
 
 describe("JobDetailPage rail — Notes / Labour / Equipment share the canonical RailContentCard", () => {
-  it("imports the canonical `<RailContentCard>` primitive", () => {
+  it("Labour panel delegates all card chrome to RailPanelRenderer (no direct RailContentCard import for Labour)", () => {
+    // After 2026-05-07 descriptor migration, Labour delegates all card chrome
+    // to RailPanelRenderer which internally owns RailContentCard.
+    // The page imports RailPanelRenderer, not RailContentCard directly.
     expect(jobDetailSrc).toMatch(
+      /import.*RailPanelRenderer.*from.*detail-rail\/RailPanelRenderer/,
+    );
+    // No direct RailContentCard import in the page (renderer owns it).
+    expect(jobDetailSrc).not.toMatch(
       /import\s*\{[^}]*\bRailContentCard\b[^}]*\}\s*from\s*["']@\/components\/detail-rail\/RailContentCard["']/,
     );
   });
 
-  it("each (tech, date) labour card is wrapped in `<RailContentCard>` (canonical card chrome)", () => {
-    // The OUTER (tech, date) card is the `<RailContentCard>` —
-    // entries inside that card are bare clickable buttons (a
-    // `<button>` nested inside another `<button>` would be invalid
-    // HTML). Pin the canonical card wraps the date.
-    expect(jobDetailSrc).toMatch(
-      /<RailContentCard[\s\S]{0,400}?testId=\{`labour-date-/,
+  it("each (tech, date) labour card is expressed via a descriptor testId — RailPanelRenderer wraps in canonical card chrome", () => {
+    // 2026-05-07 descriptor migration: date cards are RailCardDescriptor objects
+    // with testId: `labour-date-...`. The renderer wraps each in RailContentCard.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    expect(builderSlice).toMatch(
+      /testId:\s*`labour-date-\$\{group\.technicianId\}-\$\{dateBlock\.dateSortKey\}`/,
     );
   });
 
-  it("Equipment opts into RailContentCard via `cardStyle={true}` (Notes always uses RailContentCard via EntityNotesPanel)", () => {
-    // 2026-05-08 Tier 4 Notes canonicalization: the prior
-    // `cardStyle={true}` opt-in on EntityNotesSection collapsed into
-    // the single render path of EntityNotesPanel — every notes row now
-    // uses `<RailContentCard>` unconditionally. Equipment's parallel
-    // opt-in is preserved (its migration is a separate phase).
+  it("Equipment (now in Summary card) opts into RailContentCard via cardStyle={true} (Notes always uses RailContentCard via EntityNotesPanel)", () => {
     expect(jobDetailSrc).toMatch(/<EntityNotesPanel\b/);
     expect(jobDetailSrc).toMatch(
       /<JobEquipmentSection[\s\S]{0,2400}?cardStyle=\{true\}/,
@@ -642,86 +649,90 @@ describe("JobDetailPage rail — Notes / Labour / Equipment share the canonical 
 
 describe("JobDetailPage rail — canonical typography tokens", () => {
   it("Labour entry rows use the spec'd canonical token set (no raw text-xs / text-sm / text-base / text-[Npx])", () => {
-    // 2026-05-07 typography normalization. Per-element spec:
-    //   - Entry type    → text-row font-semibold
-    //   - Entry amount  → text-row font-semibold tabular-nums
-    //   - Entry time    → text-caption tabular-nums text-muted-foreground
-    //   - Entry duration → same as time
-    const labourIdx = jobDetailSrc.indexOf("dateBlock.entries.map");
-    expect(labourIdx).toBeGreaterThan(-1);
-    const slice = jobDetailSrc.slice(labourIdx, labourIdx + 6000);
-    // Type label: text-row + font-semibold.
-    expect(slice).toMatch(
-      /text-row\s+font-semibold\s+text-text-primary[\s\S]{0,400}?entry\.typeLabel/,
-    );
-    // Amount: text-row + font-semibold + tabular-nums.
-    expect(slice).toMatch(/text-row\s+font-semibold\s+tabular-nums/);
-    // Time range + duration: text-caption + tabular-nums + text-muted-foreground.
-    expect(slice).toMatch(
-      /text-caption\s+tabular-nums\s+text-muted-foreground[\s\S]{0,300}?\{timeRange\}/,
-    );
-    expect(slice).toMatch(
-      /text-caption\s+tabular-nums\s+text-muted-foreground[\s\S]{0,300}?formatMinutes\(minutes\)/,
-    );
-    // Inverse pin: no raw text-size classes inside the entry slice.
-    expect(slice).not.toMatch(/\btext-xs\b/);
-    expect(slice).not.toMatch(/\btext-sm\b/);
-    expect(slice).not.toMatch(/\btext-base\b/);
-    expect(slice).not.toMatch(/\btext-\[\d+px\]/);
+    // 2026-05-07 descriptor migration: entry typography fully delegated to
+    // RailPanelRenderer. The builder populates typed descriptor fields —
+    // entry.typeLabel / leftText / rightText — with no className strings.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    expect(builderStart).toBeGreaterThan(-1);
+    // Scope the slice to the builder body only (ends before const jobRailTabs:).
+    const builderEnd = jobDetailSrc.indexOf("const jobRailTabs:", builderStart);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderEnd);
+    // Descriptor entry fields populated correctly.
+    expect(builderSlice).toMatch(/entry\.typeLabel/);
+    expect(builderSlice).toMatch(/leftText:\s*timeRange/);
+    expect(builderSlice).toMatch(/rightText:\s*formatMinutes\(minutes\)/);
+    // Inverse pin: no raw text-size classes or inline className in the builder.
+    expect(builderSlice).not.toMatch(/className\s*=\s*"/);
+    expect(builderSlice).not.toMatch(/\btext-xs\b/);
+    expect(builderSlice).not.toMatch(/\btext-sm\b/);
+    expect(builderSlice).not.toMatch(/\btext-base\b/);
+    expect(builderSlice).not.toMatch(/\btext-\[\d+px\]/);
   });
 
-  it("Labour total summary uses canonical `text-label uppercase tracking-wide` + `text-row font-semibold tabular-nums`", () => {
-    const totalsIdx = jobDetailSrc.indexOf('data-testid="labour-summary-totals"');
-    expect(totalsIdx).toBeGreaterThan(-1);
-    const slice = jobDetailSrc.slice(totalsIdx, totalsIdx + 1200);
-    // Label: text-label uppercase tracking-wide.
-    expect(slice).toMatch(/text-label\s+uppercase\s+tracking-wide/);
-    // Both totals values: text-row font-semibold tabular-nums.
-    const valueMatches = slice.match(
-      /text-row\s+font-semibold\s+tabular-nums\s+text-text-primary/g,
-    ) ?? [];
-    expect(valueMatches.length).toBeGreaterThanOrEqual(2);
-    // Inverse pin: no raw text-size classes in the total summary slice.
-    expect(slice).not.toMatch(/\btext-xs\b/);
-    expect(slice).not.toMatch(/\btext-sm\b/);
-    expect(slice).not.toMatch(/\btext-base\b/);
-    expect(slice).not.toMatch(/\btext-\[\d+px\]/);
+  it("Labour total summary uses canonical `text-label text-text-muted` + `text-row-emphasis tabular-nums` (2026-05-08 remap, tokens in RailPanelRenderer)", () => {
+    // 2026-05-08 typography remap: `text-label uppercase tracking-wide` consolidated
+    // to `text-label text-text-muted` (token bakes uppercase + tracking).
+    // Values changed from `text-row font-semibold tabular-nums` to
+    // `text-row-emphasis tabular-nums text-text-primary`.
+    // All class strings live in RailPanelRenderer — verified there, not in builder.
+    const rendererSrc = readFileSync(
+      resolve(ROOT, "client/src/components/detail-rail/RailPanelRenderer.tsx"),
+      "utf-8",
+    );
+    // Panel header label token (post-remap).
+    expect(rendererSrc).toMatch(/text-label\s+text-text-muted/);
+    // Panel header value token (post-remap).
+    expect(rendererSrc).toMatch(/text-row-emphasis\s+tabular-nums\s+text-text-primary/);
+    // Builder scoped to body only: no inline className strings (delegation proof).
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    const builderEnd = jobDetailSrc.indexOf("const jobRailTabs:", builderStart);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderEnd);
+    expect(builderSlice).not.toMatch(/className\s*=\s*"/);
   });
 
-  it("Labour technician group header uses canonical `text-section-title font-semibold`", () => {
-    // Bumped from `text-row-emphasis` (15px / 500) to
-    // `text-section-title` (18px / 600) per the typography
-    // normalization spec — technician name reads as a clear h2-level
-    // grouping above the date-card heading.
-    expect(jobDetailSrc).toMatch(
-      /text-section-title\s+font-semibold\s+text-text-primary[\s\S]{0,400}?\{group\.name\}/,
+  it("Labour technician group header uses canonical `text-section-title text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
+    // 2026-05-08 remap: `text-section-title font-semibold` → `text-section-title text-text-primary`.
+    // After descriptor migration, heading is `heading: group.name` in the descriptor;
+    // the renderer owns the class string.
+    const rendererSrc = readFileSync(
+      resolve(ROOT, "client/src/components/detail-rail/RailPanelRenderer.tsx"),
+      "utf-8",
     );
-    // Inverse pin: the prior emphasis token is gone from the tech
-    // group header markup.
-    expect(jobDetailSrc).not.toMatch(
-      /text-row-emphasis[\s\S]{0,400}?\{group\.name\}/,
-    );
+    expect(rendererSrc).toMatch(/text-section-title\s+text-text-primary/);
+    // Builder (scoped to body only) carries `heading: group.name` — no inline class string.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    const builderEnd = jobDetailSrc.indexOf("const jobRailTabs:", builderStart);
+    const builderSlice = jobDetailSrc.slice(builderStart, builderEnd);
+    expect(builderSlice).toMatch(/heading:\s*group\.name/);
+    expect(builderSlice).not.toMatch(/className\s*=\s*"/);
   });
 
-  it("Labour date-card heading uses canonical `text-label uppercase tracking-wide` + `text-caption font-medium tabular-nums`", () => {
-    // The date-card heading switched to the spec'd canonical token
-    // set. Date label: text-label uppercase tracking-wide. Date
-    // totals: text-caption font-medium tabular-nums.
-    expect(jobDetailSrc).toMatch(
-      /text-label\s+uppercase\s+tracking-wide[\s\S]{0,400}?\{dateBlock\.dateLabel\}/,
+  it("Labour date-card heading uses canonical `text-label text-text-muted` + `text-caption tabular-nums text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
+    // 2026-05-08 remap: `text-label uppercase tracking-wide` → `text-label text-text-muted`.
+    // `text-caption font-medium tabular-nums` → `text-caption tabular-nums text-text-primary`.
+    // Tokens live in RailPanelRenderer. Builder expresses the date via
+    // sectionHeader.label = dateBlock.dateLabel (no className string).
+    const rendererSrc = readFileSync(
+      resolve(ROOT, "client/src/components/detail-rail/RailPanelRenderer.tsx"),
+      "utf-8",
     );
-    expect(jobDetailSrc).toMatch(
-      /text-caption\s+font-medium\s+tabular-nums[\s\S]{0,400}?formatMinutes\(dateBlock\.totalMinutes\)/,
-    );
+    // Section header label token (shared renderer path for panel header + section header).
+    expect(rendererSrc).toMatch(/text-label\s+text-text-muted/);
+    // Section header value token.
+    expect(rendererSrc).toMatch(/text-caption\s+tabular-nums\s+text-text-primary/);
+    // Builder: label expressed as descriptor property, not inline JSX.
+    const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
+    const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);
+    expect(builderSlice).toMatch(/label:\s*dateBlock\.dateLabel/);
   });
 
   it("the entire Labour rail body has NO raw text-size classes (text-sm / text-xs / text-base / text-[Npx])", () => {
     // Slice the entire Labour panel content slot — start at the
     // labour summary totals testid (top of the panel body) and end
-    // at the Equipment tab declaration to scope to Labour only.
+    // at the closing of the jobRailTabs array.
     const startIdx = jobDetailSrc.indexOf('data-testid="card-labour-summary"');
     expect(startIdx).toBeGreaterThan(-1);
-    const endIdx = jobDetailSrc.indexOf('id: "equipment"', startIdx);
+    const endIdx = jobDetailSrc.indexOf("];", startIdx);
     expect(endIdx).toBeGreaterThan(startIdx);
     const labourBodySlice = jobDetailSrc.slice(startIdx, endIdx);
     expect(labourBodySlice).not.toMatch(/\btext-xs\b/);

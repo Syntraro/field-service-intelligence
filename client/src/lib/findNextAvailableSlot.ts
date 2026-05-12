@@ -52,7 +52,9 @@ export interface CapacityBlock {
   // when passed to `clampOpenBlockToNow`. The clamp logic only mutates
   // `open` blocks (see line ~580), so the new variant is a passthrough
   // for the algorithm — same way `booked` blocks already are.
-  kind: "booked" | "open" | "time_off";
+  // 2026-05-12 — `task` widening: scheduled tasks surface as kind:"task"
+  // blocks in the capacity feed; the clamp is a passthrough for them too.
+  kind: "booked" | "open" | "time_off" | "task";
   startISO: string;
   endISO: string;
   durationMinutes: number;

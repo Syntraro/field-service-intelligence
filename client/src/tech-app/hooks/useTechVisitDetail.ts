@@ -15,7 +15,9 @@
  * are handled by the backend orchestrator — no frontend logic.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRef, useCallback } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { formatClockTime } from "../utils/formatTime";
 import { UNKNOWN_LOCATION, NO_ADDRESS } from "../utils/visitDisplay";
 
@@ -269,6 +271,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
 
 export function useTechVisitDetail(visitId: string | undefined) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const queryKey = ["/api/tech/visits", visitId];
 
@@ -306,23 +309,33 @@ export function useTechVisitDetail(visitId: string | undefined) {
     invalidateAfterAction();
   };
 
-  // Shared error handler for mutation failures — prevents silent errors
-  const handleMutationError = (err: any) => {
-    console.error("[TechVisitDetail] Mutation failed:", err?.message || err);
-  };
+  // Debounced toast factory — shows a destructive toast for lifecycle failures.
+  // A module-level timestamp prevents duplicate toasts if the same action
+  // fires twice within 2 s (e.g. double-tap while the network is slow).
+  const lastToastAt = useRef<number>(0);
+  const showActionError = useCallback(
+    (message: string) => (err: any) => {
+      console.error("[TechVisitDetail] Mutation failed:", err?.message || err);
+      const now = Date.now();
+      if (now - lastToastAt.current < 2000) return;
+      lastToastAt.current = now;
+      toast({ title: "Action failed", description: message, variant: "destructive" });
+    },
+    [toast],
+  );
 
   // Action: Start Travel (scheduled → en_route)
   const startTravelMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/en-route`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not start route. Check your connection and try again."),
   });
 
   // Action: Start Job / Check In (en_route → in_progress)
   const startJobMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/start`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not start job. Refresh the visit and try again."),
   });
 
   // 2026-04-09: Reversible workflow controls.
@@ -333,25 +346,25 @@ export function useTechVisitDetail(visitId: string | undefined) {
   const cancelRouteMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/cancel-route`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not cancel route. Check your connection and try again."),
   });
 
   const cancelStartMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/cancel-start`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not cancel check-in. Check your connection and try again."),
   });
 
   const pauseJobMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/pause`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not pause visit. Check your connection and try again."),
   });
 
   const resumeJobMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/resume`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
-    onError: handleMutationError,
+    onError: showActionError("Could not resume visit. Check your connection and try again."),
   });
 
   // Action: Complete visit with outcome
@@ -365,7 +378,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
       });
       invalidateAfterAction();
     },
-    onError: handleMutationError,
+    onError: showActionError("Could not complete visit. Check your connection and try again."),
   });
 
   // Action: Add note to visit's job (with optional equipment linkage).
@@ -373,6 +386,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
   // the note to the IndexedDB offline queue instead of hitting the server.
   // The pending row is rendered in the notes list via `useOfflineNotes`
   // and drained by `useNoteSyncReplay`. Online behavior is unchanged.
+  // 2026-05-12: idempotencyKey sent for both paths so replay cannot duplicate.
   const addNoteMutation = useMutation({
     mutationFn: async (params: { text: string; equipmentId?: string | null }) => {
       if (typeof navigator !== "undefined" && !navigator.onLine && visitId) {
@@ -385,16 +399,20 @@ export function useTechVisitDetail(visitId: string | undefined) {
         // Stub return so callers get a temp `id` for UI — marked pending.
         return { id: item.id, pending: true } as { id: string; pending?: boolean };
       }
+      // Online path: generate a one-shot idempotency key so the server can
+      // de-duplicate if the request retries before the response arrives.
+      const idempotencyKey = crypto.randomUUID();
       return apiRequest(`/api/tech/visits/${visitId}/notes`, {
         method: "POST",
         body: JSON.stringify({
           text: params.text,
           equipmentId: params.equipmentId ?? null,
+          idempotencyKey,
         }),
       });
     },
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not save note. Check your connection and try again."),
   });
 
   // 2026-04-14: Edit / delete note — thin wrappers over the canonical
@@ -407,14 +425,14 @@ export function useTechVisitDetail(visitId: string | undefined) {
         body: JSON.stringify({ text: params.text }),
       }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not update note. Check your connection and try again."),
   });
 
   const deleteNoteMutation = useMutation({
     mutationFn: (noteId: string) =>
       apiRequest(`/api/tech/visits/${visitId}/notes/${noteId}`, { method: "DELETE" }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not delete note. Check your connection and try again."),
   });
 
   // Action: Add part to visit's job (with optional equipment linkage)
@@ -422,7 +440,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (params: { productId: string; quantity: string; equipmentId?: string | null }) =>
       apiRequest(`/api/tech/visits/${visitId}/parts`, { method: "POST", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not add part. Check your connection and try again."),
   });
 
   // Action: Delete part from job
@@ -430,7 +448,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (partId: string) =>
       apiRequest(`/api/tech/visits/${visitId}/parts/${partId}`, { method: "DELETE" }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not remove part. Check your connection and try again."),
   });
 
   // Action: Remove equipment from job
@@ -438,7 +456,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (jobEquipmentId: string) =>
       apiRequest(`/api/tech/visits/${visitId}/equipment/${jobEquipmentId}`, { method: "DELETE" }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not remove equipment. Check your connection and try again."),
   });
 
   // Action: Add existing equipment to job
@@ -446,7 +464,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (equipmentId: string) =>
       apiRequest(`/api/tech/visits/${visitId}/equipment`, { method: "POST", body: JSON.stringify({ equipmentId }) }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not add equipment. Check your connection and try again."),
   });
 
   // Action: Update visit (version-only — visitNotes is office-owned post-create)
@@ -454,7 +472,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (params: { version: number }) =>
       apiRequest(`/api/tech/visits/${visitId}`, { method: "PATCH", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not update visit. Check your connection and try again."),
   });
 
   // Action: Update job fields (summary, priority — description/accessInstructions are office-owned)
@@ -462,7 +480,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
     mutationFn: (params: { version: number; summary?: string; priority?: string }) =>
       apiRequest(`/api/tech/jobs/${query.data?.visit?.jobId}`, { method: "PATCH", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
-    onError: handleMutationError,
+    onError: showActionError("Could not update job. Check your connection and try again."),
   });
 
   return {

@@ -92,6 +92,7 @@ import {
   RailContentCardFooter,
 } from "@/components/detail-rail/RailContentCard";
 import { DetailRightRailEmpty } from "@/components/detail-rail/DetailRightRail";
+import { InlineActionRow } from "@/components/ui/form-field";
 import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
 import {
   EntityNoteDialog,
@@ -915,7 +916,7 @@ function ClientScopedNotesPanel({
               )}
             </div>
 
-            <div className="flex justify-end gap-2">
+            <InlineActionRow>
               <Button
                 variant="outline"
                 size="sm"
@@ -933,7 +934,7 @@ function ClientScopedNotesPanel({
                 )}
                 Save Note
               </Button>
-            </div>
+            </InlineActionRow>
           </div>
         )}
 
@@ -1085,7 +1086,7 @@ function ClientScopedNotesPanel({
                     )}
                   </div>
 
-                  <div className="flex justify-end gap-2">
+                  <InlineActionRow>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1104,7 +1105,7 @@ function ClientScopedNotesPanel({
                       )}
                       Save
                     </Button>
-                  </div>
+                  </InlineActionRow>
                 </div>
               ) : (
                 /* ── Read view ────────────────────────────────────── */

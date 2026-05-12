@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, X, CheckCircle2, XCircle } from "lucide-react";
+import { PickerShell } from "@/components/ui/picker-shell";
 
 export interface BatchSendInvoicesModalProps {
   invoiceIds: string[];
@@ -262,7 +263,7 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                 <span className="font-medium">{result.failureCount} failed</span>
               </div>
             </div>
-            <div className="max-h-64 overflow-y-auto rounded-md border divide-y">
+            <PickerShell className="max-h-64">
               {result.results.map((r) => (
                 <div
                   key={r.invoiceId}
@@ -288,7 +289,7 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                   </div>
                 </div>
               ))}
-            </div>
+            </PickerShell>
           </div>
         )}
 

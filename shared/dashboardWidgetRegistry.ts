@@ -261,6 +261,17 @@ export const FINANCIAL_DASHBOARD_WIDGETS: readonly DashboardWidgetDefinition[] =
     sizePreset: "third",
     heightPreset: "summary",
   },
+  {
+    key: "tasks_overview",
+    dashboardKey: "financial",
+    title: "Tasks",
+    description: "Open tasks assigned to the team — check off or open for details.",
+    defaultVisible: true,
+    defaultOrder: 60,
+    requiredPermission: null,
+    sizePreset: "third",
+    heightPreset: "summary",
+  },
 ];
 
 /** Every widget known to this build. Keyed first by dashboardKey, then

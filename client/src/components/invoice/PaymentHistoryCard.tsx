@@ -37,6 +37,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
+import { IconToneBadge } from "@/components/ui/icon-tone-badge";
+import { type IconTone } from "@/lib/iconToneVariants";
 // 2026-04-29 Stripe completion: refund-affordance visibility helper.
 // Pure logic shared with the regression test suite — UX hint only;
 // server-side `assertRefundAmountWithinParent` is authoritative.
@@ -81,15 +83,15 @@ function methodIcon(method: string) {
 function typeMeta(paymentType: string): {
   label: string;
   icon: React.ReactNode;
-  tone: "default" | "refund" | "reversal";
+  tone: IconTone;
 } {
   if (paymentType === "refund") {
-    return { label: "Refund", icon: <Undo2 className="h-3 w-3" />, tone: "refund" };
+    return { label: "Refund", icon: <Undo2 className="h-3 w-3" />, tone: "danger" };
   }
   if (paymentType === "reversal") {
-    return { label: "Reversal", icon: <CornerUpLeft className="h-3 w-3" />, tone: "reversal" };
+    return { label: "Reversal", icon: <CornerUpLeft className="h-3 w-3" />, tone: "warning" };
   }
-  return { label: "Payment", icon: <Receipt className="h-3 w-3" />, tone: "default" };
+  return { label: "Payment", icon: <Receipt className="h-3 w-3" />, tone: "success" };
 }
 
 // 2026-05-08 Phase 3: migrated from ad-hoc outline Badge color triplets
@@ -148,9 +150,9 @@ export function PaymentHistoryCard({ payments, isLoading, onRefund }: PaymentHis
             // so formatCurrency will render the minus on its own; we just
             // tone the number to signal AR direction.
             const toneClass =
-              meta.tone === "refund"
+              p.paymentType === "refund"
                 ? "text-red-700"
-                : meta.tone === "reversal"
+                : p.paymentType === "reversal"
                   ? "text-amber-700"
                   : "text-text-primary";
             return (
@@ -159,14 +161,9 @@ export function PaymentHistoryCard({ payments, isLoading, onRefund }: PaymentHis
                 className="py-2 flex items-start gap-2"
                 data-testid={`payment-row-${p.id}`}
               >
-                <div className={cn(
-                  "mt-0.5 shrink-0 rounded p-1",
-                  meta.tone === "refund" ? "bg-red-50 text-red-700"
-                  : meta.tone === "reversal" ? "bg-amber-50 text-amber-700"
-                  : "bg-emerald-50 text-emerald-700",
-                )}>
+                <IconToneBadge tone={meta.tone} className="mt-0.5">
                   {meta.icon}
-                </div>
+                </IconToneBadge>
                 <div className="flex-1 min-w-0 space-y-0.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-helper font-medium text-text-primary">{meta.label}</span>

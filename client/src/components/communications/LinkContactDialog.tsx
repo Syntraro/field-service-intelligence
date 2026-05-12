@@ -53,6 +53,7 @@ import {
 } from "@/lib/communications/useCommunicationThreads";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { PickerShell } from "@/components/ui/picker-shell";
 
 type LinkContactDialogMode = "unknown" | "conflict";
 
@@ -173,8 +174,8 @@ export function LinkContactDialog({
               />
             </div>
             {showCandidates && (
-              <div
-                className="rounded-md border border-border/60 divide-y divide-border/60 max-h-[280px] overflow-y-auto"
+              <PickerShell
+                className="border-border/60 divide-border/60 max-h-[280px]"
                 data-testid="link-contact-candidate-list"
               >
                 {candidatesQuery.isLoading && (
@@ -220,7 +221,7 @@ export function LinkContactDialog({
                       </button>
                     );
                   })}
-              </div>
+              </PickerShell>
             )}
             <LinkActionRow
               icon={Plus}
@@ -232,8 +233,8 @@ export function LinkContactDialog({
             />
           </div>
         ) : (
-          <div
-            className="rounded-md border border-border/60 divide-y divide-border/60 max-h-[280px] overflow-y-auto"
+          <PickerShell
+            className="border-border/60 divide-border/60 max-h-[280px]"
             data-testid="link-contact-conflict-list"
           >
             {candidates.map((m) => {
@@ -265,7 +266,7 @@ export function LinkContactDialog({
                 </button>
               );
             })}
-          </div>
+          </PickerShell>
         )}
       </ModalBody>
 
