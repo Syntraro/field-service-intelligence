@@ -783,6 +783,8 @@ export interface FinancialSummary {
     balance: number;
     status: string | null;
     daysLate: number | null;
+    /** customerCompanyId: used to open ClientCollectionsModal from dashboard rows. */
+    customerCompanyId: string | null;
   }[];
   /** 2026-04-21 Financial Dashboard: top 10 customer balances. */
   topCustomerBalances: {
@@ -1395,6 +1397,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       customerName: customerCompanies.name,
       locationCompanyName: clients.companyName,
       locationName: clients.location,
+      customerCompanyId: customerCompanies.id,
     }).from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
       .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
@@ -1593,6 +1596,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       balance: parseFloat(r.balance ?? "0"),
       status: r.status ?? null,
       daysLate,
+      customerCompanyId: r.customerCompanyId ?? null,
     };
   });
 

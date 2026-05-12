@@ -36,8 +36,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  FormField,
+  FormLabel,
+  FormRow,
+} from "@/components/ui/form-field";
 import {
   Select,
   SelectContent,
@@ -431,8 +435,8 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
               <h3 className="text-sm font-semibold">Template Details</h3>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Name *</Label>
+                <FormField>
+                  <FormLabel htmlFor="name" srOnly required>Name</FormLabel>
                   <Input
                     id="name"
                     value={name}
@@ -440,15 +444,15 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                     placeholder="e.g., Standard Service Call"
                     data-testid="input-template-name"
                   />
-                </div>
+                </FormField>
 
-                <div className="space-y-2">
-                  <Label htmlFor="jobType">Job Type</Label>
+                <FormField>
+                  <FormLabel htmlFor="jobType">Job Type</FormLabel>
                   <Select
                     value={jobType || "none"}
                     onValueChange={(val) => setJobType(val === "none" ? "" : val)}
                   >
-                    <SelectTrigger data-testid="select-job-type">
+                    <SelectTrigger id="jobType" data-testid="select-job-type">
                       <SelectValue placeholder="Select type..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -459,11 +463,11 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </FormField>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+              <FormField>
+                <FormLabel htmlFor="description" srOnly>Description</FormLabel>
                 <Textarea
                   id="description"
                   value={description}
@@ -472,7 +476,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                   rows={2}
                   data-testid="input-template-description"
                 />
-              </div>
+              </FormField>
 
               <div className="flex items-center gap-6">
                 {jobType && (
@@ -653,16 +657,16 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Type *</Label>
+            <FormRow className="grid-cols-2">
+              <FormField>
+                <FormLabel htmlFor="quick-add-type" required>Type</FormLabel>
                 <Select
                   value={quickAddData.type}
                   onValueChange={(v: "product" | "service") =>
                     setQuickAddData((prev) => ({ ...prev, type: v }))
                   }
                 >
-                  <SelectTrigger data-testid="quick-add-type">
+                  <SelectTrigger id="quick-add-type" data-testid="quick-add-type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -670,10 +674,11 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                     <SelectItem value="service">Service</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>SKU</Label>
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="quick-add-sku" srOnly>SKU</FormLabel>
                 <Input
+                  id="quick-add-sku"
                   value={quickAddData.sku}
                   onChange={(e) =>
                     setQuickAddData((prev) => ({ ...prev, sku: e.target.value }))
@@ -681,12 +686,13 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                   placeholder="Optional"
                   data-testid="quick-add-sku"
                 />
-              </div>
-            </div>
+              </FormField>
+            </FormRow>
 
-            <div className="space-y-2">
-              <Label>Name *</Label>
+            <FormField>
+              <FormLabel htmlFor="quick-add-name" srOnly required>Name</FormLabel>
               <Input
+                id="quick-add-name"
                 value={quickAddData.name}
                 onChange={(e) =>
                   setQuickAddData((prev) => ({ ...prev, name: e.target.value }))
@@ -694,11 +700,12 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                 placeholder="Product or service name"
                 data-testid="quick-add-name"
               />
-            </div>
+            </FormField>
 
-            <div className="space-y-2">
-              <Label>Description</Label>
+            <FormField>
+              <FormLabel htmlFor="quick-add-description" srOnly>Description</FormLabel>
               <Input
+                id="quick-add-description"
                 value={quickAddData.description}
                 onChange={(e) =>
                   setQuickAddData((prev) => ({
@@ -709,11 +716,12 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                 placeholder="Optional description"
                 data-testid="quick-add-description"
               />
-            </div>
+            </FormField>
 
-            <div className="space-y-2">
-              <Label>Unit Price</Label>
+            <FormField>
+              <FormLabel htmlFor="quick-add-price" srOnly>Unit Price</FormLabel>
               <Input
+                id="quick-add-price"
                 type="number"
                 min="0"
                 step="0.01"
@@ -727,7 +735,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                 placeholder="0.00"
                 data-testid="quick-add-price"
               />
-            </div>
+            </FormField>
           </div>
 
           <DialogFooter>

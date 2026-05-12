@@ -35,8 +35,12 @@
  *   - Initial registration (`immediate: true`).
  *   - Hourly `setInterval` for long-lived foreground tabs.
  *   - `visibilitychange` to "visible" — bridges iPad PWA suspension.
+ *   - `pageshow` — iOS bfcache / PWA resume signal more reliable than
+ *     visibilitychange on Safari; fires even when visibilitychange does not.
  *   - `online` event — covers the "left a tunnel / re-joined Wi-Fi"
  *     case where visibility never changed but the network came back.
+ *   - Route change (throttled to once per 5 min) — long-lived foreground
+ *     tabs now check on navigation rather than waiting up to 60 minutes.
  *
  * Secondary "Update available" banner:
  *   - Appears only if a `waiting` worker has been around for more than
@@ -44,7 +48,8 @@
  *     that NetworkFirst fronts the navigation; kept as belt-and-
  *     suspenders for the iOS-PWA-parked-SW edge case.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useLocation } from "wouter";
 
 const loadModule = new Function("m", "return import(m)") as (id: string) => Promise<any>;
 // Stores the build ID for which the last full-page reload occurred —
@@ -59,6 +64,10 @@ const RELOAD_BUILD_KEY = "__syntraro_sw_last_reload_build__";
 const RELOAD_AT_KEY = "__syntraro_sw_last_reload_at__";
 const MIN_RELOAD_INTERVAL_MS = 10_000;
 const WAITING_GRACE_MS = 5000;
+// Minimum gap between route-change-triggered update checks. 5 minutes is
+// short enough to catch a deploy within one navigation cycle without
+// hammering the SW update endpoint on every link click.
+const ROUTE_UPDATE_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
  * Read the current build ID — preferring the runtime-injected window
@@ -80,12 +89,18 @@ function getCurrentBuildId(): string | null {
 }
 
 export function PwaUpdatePrompt() {
+  const [location] = useLocation();
   // Secondary fallback — see the file-level comment. Auto-reload via
   // controllerchange is the primary path; this banner only renders if
   // a `waiting` worker has been present for >= WAITING_GRACE_MS.
   const [needsRefresh, setNeedsRefresh] = useState(false);
   // Captured once registerSW returns so the banner button can call it.
   const [updater, setUpdater] = useState<((reloadPage?: boolean) => Promise<void>) | null>(null);
+  // Shared registration ref so the route-change effect can call update()
+  // without re-running the full registration setup.
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  // Timestamp of last route-triggered update() call — throttle gate.
+  const lastRouteUpdateMs = useRef<number>(0);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -119,6 +134,7 @@ export function PwaUpdatePrompt() {
 
     let unbindWaiting: (() => void) | null = null;
     let unbindVisibility: (() => void) | null = null;
+    let unbindPageShow: (() => void) | null = null;
     let unbindOnline: (() => void) | null = null;
 
     loadModule("virtual:pwa-register")
@@ -135,6 +151,9 @@ export function PwaUpdatePrompt() {
           },
           onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
             if (!registration) return;
+
+            // Share with the route-change effect.
+            registrationRef.current = registration;
 
             // Hourly background poll — preserves the prior safety net for
             // long-lived foreground tabs. The visibilitychange listener
@@ -155,6 +174,20 @@ export function PwaUpdatePrompt() {
             };
             document.addEventListener("visibilitychange", onVisible);
             unbindVisibility = () => document.removeEventListener("visibilitychange", onVisible);
+
+            // 2026-05-11 iOS resume fix: pageshow is more reliable than
+            // visibilitychange on Safari / iOS installed PWA. When iOS
+            // restores a page from the bfcache or resumes a suspended
+            // PWA context, pageshow fires even when visibilitychange
+            // does not. event.persisted === true indicates a bfcache
+            // restore; we call update() unconditionally because the cost
+            // is negligible and a false negative (missing a deploy) is
+            // worse than an extra SW update check.
+            const onPageShow = () => {
+              registration.update().catch(() => {});
+            };
+            window.addEventListener("pageshow", onPageShow);
+            unbindPageShow = () => window.removeEventListener("pageshow", onPageShow);
 
             // 2026-04-30: also re-check when the network comes back.
             // visibilitychange covers "user returned to the tab", but
@@ -217,9 +250,25 @@ export function PwaUpdatePrompt() {
       navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
       if (unbindWaiting) unbindWaiting();
       if (unbindVisibility) unbindVisibility();
+      if (unbindPageShow) unbindPageShow();
       if (unbindOnline) unbindOnline();
     };
   }, []);
+
+  // Route-change update check. Fires each time the SPA location changes;
+  // throttled so it triggers at most once per ROUTE_UPDATE_THROTTLE_MS.
+  // Bridges the gap between the hourly poll and reality: a long-lived
+  // foreground tab navigating between pages now detects a new SW within
+  // one navigation instead of waiting up to 60 minutes.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = registrationRef.current;
+    if (!reg) return;
+    const now = Date.now();
+    if (now - lastRouteUpdateMs.current < ROUTE_UPDATE_THROTTLE_MS) return;
+    lastRouteUpdateMs.current = now;
+    reg.update().catch(() => {});
+  }, [location]);
 
   // Secondary fallback UI. Only renders when the auto-reload path didn't
   // fire within WAITING_GRACE_MS of a new worker installing. Tap the

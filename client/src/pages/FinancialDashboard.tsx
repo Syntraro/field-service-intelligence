@@ -61,6 +61,7 @@ import {
 // Replaces the previous inline AlertRow stack so the Financial dashboard
 // shares the same alerts component the Operations dashboard already uses.
 import { OperationalAlertsCard } from "@/components/dashboard/OperationalAlertsCard";
+import { ClientCollectionsModal } from "@/components/collections/ClientCollectionsModal";
 import {
   DashboardActionModal,
   type DashboardActionMode,
@@ -131,6 +132,7 @@ interface FinancialSummary {
     balance: number;
     status: string | null;
     daysLate: number | null;
+    customerCompanyId: string | null;
   }[];
   topCustomerBalances: {
     customerCompanyId: string;
@@ -390,6 +392,7 @@ export default function FinancialDashboard() {
   // query cache.
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("requires_attention");
+  const [collectionsModalCustomerCompanyId, setCollectionsModalCustomerCompanyId] = useState<string | null>(null);
   // 2026-05-07 RALPH: customize-drawer open state. The framework hook
   // (`useDashboardLayout`) owns the resolved widget list + persistence;
   // this state just toggles the right-side Sheet.
@@ -653,8 +656,14 @@ export default function FinancialDashboard() {
               <CollectionsOverviewCard
                 data={data}
                 isLoading={isLoading}
-                onOpenInvoice={(id) => setLocation(`/invoices/${id}`)}
-                onOpenCustomer={(id) => setLocation(`/clients/${id}`)}
+                onOpenInvoice={(invoiceId, customerCompanyId) => {
+                  if (customerCompanyId) {
+                    setCollectionsModalCustomerCompanyId(customerCompanyId);
+                  } else {
+                    setLocation(`/invoices/${invoiceId}`);
+                  }
+                }}
+                onOpenCustomer={(id) => setCollectionsModalCustomerCompanyId(id)}
               />
             ),
             scheduled_revenue: (
@@ -698,6 +707,15 @@ export default function FinancialDashboard() {
         onOpenChange={setActionModalOpen}
         mode={actionModalMode}
       />
+      {collectionsModalCustomerCompanyId && (
+        <ClientCollectionsModal
+          open={!!collectionsModalCustomerCompanyId}
+          onOpenChange={(open) => {
+            if (!open) setCollectionsModalCustomerCompanyId(null);
+          }}
+          customerCompanyId={collectionsModalCustomerCompanyId}
+        />
+      )}
     </div>
   );
 }
@@ -890,7 +908,8 @@ function PipelineActionRow({
 interface CollectionsOverviewCardProps {
   data?: FinancialSummary;
   isLoading: boolean;
-  onOpenInvoice: (invoiceId: string) => void;
+  /** Second arg is customerCompanyId — present when the invoice row has it. */
+  onOpenInvoice: (invoiceId: string, customerCompanyId: string | null) => void;
   onOpenCustomer: (customerCompanyId: string) => void;
 }
 
@@ -1009,7 +1028,7 @@ function CollectionsOverviewCard({
                     <button
                       key={inv.id}
                       type="button"
-                      onClick={() => onOpenInvoice(inv.id)}
+                      onClick={() => onOpenInvoice(inv.id, inv.customerCompanyId ?? null)}
                       className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
                       data-testid={`collections-invoice-${inv.id}`}
                     >

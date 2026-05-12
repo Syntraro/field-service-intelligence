@@ -34,8 +34,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  FormField,
+  FormLabel,
+  FormHelperText,
+  FormRow,
+} from "@/components/ui/form-field";
 import {
   Select,
   SelectContent,
@@ -572,8 +577,8 @@ export default function PMTemplateEditorPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3 space-y-2.5">
-            <div className="space-y-1">
-              <Label htmlFor="tpl-name" className="text-sm">Template Name</Label>
+            <FormField>
+              <FormLabel srOnly htmlFor="tpl-name">Template Name</FormLabel>
               <Input
                 id="tpl-name"
                 className="h-9"
@@ -582,9 +587,9 @@ export default function PMTemplateEditorPage() {
                 placeholder="e.g. RTU Cooling PM, Fall Startup Quarterly"
                 data-testid="pm-tpl-name"
               />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="tpl-summary" className="text-sm">PM Summary</Label>
+            </FormField>
+            <FormField>
+              <FormLabel srOnly htmlFor="tpl-summary">PM Summary</FormLabel>
               <Input
                 id="tpl-summary"
                 className="h-9"
@@ -593,7 +598,7 @@ export default function PMTemplateEditorPage() {
                 placeholder="Default plan name applied to new plans"
                 data-testid="pm-tpl-summary"
               />
-            </div>
+            </FormField>
           </CardContent>
         </Card>
 
@@ -605,8 +610,8 @@ export default function PMTemplateEditorPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3 space-y-2.5">
-            <div className="space-y-1">
-              <Label className="text-sm">Charge Type</Label>
+            <FormField>
+              <FormLabel>Charge Type</FormLabel>
               <Select
                 value={billingMode || "none-unset"}
                 onValueChange={(v) => setBillingMode(v === "none-unset" ? "" : v)}
@@ -621,9 +626,9 @@ export default function PMTemplateEditorPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Suggested Rate (optional)</Label>
+            </FormField>
+            <FormField>
+              <FormLabel srOnly>Suggested Rate (optional)</FormLabel>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
                   $
@@ -639,7 +644,7 @@ export default function PMTemplateEditorPage() {
                   data-testid="pm-tpl-price"
                 />
               </div>
-            </div>
+            </FormField>
             <p className="text-[11px] text-muted-foreground leading-snug">
               Used for reporting only. Plans created from this template can override the rate.
               Invoices are not generated automatically from this setting.
@@ -650,16 +655,18 @@ export default function PMTemplateEditorPage() {
 
       {/* Description — full width below the top row. */}
       <Card>
-        <CardContent className="px-4 py-3 space-y-1">
-          <Label htmlFor="tpl-desc" className="text-sm">Description</Label>
-          <Textarea
-            id="tpl-desc"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Scope, checklist, instructions..."
-            rows={3}
-            data-testid="pm-tpl-description"
-          />
+        <CardContent className="px-4 py-3">
+          <FormField>
+            <FormLabel srOnly htmlFor="tpl-desc">Description</FormLabel>
+            <Textarea
+              id="tpl-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Scope, checklist, instructions..."
+              rows={3}
+              data-testid="pm-tpl-description"
+            />
+          </FormField>
         </CardContent>
       </Card>
 
@@ -673,8 +680,8 @@ export default function PMTemplateEditorPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3 space-y-2.5">
-            <div className="space-y-1">
-              <Label className="text-sm">Frequency</Label>
+            <FormField>
+              <FormLabel>Frequency</FormLabel>
               <FrequencyPicker
                 value={frequency}
                 months={months}
@@ -683,9 +690,9 @@ export default function PMTemplateEditorPage() {
               <p className="text-[11px] text-muted-foreground leading-snug">
                 Plans created from this template re-anchor months on the selected start date.
               </p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Job Creation Timing</Label>
+            </FormField>
+            <FormField>
+              <FormLabel>Job Creation Timing</FormLabel>
               <div className="flex items-center gap-2">
                 <Select
                   value={genMode || "none"}
@@ -713,7 +720,7 @@ export default function PMTemplateEditorPage() {
                   />
                 )}
               </div>
-            </div>
+            </FormField>
           </CardContent>
         </Card>
 
@@ -729,9 +736,9 @@ export default function PMTemplateEditorPage() {
               The acceptable date range around the ideal service date.
               Leave both blank to skip the default.
             </p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-sm">Days Before</Label>
+            <FormRow className="grid-cols-2 gap-3">
+              <FormField>
+                <FormLabel>Days Before</FormLabel>
                 <Input
                   type="number"
                   className="h-9"
@@ -742,9 +749,9 @@ export default function PMTemplateEditorPage() {
                   placeholder="7"
                   data-testid="pm-tpl-window-before"
                 />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-sm">Days After</Label>
+              </FormField>
+              <FormField>
+                <FormLabel>Days After</FormLabel>
                 <Input
                   type="number"
                   className="h-9"
@@ -755,8 +762,8 @@ export default function PMTemplateEditorPage() {
                   placeholder="14"
                   data-testid="pm-tpl-window-after"
                 />
-              </div>
-            </div>
+              </FormField>
+            </FormRow>
           </CardContent>
         </Card>
       </div>
@@ -818,9 +825,9 @@ export default function PMTemplateEditorPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground py-1">
+                <FormHelperText className="py-1">
                   No line items yet. Add reusable products or services to keep with this template.
-                </p>
+                </FormHelperText>
               )}
             </div>
           </CollapsibleContent>

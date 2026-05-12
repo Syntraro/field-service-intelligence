@@ -13,9 +13,14 @@ import { Button } from "@/components/ui/button";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+import {
+  FormField,
+  FormLabel,
+  FormRow,
+  InlineInput,
+  InlineTextarea,
+} from "@/components/ui/form-field";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import type { Supplier, SupplierLocation, Job } from "@shared/schema";
@@ -407,29 +412,19 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   (see useEffect line 195) so the toggle is no longer
                   needed there either — the type is inferred from the
                   edited task. */}
-              <div className="space-y-1">
-                {/* 2026-04-30 (embedded compact pass): drop visible label
-                    and use a type-aware placeholder. Edit flows keep the
-                    explicit "Title" label. */}
-                {embedded ? (
-                  <Label htmlFor="task-title-embedded" className="sr-only">Title</Label>
-                ) : (
-                  <Label className="text-xs">Title</Label>
-                )}
-                <Input
-                  id={embedded ? "task-title-embedded" : undefined}
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder={
-                    embedded
-                      ? type === "SUPPLIER_VISIT"
-                        ? "Brief description of the supplier visit"
-                        : "Brief description of the task"
-                      : "Task title"
-                  }
-                  className="h-9"
-                />
-              </div>
+              <InlineInput
+                id={embedded ? "task-title-embedded" : "task-title"}
+                label="Title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={
+                  embedded
+                    ? type === "SUPPLIER_VISIT"
+                      ? "Brief description of the supplier visit"
+                      : "Brief description of the task"
+                    : "Task title"
+                }
+              />
 
               {/* Row 2: Notes (full width).
                   2026-04-30 (embedded compact pass): collapsed behind a
@@ -440,7 +435,8 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                 (embNotesOpen || notes.length > 0) ? (
                   <div className="rounded-md bg-muted/30 p-2">
                     <div className="flex items-center justify-between mb-1">
-                      <Label className="text-xs">Instructions</Label>
+                      {/* Visual section tag — not a form input label */}
+                      <span className="text-xs font-medium">Instructions</span>
                       {notes.length === 0 && (
                         <button
                           type="button"
@@ -471,55 +467,54 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   </button>
                 )
               ) : (
-                <div className="space-y-1">
-                  <Label className="text-xs">Notes</Label>
-                  <Textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Additional details"
-                    rows={2}
-                    className="text-sm"
-                  />
-                </div>
+                <InlineTextarea
+                  id="task-notes"
+                  label="Notes"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Additional details"
+                  rows={2}
+                />
               )}
 
               {/* Row 3: Assigned To | Start Date | Start Time */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs">Assigned To</Label>
+              <FormRow className="grid-cols-2 sm:grid-cols-4">
+                <FormField>
+                  <FormLabel>Assigned To</FormLabel>
                   <TechnicianSelector
                     mode="single"
                     value={assignedToUserId || null}
                     onChange={(id) => setAssignedToUserId(id ?? "")}
                     placeholder="Select..."
                   />
-                </div>
+                </FormField>
 
-                <div className="space-y-1">
-                  <Label className="text-xs">Start Date</Label>
+                <FormField>
+                  <FormLabel>Start Date</FormLabel>
                   <CanonicalDatePicker
                     value={startDate}
                     onChange={(next) => setStartDate(next ?? "")}
                     className="w-full h-9 text-sm"
                   />
-                </div>
+                </FormField>
 
-                <div className="space-y-1">
-                  <Label className="text-xs">Start Time</Label>
+                <FormField>
+                  <FormLabel htmlFor="task-start-time">Start Time</FormLabel>
                   <Input
+                    id="task-start-time"
                     type="time"
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
                     disabled={!startDate}
                     className="h-9 text-sm"
                   />
-                </div>
+                </FormField>
 
-              </div>
+              </FormRow>
 
               {/* Row 4: Link to Job (full width) */}
-              <div className="space-y-1">
-                <Label className="text-xs">Link to Job (Optional)</Label>
+              <FormField>
+                <FormLabel>Link to Job (Optional)</FormLabel>
                 <div className="flex gap-1">
                   <Select value={jobId || undefined} onValueChange={setJobId}>
                     <SelectTrigger className="h-9 text-sm flex-1">
@@ -545,7 +540,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                     </Button>
                   )}
                 </div>
-              </div>
+              </FormField>
 
               {/* Row 5: Supplier Visit Details.
                   2026-05-01 — embedded callers (the merged Task tab in
@@ -600,8 +595,8 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   {/* Supplier + Location side-by-side */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {/* Supplier */}
-                    <div className="space-y-1">
-                      <Label className="text-xs">Supplier</Label>
+                    <FormField>
+                      <FormLabel>Supplier</FormLabel>
                       <div className="flex gap-1">
                         <Select
                           value={supplierId || undefined}
@@ -646,11 +641,11 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                           </Button>
                         )}
                       </div>
-                    </div>
+                    </FormField>
 
                     {/* Location — always rendered when supplier selected */}
-                    <div className="space-y-1">
-                      <Label className="text-xs">Location</Label>
+                    <FormField>
+                      <FormLabel>Location</FormLabel>
                       <div className="flex gap-1">
                         <Select
                           value={supplierLocationId || undefined}
@@ -691,19 +686,17 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                           </Button>
                         )}
                       </div>
-                    </div>
+                    </FormField>
                   </div>
 
                   {/* PO Number (full width) */}
-                  <div className="space-y-1">
-                    <Label className="text-xs">PO Number (Optional)</Label>
-                    <Input
-                      value={poNumber}
-                      onChange={(e) => setPoNumber(e.target.value)}
-                      placeholder="e.g. PO-12345"
-                      className="h-9 text-sm"
-                    />
-                  </div>
+                  <InlineInput
+                    id="task-po-number"
+                    label="PO Number (Optional)"
+                    value={poNumber}
+                    onChange={(e) => setPoNumber(e.target.value)}
+                    placeholder="e.g. PO-12345"
+                  />
                 </div>
               )}
             </div>

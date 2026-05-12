@@ -149,18 +149,106 @@ type PatternKey = keyof typeof BANNED_PATTERNS;
 type AllowlistEntry = { reason: string };
 type Allowlist = Partial<Record<PatternKey, AllowlistEntry>>;
 const ALLOWLIST: Record<string, Allowlist> = {
-  // No exceptions as of Phase 2C completion (2026-05-09).
-  //
-  // Template for adding a future exception:
-  //
-  // "client/src/components/SomeWidget.tsx": {
-  //   RAW_SPACE_Y_1_DIV: {
-  //     reason:
-  //       "SomeWidget uses space-y-1 for non-field vertical rhythm in a scrollable list
-  //        container, not as a label+input field wrapper. Replacing with FormField would
-  //        break the layout because there is no associated input.",
-  //   },
-  // },
+  // Phase C-1 (2026-05-11): EditVisitModal migrated its standalone visit-notes
+  // textarea to FormField + FormLabel srOnly. The schedule grid (Date / Start /
+  // Duration / Assigned To) uses a two-column grid div for compact inline-label
+  // rows inside h-11 bordered cells — a deliberate density constraint that does
+  // not map to FormRow (which is a standard label-above-input field row). Migrating
+  // the grid to FormRow would break the schedule section's layout contract.
+  "client/src/components/visits/EditVisitModal.tsx": {
+    RAW_GRID_FIELD_ROW: {
+      reason:
+        "Schedule grid uses <div className=\"grid grid-cols-2\"> for compact inline-label " +
+        "rows (h-11 bordered cells, label-left / value-right). This is a density layout " +
+        "pattern, not a standard label-above-input field row. FormRow cannot replace it " +
+        "without breaking the schedule section's visual contract. Only the visit-notes " +
+        "textarea (Phase C-1 target) was migrated in this session.",
+    },
+  },
+  // Phase C (2026-05-11): PaymentsDashboardPage became a form-field consumer after
+  // FilterField was migrated from <Label className=...> to <FormLabel>. The DisputesTab
+  // summary row uses <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+  // as a responsive metric-card grid (6 SummaryCard tiles), not a label-above-input
+  // field row. FormRow is a field-layout primitive and cannot replace a card grid.
+  "client/src/pages/PaymentsDashboardPage.tsx": {
+    RAW_GRID_FIELD_ROW: {
+      reason:
+        "DisputesTab summary uses <div className=\"grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6\"> " +
+        "as a 6-column responsive metric-card grid (SummaryCard tiles). This is a dashboard " +
+        "layout pattern, not a form field row. FormRow cannot replace it.",
+    },
+  },
+  // Phase C (2026-05-11): SupportConsole became a form-field consumer after dialog fields
+  // were migrated to FormField/FormLabel/FormHelperText. The Company Details panel uses
+  // <div className="grid grid-cols-2 gap-4"> as a read-only 2-column info grid (plan /
+  // status / users / locations). This is a data-display layout, not a form field row.
+  "client/src/pages/SupportConsole.tsx": {
+    RAW_GRID_FIELD_ROW: {
+      reason:
+        "Company Details panel uses <div className=\"grid grid-cols-2 gap-4\"> as a read-only " +
+        "2-column info grid (subscription plan / status / user count / location count). " +
+        "This is a data-display layout pattern, not a label-above-input field row. " +
+        "FormRow cannot replace it without redesigning the info panel.",
+    },
+  },
+  // Phase C (2026-05-11): RolesAccessTab migrated the Role select field to
+  // FormField + FormLabel + FormHelperText. Three text-xs text-muted-foreground
+  // paragraphs remain in non-form contexts:
+  //   (1) member email subtitle below the card title — display metadata, not helper
+  //   (2) "Loading…" skeleton in EffectiveAccessPanel — status message
+  //   (3) permission.description in renderOverrideRow — metadata alongside tri-state
+  //       Allow/Deny/Inherit buttons, not a standard FormField helper
+  "client/src/components/team-hub/RolesAccessTab.tsx": {
+    RAW_HELPER_TEXT: {
+      reason:
+        "Three non-form-context paragraphs: (1) member email below card title — display " +
+        "metadata, not field helper text; (2) loading skeleton in EffectiveAccessPanel — " +
+        "status message; (3) permission description in renderOverrideRow — descriptive " +
+        "metadata alongside tri-state toggle buttons, not a standard FormField helper.",
+    },
+  },
+  // Phase C medium-safe (2026-05-11): PMTemplateEditorPage — FrequencyPicker uses
+  // <div className="grid grid-cols-3 sm:grid-cols-5"> as a button-palette layout
+  // (5 frequency preset buttons in a responsive grid). This is a UI control, not a
+  // label-above-input field row. FormRow cannot replace it without breaking the picker.
+  "client/src/pages/PMTemplateEditorPage.tsx": {
+    RAW_GRID_FIELD_ROW: {
+      reason:
+        "FrequencyPicker renders preset buttons in <div className=\"grid grid-cols-3 sm:grid-cols-5\"> — " +
+        "a responsive button-palette layout, not a label-above-input field row. " +
+        "FormRow is a field-layout primitive and cannot replace a button grid without " +
+        "breaking the picker's compact visual contract.",
+    },
+  },
+  // Phase C medium-safe (2026-05-11): PMDetailPage migrated PlanBasicsEditCard fields
+  // (plan name, description) and ScheduleCard start/end date fields to FormField/FormLabel/FormRow.
+  // Two patterns remain allowlisted:
+  //   RAW_LABEL_WITH_CLASSNAME — service window notification section uses
+  //     <Label className="text-xs text-muted-foreground"> as inline unit labels next to
+  //     compact <Input type="number" className="w-16 h-8"> controls ("days before/after
+  //     job creation"). These are visual suffix labels in a flex row, not label-above-input
+  //     form fields. Restructuring the compact notification window layout to use FormLabel
+  //     would change the density contract of the scheduling section.
+  //   RAW_SPACE_Y_1_DIV — WorkQueueCard and GeneratedWorkCard use
+  //     <div className="space-y-1"> as list item containers for pending PM instances and
+  //     generated job link rows. These are card-body list wrappers, not form field
+  //     wrappers; FormField cannot replace them.
+  "client/src/pages/PMDetailPage.tsx": {
+    RAW_LABEL_WITH_CLASSNAME: {
+      reason:
+        "Service window section uses <Label className=\"text-xs text-muted-foreground\"> as inline " +
+        "unit labels for compact numeric inputs (\"days before/after job creation\") inside a flex " +
+        "row. These are visual suffix labels, not label-above-input form fields. Converting them to " +
+        "FormLabel would require restructuring the compact notification window layout and break the " +
+        "scheduling-density contract.",
+    },
+    RAW_SPACE_Y_1_DIV: {
+      reason:
+        "WorkQueueCard and GeneratedWorkCard use <div className=\"space-y-1\"> as list item " +
+        "containers for pending PM instance rows and generated job link rows. These are card-body " +
+        "list wrappers, not form field wrappers; FormField cannot replace them.",
+    },
+  },
 };
 
 // ─── Sanity ────────────────────────────────────────────────────────────────────
@@ -282,9 +370,13 @@ describe("Form canonical drift — allowlist integrity", () => {
     });
   }
 
-  it("allowlist is empty at Phase 2C baseline (all migrated files are clean)", () => {
-    // This test documents the Phase 2C state. When the first allowlist entry is
-    // legitimately added, delete this assertion and replace with a count pin.
-    expect(Object.keys(ALLOWLIST)).toHaveLength(0);
+  it("allowlist has exactly 6 entries (EditVisitModal schedule grid + PaymentsDashboardPage metric card grid + SupportConsole company details info grid + RolesAccessTab non-form paragraphs + PMDetailPage service-window inline labels + list containers + PMTemplateEditorPage frequency picker button grid)", () => {
+    // Phase C-1 (2026-05-11): EditVisitModal — schedule grid density layout.
+    // Phase C (2026-05-11): PaymentsDashboardPage — DisputesTab metric-card grid.
+    // Phase C (2026-05-11): SupportConsole — Company Details read-only info grid.
+    // Phase C (2026-05-11): RolesAccessTab — non-form text-xs paragraphs (email metadata, loading state, permission description).
+    // Phase C medium-safe (2026-05-11): PMDetailPage — service-window inline unit labels + work-card list containers.
+    // Phase C medium-safe (2026-05-11): PMTemplateEditorPage — FrequencyPicker button-palette grid.
+    expect(Object.keys(ALLOWLIST)).toHaveLength(6);
   });
 });

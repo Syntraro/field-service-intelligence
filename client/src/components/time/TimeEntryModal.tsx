@@ -22,10 +22,10 @@ import { useActivityStore } from "@/lib/activityStore";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/button";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { FormField, FormLabel, FormHelperText, FormErrorText, FormRow } from "@/components/ui/form-field";
 import {
   Dialog,
   DialogContent,
@@ -425,9 +425,9 @@ export function TimeEntryModal({
               )}
 
               {/* Row 1: Technician + Cost/hr + Total cost — same layout for both modes */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs">Technician</Label>
+              <FormRow className="grid-cols-3">
+                <FormField>
+                  <FormLabel>Technician</FormLabel>
                   {isEdit || lockedTechnicianId ? (
                     <div className="h-8 flex items-center gap-1.5 px-3 rounded-md border border-input bg-muted/50 text-sm">
                       <LockKeyhole className="h-3 w-3 text-muted-foreground shrink-0" />
@@ -450,9 +450,9 @@ export function TimeEntryModal({
                       </SelectContent>
                     </Select>
                   )}
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Cost / hr</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel srOnly>Cost / hr</FormLabel>
                   {isEdit ? (
                     <div className="h-8 flex items-center px-3 rounded-md border border-input bg-muted/50 text-sm tabular-nums">
                       {costPerHour ? `$${parseFloat(costPerHour).toFixed(2)}` : "—"}
@@ -472,53 +472,56 @@ export function TimeEntryModal({
                       />
                     </div>
                   )}
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Total cost</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel>Total cost</FormLabel>
                   <div className="h-8 flex items-center px-3 rounded-md border border-input bg-muted/50 text-sm tabular-nums">
                     ${totalCost > 0 ? totalCost.toFixed(2) : "0.00"}
                   </div>
-                </div>
-              </div>
+                </FormField>
+              </FormRow>
 
               {/* Row 2: Date + Start/End times */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs">Date</Label>
+              <FormRow className="grid-cols-3">
+                <FormField>
+                  <FormLabel>Date</FormLabel>
                   <CanonicalDatePicker
                     value={startDate}
                     onChange={(next) => setStartDate(next ?? "")}
                     className="w-full h-8 text-sm"
                     data-testid="input-start-date"
                   />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Start</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel htmlFor="input-start-time" srOnly>Start</FormLabel>
                   <Input
+                    id="input-start-time"
                     type="time"
                     value={startTime}
                     onChange={e => { setStartTime(e.target.value); setLastEditSource("time"); }}
                     className="h-8 text-sm"
                     data-testid="input-start-time"
                   />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">End</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel htmlFor="input-end-time" srOnly>End</FormLabel>
                   <Input
+                    id="input-end-time"
                     type="time"
                     value={endTime}
                     onChange={e => { setEndTime(e.target.value); setLastEditSource("time"); }}
                     className="h-8 text-sm"
                     data-testid="input-end-time"
                   />
-                </div>
-              </div>
+                </FormField>
+              </FormRow>
 
               {/* Row 3: Hours + Minutes + Entry Type */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs">Hours</Label>
+              <FormRow className="grid-cols-3">
+                <FormField>
+                  <FormLabel htmlFor="input-hours" srOnly>Hours</FormLabel>
                   <Input
+                    id="input-hours"
                     type="number"
                     min="0"
                     max="23"
@@ -527,10 +530,11 @@ export function TimeEntryModal({
                     className="h-8 text-sm"
                     data-testid="input-hours"
                   />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Minutes</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel htmlFor="input-minutes" srOnly>Minutes</FormLabel>
                   <Input
+                    id="input-minutes"
                     type="number"
                     min="0"
                     max="59"
@@ -545,9 +549,9 @@ export function TimeEntryModal({
                     className="h-8 text-sm"
                     data-testid="input-minutes"
                   />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Type</Label>
+                </FormField>
+                <FormField>
+                  <FormLabel>Type</FormLabel>
                   <Select value={type} onValueChange={v => setType(v as TimeEntryType)}>
                     <SelectTrigger className="h-8 text-sm" data-testid="select-type">
                       <SelectValue />
@@ -558,13 +562,13 @@ export function TimeEntryModal({
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-              </div>
+                </FormField>
+              </FormRow>
 
               {/* Row 4: Notes + Billable */}
-              <div className="space-y-1">
+              <FormField>
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">Notes</Label>
+                  <FormLabel htmlFor="input-notes" srOnly>Notes</FormLabel>
                   <div className="flex items-center gap-2">
                     <Checkbox
                       id="billable"
@@ -574,12 +578,13 @@ export function TimeEntryModal({
                       className="h-3.5 w-3.5"
                       data-testid="checkbox-billable"
                     />
-                    <Label htmlFor="billable" className="text-xs cursor-pointer">
+                    <label htmlFor="billable" className="text-xs cursor-pointer">
                       Billable
-                    </Label>
+                    </label>
                   </div>
                 </div>
                 <Textarea
+                  id="input-notes"
                   value={notes}
                   onChange={e => setNotes(e.target.value)}
                   placeholder="Optional notes..."
@@ -588,9 +593,9 @@ export function TimeEntryModal({
                   data-testid="input-notes"
                 />
                 {type === "break" && (
-                  <p className="text-xs text-muted-foreground">Breaks are never billable.</p>
+                  <FormHelperText>Breaks are never billable.</FormHelperText>
                 )}
-              </div>
+              </FormField>
 
               {/* Lock Override Section (edit locked entries only) */}
               {isLocked && (
@@ -603,14 +608,14 @@ export function TimeEntryModal({
                       className="mt-0.5 h-3.5 w-3.5"
                       data-testid="checkbox-override-acknowledge"
                     />
-                    <Label htmlFor="override-acknowledge" className="text-xs leading-normal cursor-pointer">
+                    <label htmlFor="override-acknowledge" className="text-xs leading-normal cursor-pointer">
                       I understand this entry is locked and my changes will <strong>NOT</strong> update the associated invoice.
-                    </Label>
+                    </label>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">
+                  <FormField>
+                    <FormLabel>
                       Reason for edit <span className="text-muted-foreground">(min. 10 chars)</span>
-                    </Label>
+                    </FormLabel>
                     <Textarea
                       value={overrideReason}
                       onChange={e => setOverrideReason(e.target.value)}
@@ -620,9 +625,9 @@ export function TimeEntryModal({
                       data-testid="input-override-reason"
                     />
                     {overrideReason.length > 0 && overrideReason.length < 10 && (
-                      <p className="text-xs text-destructive">{10 - overrideReason.length} more characters needed</p>
+                      <FormErrorText>{10 - overrideReason.length} more characters needed</FormErrorText>
                     )}
-                  </div>
+                  </FormField>
                 </div>
               )}
             </div>

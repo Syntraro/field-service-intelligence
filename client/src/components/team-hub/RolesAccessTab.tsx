@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormField, FormLabel, FormHelperText } from "@/components/ui/form-field";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -361,8 +362,8 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                 </Link>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Role</Label>
+                <FormField>
+                  <FormLabel>Role</FormLabel>
                   <div className="flex gap-2">
                     <Select
                       value={pickedRoleId}
@@ -392,11 +393,11 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                       {saveRole.isPending ? "Saving…" : "Save role"}
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <FormHelperText>
                     Role hierarchy is enforced server-side — you can only assign roles at or below
                     your own.
-                  </p>
-                </div>
+                  </FormHelperText>
+                </FormField>
               </CardContent>
             </Card>
 
@@ -718,20 +719,18 @@ function EffectiveAccessPanel({
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Section 1 — Pack rollup. Primary UI; visible by default. */}
-        <div data-testid="effective-pack-rollup">
-          <div className="space-y-1">
-            {packRollup.rows.map((row) => (
-              <PackStatusRow
-                key={row.pack.id}
-                packId={row.pack.id}
-                label={row.pack.label}
-                description={row.pack.description}
-                status={row.status}
-                grantedCount={row.grantedCount}
-                totalCount={row.totalCount}
-              />
-            ))}
-          </div>
+        <div data-testid="effective-pack-rollup" className="space-y-1">
+          {packRollup.rows.map((row) => (
+            <PackStatusRow
+              key={row.pack.id}
+              packId={row.pack.id}
+              label={row.pack.label}
+              description={row.pack.description}
+              status={row.status}
+              grantedCount={row.grantedCount}
+              totalCount={row.totalCount}
+            />
+          ))}
         </div>
 
         {/* Section 2 — Permission breakdown, collapsed by default
@@ -867,7 +866,7 @@ function BreakdownSection({
       <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
         {label} <span className="font-normal text-muted-foreground/70">({total})</span>
       </h4>
-      <div className="space-y-1.5">
+      <div data-testid={`effective-breakdown-${testIdSuffix}-list`} className="space-y-1.5">
         {PERMISSION_PACKS.map((pack) => {
           const keys = data.byPack.get(pack.id);
           if (!keys || keys.length === 0) return null;

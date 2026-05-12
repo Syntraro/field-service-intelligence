@@ -55,8 +55,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel, FormErrorText, InlineTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -481,8 +480,8 @@ export function JobSessionCreateModal({
         {view === "labor" ? (
           <>
             {/* Job selector */}
-            <div>
-              <Label className="mb-1 block text-[12px]">Job</Label>
+            <FormField>
+              <FormLabel>Job</FormLabel>
               {jobId ? (
                 <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50/50 px-2.5 py-1.5">
                   <span
@@ -504,7 +503,7 @@ export function JobSessionCreateModal({
                   </Button>
                 </div>
               ) : (
-                <div className="space-y-1">
+                <div>
                   <Input
                     value={jobSearch}
                     onChange={(e) => {
@@ -517,7 +516,7 @@ export function JobSessionCreateModal({
                     data-testid="create-job-search"
                   />
                   {jobPickerOpen && trimmedSearch.length >= 2 && (
-                    <div className="max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-sm">
+                    <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-sm">
                       {jobQuery.isLoading ? (
                         <div className="flex items-center justify-center py-3">
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -549,7 +548,7 @@ export function JobSessionCreateModal({
                   )}
                 </div>
               )}
-            </div>
+            </FormField>
 
             {/* Drive + On-site rows — thin dividers, no card borders. */}
             <CompactRow
@@ -588,18 +587,14 @@ export function JobSessionCreateModal({
         )}
 
         {/* Notes */}
-        <div>
-          <Label htmlFor="create-notes" className="mb-1 block text-[12px]">Notes</Label>
-          <Textarea
-            id="create-notes"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={2}
-            placeholder=""
-            data-testid="create-notes"
-            className="text-sm"
-          />
-        </div>
+        <InlineTextarea
+          id="create-notes"
+          label="Notes"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          data-testid="create-notes"
+        />
 
         {/* Mode-toggle — secondary outline button (more visible than
             the prior text-only link, but still secondary to Save). */}
@@ -630,9 +625,7 @@ export function JobSessionCreateModal({
         </div>
 
         {error && (
-          <p className="text-xs text-destructive" data-testid="create-error">
-            {error}
-          </p>
+          <FormErrorText data-testid="create-error">{error}</FormErrorText>
         )}
 
         <DialogFooter>
@@ -914,7 +907,7 @@ function CompactRow({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1">
-          <Label className="text-[11px] text-muted-foreground">Start</Label>
+          <label className="text-[11px] text-muted-foreground">Start</label>
           <SegmentedTimeInput
             value={fields.startTime}
             onChange={(v) => onChangeStartEnd("startTime", v)}
@@ -923,7 +916,7 @@ function CompactRow({
           />
         </div>
         <div className="flex items-center gap-1">
-          <Label className="text-[11px] text-muted-foreground">End</Label>
+          <label className="text-[11px] text-muted-foreground">End</label>
           <SegmentedTimeInput
             value={fields.endTime}
             onChange={(v) => onChangeStartEnd("endTime", v)}
@@ -931,7 +924,7 @@ function CompactRow({
           />
         </div>
         <div className="flex items-center gap-1">
-          <Label className="text-[11px] text-muted-foreground">Duration</Label>
+          <label className="text-[11px] text-muted-foreground">Duration</label>
           <Input
             type="number"
             inputMode="numeric"

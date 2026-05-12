@@ -29,6 +29,7 @@ export interface User {
   //    this session (server flag `req.isImpersonating`)
   onboardingCompletedAt?: string | null;
   isImpersonating?: boolean;
+  appearance?: "dark" | "light";
 }
 
 interface AuthContextType {

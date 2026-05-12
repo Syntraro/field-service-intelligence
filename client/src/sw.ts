@@ -37,7 +37,7 @@ declare const self: ServiceWorkerGlobalScope & {
 };
 
 // ---------------------------------------------------------------------------
-// Precache + activation (same behavior as previous generateSW config)
+// Precache + activation
 // ---------------------------------------------------------------------------
 
 // Injected by vite-plugin-pwa at build time.
@@ -45,7 +45,18 @@ precacheAndRoute(self.__WB_MANIFEST ?? []);
 cleanupOutdatedCaches();
 self.skipWaiting();
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  // 2026-05-11 stale-cache fix: explicitly delete the HTML shell runtime
+  // cache on every SW activation. cleanupOutdatedCaches() only touches
+  // workbox-precache-v2-* caches; "syntraro-html-shell" is a separate
+  // named runtime cache that survives SW updates unchanged. If allowed to
+  // persist, it can serve index.html referencing chunk hashes from the
+  // prior build — all of which were deleted by Vite's emptyOutDir — causing
+  // a blank screen or ChunkLoadError on the next offline/slow navigation.
+  // Deleting it on activate guarantees the new SW starts with a clean slate;
+  // the first online navigation repopulates it from the network.
+  event.waitUntil(
+    caches.delete("syntraro-html-shell").then(() => self.clients.claim()),
+  );
 });
 
 // 2026-04-30 stale-deploy fix (Balanced): SPA navigations are now
@@ -70,7 +81,14 @@ self.addEventListener("activate", (event) => {
 const navigationStrategy = new NetworkFirst({
   cacheName: "syntraro-html-shell",
   networkTimeoutSeconds: 3,
-  plugins: [new CacheableResponsePlugin({ statuses: [200] })],
+  plugins: [
+    new CacheableResponsePlugin({ statuses: [200] }),
+    // Secondary protection: cap entries to 1 (there is only one HTML shell
+    // URL) and expire after 24 hours so a stale entry cannot linger across
+    // multiple deploys even if the activate-time cache.delete path somehow
+    // ran before the old SW served a final navigation.
+    new ExpirationPlugin({ maxEntries: 1, maxAgeSeconds: 24 * 60 * 60 }),
+  ],
 });
 
 // Handler type matches Workbox's `RouteHandlerCallback`. We type the

@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { FormField, FormLabel, FormHelperText, InlineInput } from "@/components/ui/form-field";
 
 // ========================================
 // TYPES
@@ -461,8 +462,8 @@ export default function TaxBillingRulesPage() {
             <Calendar className="h-3.5 w-3.5" /> Invoice Payment Terms
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-            <div className="space-y-1.5">
-              <Label htmlFor="payment-terms" className="text-xs">Default Payment Terms</Label>
+            <FormField>
+              <FormLabel htmlFor="payment-terms">Default Payment Terms</FormLabel>
               <Select value={paymentTermsDays} onValueChange={setPaymentTermsDays} disabled={settingsLoading}>
                 <SelectTrigger id="payment-terms" className="h-8 text-sm" data-testid="select-payment-terms">
                   <SelectValue placeholder="Select payment terms" />
@@ -473,14 +474,14 @@ export default function TaxBillingRulesPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="custom-days" className="text-xs">Or custom days</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="custom-days">Or custom days</FormLabel>
               <div className="flex items-center gap-2">
                 <Input id="custom-days" type="number" min="0" max="365" value={paymentTermsDays} onChange={(e) => setPaymentTermsDays(e.target.value)} className="w-20 h-8 text-sm" data-testid="input-custom-days" />
                 <span className="text-xs text-muted-foreground">days</span>
               </div>
-            </div>
+            </FormField>
           </div>
           <div className="flex justify-end pt-1 border-t">
             <Button size="sm" onClick={handleSavePaymentTerms} disabled={updateSettingsMutation.isPending} data-testid="button-save-payment-terms">
@@ -494,14 +495,10 @@ export default function TaxBillingRulesPage() {
       {/* Tax Registrations — multi-row list editor. 2026-05-03 */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-              <Receipt className="h-3.5 w-3.5" /> Tax Registrations
-            </p>
-            <p className="text-xs text-muted-foreground">
-              These appear on customer-facing invoices.
-            </p>
-          </div>
+          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+            <Receipt className="h-3.5 w-3.5" /> Tax Registrations
+          </p>
+          <FormHelperText>These appear on customer-facing invoices.</FormHelperText>
 
           {taxRegistrationRows.length === 0 ? (
             <p className="text-xs text-muted-foreground py-2">
@@ -515,11 +512,9 @@ export default function TaxBillingRulesPage() {
                   className="grid grid-cols-[120px_1fr_auto] gap-2 items-end"
                   data-testid={`row-tax-reg-${idx}`}
                 >
-                  <div className="space-y-1.5">
+                  <FormField>
                     {idx === 0 && (
-                      <Label className="text-xs" htmlFor={`tax-reg-label-${row.key}`}>
-                        Label
-                      </Label>
+                      <FormLabel htmlFor={`tax-reg-label-${row.key}`}>Label</FormLabel>
                     )}
                     <Input
                       id={`tax-reg-label-${row.key}`}
@@ -531,12 +526,10 @@ export default function TaxBillingRulesPage() {
                       disabled={taxRegistrationsLoading}
                       data-testid={`input-tax-reg-label-${idx}`}
                     />
-                  </div>
-                  <div className="space-y-1.5">
+                  </FormField>
+                  <FormField>
                     {idx === 0 && (
-                      <Label className="text-xs" htmlFor={`tax-reg-number-${row.key}`}>
-                        Number
-                      </Label>
+                      <FormLabel htmlFor={`tax-reg-number-${row.key}`}>Number</FormLabel>
                     )}
                     <Input
                       id={`tax-reg-number-${row.key}`}
@@ -548,7 +541,7 @@ export default function TaxBillingRulesPage() {
                       disabled={taxRegistrationsLoading}
                       data-testid={`input-tax-reg-number-${idx}`}
                     />
-                  </div>
+                  </FormField>
                   <Button
                     type="button"
                     variant="ghost"
@@ -737,36 +730,32 @@ export default function TaxBillingRulesPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="rate-name">Name</Label>
-              <Input
-                id="rate-name"
-                value={rateName}
-                onChange={(e) => setRateName(e.target.value)}
-                placeholder="e.g., GST, PST, HST"
-                data-testid="input-rate-name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="rate-value">Rate (%)</Label>
-              <Input
-                id="rate-value"
-                value={rateValue}
-                onChange={(e) => setRateValue(e.target.value)}
-                placeholder="e.g., 5.0000"
-                data-testid="input-rate-value"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="rate-description">Description (optional)</Label>
-              <Input
-                id="rate-description"
-                value={rateDescription}
-                onChange={(e) => setRateDescription(e.target.value)}
-                placeholder="e.g., Goods and Services Tax"
-                data-testid="input-rate-description"
-              />
-            </div>
+            <InlineInput
+              id="rate-name"
+              label="Name"
+              required
+              value={rateName}
+              onChange={(e) => setRateName(e.target.value)}
+              placeholder="e.g., GST, PST, HST"
+              data-testid="input-rate-name"
+            />
+            <InlineInput
+              id="rate-value"
+              label="Rate (%)"
+              required
+              value={rateValue}
+              onChange={(e) => setRateValue(e.target.value)}
+              placeholder="e.g., 5.0000"
+              data-testid="input-rate-value"
+            />
+            <InlineInput
+              id="rate-description"
+              label="Description (optional)"
+              value={rateDescription}
+              onChange={(e) => setRateDescription(e.target.value)}
+              placeholder="e.g., Goods and Services Tax"
+              data-testid="input-rate-description"
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRateDialogOpen(false)}>Cancel</Button>
@@ -791,28 +780,25 @@ export default function TaxBillingRulesPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="group-name">Group Name</Label>
-              <Input
-                id="group-name"
-                value={groupName}
-                onChange={(e) => setGroupName(e.target.value)}
-                placeholder="e.g., GST+PST, HST Only"
-                data-testid="input-group-name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="group-description">Description (optional)</Label>
-              <Input
-                id="group-description"
-                value={groupDescription}
-                onChange={(e) => setGroupDescription(e.target.value)}
-                placeholder="e.g., British Columbia combined tax"
-                data-testid="input-group-description"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Tax Rates</Label>
+            <InlineInput
+              id="group-name"
+              label="Group Name"
+              required
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="e.g., GST+PST, HST Only"
+              data-testid="input-group-name"
+            />
+            <InlineInput
+              id="group-description"
+              label="Description (optional)"
+              value={groupDescription}
+              onChange={(e) => setGroupDescription(e.target.value)}
+              placeholder="e.g., British Columbia combined tax"
+              data-testid="input-group-description"
+            />
+            <FormField>
+              <FormLabel>Tax Rates</FormLabel>
               {taxRates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No tax rates available. Create rates first.</p>
               ) : (
@@ -833,11 +819,11 @@ export default function TaxBillingRulesPage() {
                 </div>
               )}
               {selectedRateIds.length > 0 && (
-                <p className="text-xs text-muted-foreground">
+                <FormHelperText>
                   Combined rate: {getCombinedRate(taxRates.filter((r) => selectedRateIds.includes(r.id)))}%
-                </p>
+                </FormHelperText>
               )}
-            </div>
+            </FormField>
             <div className="flex items-center gap-2">
               <Switch
                 id="group-default"
@@ -845,7 +831,7 @@ export default function TaxBillingRulesPage() {
                 onCheckedChange={setGroupIsDefault}
                 data-testid="switch-group-default"
               />
-              <Label htmlFor="group-default" className="cursor-pointer">
+              <Label htmlFor="group-default">
                 Set as default tax group for new invoices
               </Label>
             </div>

@@ -30,6 +30,7 @@ import { PlatformAuthRoute } from "@/lib/platformAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
 import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
+import { useTheme } from "@/hooks/useTheme";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
@@ -198,7 +199,7 @@ import CommunicationsHub from "@/pages/CommunicationsHub";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
-import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield } from "lucide-react";
+import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield, Moon, Sun } from "lucide-react";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { makeCreateMenuItems } from "@/components/create/createMenuConfig";
 import { HelpPanel } from "@/components/help/HelpPanel";
@@ -926,6 +927,7 @@ function TimesheetsRoute() {
 function AppContent() {
   const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
+  const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   // 2026-04-26: Quick-create funnel collapsed onto the canonical
@@ -1325,6 +1327,10 @@ function AppContent() {
                   <DropdownMenuItem onClick={() => setLocation("/settings")} data-testid="menu-settings">
                     <Settings className="h-4 w-4 mr-2" />
                     Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setTheme(theme === "light" ? "dark" : "light")} data-testid="menu-appearance-toggle">
+                    {theme === "light" ? <Moon className="h-4 w-4 mr-2" /> : <Sun className="h-4 w-4 mr-2" />}
+                    {theme === "light" ? "Dark mode" : "Light mode"}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setFeedbackOpen(true)} data-testid="menu-feedback">
                     <MessageCircle className="h-4 w-4 mr-2" />

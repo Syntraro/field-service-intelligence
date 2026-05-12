@@ -4,6 +4,13 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // =============================================================================
+// ENUMS
+// =============================================================================
+
+export const userAppearanceEnum = ["dark", "light"] as const;
+export type UserAppearance = typeof userAppearanceEnum[number];
+
+// =============================================================================
 // SHARED VALIDATION HELPERS
 // =============================================================================
 
@@ -253,6 +260,8 @@ export const users = pgTable("users", {
   tokenVersion: integer("token_version").notNull().default(0), // Increment to invalidate all sessions
   lastLoginAt: timestamp("last_login_at"),
   deletedAt: timestamp("deleted_at"), // Soft delete timestamp
+  // CHECK constraint mirrors migrations/2026_05_11_user_appearance_preference.sql
+  appearance: text("appearance").notNull().default("dark"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

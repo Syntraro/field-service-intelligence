@@ -1,6 +1,6 @@
 import { Router, Response, NextFunction } from "express";
 import { z } from "zod";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, asc, desc, isNull, sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
@@ -17,8 +17,9 @@ import { storage } from "../storage/index";
 import { getQueryCtx } from "../lib/queryCtx";
 import { logEventAsync } from "../lib/events";
 import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
+import { getClientIntelligence } from "../storage/clientIntelligence";
 import { db } from "../db";
-import { clientLocations } from "@shared/schema";
+import { clientLocations, customerCompanies, invoices } from "@shared/schema";
 import {
   INVALID_EMAIL_MESSAGE,
   isValidOptionalEmail,
@@ -69,6 +70,234 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const list = await customerCompanyRepository.listCustomerCompanies(companyId!);
   res.json(list);
 }));
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/ar-summary
+ *
+ * Focused AR snapshot for the ClientCollectionsModal:
+ *   - Customer contact info (name, phone, email)
+ *   - All unpaid invoices split into pastDue / current
+ *   - Aggregated totals
+ *
+ * Tenant isolation: companyId from session.
+ */
+router.get(
+  "/:customerCompanyId/ar-summary",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    const { customerCompanyId } = req.params;
+
+    // AR_INVOICE_STATUSES: invoices eligible for AR collections view.
+    // Includes draft so in-progress invoices with balance show up; excludes paid + voided.
+    const AR_INVOICE_STATUSES = ["draft", "awaiting_payment", "sent", "partial_paid"] as const;
+
+    const ctx = getQueryCtx(req);
+
+    // All four queries run in parallel: customer row, invoices, billing summary, locations.
+    const [ccRow, rawInvoices, billingSummary, locationRows] = await Promise.all([
+      // Customer company — includes billing address for header display
+      db
+        .select({
+          id: customerCompanies.id,
+          name: customerCompanies.name,
+          firstName: customerCompanies.firstName,
+          lastName: customerCompanies.lastName,
+          phone: customerCompanies.phone,
+          email: customerCompanies.email,
+          useCompanyAsPrimary: customerCompanies.useCompanyAsPrimary,
+          billingStreet: customerCompanies.billingStreet,
+          billingCity: customerCompanies.billingCity,
+          billingProvince: customerCompanies.billingProvince,
+        })
+        .from(customerCompanies)
+        .where(
+          and(
+            eq(customerCompanies.id, customerCompanyId),
+            eq(customerCompanies.companyId, companyId!),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+
+      // Invoices — direct query joining clientLocations via invoices.locationId.
+      // Does NOT join customerCompanies via location chain, preventing display-name leakage
+      // when invoice.customerCompanyId diverges from location.parentCompanyId.
+      db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          status: invoices.status,
+          issueDate: invoices.issueDate,
+          dueDate: invoices.dueDate,
+          total: invoices.total,
+          balance: invoices.balance,
+          summary: invoices.summary,
+          workDescription: invoices.workDescription,
+          sentAt: invoices.sentAt,
+          viewedAt: invoices.viewedAt,
+          locationSite: clientLocations.location,
+          locationCompanyName: clientLocations.companyName,
+          locationAddress: clientLocations.address,
+          locationCity: clientLocations.city,
+          locationProvince: clientLocations.province,
+        })
+        .from(invoices)
+        .leftJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
+        .where(
+          and(
+            eq(invoices.companyId, companyId!),
+            eq(invoices.customerCompanyId, customerCompanyId),
+            inArray(invoices.status, AR_INVOICE_STATUSES as unknown as string[]),
+            sql`CAST(${invoices.balance} AS numeric) > 0`,
+          ),
+        )
+        .orderBy(asc(invoices.dueDate))
+        .limit(200),
+
+      getClientBillingSummary(ctx, { customerCompanyId }),
+
+      // Service locations: primary first, then oldest. Used for contact name + location count.
+      db
+        .select({
+          contactName: clientLocations.contactName,
+          address: clientLocations.address,
+          city: clientLocations.city,
+          province: clientLocations.province,
+          isPrimary: clientLocations.isPrimary,
+        })
+        .from(clientLocations)
+        .where(
+          and(
+            eq(clientLocations.companyId, companyId!),
+            eq(clientLocations.parentCompanyId, customerCompanyId),
+            isNull(clientLocations.deletedAt),
+          ),
+        )
+        .orderBy(desc(clientLocations.isPrimary), asc(clientLocations.createdAt))
+        .limit(50),
+    ]);
+
+    if (!ccRow) throw createError(404, "Customer company not found");
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    function computeIsPastDue(status: string | null, dueDate: string | null, balance: string | null): boolean {
+      if (!status || status === "draft" || status === "paid" || status === "voided") return false;
+      const bal = parseFloat(balance ?? "0");
+      if (bal <= 0 || !dueDate) return false;
+      const due = new Date(dueDate);
+      due.setHours(0, 0, 0, 0);
+      return due < today;
+    }
+
+    function toISOOrNull(val: Date | string | null | undefined): string | null {
+      if (!val) return null;
+      return val instanceof Date ? val.toISOString() : String(val);
+    }
+
+    // Build context label per invoice: summary > workDescription > site name > address
+    function invoiceContextLabel(r: {
+      summary: string | null;
+      workDescription: string | null;
+      locationSite: string | null;
+      locationCompanyName: string | null;
+      locationAddress: string | null;
+      locationCity: string | null;
+    }): string | null {
+      if (r.summary?.trim()) return r.summary.trim();
+      if (r.workDescription?.trim()) return r.workDescription.trim().slice(0, 120);
+      if (r.locationSite?.trim()) return r.locationSite.trim();
+      if (r.locationCompanyName?.trim()) return r.locationCompanyName.trim();
+      const addr = [r.locationAddress, r.locationCity].filter(Boolean).join(", ");
+      return addr || null;
+    }
+
+    type ARInvoice = {
+      id: string;
+      invoiceNumber: string | null;
+      status: string | null;
+      issueDate: string | null;
+      dueDate: string | null;
+      total: string | null;
+      balance: string | null;
+      locationDisplayName: string | null;
+      contextLabel: string | null;
+      sentAt: string | null;
+      viewedAt: string | null;
+      isPastDue: boolean;
+    };
+
+    const mapped: ARInvoice[] = rawInvoices.map((r) => ({
+      id: r.id,
+      invoiceNumber: r.invoiceNumber ?? null,
+      status: r.status ?? null,
+      issueDate: r.issueDate ?? null,
+      dueDate: r.dueDate ?? null,
+      total: r.total ?? null,
+      balance: r.balance ?? null,
+      locationDisplayName: r.locationSite || r.locationCompanyName || null,
+      contextLabel: invoiceContextLabel(r),
+      sentAt: toISOOrNull(r.sentAt),
+      viewedAt: toISOOrNull(r.viewedAt),
+      isPastDue: computeIsPastDue(r.status, r.dueDate, r.balance),
+    }));
+
+    const pastDueInvoices = mapped.filter((inv) => inv.isPastDue);
+    const currentInvoices = mapped.filter((inv) => !inv.isPastDue);
+
+    const sumBalance = (rows: ARInvoice[]) =>
+      rows.reduce((acc, r) => acc + parseFloat(r.balance ?? "0"), 0).toFixed(2);
+
+    // Service location context for header
+    const primaryLocation = locationRows[0] ?? null;
+    const serviceLocationCount = locationRows.length;
+    const primaryContactName = primaryLocation?.contactName ?? null;
+
+    // Compact billing address: street + city, province (omit if all blank)
+    const billingParts = [
+      ccRow.billingStreet,
+      [ccRow.billingCity, ccRow.billingProvince].filter(Boolean).join(", "),
+    ].filter(Boolean);
+    const billingAddress = billingParts.length > 0 ? billingParts.join(", ") : null;
+
+    // Days since last payment (server-computed so UI doesn't need Date arithmetic)
+    const lastPayment = billingSummary.totals.lastPayment ?? null;
+    let daysSinceLastPayment: number | null = null;
+    if (lastPayment?.receivedAt) {
+      const paid = new Date(lastPayment.receivedAt);
+      paid.setHours(0, 0, 0, 0);
+      daysSinceLastPayment = Math.floor((today.getTime() - paid.getTime()) / 86_400_000);
+    }
+
+    res.json({
+      customer: {
+        id: ccRow.id,
+        name: ccRow.name ?? null,
+        firstName: ccRow.firstName ?? null,
+        lastName: ccRow.lastName ?? null,
+        phone: ccRow.phone ?? null,
+        email: ccRow.email ?? null,
+        useCompanyAsPrimary: ccRow.useCompanyAsPrimary,
+        billingAddress,
+        primaryContactName,
+        serviceLocationCount,
+      },
+      totals: {
+        totalOutstanding: sumBalance(mapped),
+        pastDueTotal: sumBalance(pastDueInvoices),
+        currentTotal: sumBalance(currentInvoices),
+        invoiceCount: mapped.length,
+        pastDueCount: pastDueInvoices.length,
+        currentCount: currentInvoices.length,
+      },
+      lastPayment,
+      daysSinceLastPayment,
+      pastDueInvoices,
+      currentInvoices,
+    });
+  }),
+);
 
 /**
  * GET /api/customer-companies/:companyId
@@ -316,6 +545,22 @@ router.get("/:companyId/billing-history", asyncHandler(async (req: AuthedRequest
     { limit: Number.isFinite(limitParam) ? limitParam : undefined },
   );
   res.json({ items: history });
+}));
+
+/**
+ * GET /api/customer-companies/:companyId/intelligence
+ * Aggregate client intelligence: KPIs, financial performance, payment behavior,
+ * revenue categories, and at-a-glance metrics for a single customer company.
+ */
+router.get("/:companyId/intelligence", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId } = req.params;
+
+  const company = await customerCompanyRepository.getCustomerCompany(tenantCompanyId!, companyId);
+  if (!company) throw createError(404, "Customer company not found");
+
+  const data = await getClientIntelligence(getQueryCtx(req), { customerCompanyId: companyId });
+  res.json(data);
 }));
 
 /**

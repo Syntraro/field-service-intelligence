@@ -211,8 +211,18 @@ router.get("/me", (req: Request, res: Response) => {
     companyId: req.user.companyId,
     onboardingCompletedAt: (req.user as any).onboardingCompletedAt ?? null,
     isImpersonating: Boolean((req as any).isImpersonating),
+    appearance: (req.user as any).appearance ?? "dark",
   });
 });
+
+router.patch("/me/appearance", asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+  const schema = z.object({ appearance: z.enum(["dark", "light"]) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid appearance value" });
+  await storage.updateUser(req.user.id, { appearance: parsed.data.appearance } as any);
+  res.json({ appearance: parsed.data.appearance });
+}));
 
 /**
  * Rate limiter for signup (invite + public paths).

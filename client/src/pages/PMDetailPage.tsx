@@ -47,6 +47,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -309,23 +310,25 @@ function PlanBasicsEditCard({
   return (
     <SectionCard icon={Wrench} title="Plan">
       <div className="space-y-3">
-        <div className="space-y-1.5">
-          <Label className="text-xs">Plan name</Label>
+        <FormField>
+          <FormLabel srOnly>Plan name</FormLabel>
           <Input
+            placeholder="Plan name"
             value={form.title}
             onChange={(e) => onChange({ title: e.target.value })}
             data-testid="pm-detail-title"
           />
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs">Internal notes (optional)</Label>
+        </FormField>
+        <FormField>
+          <FormLabel srOnly>Internal notes (optional)</FormLabel>
           <Textarea
+            placeholder="Internal notes (optional)"
             value={form.description}
             onChange={(e) => onChange({ description: e.target.value })}
             rows={2}
             data-testid="pm-detail-description"
           />
-        </div>
+        </FormField>
         <div className="flex items-center gap-2 pt-1">
           <Checkbox
             id="pm-detail-active"
@@ -487,18 +490,18 @@ function ScheduleCard({
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label className="text-xs">Start date</Label>
+          <FormRow className="grid-cols-2">
+            <FormField>
+              <FormLabel>Start date</FormLabel>
               <CanonicalDatePicker
                 value={form.startDate}
                 onChange={(next) => onChange({ startDate: next ?? "" })}
                 className="w-full h-9 text-sm"
                 data-testid="pm-detail-start-date"
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">End date (optional)</Label>
+            </FormField>
+            <FormField>
+              <FormLabel>End date (optional)</FormLabel>
               <CanonicalDatePicker
                 value={form.endDate}
                 onChange={(next) => onChange({ endDate: next ?? "" })}
@@ -507,8 +510,8 @@ function ScheduleCard({
                 className="w-full h-9 text-sm"
                 data-testid="pm-detail-end-date"
               />
-            </div>
-          </div>
+            </FormField>
+          </FormRow>
         </div>
       </SectionCard>
     );

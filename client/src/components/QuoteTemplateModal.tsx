@@ -13,8 +13,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 import {
   Table,
   TableBody,
@@ -356,8 +356,8 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
             <div className="space-y-4">
               <h3 className="text-sm font-semibold">Template Details</h3>
 
-              <div className="space-y-2">
-                <Label htmlFor="name">Name *</Label>
+              <FormField>
+                <FormLabel htmlFor="name" srOnly>Name</FormLabel>
                 <Input
                   id="name"
                   value={name}
@@ -365,10 +365,10 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                   placeholder="e.g., Standard Service Quote"
                   data-testid="input-template-name"
                 />
-              </div>
+              </FormField>
 
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+              <FormField>
+                <FormLabel htmlFor="description" srOnly>Description</FormLabel>
                 <Textarea
                   id="description"
                   value={description}
@@ -377,7 +377,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                   rows={2}
                   data-testid="input-template-description"
                 />
-              </div>
+              </FormField>
 
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -552,9 +552,9 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Type *</Label>
+            <FormRow className="grid-cols-2">
+              <FormField>
+                <FormLabel>Type</FormLabel>
                 <Select
                   value={quickAddData.type}
                   onValueChange={(v: "product" | "service") =>
@@ -567,37 +567,37 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                     <SelectItem value="service">Service</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>SKU</Label>
+              </FormField>
+              <FormField>
+                <FormLabel srOnly>SKU</FormLabel>
                 <Input
                   value={quickAddData.sku}
                   onChange={(e) => setQuickAddData((prev) => ({ ...prev, sku: e.target.value }))}
                   placeholder="Optional"
                   data-testid="quick-add-sku"
                 />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Name *</Label>
+              </FormField>
+            </FormRow>
+            <FormField>
+              <FormLabel srOnly>Name</FormLabel>
               <Input
                 value={quickAddData.name}
                 onChange={(e) => setQuickAddData((prev) => ({ ...prev, name: e.target.value }))}
                 placeholder="Product or service name"
                 data-testid="quick-add-name"
               />
-            </div>
-            <div className="space-y-2">
-              <Label>Description</Label>
+            </FormField>
+            <FormField>
+              <FormLabel srOnly>Description</FormLabel>
               <Input
                 value={quickAddData.description}
                 onChange={(e) => setQuickAddData((prev) => ({ ...prev, description: e.target.value }))}
                 placeholder="Optional description"
                 data-testid="quick-add-description"
               />
-            </div>
-            <div className="space-y-2">
-              <Label>Unit Price</Label>
+            </FormField>
+            <FormField>
+              <FormLabel srOnly>Unit Price</FormLabel>
               <Input
                 type="number"
                 min="0"
@@ -607,7 +607,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                 placeholder="0.00"
                 data-testid="quick-add-price"
               />
-            </div>
+            </FormField>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setQuickAddOpen(false)} data-testid="quick-add-cancel">

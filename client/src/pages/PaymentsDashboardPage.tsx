@@ -70,7 +70,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
-import { Label } from "@/components/ui/label";
+import { FormLabel } from "@/components/ui/form-field";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/formatters";
 import {
   useTenantPaymentAccount,
@@ -1195,12 +1195,7 @@ function FilterField(props: {
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <Label
-        htmlFor={props.htmlFor}
-        className="text-xs text-muted-foreground"
-      >
-        {props.label}
-      </Label>
+      <FormLabel htmlFor={props.htmlFor}>{props.label}</FormLabel>
       {props.children}
     </div>
   );

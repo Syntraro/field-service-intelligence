@@ -81,6 +81,7 @@ import { Label } from "@/components/ui/label";
 // 2026-05-03 modal form-field polish: internal-label wrapper for the
 // compact Schedule grid (Date / Start / Duration / Assigned To).
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel } from "@/components/ui/form-field";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // 2026-04-26: canonical compact duration options (15m / 30m / 1h / 1.5h / 2h / 3h / 4h / 8h)
 // shared with QuickAddJobDialog. Ensures both surfaces present the same picker.
@@ -913,14 +914,19 @@ export function EditVisitModal({
                     default height that expands on focus so the modal
                     stays small at rest but gives writers room when
                     they need it. */}
-                <Textarea
-                  id="visit-notes"
-                  value={visitNotes}
-                  onChange={(e) => setVisitNotes(e.target.value)}
-                  placeholder="Add team instructions..."
-                  className="text-sm resize-none h-16 min-h-0 px-3 py-2"
-                  data-testid="textarea-visit-notes"
-                />
+                <FormField>
+                  <FormLabel srOnly htmlFor="visit-notes">
+                    Team Instructions
+                  </FormLabel>
+                  <Textarea
+                    id="visit-notes"
+                    value={visitNotes}
+                    onChange={(e) => setVisitNotes(e.target.value)}
+                    placeholder="Add team instructions..."
+                    className="text-sm resize-none h-16 min-h-0 px-3 py-2"
+                    data-testid="textarea-visit-notes"
+                  />
+                </FormField>
 
                 {/* 3. Schedule — 4-column grid: Date | Start | Duration | Assigned.
                     Visit scheduling is end-time based (preserved from

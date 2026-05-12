@@ -75,6 +75,17 @@ export default defineConfig({
       // + skipWaiting + clientsClaim + cleanupOutdatedCaches guarantees each
       // deploy takes over all clients atomically and drops stale precaches.
       registerType: "autoUpdate",
+      // 2026-05-11 double-registration fix: set injectRegister to null so
+      // vite-plugin-pwa does NOT auto-inject a raw registerSW.js script tag
+      // into index.html. With "auto" (the default), two registrations occur
+      // concurrently: the raw script fires on "load" with no workbox-window
+      // lifecycle hooks, and PwaUpdatePrompt.tsx registers again via
+      // virtual:pwa-register. The raw path can miss a waiting SW that
+      // installs between "load" and React mounting, causing the
+      // onNeedRefresh / updatefound callbacks to never fire for that worker.
+      // Removing it makes virtual:pwa-register (PwaUpdatePrompt.tsx) the
+      // sole registration path.
+      injectRegister: null,
       // 2026-04-21 Phase 1 push notifications: flipped from the default
       // `generateSW` strategy to `injectManifest` with a custom source at
       // `client/src/sw.ts`. The custom SW preserves the previous Workbox
@@ -104,7 +115,7 @@ export default defineConfig({
       },
       injectManifest: {
         // Only precache built static assets.
-        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3 MB — main bundle is ~2.2 MB
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // 4 MB — main bundle measured at 3.44 MB (2026-05-11)
         globPatterns: ["**/*.{js,css,html,woff2,png,svg,ico}"],
       },
     }),

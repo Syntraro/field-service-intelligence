@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { FormField, FormLabel, FormHelperText } from "@/components/ui/form-field";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, UserCircle, Building2, Calendar, DollarSign, Clock, ShieldAlert } from "lucide-react";
@@ -464,8 +464,8 @@ export default function SupportConsole() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="reason">Reason (minimum 10 characters)</Label>
+            <FormField>
+              <FormLabel srOnly htmlFor="reason">Reason</FormLabel>
               <Textarea
                 id="reason"
                 placeholder="e.g., Support ticket #12345 - User unable to access calendar"
@@ -474,10 +474,10 @@ export default function SupportConsole() {
                 rows={3}
                 data-testid="input-impersonation-reason"
               />
-              <p className="text-xs text-muted-foreground">
-                Session will expire after 60 minutes with 15-minute idle timeout
-              </p>
-            </div>
+              <FormHelperText>
+                Minimum 10 characters. Session expires after 60 minutes with 15-minute idle timeout.
+              </FormHelperText>
+            </FormField>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setImpersonateDialogOpen(false)}>
@@ -517,17 +517,18 @@ export default function SupportConsole() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="trial-days">Days to Add</Label>
+            <FormField>
+              <FormLabel srOnly htmlFor="trial-days">Days to Add</FormLabel>
               <Input
                 id="trial-days"
                 type="number"
                 min="1"
+                placeholder="e.g. 30"
                 value={trialDays}
                 onChange={(e) => setTrialDays(Number(e.target.value))}
                 data-testid="input-trial-days"
               />
-            </div>
+            </FormField>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTrialDialogOpen(false)}>
@@ -558,8 +559,8 @@ export default function SupportConsole() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="plan">Subscription Plan</Label>
+            <FormField>
+              <FormLabel htmlFor="plan">Subscription Plan</FormLabel>
               <Select value={selectedPlan} onValueChange={setSelectedPlan}>
                 <SelectTrigger data-testid="select-plan">
                   <SelectValue />
@@ -571,9 +572,9 @@ export default function SupportConsole() {
                   <SelectItem value="enterprise">Enterprise</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="status">Subscription Status</Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="status">Subscription Status</FormLabel>
               <Select value={selectedStatus} onValueChange={setSelectedStatus}>
                 <SelectTrigger data-testid="select-status">
                   <SelectValue />
@@ -585,7 +586,7 @@ export default function SupportConsole() {
                   <SelectItem value="canceled">Canceled</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
+            </FormField>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSubscriptionDialogOpen(false)}>

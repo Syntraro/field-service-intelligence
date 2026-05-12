@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { FormField, FormLabel, FormErrorText, FormHelperText } from "@/components/ui/form-field";
 import {
   Dialog,
   DialogContent,
@@ -224,7 +225,7 @@ export default function InvoiceRemindersSettingsPage() {
               <>
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <Label htmlFor="enabled" className="text-sm font-medium">
+                    <Label htmlFor="enabled">
                       Enable automatic reminders
                     </Label>
                     <p className="text-xs text-muted-foreground mt-0.5">
@@ -240,10 +241,10 @@ export default function InvoiceRemindersSettingsPage() {
                   />
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="first-delay" className="text-sm">
+                <FormField>
+                  <FormLabel htmlFor="first-delay">
                     First reminder after due date
-                  </Label>
+                  </FormLabel>
                   <div className="flex items-center gap-2">
                     <Input
                       id="first-delay"
@@ -259,14 +260,14 @@ export default function InvoiceRemindersSettingsPage() {
                     <span className="text-sm text-muted-foreground">days</span>
                   </div>
                   {firstDelayError && (
-                    <p className="text-xs text-destructive">{firstDelayError}</p>
+                    <FormErrorText>{firstDelayError}</FormErrorText>
                   )}
-                </div>
+                </FormField>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="repeat-every" className="text-sm">
+                <FormField>
+                  <FormLabel htmlFor="repeat-every">
                     Repeat every
-                  </Label>
+                  </FormLabel>
                   <div className="flex items-center gap-2">
                     <Input
                       id="repeat-every"
@@ -282,9 +283,9 @@ export default function InvoiceRemindersSettingsPage() {
                     <span className="text-sm text-muted-foreground">days</span>
                   </div>
                   {repeatError && (
-                    <p className="text-xs text-destructive">{repeatError}</p>
+                    <FormErrorText>{repeatError}</FormErrorText>
                   )}
-                </div>
+                </FormField>
 
                 <div className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
                   Reminders continue until the invoice is paid, voided, or
@@ -324,8 +325,8 @@ export default function InvoiceRemindersSettingsPage() {
               </div>
             ) : (
               <>
-                <div className="space-y-1.5">
-                  <Label htmlFor="subject-template" className="text-xs">Subject</Label>
+                <FormField>
+                  <FormLabel htmlFor="subject-template">Subject</FormLabel>
                   <Input
                     id="subject-template"
                     value={subjectTemplate}
@@ -333,10 +334,10 @@ export default function InvoiceRemindersSettingsPage() {
                     data-testid="input-template-subject"
                     className="text-xs"
                   />
-                </div>
+                </FormField>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="body-template" className="text-xs">Body</Label>
+                <FormField>
+                  <FormLabel htmlFor="body-template">Body</FormLabel>
                   {/* Typography pass (2026-04-16): body inherits the app's
                       Inter sans stack at the canonical 12px editor scale.
                       Previously `font-mono text-xs` overrode the stack and
@@ -349,10 +350,10 @@ export default function InvoiceRemindersSettingsPage() {
                     data-testid="input-template-body"
                     className="text-xs leading-5"
                   />
-                </div>
+                </FormField>
 
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Available variables</Label>
+                <div className="space-y-2">
+                  <p className="text-xs font-medium">Available variables</p>
                   <div className="flex flex-wrap gap-1.5">
                     {REMINDER_VARS.map((v) => (
                       <code
@@ -420,9 +421,9 @@ export default function InvoiceRemindersSettingsPage() {
                 {previewBody ?? ""}
               </pre>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <FormHelperText>
               Rendered with sample data. Real sends use each invoice's actual values.
-            </p>
+            </FormHelperText>
           </div>
           <DialogFooter>
             <Button

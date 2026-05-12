@@ -138,6 +138,8 @@ import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { ClientKpiStrip } from "@/components/client-intelligence/ClientKpiStrip";
+import { ClientOverviewTab } from "@/pages/ClientOverviewTab";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -154,6 +156,7 @@ type ScopeType = "company" | "location";
  *  so a future surface can re-mount them, but they no longer appear
  *  in the workspace tab bar. */
 type WorkspaceTab =
+  | "overview"
   | "active"
   | "jobs"
   | "invoices"
@@ -249,17 +252,16 @@ interface PMPartWithItem extends LocationPMPartTemplate {
  *  when the user toggles scope. PM is location-only and only listed
  *  in `LOCATION_TABS`. */
 const COMPANY_TABS: { key: WorkspaceTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
   { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
-  // 2026-05-02: Pricing tab. The endpoint is location-keyed, so this
-  // company-scope position renders ScopeRequiredEmpty. Listed here
-  // only so the tab bar shape stays stable across scope toggles.
   { key: "pricing", label: "Pricing" },
 ];
 
 const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
   { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
@@ -812,6 +814,7 @@ export default function ClientDetailPage() {
   }, [allJobs, locations, clientId]);
 
   const activeJobsCount = companyJobs.filter(j => j.status === "open").length;
+  const onHoldJobsCount = companyJobs.filter(j => j.status === "open" && (j as any).openSubStatus === "on_hold").length;
   const overdueInvoicesCount = allInvoices.filter(i =>
     i.status !== "paid" && i.status !== "voided" && i.dueDate && new Date(i.dueDate) < new Date()
   ).length;
@@ -1427,9 +1430,9 @@ export default function ClientDetailPage() {
            as two distinct header sections. Add Location lives in the
            overflow dropdown so it doesn't visually dominate. */}
       <div className="bg-white border-b border-slate-200 px-6 pt-4 pb-5">
-        <div className="flex items-start gap-4">
-          {/* Left block: name, subtitle, create actions */}
-          <div className="min-w-0 flex-shrink-0">
+        <div className="flex items-start justify-between gap-4">
+          {/* Left block: name, subtitle, tags */}
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5">
               <h1 className="text-2xl font-bold text-slate-900 truncate">{companyName}</h1>
               {parentCompany?.isActive === false && (
@@ -1442,15 +1445,6 @@ export default function ClientDetailPage() {
                 : `${locations.length} location${locations.length !== 1 ? "s" : ""}`}
             </p>
 
-            {/* 2026-05-02: scope-aware tag row. In `All Locations`
-                scope shows the customer-company tags; in a specific
-                location's scope shows that location's tags. The Edit
-                affordance routes through the canonical
-                `EditTagsModal` (the same modal the More-overflow
-                menu uses) — no parallel tag system, no new endpoint.
-                Hidden entirely when there are no tags AND no Edit
-                affordance is rendered (e.g. before companyId
-                resolves), to avoid an empty tag strip. */}
             {(scopeTags.length > 0 || (scopeType === "company" ? Boolean(companyId) : Boolean(selectedLocationId))) && (
               <div className="flex items-center flex-wrap gap-1.5 mt-1.5" data-testid="client-header-tags">
                 {scopeTags.map(tag => (
@@ -1463,9 +1457,6 @@ export default function ClientDetailPage() {
                     {tag.name}
                   </span>
                 ))}
-                {/* Edit / add affordance — only rendered when an
-                    underlying entity id is resolvable (otherwise the
-                    canonical modal has nothing to write against). */}
                 {scopeType === "company" && companyId ? (
                   <button
                     type="button"
@@ -1491,118 +1482,79 @@ export default function ClientDetailPage() {
                 ) : null}
               </div>
             )}
-
-            {/* Create-actions row — distinct from the info block above.
-                `mt-4 pt-3 border-t border-slate-100` separates it with
-                a hairline divider + 28px of vertical breathing room so
-                the client info and the actions read as two sections.
-                The More (overflow) menu lives in this cluster, not at
-                the far-right page edge. */}
-            <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-slate-100">
-              <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
-                <Plus className="mr-1 h-3 w-3" />Create Job
-              </Button>
-              {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
-              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
-                <Plus className="mr-1 h-3 w-3" />Create Quote
-              </Button>
-              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
-                <Plus className="mr-1 h-3 w-3" />Create Invoice
-              </Button>
-              <ActionMenu
-                items={[
-                  {
-                    id: "add-location",
-                    label: "Add Location",
-                    icon: Plus,
-                    onSelect: () => setAddLocationDialogOpen(true),
-                  },
-                  {
-                    id: "edit-client",
-                    label: "Edit Client",
-                    icon: Pencil,
-                    onSelect: () => setEditClientDialogOpen(true),
-                  },
-                  {
-                    id: "edit-client-tags",
-                    label: "Edit Client Tags",
-                    icon: Tag,
-                    onSelect: () => setEditClientTagsOpen(true),
-                    hidden: !(scopeType === "company" && Boolean(companyId)),
-                  },
-                  {
-                    id: "edit-location",
-                    label: "Edit Location",
-                    icon: Pencil,
-                    onSelect: () => setEditLocationModalOpen(true),
-                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
-                  },
-                  {
-                    id: "edit-location-tags",
-                    label: "Edit Location Tags",
-                    icon: Tag,
-                    onSelect: () => setEditLocationTagsOpen(true),
-                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
-                  },
-                  {
-                    id: "delete-location",
-                    label: "Delete Location",
-                    icon: Trash2,
-                    onSelect: () => openDeleteDialog("location"),
-                    hidden: !(scopeType === "location" && Boolean(selectedLoc)),
-                    // separator always before the destructive group;
-                    // when this item is hidden, delete-client owns the separator instead.
-                    separator: true,
-                    tone: "destructive",
-                  },
-                  {
-                    id: "delete-client",
-                    label: "Delete Client",
-                    icon: Trash2,
-                    onSelect: () => openDeleteDialog("company"),
-                    // separator only when delete-location is hidden (company scope),
-                    // avoiding a double-separator when both destructive items are visible.
-                    separator: !(scopeType === "location" && Boolean(selectedLoc)),
-                    tone: "destructive",
-                  },
-                ] satisfies ActionMenuItemDescriptor[]}
-                trigger={
-                  <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="header-overflow">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                }
-                align="start"
-              />
-            </div>
           </div>
 
-          {/* KPI block — fills remaining space; vertically centered */}
-          <div className="flex-1 flex justify-start items-center pl-12 pt-1">
-            <div className="flex items-center gap-5 rounded-md border border-slate-200 bg-slate-50/80 px-5 py-2.5">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-xs">Active Jobs</span>
-                <span className="font-bold text-[#76B054] text-base tabular-nums">{activeJobsCount}</span>
-              </div>
-              <div className="h-5 w-px bg-slate-200" />
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-xs">Lifetime Revenue</span>
-                <span className="font-bold text-slate-900 text-base">{fmt.format(lifetimeRevenue)}</span>
-              </div>
-              <div className="h-5 w-px bg-slate-200" />
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-xs">Outstanding</span>
-                <span className="font-bold text-slate-900 text-base">{fmt.format(outstandingInvoices.total)}</span>
-              </div>
-              {outstandingInvoices.overdueTotal > 0 && (
-                <>
-                  <div className="h-5 w-px bg-red-200" />
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-red-500 text-xs font-medium">Overdue</span>
-                    <span className="font-bold text-red-600 text-base">{fmt.format(outstandingInvoices.overdueTotal)}</span>
-                  </div>
-                </>
-              )}
-            </div>
+          {/* Right block: primary action buttons + overflow — aligned with client name */}
+          <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5" data-testid="header-actions">
+            <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
+              <Plus className="mr-1 h-3 w-3" />Create Job
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
+              <Plus className="mr-1 h-3 w-3" />Create Quote
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
+              <Plus className="mr-1 h-3 w-3" />Create Invoice
+            </Button>
+            <ActionMenu
+              items={[
+                {
+                  id: "add-location",
+                  label: "Add Location",
+                  icon: Plus,
+                  onSelect: () => setAddLocationDialogOpen(true),
+                },
+                {
+                  id: "edit-client",
+                  label: "Edit Client",
+                  icon: Pencil,
+                  onSelect: () => setEditClientDialogOpen(true),
+                },
+                {
+                  id: "edit-client-tags",
+                  label: "Edit Client Tags",
+                  icon: Tag,
+                  onSelect: () => setEditClientTagsOpen(true),
+                  hidden: !(scopeType === "company" && Boolean(companyId)),
+                },
+                {
+                  id: "edit-location",
+                  label: "Edit Location",
+                  icon: Pencil,
+                  onSelect: () => setEditLocationModalOpen(true),
+                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                },
+                {
+                  id: "edit-location-tags",
+                  label: "Edit Location Tags",
+                  icon: Tag,
+                  onSelect: () => setEditLocationTagsOpen(true),
+                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                },
+                {
+                  id: "delete-location",
+                  label: "Delete Location",
+                  icon: Trash2,
+                  onSelect: () => openDeleteDialog("location"),
+                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                  separator: true,
+                  tone: "destructive",
+                },
+                {
+                  id: "delete-client",
+                  label: "Delete Client",
+                  icon: Trash2,
+                  onSelect: () => openDeleteDialog("company"),
+                  separator: !(scopeType === "location" && Boolean(selectedLoc)),
+                  tone: "destructive",
+                },
+              ] satisfies ActionMenuItemDescriptor[]}
+              trigger={
+                <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="header-overflow">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              }
+              align="end"
+            />
           </div>
 
         </div>
@@ -1838,6 +1790,20 @@ export default function ClientDetailPage() {
             tell the user which location is selected. */}
       </div>
 
+      {/* ═══ KPI STRIP — 7 client intelligence tiles (2026-05-11) ═══
+           Rendered between the scope bar and the workspace body so it spans
+           the full content width at every breakpoint. Only mounted when the
+           company-level customerCompanyId is resolved. */}
+      {companyId && (
+        <div className="bg-white border-b border-slate-200 px-4 lg:px-6 py-3">
+          <ClientKpiStrip
+            customerCompanyId={companyId}
+            activeJobsCount={activeJobsCount}
+            onHoldJobsCount={onHoldJobsCount}
+          />
+        </div>
+      )}
+
       {/* ═══ BODY — workspace card + recent activity (LEFT-COLUMN portion only) ═══
            2026-05-07: the right utility rail was lifted to the page-
            level outer flex row above, so the body here is now a
@@ -1965,6 +1931,13 @@ export default function ClientDetailPage() {
                   <div className="p-4">
                     {scopeType === "company" ? (
                       <>
+                        {workspaceTab === "overview" && companyId && (
+                          <ClientOverviewTab
+                            customerCompanyId={companyId}
+                            companyName={companyName}
+                            onNavigate={setLocation}
+                          />
+                        )}
                         {workspaceTab === "active" && (
                           <ActiveWorkTab
                             jobs={companyJobs}
@@ -1995,6 +1968,13 @@ export default function ClientDetailPage() {
                       </>
                     ) : selectedLoc ? (
                       <>
+                        {workspaceTab === "overview" && companyId && (
+                          <ClientOverviewTab
+                            customerCompanyId={companyId}
+                            companyName={companyName}
+                            onNavigate={setLocation}
+                          />
+                        )}
                         {workspaceTab === "active" && (
                           <ActiveWorkTab
                             jobs={locJobs}

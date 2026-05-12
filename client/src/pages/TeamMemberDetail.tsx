@@ -12,8 +12,13 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  FormField,
+  FormLabel,
+  FormHelperText,
+  FormErrorText,
+} from "@/components/ui/form-field";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Select,
@@ -275,10 +280,8 @@ export default function TeamMemberDetail() {
         <Card>
           <CardContent className="pt-4 pb-4 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label htmlFor="firstName" className="text-xs">
-                  First name
-                </Label>
+              <FormField>
+                <FormLabel htmlFor="firstName">First name</FormLabel>
                 <Input
                   id="firstName"
                   value={basic.firstName}
@@ -286,11 +289,9 @@ export default function TeamMemberDetail() {
                   className="h-9"
                   data-testid="input-first-name"
                 />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="lastName" className="text-xs">
-                  Last name
-                </Label>
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="lastName">Last name</FormLabel>
                 <Input
                   id="lastName"
                   value={basic.lastName}
@@ -298,11 +299,9 @@ export default function TeamMemberDetail() {
                   className="h-9"
                   data-testid="input-last-name"
                 />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="phone" className="text-xs">
-                  Phone
-                </Label>
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="phone" srOnly>Phone</FormLabel>
                 <Input
                   id="phone"
                   value={basic.phone}
@@ -311,11 +310,9 @@ export default function TeamMemberDetail() {
                   className="h-9"
                   data-testid="input-phone"
                 />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="role" className="text-xs">
-                  Role
-                </Label>
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="role">Role</FormLabel>
                 <Select
                   value={basic.roleId}
                   onValueChange={(v) => setBasicField("roleId", v)}
@@ -331,11 +328,9 @@ export default function TeamMemberDetail() {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-1 md:col-span-2">
-                <Label htmlFor="email" className="text-xs">
-                  Login email
-                </Label>
+              </FormField>
+              <FormField className="md:col-span-2">
+                <FormLabel htmlFor="email">Login email</FormLabel>
                 <div className="flex gap-2">
                   <Input
                     id="email"
@@ -357,10 +352,10 @@ export default function TeamMemberDetail() {
                     </Button>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <FormHelperText>
                   Each email can only belong to one company. Changing it logs the user out.
-                </p>
-              </div>
+                </FormHelperText>
+              </FormField>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t">
@@ -483,10 +478,8 @@ export default function TeamMemberDetail() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
-            <div className="space-y-1">
-              <Label htmlFor="new-password" className="text-xs">
-                New password
-              </Label>
+            <FormField>
+              <FormLabel htmlFor="new-password">New password</FormLabel>
               <Input
                 id="new-password"
                 type="password"
@@ -496,13 +489,11 @@ export default function TeamMemberDetail() {
                 data-testid="input-new-password"
               />
               {newPassword.length > 0 && newPassword.length < 10 && (
-                <p className="text-xs text-destructive">Must be at least 10 characters.</p>
+                <FormErrorText>Must be at least 10 characters.</FormErrorText>
               )}
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="confirm-password" className="text-xs">
-                Confirm
-              </Label>
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="confirm-password">Confirm</FormLabel>
               <Input
                 id="confirm-password"
                 type="password"
@@ -511,9 +502,9 @@ export default function TeamMemberDetail() {
                 data-testid="input-confirm-password"
               />
               {confirmPassword.length > 0 && newPassword !== confirmPassword && (
-                <p className="text-xs text-destructive">Passwords do not match.</p>
+                <FormErrorText>Passwords do not match.</FormErrorText>
               )}
-            </div>
+            </FormField>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResetOpen(false)}>
