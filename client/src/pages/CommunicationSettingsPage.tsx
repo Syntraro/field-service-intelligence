@@ -41,7 +41,7 @@ export default function CommunicationSettingsPage() {
       </div>
 
       <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">Client Communication</h1>
+        <h1 className="text-title font-semibold">Client Communication</h1>
         <p className="text-sm text-muted-foreground">
           Customize the outbound email subject and body for invoices, quotes, and job updates.
           Each tenant has one template per entity. If no template is saved, the system default is used.
@@ -65,7 +65,7 @@ export default function CommunicationSettingsPage() {
               enabled={portalPaymentsEnabled}
               loading={entitlementsLoading}
             />
-            <p className="text-xs text-muted-foreground flex-1 min-w-[240px]">
+            <p className="text-helper text-muted-foreground flex-1 min-w-[240px]">
               The <code className="font-mono text-[11px]">{"{{PAYMENT_URL}}"}</code> and{" "}
               <code className="font-mono text-[11px]">{"{{PAY_NOW_CTA}}"}</code> variables render
               content only when <span className="font-medium">Customer Portal Payments</span> is
@@ -107,7 +107,7 @@ function PortalFeatureBadge({
 }) {
   if (loading) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-helper text-muted-foreground">
         <MinusCircle className="h-3.5 w-3.5 animate-pulse" />
         {label}: Loading…
       </div>

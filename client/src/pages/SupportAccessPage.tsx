@@ -51,7 +51,7 @@ export default function SupportAccessPage() {
   return (
     <div className="mx-auto max-w-4xl p-6 space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Support Access</h1>
+        <h1 className="text-title font-semibold">Support Access</h1>
         <p className="text-sm text-muted-foreground">
           Review and approve internal support requests. You can revoke access at any time.
         </p>
@@ -111,7 +111,7 @@ function PendingRow({ s }: { s: SupportSession }) {
           {s.requestedDurationMinutes && (
             <Badge variant="secondary">{s.requestedDurationMinutes} min</Badge>
           )}
-          <span className="text-xs text-muted-foreground">
+          <span className="text-helper text-muted-foreground">
             requested {new Date(s.createdAt).toLocaleString()}
           </span>
         </div>
@@ -156,7 +156,7 @@ function ActiveRow({ s }: { s: SupportSession }) {
             {s.accessMode === "read_only" ? "read-only" : "impersonation"}
           </Badge>
           <Badge>{s.status}</Badge>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-helper text-muted-foreground">
             expires {new Date(s.expiresAt).toLocaleString()}
           </span>
         </div>

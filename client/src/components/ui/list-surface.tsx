@@ -38,11 +38,11 @@ export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] d
 /** Primary cell text (company name, job location, invoice client) */
 export const listPrimaryClass = ENTITY_NAME_CLASS
 /** Secondary cell text (contact, sublocation, description) */
-export const listSecondaryClass = "text-caption text-text-muted truncate"
+export const listSecondaryClass = "text-row text-text-muted truncate"
 /** Status/tag badge sizing */
 export const listBadgeClass = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
 /** Results count footer text */
-export const listResultsClass = "text-xs text-muted-foreground mt-2"
+export const listResultsClass = "text-helper text-muted-foreground mt-2"
 
 /**
  * Canonical secondary-line class for two-line primary cells in entity list
@@ -50,8 +50,8 @@ export const listResultsClass = "text-xs text-muted-foreground mt-2"
  * Use this instead of copy-pasting the literal class string.
  *
  * 2026-05-08 canonicalization: extracted from 6 independent inline copies.
- * 2026-05-09 typography visual test: text-caption → text-helper (inverted
- * hierarchy proves token control propagates; primary is text-caption 14px).
+ * 2026-05-09 typography visual test: text-row → text-helper (inverted
+ * hierarchy proves token control propagates; primary is text-row 14px).
  */
 export const ENTITY_SECONDARY_CLASS = "text-helper text-slate-500 font-normal truncate"
 

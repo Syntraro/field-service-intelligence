@@ -339,7 +339,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
                 <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <div>
                     <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
-                    <p className="text-xs text-muted-foreground">{member.email}</p>
+                    <p className="text-helper text-muted-foreground">{member.email}</p>
                   </div>
                   <Badge
                     variant={isSchedulable && !member.disabled ? "default" : "secondary"}
@@ -383,7 +383,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
                 <div>
                   <CardTitle className="text-base">Weekly hours</CardTitle>
                   {!useCustom && companyHoursConfigured && (
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                    <p className="text-helper text-muted-foreground mt-1 flex items-center gap-1">
                       <Info className="h-3 w-3" />
                       Inheriting company default hours — enable "Use custom schedule" to override.
                     </p>
@@ -457,7 +457,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
                 })}
                 <div className="flex items-center justify-end gap-2 pt-4">
                   {dirty.isDirty && useCustom && (
-                    <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                    <span className="text-helper text-muted-foreground">Unsaved changes</span>
                   )}
                   <Button
                     onClick={() => saveHours.mutate(hours)}

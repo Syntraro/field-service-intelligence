@@ -674,7 +674,7 @@ function WorkDueTab({
             <div onClick={(e) => e.stopPropagation()} className="inline-block">
               <Button
                 size="sm"
-                className="h-7 px-2 text-caption gap-1"
+                className="h-7 px-2 text-row gap-1"
                 disabled={!eligible || isGenerating}
                 onClick={() => onGenerateOne(item.instanceId)}
                 title="Generate work order"
@@ -1019,9 +1019,9 @@ function PlansTab({
             <AlertCircle className="h-5 w-5 shrink-0" />
             <span className="font-semibold text-row">Failed to load plans{status}</span>
           </div>
-          <p className="text-caption text-slate-600 font-mono break-all">{detail}</p>
+          <p className="text-row text-slate-600 font-mono break-all">{detail}</p>
           {looks500 && (
-            <p className="text-caption text-slate-500 leading-relaxed">
+            <p className="text-row text-slate-500 leading-relaxed">
               If this is a fresh schema, the recently added <code className="font-mono px-1 py-0.5 bg-slate-100 rounded">generation_days_before</code> column may not have been applied. Run:
               <br />
               <code className="font-mono inline-block mt-1 px-2 py-1 bg-slate-100 rounded">npm run db:migrate</code>
@@ -1258,7 +1258,7 @@ function TemplatesTab() {
           <Plus className="mr-2 h-4 w-4" />New Template
         </Button>
       </div>
-      <p className="text-caption text-muted-foreground">
+      <p className="text-row text-muted-foreground">
         Reusable presets for maintenance plans. Templates prefill the new-plan wizard with default content.
       </p>
 
@@ -1277,7 +1277,7 @@ function TemplatesTab() {
               <p className="text-row text-slate-500 max-w-sm">Create a template to prefill plan content with one click — useful when you bill the same maintenance package to multiple clients.</p>
             </div>
             <Button onClick={() => setLocation("/pm/templates/new")}>
-              <Plus className="mr-2 h-4 w-4" />Create First Template
+              Create First Template
             </Button>
           </CardContent>
         </Card>
@@ -1458,7 +1458,7 @@ export default function PMWorkspacePage() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <div className="flex items-end justify-between gap-3 flex-wrap border-b border-slate-200 pb-3">
             <div className="flex items-baseline gap-6 flex-wrap">
-              <h1 className="text-page-title font-semibold text-slate-900 leading-none" data-testid="pm-page-title">
+              <h1 className="text-title font-semibold text-slate-900 leading-none" data-testid="pm-page-title">
                 Service Plans
               </h1>
               <TabsList
@@ -1494,7 +1494,7 @@ export default function PMWorkspacePage() {
                   Work Due controls row above the table. */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="header-new-plan">
+                  <Button size="sm" className="gap-1.5" data-testid="header-new-plan">
                     <Plus className="h-4 w-4" />New Plan
                     <ChevronDown className="h-3.5 w-3.5 -ml-1 opacity-70" />
                   </Button>

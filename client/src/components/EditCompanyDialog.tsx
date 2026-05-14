@@ -197,7 +197,7 @@ export function EditCompanyDialog({
           title={
             <>
               Client Identity{" "}
-              <span className="text-xs font-normal text-muted-foreground">
+              <span className="text-helper font-normal text-muted-foreground">
                 (first name or company required)
               </span>
             </>

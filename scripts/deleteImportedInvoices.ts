@@ -9,9 +9,7 @@
  * IDENTIFICATION (bulletproof — the "imported" line source was introduced
  * by this importer and cannot collide with existing data):
  *   A row is a candidate when the invoice has at least one invoice_line
- *   where `source = 'imported'`. As a secondary cross-check, invoices
- *   whose `notes_internal` begins with the importer's snapshot header
- *   (`--- Imported Historical Invoice Details ---`) are also included.
+ *   where `source = 'imported'`.
  *
  * WHY NOT `InvoiceRepository.deleteInvoice()`:
  *   The canonical method enforces user-facing deletion rules (status must
@@ -99,10 +97,7 @@ async function main() {
   );
 
   // ── 1. Identify candidates ────────────────────────────────────────────────
-  // Primary: any invoice with at least one line where source='imported'.
-  // Secondary: any invoice whose notes_internal starts with the importer's
-  // snapshot header — defense-in-depth in case a future writer tags lines
-  // differently.
+  // Any invoice with at least one invoice_line where source='imported'.
   const tenantFilter = COMPANY_ID
     ? sql` AND i.company_id = ${COMPANY_ID}`
     : sql``;
@@ -126,12 +121,9 @@ async function main() {
       (SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id) AS payment_count,
       (SELECT COUNT(*) FROM invoice_tax_lines itl WHERE itl.invoice_id = i.id) AS tax_line_count
     FROM invoices i
-    WHERE (
-      EXISTS (
-        SELECT 1 FROM invoice_lines il
-        WHERE il.invoice_id = i.id AND il.source = 'imported'
-      )
-      OR i.notes_internal LIKE '--- Imported Historical Invoice Details ---%'
+    WHERE EXISTS (
+      SELECT 1 FROM invoice_lines il
+      WHERE il.invoice_id = i.id AND il.source = 'imported'
     )
     ${tenantFilter}
     ORDER BY i.company_id, i.created_at DESC
@@ -269,12 +261,9 @@ async function main() {
   const remaining = await db.execute(sql`
     SELECT COUNT(*)::int AS n
     FROM invoices i
-    WHERE (
-      EXISTS (
-        SELECT 1 FROM invoice_lines il
-        WHERE il.invoice_id = i.id AND il.source = 'imported'
-      )
-      OR i.notes_internal LIKE '--- Imported Historical Invoice Details ---%'
+    WHERE EXISTS (
+      SELECT 1 FROM invoice_lines il
+      WHERE il.invoice_id = i.id AND il.source = 'imported'
     )
     ${tenantFilter}
   `);

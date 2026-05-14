@@ -275,7 +275,7 @@ export default function SupportConsole() {
                           <Badge variant={getStatusBadgeVariant(company.subscriptionStatus)}>
                             {company.subscriptionStatus}
                           </Badge>
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-helper text-muted-foreground">
                             {getPlanDisplayName(company.subscriptionPlan)}
                           </span>
                         </div>
@@ -367,7 +367,7 @@ export default function SupportConsole() {
                             <UserCircle className="w-5 h-5 text-muted-foreground" />
                             <div>
                               <p className="font-medium">{user.email}</p>
-                              <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
+                              <p className="text-helper text-muted-foreground capitalize">{user.role}</p>
                             </div>
                           </div>
                           {user.role !== "platform_admin" && (

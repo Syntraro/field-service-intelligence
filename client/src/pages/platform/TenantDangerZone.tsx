@@ -348,7 +348,7 @@ function ActiveRequestPanel({
           </div>
           <div className="text-sm font-medium">
             {request.companyNameSnapshot}
-            <span className="text-xs text-muted-foreground font-mono ml-2">
+            <span className="text-helper text-muted-foreground font-mono ml-2">
               {request.id}
             </span>
           </div>
@@ -599,7 +599,7 @@ function DeletionWizardDialog({
                   onChange={(e) => setReason(e.target.value)}
                   placeholder="Explain why this tenant must be deleted…"
                 />
-                <div className="text-xs text-muted-foreground mt-1">
+                <div className="text-helper text-muted-foreground mt-1">
                   {reason.trim().length}/{policy?.reasonMinLength ?? 20} minimum
                 </div>
               </div>
@@ -707,7 +707,7 @@ function PreviewSummary({ preview }: { preview: PreviewResponse }) {
     >
       <div className="font-medium">
         {preview.company.name}
-        <span className="text-xs font-mono text-muted-foreground ml-2">
+        <span className="text-helper font-mono text-muted-foreground ml-2">
           {preview.companyId}
         </span>
       </div>

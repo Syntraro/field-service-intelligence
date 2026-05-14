@@ -249,7 +249,7 @@ export function LineItemEditModal({
         {/* Product picker — same primitive the inline AddLineItemForm
             uses, so saved-item lookup behaves identically. */}
         <div className="space-y-1">
-          <label className="text-caption font-medium text-slate-700">
+          <label className="text-row font-medium text-slate-700">
             Saved item
           </label>
           <CreateOrSelectField<ProductOption>
@@ -299,7 +299,7 @@ export function LineItemEditModal({
             tolerates the field being open. */}
         <div className="space-y-1">
           <label
-            className="text-caption font-medium text-slate-700"
+            className="text-row font-medium text-slate-700"
             htmlFor="line-item-edit-description"
           >
             Description
@@ -325,7 +325,7 @@ export function LineItemEditModal({
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <label
-              className="text-caption font-medium text-slate-700"
+              className="text-row font-medium text-slate-700"
               htmlFor="line-item-edit-qty"
             >
               Quantity
@@ -348,13 +348,13 @@ export function LineItemEditModal({
           {showCost && (
             <div className="space-y-1">
               <label
-                className="text-caption font-medium text-slate-700"
+                className="text-row font-medium text-slate-700"
                 htmlFor="line-item-edit-cost"
               >
                 Cost
               </label>
               <div className="relative">
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-helper text-muted-foreground pointer-events-none">
                   $
                 </span>
                 <Input
@@ -376,13 +376,13 @@ export function LineItemEditModal({
           )}
           <div className={showCost ? "space-y-1 col-span-2" : "space-y-1"}>
             <label
-              className="text-caption font-medium text-slate-700"
+              className="text-row font-medium text-slate-700"
               htmlFor="line-item-edit-price"
             >
               Rate
             </label>
             <div className="relative">
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-helper text-muted-foreground pointer-events-none">
                 $
               </span>
               <Input
@@ -407,7 +407,7 @@ export function LineItemEditModal({
           className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
           data-testid="line-item-edit-total"
         >
-          <span className="text-caption font-medium text-slate-700">Amount</span>
+          <span className="text-row font-medium text-slate-700">Amount</span>
           <span className="text-sm font-semibold tabular-nums text-slate-900">
             {lineTotalLabel}
           </span>

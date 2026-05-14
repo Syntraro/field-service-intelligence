@@ -49,6 +49,8 @@ interface InvoiceListPanelProps {
   /** When in receivablesMode: controlled status filter from the parent tab row. */
   externalActiveFilter?: InvoiceStatusFilter;
   onExternalActiveFilterChange?: (f: InvoiceStatusFilter) => void;
+  /** When in receivablesMode: invoice date range filter from the workspace toolbar. */
+  externalDateRange?: InvoiceDateRange;
 }
 
 interface EnrichedInvoice extends Invoice {
@@ -68,6 +70,13 @@ interface InvoiceStats {
 export type InvoiceStatusFilter =
   | "all" | "draft" | "awaiting_payment" | "partial_paid" | "paid"
   | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
+
+export type InvoiceDatePreset = "this_month" | "last_month" | "last_30_days" | "custom";
+export interface InvoiceDateRange {
+  preset: InvoiceDatePreset | null;
+  start: string | null; // YYYY-MM-DD
+  end: string | null;   // YYYY-MM-DD
+}
 
 const INVOICES_PAGE_SIZE = 50;
 
@@ -93,10 +102,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-caption font-medium text-slate-500">{label}</div>
+        <div className="text-row font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-page-title font-medium text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-caption text-slate-500 mt-1">{note}</div>
+      <div className="text-title font-medium text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-row text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -107,6 +116,7 @@ export function InvoiceListPanel({
   activeView, onSelectionChange, receivablesMode,
   externalSearchQuery, onExternalSearchChange,
   externalActiveFilter, onExternalActiveFilterChange,
+  externalDateRange,
 }: InvoiceListPanelProps) {
   const [, setLocation] = useLocation();
   const [activeFilter, setActiveFilter] = useState<InvoiceStatusFilter>(() => viewToFilter(activeView));
@@ -124,8 +134,8 @@ export function InvoiceListPanel({
     setSelectedIds(new Set());
   }, [activeView]);
 
-  // Reset visible slice on local filter or search change.
-  useEffect(() => { setVisibleCount(INVOICES_PAGE_SIZE); }, [activeFilter, searchQuery]);
+  // Reset visible slice on local filter, search, or date range change.
+  useEffect(() => { setVisibleCount(INVOICES_PAGE_SIZE); }, [activeFilter, searchQuery, externalDateRange]);
 
   const UNPAID_STATUSES = new Set(UNPAID_INVOICE_STATUSES);
 
@@ -196,9 +206,10 @@ export function InvoiceListPanel({
   const isErrorInvoices = receivablesMode ? receivablesError : isError;
   const refetch = receivablesMode ? refetchReceivables : refetchInvoices;
 
-  // Effective search/filter — external (tab row) when in receivablesMode, internal otherwise.
+  // Effective search/filter/date — external when in receivablesMode, internal otherwise.
   const effectiveSearchQuery = receivablesMode ? (externalSearchQuery ?? "") : searchQuery;
   const effectiveActiveFilter = receivablesMode ? (externalActiveFilter ?? "all") : activeFilter;
+  const effectiveDateRange = receivablesMode ? (externalDateRange ?? null) : null;
 
   const { data: stats } = useQuery<InvoiceStats>({
     queryKey: ["invoices", "stats"],
@@ -263,8 +274,17 @@ export function InvoiceListPanel({
         return invoiceNumber.includes(query) || locationName.includes(query) || companyName.includes(query) || description.includes(query);
       });
     }
+    if (effectiveDateRange?.start || effectiveDateRange?.end) {
+      result = result.filter(inv => {
+        const d = (inv as any).issueDate as string | null | undefined;
+        if (!d) return true;
+        if (effectiveDateRange.start && d < effectiveDateRange.start) return false;
+        if (effectiveDateRange.end && d > effectiveDateRange.end) return false;
+        return true;
+      });
+    }
     return result;
-  }, [enrichedInvoices, effectiveActiveFilter, effectiveSearchQuery]);
+  }, [enrichedInvoices, effectiveActiveFilter, effectiveSearchQuery, effectiveDateRange]);
 
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { all: enrichedInvoices.length, awaiting_payment: 0 };
@@ -481,10 +501,10 @@ export function InvoiceListPanel({
           {reconciliationIssues.length === 1 ? "" : "s"} need
           {reconciliationIssues.length === 1 ? "s" : ""} reconciliation
         </div>
-        <div className="text-caption text-amber-800 mt-0.5">
+        <div className="text-row text-amber-800 mt-0.5">
           Status and payment totals have drifted on these rows. Open each to review and correct.
         </div>
-        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-caption">
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-row">
           {reconciliationIssues.slice(0, 6).map((iss) => {
             const label =
               iss.kind === "paid_with_balance" ? "Paid · balance owed"
@@ -592,7 +612,11 @@ export function InvoiceListPanel({
             <EntityListTable<InvoiceRow>
               rows={filteredInvoices.slice(0, visibleCount)}
               rowKey={(invoice) => invoice.id}
-              onRowClick={(invoice) => setSelectedIds(new Set([invoice.id]))}
+              onRowClick={(invoice) => {
+                setSelectedIds((prev) =>
+                  prev.size === 1 && prev.has(invoice.id) ? new Set() : new Set([invoice.id]),
+                );
+              }}
               selectedRowKey={receivablesSelectedKey}
               selectedHighlightClass="bg-blue-50"
               loadingState={isLoadingInvoices ? { kind: "loading", title: "Loading invoices…", testId: "invoices-loading" } : undefined}
@@ -608,6 +632,17 @@ export function InvoiceListPanel({
               }
               columns={receivablesColumns}
               fillHeight={!particularsInvoiceId}
+              inlineRowDetail={(invoice) => {
+                if (invoice.id !== particularsInvoiceId) return null;
+                return (
+                  <div className="border-t border-border" data-testid="invoice-particulars-container">
+                    <InvoiceParticularsPanel
+                      invoiceId={invoice.id}
+                      onClose={() => setSelectedIds(new Set())}
+                    />
+                  </div>
+                );
+              }}
               data-testid="invoice-list-table-receivables"
             />
             <ListLoadMoreFooter
@@ -619,19 +654,6 @@ export function InvoiceListPanel({
               hideCountText
             />
           </div>
-
-          {/* Particulars panel — rendered immediately below the table, no gap */}
-          {particularsInvoiceId && (
-            <div
-              className="border-t border-border px-4 pt-3 pb-4"
-              data-testid="invoice-particulars-container"
-            >
-              <InvoiceParticularsPanel
-                invoiceId={particularsInvoiceId}
-                onClose={() => setSelectedIds(new Set())}
-              />
-            </div>
-          )}
         </div>
 
         {batchModalNode}

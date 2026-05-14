@@ -10,7 +10,7 @@
  * (density="default").
  *
  * Typography contract:
- *   label:       text-helper + density-controlled weight
+ *   label:       compact → text-row; default → text-helper; + density-controlled weight
  *   description: text-helper text-muted-foreground (default density only)
  *   count:       text-row tabular-nums + density-controlled weight
  *   hover:       hover:bg-primary/5
@@ -165,7 +165,7 @@ export function DashboardMetricRow({
         // Compact layout: icon | label (flex-1) | count
         <>
           <Icon className={iconClass} />
-          <span className={cn("flex-1 text-helper truncate", d.labelWeight, labelColor)}>
+          <span className={cn("flex-1 text-row truncate", d.labelWeight, labelColor)}>
             {label}
           </span>
           <span className={cn("text-row tabular-nums shrink-0", d.countWeight, countColor)}>

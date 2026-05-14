@@ -296,7 +296,7 @@ function DayRow({
         data-testid={`day-label-${day.date}`}
       >
         <span className="text-sm font-semibold leading-tight">{dayName}</span>
-        <span className="text-xs text-muted-foreground leading-tight">
+        <span className="text-helper text-muted-foreground leading-tight">
           {dayDate}
         </span>
         {warning && (

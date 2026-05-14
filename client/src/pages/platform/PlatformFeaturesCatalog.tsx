@@ -56,7 +56,7 @@ export default function PlatformFeaturesCatalog() {
     <PlatformLayout>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">Features Catalog</h2>
+          <h2 className="text-title font-semibold">Features Catalog</h2>
           <p className="text-sm text-muted-foreground">Dynamic feature definitions. feature_key is immutable after creation.</p>
         </div>
         <CreateFeatureDialog />
@@ -80,7 +80,7 @@ export default function PlatformFeaturesCatalog() {
                         {f.isCore && <Badge variant="outline" className="text-xs">Core</Badge>}
                         {!f.active && <Badge variant="outline" className="text-xs">Inactive</Badge>}
                       </div>
-                      <div className="text-xs text-muted-foreground font-mono">{f.featureKey}</div>
+                      <div className="text-helper text-muted-foreground font-mono">{f.featureKey}</div>
                     </div>
                     <Badge variant="secondary" className="text-xs">{f.limitType}</Badge>
                   </div>
@@ -125,7 +125,7 @@ function CreateFeatureDialog() {
           <div>
             <Label htmlFor="key">feature_key</Label>
             <Input id="key" value={featureKey} onChange={(e) => setFeatureKey(e.target.value)} placeholder="e.g. custom_dashboards" className="font-mono" />
-            <p className="text-xs text-muted-foreground mt-1">Lowercase snake_case. Immutable after creation.</p>
+            <p className="text-helper text-muted-foreground mt-1">Lowercase snake_case. Immutable after creation.</p>
           </div>
           <div>
             <Label htmlFor="dname">Display name</Label>

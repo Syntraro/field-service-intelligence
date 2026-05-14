@@ -235,7 +235,7 @@ export function BulkArchivedJobsCleanupCard() {
               onChange={(e) => setOlderThanDays(e.target.value)}
               data-testid="input-bulk-cleanup-older-than"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               Only jobs archived more than N days ago. Leave blank for all.
             </p>
           </div>
@@ -251,7 +251,7 @@ export function BulkArchivedJobsCleanupCard() {
               onChange={(e) => setLimit(e.target.value)}
               data-testid="input-bulk-cleanup-limit"
             />
-            <p className="text-xs text-muted-foreground">Hard cap. Max 1000.</p>
+            <p className="text-helper text-muted-foreground">Hard cap. Max 1000.</p>
           </div>
 
           <div className="space-y-1.5">
@@ -324,7 +324,7 @@ export function BulkArchivedJobsCleanupCard() {
 
             {preview.sample.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-2">
+                <p className="text-helper font-medium text-muted-foreground mb-2">
                   Sample ({preview.sample.length} of {preview.totalMatched})
                 </p>
                 <div className="border rounded-md max-h-64 overflow-y-auto">
@@ -385,7 +385,7 @@ export function BulkArchivedJobsCleanupCard() {
             </div>
             {runResult.failures.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-2">
+                <p className="text-helper font-medium text-muted-foreground mb-2">
                   Failures ({runResult.failures.length})
                 </p>
                 <div className="border rounded-md max-h-40 overflow-y-auto">

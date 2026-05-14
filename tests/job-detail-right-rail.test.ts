@@ -669,11 +669,11 @@ describe("JobDetailPage rail — canonical typography tokens", () => {
     expect(builderSlice).not.toMatch(/\btext-\[\d+px\]/);
   });
 
-  it("Labour total summary uses canonical `text-label text-text-muted` + `text-row-emphasis tabular-nums` (2026-05-08 remap, tokens in RailPanelRenderer)", () => {
+  it("Labour total summary uses canonical `text-label text-text-muted` + `text-emphasis tabular-nums` (2026-05-08 remap, tokens in RailPanelRenderer)", () => {
     // 2026-05-08 typography remap: `text-label uppercase tracking-wide` consolidated
     // to `text-label text-text-muted` (token bakes uppercase + tracking).
     // Values changed from `text-row font-semibold tabular-nums` to
-    // `text-row-emphasis tabular-nums text-text-primary`.
+    // `text-emphasis tabular-nums text-text-primary`.
     // All class strings live in RailPanelRenderer — verified there, not in builder.
     const rendererSrc = readFileSync(
       resolve(ROOT, "client/src/components/detail-rail/RailPanelRenderer.tsx"),
@@ -682,7 +682,7 @@ describe("JobDetailPage rail — canonical typography tokens", () => {
     // Panel header label token (post-remap).
     expect(rendererSrc).toMatch(/text-label\s+text-text-muted/);
     // Panel header value token (post-remap).
-    expect(rendererSrc).toMatch(/text-row-emphasis\s+tabular-nums\s+text-text-primary/);
+    expect(rendererSrc).toMatch(/text-emphasis\s+tabular-nums\s+text-text-primary/);
     // Builder scoped to body only: no inline className strings (delegation proof).
     const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
     const builderEnd = jobDetailSrc.indexOf("const jobRailTabs:", builderStart);
@@ -690,15 +690,15 @@ describe("JobDetailPage rail — canonical typography tokens", () => {
     expect(builderSlice).not.toMatch(/className\s*=\s*"/);
   });
 
-  it("Labour technician group header uses canonical `text-section-title text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
-    // 2026-05-08 remap: `text-section-title font-semibold` → `text-section-title text-text-primary`.
+  it("Labour technician group header uses canonical `text-header text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
+    // 2026-05-08 remap: `text-header font-semibold` → `text-header text-text-primary`.
     // After descriptor migration, heading is `heading: group.name` in the descriptor;
     // the renderer owns the class string.
     const rendererSrc = readFileSync(
       resolve(ROOT, "client/src/components/detail-rail/RailPanelRenderer.tsx"),
       "utf-8",
     );
-    expect(rendererSrc).toMatch(/text-section-title\s+text-text-primary/);
+    expect(rendererSrc).toMatch(/text-header\s+text-text-primary/);
     // Builder (scoped to body only) carries `heading: group.name` — no inline class string.
     const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
     const builderEnd = jobDetailSrc.indexOf("const jobRailTabs:", builderStart);
@@ -707,9 +707,9 @@ describe("JobDetailPage rail — canonical typography tokens", () => {
     expect(builderSlice).not.toMatch(/className\s*=\s*"/);
   });
 
-  it("Labour date-card heading uses canonical `text-label text-text-muted` + `text-caption tabular-nums text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
+  it("Labour date-card heading uses canonical `text-label text-text-muted` + `text-row tabular-nums text-text-primary` (2026-05-08 remap, renderer-owned)", () => {
     // 2026-05-08 remap: `text-label uppercase tracking-wide` → `text-label text-text-muted`.
-    // `text-caption font-medium tabular-nums` → `text-caption tabular-nums text-text-primary`.
+    // `text-row font-medium tabular-nums` → `text-row tabular-nums text-text-primary`.
     // Tokens live in RailPanelRenderer. Builder expresses the date via
     // sectionHeader.label = dateBlock.dateLabel (no className string).
     const rendererSrc = readFileSync(
@@ -719,7 +719,7 @@ describe("JobDetailPage rail — canonical typography tokens", () => {
     // Section header label token (shared renderer path for panel header + section header).
     expect(rendererSrc).toMatch(/text-label\s+text-text-muted/);
     // Section header value token.
-    expect(rendererSrc).toMatch(/text-caption\s+tabular-nums\s+text-text-primary/);
+    expect(rendererSrc).toMatch(/text-row\s+tabular-nums\s+text-text-primary/);
     // Builder: label expressed as descriptor property, not inline JSX.
     const builderStart = jobDetailSrc.indexOf("const buildJobLabourPanelDescriptor");
     const builderSlice = jobDetailSrc.slice(builderStart, builderStart + 5000);

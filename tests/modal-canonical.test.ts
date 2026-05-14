@@ -54,11 +54,11 @@ describe("Modal canonical primitives — exist + lock typography", () => {
     }
   });
 
-  it("ModalTitle locks text-section-title + font-semibold + text-slate-900", () => {
+  it("ModalTitle locks text-header + font-semibold + text-slate-900", () => {
     // The title is the spec's hard-pinned typography rule; this is
     // what prevents the "bubbly" / oversized look from coming back.
     expect(modalSrc).toMatch(
-      /ModalTitle[\s\S]+?text-section-title[\s\S]+?font-semibold[\s\S]+?text-slate-900/,
+      /ModalTitle[\s\S]+?text-header[\s\S]+?font-semibold[\s\S]+?text-slate-900/,
     );
   });
 
@@ -276,7 +276,7 @@ describe("Primitive defaults — canonical typography on Dialog + AlertDialog", 
     // Was: text-lg font-semibold (legacy shadcn). Now must match
     // the same triple <ModalTitle> locks.
     expect(alertDialogSrc).toMatch(
-      /AlertDialogPrimitive\.Title[\s\S]+?text-section-title[\s\S]+?font-semibold[\s\S]+?text-slate-900/,
+      /AlertDialogPrimitive\.Title[\s\S]+?text-header[\s\S]+?font-semibold[\s\S]+?text-slate-900/,
     );
     // Negative pin: legacy default must be gone.
     const codeOnly = alertDialogSrc
@@ -301,9 +301,9 @@ describe("Primitive defaults — canonical typography on Dialog + AlertDialog", 
     );
   });
 
-  it("DialogDescription default still locks text-caption (Phase C)", () => {
+  it("DialogDescription default still locks text-row (Phase C)", () => {
     expect(dialogSrc).toMatch(
-      /DialogPrimitive\.Description[\s\S]+?text-caption/,
+      /DialogPrimitive\.Description[\s\S]+?text-row/,
     );
   });
 
@@ -404,8 +404,8 @@ describe("Repo scan — no typography drift on Dialog/AlertDialog primitives", (
   });
 
   it("only modal-related primitive files use the canonical token names directly", () => {
-    // Sanity guard: the canonical token names (text-section-title /
-    // text-row / text-caption / text-label) should be free for use
+    // Sanity guard: the canonical token names (text-header /
+    // text-row / text-row / text-label) should be free for use
     // anywhere in the app — they're the public typography vocabulary.
     // No assertion on their distribution; this test just confirms
     // the scan above didn't accidentally over-match canonical usage.

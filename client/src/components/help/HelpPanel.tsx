@@ -119,7 +119,7 @@ export function HelpPanel({
         </div>
         {filtered.length === 0 ? (
           <div
-            className="text-center py-6 text-xs text-muted-foreground"
+            className="text-center py-6 text-helper text-muted-foreground"
             data-testid="help-panel-empty"
           >
             No results

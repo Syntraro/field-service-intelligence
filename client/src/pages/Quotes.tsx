@@ -12,7 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { isValid, parseISO, startOfMonth } from "date-fns";
 import { useLocation, useSearch } from "wouter";
 import {
-  Plus, FileText, Send, CheckCircle2, Briefcase, Search,
+  FileText, Send, CheckCircle2, Briefcase, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -57,10 +57,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-caption font-medium text-slate-500">{label}</div>
+        <div className="text-row font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-caption text-slate-500 mt-1">{note}</div>
+      <div className="text-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-row text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -262,12 +262,11 @@ export default function Quotes() {
         {/* ── 1. Header Row ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-page-title font-semibold text-slate-900">Quotes</h1>
+            <h1 className="text-title font-semibold text-slate-900">Quotes</h1>
             <p className="text-row text-slate-500 mt-0.5">Quote pipeline overview with full quote list.</p>
           </div>
           {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
-          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setLocation("/quotes/new")} data-testid="button-new-quote">
-            <Plus className="h-4 w-4" />
+          <Button size="sm" className="gap-1.5" onClick={() => setLocation("/quotes/new")} data-testid="button-new-quote">
             New Quote
           </Button>
         </div>

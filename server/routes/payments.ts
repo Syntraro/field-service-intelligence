@@ -411,6 +411,7 @@ router.post(
     // Lifecycle event — fires once per invoice for which this payment
     // moved status. Fully-paid emits `invoice.paid`; partials emit
     // `invoice.partial_paid`. Both feed the global Activity Feed.
+    const paymentId = result.payment?.id ?? null;
     for (const inv of result.invoices) {
       if (isInvoicePaid(inv.status)) {
         logEventAsync(getQueryCtx(req), {
@@ -420,7 +421,7 @@ router.post(
           summary: `Invoice #${inv.invoiceNumber} fully paid`,
           meta: {
             invoiceNumber: inv.invoiceNumber,
-            paymentId: result.payment.id,
+            ...(paymentId ? { paymentId } : {}),
             method: validated.method,
             multiInvoice: result.invoices.length > 1,
           },
@@ -433,7 +434,7 @@ router.post(
           summary: `Partial payment received on Invoice #${inv.invoiceNumber}`,
           meta: {
             invoiceNumber: inv.invoiceNumber,
-            paymentId: result.payment.id,
+            ...(paymentId ? { paymentId } : {}),
             method: validated.method,
             balance: inv.balance,
             total: inv.total,
@@ -464,11 +465,14 @@ router.post(
     let receiptEmailMessageId: string | null = null;
     let receiptEmailErrorMessage: string | null = null;
 
-    if (validated.emailReceipt === true) {
+    // Email receipt is only possible when a payment ledger row was created
+    // (all-zero-balance collections produce no payment row, so there's no
+    // record for the receipt template to look up).
+    if (validated.emailReceipt === true && paymentId) {
       try {
         const sendResult = await emailDispatchService.sendMultiInvoicePaymentReceiptEmail({
           tenantId: companyId,
-          paymentId: result.payment.id,
+          paymentId,
         });
         if (sendResult === null) {
           // No recipient resolved — `getDefaultRecipients` returned
@@ -492,7 +496,7 @@ router.post(
           JSON.stringify({
             event: "manual_payment.receipt_send_failed",
             companyId,
-            paymentId: result.payment.id,
+            paymentId,
             error: receiptEmailErrorMessage,
             timestamp: new Date().toISOString(),
           }),

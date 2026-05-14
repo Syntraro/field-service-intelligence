@@ -44,13 +44,13 @@ export default function DispatchBoardHeader({
         <Button variant="outline" size="sm" onClick={onToday} disabled={isToday} className="text-xs">
           Today
         </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevDay}>
+        <Button variant="ghost" size="icon" onClick={onPrevDay}>
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <span className="min-w-[180px] text-center text-sm font-medium">
           {dateLabel}
         </span>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextDay}>
+        <Button variant="ghost" size="icon" onClick={onNextDay}>
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>

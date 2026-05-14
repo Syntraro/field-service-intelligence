@@ -40,7 +40,7 @@ export function TimelineRail({ entries, className }: TimelineRailProps) {
     return (
       <div
         className={cn(
-          "flex shrink-0 flex-col items-center justify-center px-3 py-6 text-xs text-muted-foreground",
+          "flex shrink-0 flex-col items-center justify-center px-3 py-6 text-helper text-muted-foreground",
           className,
         )}
         data-testid="day-timeline-rail"

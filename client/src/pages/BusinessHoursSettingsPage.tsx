@@ -308,7 +308,7 @@ export default function BusinessHoursSettingsPage() {
                     disabled={isLoading}
                     data-testid={`switch-open-${day.dayOfWeek}`}
                   />
-                  <span className={`text-xs ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
+                  <span className={`text-helper ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
                     {day.isOpen ? "Open" : "Closed"}
                   </span>
                 </div>
@@ -332,7 +332,7 @@ export default function BusinessHoursSettingsPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <span className="text-xs text-muted-foreground">to</span>
+                    <span className="text-helper text-muted-foreground">to</span>
                     <Select
                       value={day.endMinutes?.toString() ?? ""}
                       onValueChange={(val) => handleEndChange(day.dayOfWeek, parseInt(val))}
@@ -351,7 +351,7 @@ export default function BusinessHoursSettingsPage() {
                     </Select>
                   </div>
                 ) : (
-                  <span className="text-xs text-muted-foreground">—</span>
+                  <span className="text-helper text-muted-foreground">—</span>
                 )}
               </div>
             ))}

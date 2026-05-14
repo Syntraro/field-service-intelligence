@@ -104,7 +104,7 @@ function ComparisonRow({
   const colorClass = trendColorClass(pct, polarity);
   const Icon = pct == null || pct === 0 ? null : pct > 0 ? ArrowUp : ArrowDown;
   return (
-    <div className="flex items-center justify-between text-xs text-muted-foreground">
+    <div className="flex items-center justify-between text-helper text-muted-foreground">
       <span>{label}</span>
       <div className="flex items-center gap-1.5 font-medium tabular-nums">
         <span className="text-foreground/80">{formatMetricValue(value, unit)}</span>
@@ -124,7 +124,7 @@ function MetricTile({ metric }: { metric: MetricCardData }) {
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-2 min-h-[140px]"
       data-testid={`metric-card-${testIdSuffix}`}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {metric.label}
       </div>
       {metric.hasData ? (
@@ -488,7 +488,7 @@ function StatusBreakdownList({
           </div>
         </div>
       ))}
-      <div className="text-xs text-muted-foreground pt-2 border-t">
+      <div className="text-helper text-muted-foreground pt-2 border-t">
         Total: {totalCount.toLocaleString()} {noun}
         {totalCount === 1 ? "" : "s"}
       </div>
@@ -572,7 +572,7 @@ function ConversionLagCard({
             className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4"
             data-testid="sales-funnel-conversion-lag-leads"
           >
-            <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+            <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
               Lead → conversion
             </div>
             <div className="text-2xl font-semibold tabular-nums text-foreground mt-1">
@@ -580,7 +580,7 @@ function ConversionLagCard({
                 ? `${section.leads.avgDays.toFixed(1)}d`
                 : "—"}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-helper text-muted-foreground">
               {section.leads.count.toLocaleString()} converted lead
               {section.leads.count === 1 ? "" : "s"} in window
             </div>
@@ -597,7 +597,7 @@ function ConversionLagCard({
             className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4"
             data-testid="sales-funnel-conversion-lag-quotes"
           >
-            <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+            <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
               Quote → conversion
             </div>
             <div className="text-2xl font-semibold tabular-nums text-foreground mt-1">
@@ -605,7 +605,7 @@ function ConversionLagCard({
                 ? `${section.quotes.avgDays.toFixed(1)}d`
                 : "—"}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-helper text-muted-foreground">
               {section.quotes.count.toLocaleString()} converted quote
               {section.quotes.count === 1 ? "" : "s"} in window
             </div>
@@ -662,7 +662,7 @@ export default function ReportsSalesFunnel() {
               >
                 Sales Funnel
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Lead and quote progression — creation, conversion, drop-off,
                 status mix, and time-to-conversion.
               </p>

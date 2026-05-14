@@ -97,14 +97,14 @@ function HealthBadge({ health }: { health: TenantHealth | null }) {
 }
 
 function LastActivity({ health }: { health: TenantHealth | null }) {
-  if (!health) return <span className="text-xs text-muted-foreground">—</span>;
+  if (!health) return <span className="text-helper text-muted-foreground">—</span>;
   if (!health.lastActivityAt) {
-    return <span className="text-xs text-muted-foreground">never</span>;
+    return <span className="text-helper text-muted-foreground">never</span>;
   }
   const ts = new Date(health.lastActivityAt);
   return (
     <span
-      className="text-xs text-muted-foreground inline-flex items-center gap-1"
+      className="text-helper text-muted-foreground inline-flex items-center gap-1"
       title={ts.toLocaleString()}
     >
       <Clock className="h-3 w-3" />
@@ -115,7 +115,7 @@ function LastActivity({ health }: { health: TenantHealth | null }) {
 
 function TopReason({ health }: { health: TenantHealth | null }) {
   if (!health || health.reasons.length === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>;
+    return <span className="text-helper text-muted-foreground">—</span>;
   }
   const top = health.reasons[0];
   return (

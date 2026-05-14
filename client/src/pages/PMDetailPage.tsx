@@ -378,7 +378,7 @@ function ScheduleCard({
           <div className="rounded-md border border-border bg-card overflow-hidden" data-testid="pm-detail-service-generation">
             <div className="px-3 pt-3 pb-2 border-b border-border">
               <h3 className="text-sm font-semibold">Service Generation</h3>
-              <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+              <p className="text-helper text-muted-foreground mt-0.5 leading-snug">
                 Choose how this plan is handled when service is due.
               </p>
             </div>
@@ -399,7 +399,7 @@ function ScheduleCard({
                 </div>
                 <div className="min-w-0">
                   <div className="font-medium text-sm">Automatically create work orders</div>
-                  <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  <div className="text-helper text-muted-foreground mt-0.5 leading-snug">
                     An unscheduled work order will be created automatically on the job creation date.
                   </div>
                   {form.autoGenerateJobs && (
@@ -413,7 +413,7 @@ function ScheduleCard({
 
             <div className="flex items-center gap-2 px-3 py-1">
               <div className="flex-1 h-px bg-border" />
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">OR</span>
+              <span className="text-helper font-medium text-muted-foreground uppercase tracking-wide">OR</span>
               <div className="flex-1 h-px bg-border" />
             </div>
 
@@ -434,7 +434,7 @@ function ScheduleCard({
                   </div>
                   <div className="min-w-0">
                     <div className="font-medium text-sm">Notify me to create the work order</div>
-                    <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                    <div className="text-helper text-muted-foreground mt-0.5 leading-snug">
                       You'll be notified so you can manually create the work order.
                     </div>
                   </div>
@@ -445,7 +445,7 @@ function ScheduleCard({
                 <div className="px-3 pb-3 ml-6 space-y-2.5">
                   <div>
                     <div className="text-xs font-semibold">Notification window</div>
-                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                    <p className="text-helper text-muted-foreground mt-0.5 leading-snug">
                       You'll be notified this many days before the work order is created. The work order should be completed within the specified days of creation or it will be marked overdue.
                     </p>
                   </div>
@@ -462,7 +462,7 @@ function ScheduleCard({
                         }
                         data-testid="pm-detail-window-before"
                       />
-                      <Label className="text-xs text-muted-foreground">days before job creation</Label>
+                      <Label className="text-helper text-muted-foreground">days before job creation</Label>
                     </div>
                     <div className="flex items-center gap-2">
                       <Input
@@ -476,10 +476,10 @@ function ScheduleCard({
                         }
                         data-testid="pm-detail-window-after"
                       />
-                      <Label className="text-xs text-muted-foreground">days after job creation</Label>
+                      <Label className="text-helper text-muted-foreground">days after job creation</Label>
                     </div>
                   </div>
-                  <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+                  <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-helper text-muted-foreground leading-relaxed">
                     Example: You'll be notified{" "}
                     <span className="font-medium text-foreground">{form.serviceWindowDaysBefore}</span>{" "}
                     days before the work order is created. The work order should be completed within{" "}
@@ -990,7 +990,7 @@ export default function PMDetailPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="flex items-start gap-2 min-w-0 flex-1">
-            <Button variant="ghost" size="icon" className="h-8 w-8 -ml-2" onClick={() => setLocation("/pm")} data-testid="pm-detail-back">
+            <Button variant="ghost" size="icon" className="-ml-2" onClick={() => setLocation("/pm")} data-testid="pm-detail-back">
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <div className="min-w-0">

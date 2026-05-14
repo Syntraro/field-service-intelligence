@@ -31,14 +31,14 @@
  * The role-class values pin the canonical Tailwind tokens declared in
  * `tailwind.config.ts > theme.fontSize`:
  *
- *   • ENTITY_NAME_CLASS      → text-caption + font-medium (14px / fw 500)
+ *   • ENTITY_NAME_CLASS      → text-row + font-medium (14px / fw 500)
  *   • ENTITY_META_CLASS      → text-helper (13px / fw 400) + muted
  *   • SECTION_LABEL_CLASS    → text-label (13px / fw 500 uppercase tracked)
  *   • ENTITY_LINK_CLASS      → text-brand (canonical brand color) + hover underline
  *
  * Operational density recalibration (2026-05-07 follow-up to H1/H2):
- *   • Primary entity name dropped from `text-row-emphasis` (15px / fw 500)
- *     to `text-caption font-medium` (14px / fw 500). The reference
+ *   • Primary entity name dropped from `text-emphasis` (15px / fw 500)
+ *     to `text-row font-medium` (14px / fw 500). The reference
  *     baseline is the row label density of the dashboard's
  *     `OperationalAlertsCard` — operational CRM rows at ~14px / 500.
  *   • Hierarchy stays intact:
@@ -49,13 +49,13 @@
  *     via `listPrimaryClass`, communications rows, open-job lists,
  *     anything else composing `EntityName` / `ENTITY_NAME_CLASS`) inherits
  *     automatically. No per-screen patching.
- *   • Compositional, not new tokens: `text-caption` is the existing 14px
+ *   • Compositional, not new tokens: `text-row` is the existing 14px
  *     size token; `font-medium` is the standard Tailwind weight utility.
  *     The architectural guard forbids `font-bold` / `font-semibold` but
  *     allows `font-medium`.
  *
  * `text-helper` is the canonical secondary-tier token for dense panels
- * and lists. `text-caption` (14px) is the new primary-name size as well
+ * and lists. `text-row` (14px) is the new primary-name size as well
  * as the existing tabular-metadata size — same pixel target, different
  * weight (medium vs regular).
  *
@@ -76,18 +76,18 @@ import { cn } from "@/lib/utils";
 /**
  * Primary entity row text — non-link variant. Pair with `text-foreground`.
  *
- * 2026-05-07 recalibration: composition is `text-caption font-medium`
+ * 2026-05-07 recalibration: composition is `text-row font-medium`
  * (14px / fw 500) — operational CRM density, matches the
- * `OperationalAlertsCard` row labels. Was `text-row-emphasis` (15/500).
+ * `OperationalAlertsCard` row labels. Was `text-emphasis` (15/500).
  */
-export const ENTITY_NAME_CLASS = "text-caption font-medium truncate";
+export const ENTITY_NAME_CLASS = "text-row font-medium truncate";
 
 /**
  * Primary entity row text — link variant. Brand-green + hover underline.
  * Same size token as `ENTITY_NAME_CLASS`.
  */
 export const ENTITY_NAME_LINK_CLASS =
-  "text-caption font-medium truncate text-brand hover:underline";
+  "text-row font-medium truncate text-brand hover:underline";
 
 /** Secondary metadata line — recessed muted text. Compact (13px). */
 export const ENTITY_META_CLASS = "text-helper text-muted-foreground truncate";

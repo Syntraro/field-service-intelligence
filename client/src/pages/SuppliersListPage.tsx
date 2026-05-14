@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, Building2, CheckCircle2, XCircle } from "lucide-react";
+import { Building2, CheckCircle2, XCircle } from "lucide-react";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import { Button } from "@/components/ui/button";
 import { ListToolbar } from "@/components/layout/ListToolbar";
@@ -171,7 +171,6 @@ export default function SuppliersListPage() {
       title="Suppliers"
       actions={
         <Button onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4 mr-2" />
           New Supplier
         </Button>
       }

@@ -31,7 +31,7 @@ export interface SendModalAttachment {
 
 export const MAX_SEND_IMAGE_ATTACHMENTS = 5;
 
-export type CommunicationEntityType = "invoice" | "quote" | "job" | "statement";
+export type CommunicationEntityType = "invoice" | "quote" | "job" | "statement" | "invoice_reminder";
 
 interface EntityEndpoints {
   recipientsPath: string;
@@ -65,6 +65,12 @@ function resolveEndpoints(entityType: CommunicationEntityType, entityId: string)
         recipientsPath: `/api/customer-companies/${entityId}/statement-recipients`,
         previewPath:    `/api/customer-companies/${entityId}/statement-preview`,
         sendPath:       `/api/customer-companies/${entityId}/send-statement`,
+      };
+    case "invoice_reminder":
+      return {
+        recipientsPath: `/api/invoices/${entityId}/email-recipients`,
+        previewPath:    `/api/invoices/${entityId}/render-reminder-email`,
+        sendPath:       `/api/invoices/${entityId}/send-reminder-email`,
       };
   }
 }

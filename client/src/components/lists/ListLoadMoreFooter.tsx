@@ -80,7 +80,7 @@ export function ListLoadMoreFooter({
       data-testid="list-load-more-footer"
     >
       {!hideCountText && (
-        <span className="text-caption text-slate-500" data-testid="list-count-text">
+        <span className="text-row text-slate-500" data-testid="list-count-text">
           {text}
         </span>
       )}

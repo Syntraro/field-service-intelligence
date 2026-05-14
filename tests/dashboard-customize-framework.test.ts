@@ -421,8 +421,8 @@ describe("DashboardCustomizeDrawer — canonical sheet contract", () => {
   it("uses tokenized typography only (no raw text-* font sizes on chrome)", () => {
     const codeOnly = stripComments(src);
     expect(codeOnly).not.toMatch(/className="[^"]*\btext-\[\d+px\]/);
-    expect(src).toMatch(/className="text-section-title text-text-primary"/);
-    expect(src).toMatch(/className="text-caption text-text-muted"/);
+    expect(src).toMatch(/className="text-header text-text-primary"/);
+    expect(src).toMatch(/className="text-row text-text-muted"/);
   });
 });
 

@@ -165,7 +165,7 @@ export function TenantTimeline({ tenantId }: { tenantId: string }) {
           {activeGroups.size > 0 && (
             <Badge
               variant="outline"
-              className="cursor-pointer text-xs text-muted-foreground border-dashed"
+              className="cursor-pointer text-helper text-muted-foreground border-dashed"
               onClick={() => setActiveGroups(new Set())}
               data-testid="timeline-clear-filters"
             >
@@ -263,7 +263,7 @@ function TimelineRow({
           )}
         </div>
         {event.subtitle && (
-          <p className="text-xs text-muted-foreground mt-0.5 truncate">
+          <p className="text-helper text-muted-foreground mt-0.5 truncate">
             {event.subtitle}
           </p>
         )}

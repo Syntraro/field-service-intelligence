@@ -218,11 +218,11 @@ export function InvoiceMetaCard({
                   text style — link affordance is only the cursor + hover
                   underline. */}
               {/* 2026-05-01 Typography Phase C: `text-3xl font-bold tracking-tight text-slate-900`
-                  migrated to canonical `text-page-title` (30/36/700 in
+                  migrated to canonical `text-title` (30/36/700 in
                   tailwind.config.ts; matches the legacy text-3xl visual
                   size at the project's 19px html root). `tracking-tight`
                   kept since the token doesn't bundle letter-spacing. */}
-              <h1 className="m-0 mb-2 text-page-title tracking-tight text-text-primary" data-testid="meta-customer-name">
+              <h1 className="m-0 mb-2 text-title tracking-tight text-text-primary" data-testid="meta-customer-name">
                 {customerCompanyId ? (
                   <Link
                     href={`/clients/${customerCompanyId}`}
@@ -238,7 +238,7 @@ export function InvoiceMetaCard({
 
               {/* 2026-05-01 Typography Phase C — `text-xs` migrated to
                   canonical tokens. Body lines use `text-row`; the location
-                  name (the row's primary identifier) uses `text-row-emphasis`
+                  name (the row's primary identifier) uses `text-emphasis`
                   which bundles weight 500. Color migrated from raw
                   `text-slate-700/900` to `text-text-secondary/text-text-primary`
                   for color-token alignment. */}
@@ -532,10 +532,10 @@ function MetaRow({
   return (
     <div className={`flex items-center justify-between gap-3 px-5 py-1.5 ${last ? "" : "border-b border-stone-100"}`}>
       {/* 2026-05-01 Typography Phase C — label was `text-xs text-slate-500`
-          → `text-caption text-text-muted`; value was `text-xs text-slate-900`
+          → `text-row text-text-muted`; value was `text-xs text-slate-900`
           → `text-row text-text-primary`. Past-due accent keeps weight 600
           + danger color via `font-semibold text-rose-600`. */}
-      <span className="text-caption text-text-muted">{label}</span>
+      <span className="text-row text-text-muted">{label}</span>
       <span
         className={`text-right ${accent ? "text-row font-semibold text-rose-600" : "text-row text-text-primary"}`}
         data-testid={testId}

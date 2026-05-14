@@ -64,7 +64,6 @@ export function useJobLifecycleActions({
   const [closeJobError, setCloseJobError] = useState<{
     title: string;
     body: string;
-    showArchiveAction?: boolean;
   } | null>(null);
 
   const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -178,14 +177,6 @@ export function useJobLifecycleActions({
         });
         return;
       }
-      if (/no.*(line item|billable|part)/i.test(error.message) || /validation/i.test(error.message)) {
-        setCloseJobError({
-          title: "Can't create invoice",
-          body: "This job has no line items. You need at least one line item to create an invoice.",
-          showArchiveAction: true,
-        });
-        return;
-      }
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       const isFriendly = error.message && !error.message.includes("is not a function") && !error.message.includes("Internal Server");
       toast({
@@ -261,7 +252,7 @@ export function useJobLifecycleActions({
                 />
                 <div>
                   <p className="font-medium text-sm">Close & create invoice now</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-helper text-muted-foreground">
                     Creates an invoice from this job and marks it as invoiced.
                   </p>
                 </div>
@@ -281,7 +272,7 @@ export function useJobLifecycleActions({
                 />
                 <div>
                   <p className="font-medium text-sm">Close & invoice later</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-helper text-muted-foreground">
                     Marks job as completed. You can create an invoice later.
                   </p>
                 </div>
@@ -301,7 +292,7 @@ export function useJobLifecycleActions({
                 />
                 <div>
                   <p className="font-medium text-sm">Close & archive (no invoice)</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-helper text-muted-foreground">
                     No invoice will be created. Job will be archived and won't appear in billing queues.
                   </p>
                   {closeOption === "archive" && (
@@ -395,18 +386,6 @@ export function useJobLifecycleActions({
           <ModalSecondaryAction onClick={() => setCloseJobError(null)}>
             Go back
           </ModalSecondaryAction>
-          {closeJobError?.showArchiveAction && (
-            <ModalPrimaryAction
-              onClick={() => {
-                setCloseJobError(null);
-                closeJobMutation.mutate({ mode: "archive" });
-              }}
-              disabled={closeJobMutation.isPending}
-              data-testid="button-archive-no-invoice"
-            >
-              Close & archive (no invoice)
-            </ModalPrimaryAction>
-          )}
         </ModalFooter>
       </ModalShell>
 

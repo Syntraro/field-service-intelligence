@@ -127,7 +127,7 @@ function ComparisonRow({
   const colorClass = trendColorClass(pct, polarity);
   const Icon = pct == null || pct === 0 ? null : pct > 0 ? ArrowUp : ArrowDown;
   return (
-    <div className="flex items-center justify-between text-xs text-muted-foreground">
+    <div className="flex items-center justify-between text-helper text-muted-foreground">
       <span>{label}</span>
       <div className="flex items-center gap-1.5 font-medium tabular-nums">
         <span className="text-foreground/80">{formatMetricValue(value, unit)}</span>
@@ -147,7 +147,7 @@ function MetricTile({ metric }: { metric: MetricCardData }) {
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-2 min-h-[140px]"
       data-testid={`metric-card-${testIdSuffix}`}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {metric.label}
       </div>
       {metric.hasData ? (
@@ -219,13 +219,13 @@ function AgingSection({ section }: { section: ARReportResponse["aging"] }) {
                   className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-1"
                   data-testid={`ar-bucket-${b.key}`}
                 >
-                  <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+                  <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
                     {b.label}
                   </div>
                   <div className={cn("text-2xl font-semibold tabular-nums", accent)}>
                     {formatMetricValue(b.amount, "currency")}
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-helper text-muted-foreground">
                     {b.invoiceCount === 0
                       ? "No invoices"
                       : `${b.invoiceCount} ${b.invoiceCount === 1 ? "invoice" : "invoices"}`}
@@ -234,7 +234,7 @@ function AgingSection({ section }: { section: ARReportResponse["aging"] }) {
               );
             })}
           </div>
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <div className="flex items-center justify-between text-helper text-muted-foreground">
             <span>
               Total outstanding:{" "}
               <span className="font-medium tabular-nums text-foreground">
@@ -339,7 +339,7 @@ function TopOutstandingClientsCard({
               data-testid={`ar-top-client-row-${idx}`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span className="text-xs text-muted-foreground tabular-nums w-5 text-right">
+                <span className="text-helper text-muted-foreground tabular-nums w-5 text-right">
                   {idx + 1}
                 </span>
                 <span className="text-sm font-medium truncate">{c.name}</span>
@@ -468,7 +468,7 @@ export default function ReportsAR() {
               >
                 Accounts Receivable
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Outstanding balances, overdue invoices, and payment behavior.
               </p>
             </div>

@@ -1546,7 +1546,7 @@ export default function QboConsolePage() {
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
             <Info className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-lg">How Sync Works</CardTitle>
+            <CardTitle className="text-header">How Sync Works</CardTitle>
           </div>
         </CardHeader>
         <CardContent>
@@ -1621,7 +1621,7 @@ export default function QboConsolePage() {
                   ) : companyInfo ? (
                     <div className="rounded-md border bg-muted/40 p-3 space-y-1">
                       <p className="text-sm font-medium">{companyInfo.companyName}</p>
-                      <p className="text-xs text-muted-foreground font-mono">Realm ID: {companyInfo.realmId}</p>
+                      <p className="text-helper text-muted-foreground font-mono">Realm ID: {companyInfo.realmId}</p>
                     </div>
                   ) : (
                     <p className="text-xs text-amber-600">Connected but unable to fetch company info — token may be expired.</p>
@@ -1693,18 +1693,18 @@ export default function QboConsolePage() {
                         <div className="rounded-md border bg-muted/30 p-3 mt-2 space-y-3 text-sm">
                           {/* Detected app info */}
                           <div>
-                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Your App URL</p>
+                            <p className="font-medium text-helper uppercase tracking-wide text-muted-foreground mb-1">Your App URL</p>
                             <code className="block text-xs bg-background rounded px-2 py-1 break-all">{oauthSetup.detectedAppOrigin}</code>
                           </div>
                           <div>
-                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Required Redirect URI</p>
+                            <p className="font-medium text-helper uppercase tracking-wide text-muted-foreground mb-1">Required Redirect URI</p>
                             <code className="block text-xs bg-background rounded px-2 py-1 break-all">{oauthSetup.requiredRedirectUri}</code>
                           </div>
 
                           {/* Missing secrets */}
                           {oauthSetup.missing.length > 0 && (
                             <div>
-                              <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Missing Secrets</p>
+                              <p className="font-medium text-helper uppercase tracking-wide text-muted-foreground mb-1">Missing Secrets</p>
                               <ul className="list-disc pl-4 text-xs space-y-0.5">
                                 {oauthSetup.missing.map((k) => <li key={k}><code>{k}</code></li>)}
                               </ul>
@@ -1713,8 +1713,8 @@ export default function QboConsolePage() {
 
                           {/* Step-by-step checklist */}
                           <div>
-                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Setup Steps</p>
-                            <ol className="list-decimal pl-4 text-xs space-y-1 text-muted-foreground">
+                            <p className="font-medium text-helper uppercase tracking-wide text-muted-foreground mb-1">Setup Steps</p>
+                            <ol className="list-decimal pl-4 text-helper space-y-1 text-muted-foreground">
                               <li>Create an app at <a href="https://developer.intuit.com" target="_blank" rel="noopener noreferrer" className="underline text-foreground">developer.intuit.com</a> — select <strong>QuickBooks Online Accounting</strong> scope.</li>
                               <li>In your Intuit app's Redirect URIs, add:<br /><code className="text-[11px] bg-background rounded px-1">{oauthSetup.requiredRedirectUri}</code></li>
                               <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> from Intuit into Replit Secrets as <code>QBO_CLIENT_ID</code> and <code>QBO_CLIENT_SECRET</code>.</li>
@@ -1789,7 +1789,7 @@ export default function QboConsolePage() {
             <CardContent className="space-y-4">
               {/* Type mapping — Service + Product */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item Type Mapping</p>
+                <p className="text-helper font-medium text-muted-foreground uppercase tracking-wide">Item Type Mapping</p>
                 <div className="grid gap-2">
                   {/* Service type — locked to "Service" */}
                   <div className="flex items-center gap-2">
@@ -1829,7 +1829,7 @@ export default function QboConsolePage() {
                     )}
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-helper text-muted-foreground">
                   Your "service" catalog items become QBO Service items. Your "product" catalog items become the selected QBO type.
                   Each item is synced individually in Step 3.
                 </p>
@@ -1837,7 +1837,7 @@ export default function QboConsolePage() {
               {/* Tax code mapping */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes (optional)</p>
+                  <p className="text-helper font-medium text-muted-foreground uppercase tracking-wide">Tax Codes (optional)</p>
                   {/* "Use QBO defaults" button — auto-selects TAX/NON if they exist */}
                   {mappingTaxCodes.length > 0 && (() => {
                     const taxDefault = mappingTaxCodes.find(tc => tc.name === "TAX");
@@ -1862,7 +1862,7 @@ export default function QboConsolePage() {
                   })()}
                 </div>
                 {mappingTaxCodesLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 text-helper text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO tax codes...
                   </div>
                 ) : !mappingTaxCodes.length ? (
@@ -1912,9 +1912,9 @@ export default function QboConsolePage() {
               </div>
               {/* Income account mapping — required for catalog sync */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Income Account (required)</p>
+                <p className="text-helper font-medium text-muted-foreground uppercase tracking-wide">Income Account (required)</p>
                 {accountsLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 text-helper text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO accounts...
                   </div>
                 ) : !incomeAccounts.length ? (
@@ -1948,7 +1948,7 @@ export default function QboConsolePage() {
                     )}
                   </div>
                 )}
-                <p className="text-xs text-muted-foreground">
+                <p className="text-helper text-muted-foreground">
                   QBO requires an income account when creating Service or Non-inventory items. Select the account to use.
                 </p>
               </div>
@@ -2086,7 +2086,7 @@ export default function QboConsolePage() {
                                   {item.action}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">
+                              <TableCell className="text-helper text-muted-foreground">
                                 {item.qboItemId || "—"}
                               </TableCell>
                             </TableRow>
@@ -2362,7 +2362,7 @@ export default function QboConsolePage() {
                 <div className="flex items-center gap-2">
                   <Shield className="h-5 w-5" />
                   <div>
-                    <CardTitle className="text-lg">QBO Go-Live Status</CardTitle>
+                    <CardTitle className="text-header">QBO Go-Live Status</CardTitle>
                     <CardDescription>Requirements and controls for enabling QuickBooks sync</CardDescription>
                   </div>
                 </div>
@@ -2453,7 +2453,7 @@ export default function QboConsolePage() {
                         <DollarSign className="h-4 w-4 text-muted-foreground" />
                         Outbound Payment Sync (App → QBO)
                       </p>
-                      <p className="text-xs text-muted-foreground mt-1">
+                      <p className="text-helper text-muted-foreground mt-1">
                         When enabled, payments you record, edit, or delete in this app are mirrored to QuickBooks. The app remains the source of truth — QBO never writes back. Inbound payment import is retired.
                       </p>
                       {paymentSyncSettings?.qboPaymentSyncEnabled && !paymentSyncSettings?.qboEnabled && (
@@ -2910,7 +2910,7 @@ export default function QboConsolePage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg">Mapping Configuration</CardTitle>
+                  <CardTitle className="text-header">Mapping Configuration</CardTitle>
                   <Button variant="ghost" size="sm" onClick={() => setShowMappingConfig(false)}>Hide</Button>
                 </div>
                 <CardDescription>Override mapping IDs directly (advanced use only)</CardDescription>
@@ -3025,7 +3025,7 @@ export default function QboConsolePage() {
           {/* Invoice Actions */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Invoice Sync Actions</CardTitle>
+              <CardTitle className="text-header">Invoice Sync Actions</CardTitle>
               <CardDescription>Enter an invoice ID to perform sync or reconciliation operations</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -3052,7 +3052,7 @@ export default function QboConsolePage() {
                     reconcile-apply is retired — payments now sync one-way (App → QBO).
                     Resolve QBO drift manually in QuickBooks. */}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Reconcile (Preview) is read-only — it shows differences between this invoice and QuickBooks but does not import any payments. The app is the source of truth for payments; resolve drift manually in QuickBooks if needed.
               </p>
             </CardContent>
@@ -3063,7 +3063,7 @@ export default function QboConsolePage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg flex items-center gap-2"><ListTodo className="h-5 w-5" /> Sync Queue</CardTitle>
+                  <CardTitle className="text-header flex items-center gap-2"><ListTodo className="h-5 w-5" /> Sync Queue</CardTitle>
                   <CardDescription>Manage queued sync jobs</CardDescription>
                 </div>
                 <div className="flex gap-2">
@@ -3117,7 +3117,7 @@ export default function QboConsolePage() {
                         <TableRow key={job.id}>
                           <TableCell className="text-xs">
                             <Badge variant="outline" className="text-xs">{job.entityType}</Badge>
-                            <div className="text-xs text-muted-foreground mt-0.5 font-mono truncate max-w-[120px]">{job.entityId}</div>
+                            <div className="text-helper text-muted-foreground mt-0.5 font-mono truncate max-w-[120px]">{job.entityId}</div>
                           </TableCell>
                           <TableCell className="text-xs">{job.action}</TableCell>
                           <TableCell><StatusBadge status={job.status.toUpperCase()} /></TableCell>
@@ -3146,7 +3146,7 @@ export default function QboConsolePage() {
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">Recent Sync Runs</CardTitle>
+                <CardTitle className="text-header">Recent Sync Runs</CardTitle>
                 <Button variant="outline" size="sm" onClick={() => refetchRuns()} disabled={runsLoading}>
                   <RefreshCw className={`h-4 w-4 ${runsLoading ? "animate-spin" : ""}`} />
                 </Button>
@@ -3225,7 +3225,7 @@ export default function QboConsolePage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg flex items-center gap-2"><Webhook className="h-5 w-5" /> Webhooks</CardTitle>
+                  <CardTitle className="text-header flex items-center gap-2"><Webhook className="h-5 w-5" /> Webhooks</CardTitle>
                   <CardDescription>Incoming QBO webhook events</CardDescription>
                 </div>
                 <div className="flex gap-2">
@@ -3285,7 +3285,7 @@ export default function QboConsolePage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg flex items-center gap-2"><Bell className="h-5 w-5" /> Drift Alerts</CardTitle>
+                  <CardTitle className="text-header flex items-center gap-2"><Bell className="h-5 w-5" /> Drift Alerts</CardTitle>
                   <CardDescription>Invoices modified in QBO that may need reconciliation</CardDescription>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => refetchDriftAlerts()} disabled={driftAlertsLoading}>
@@ -3344,7 +3344,7 @@ export default function QboConsolePage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg flex items-center gap-2"><Package className="h-5 w-5" /> QBO Items</CardTitle>
+                  <CardTitle className="text-header flex items-center gap-2"><Package className="h-5 w-5" /> QBO Items</CardTitle>
                   <CardDescription>Link local items to QuickBooks items</CardDescription>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => refetchLocalItems()} disabled={localItemsLoading}>
@@ -3376,7 +3376,7 @@ export default function QboConsolePage() {
                         onClick={() => bulkCreateItemsMutation.mutate(localItemsData.items.filter(i => !i.qboItemId).map(i => i.id))}
                         disabled={bulkCreateItemsMutation.isPending}
                       >
-                        {bulkCreateItemsMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+                        {bulkCreateItemsMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
                         Bulk Create in QBO
                       </Button>
                     )}
@@ -3470,7 +3470,7 @@ export default function QboConsolePage() {
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">Sync Events</CardTitle>
+                <CardTitle className="text-header">Sync Events</CardTitle>
                 <Button variant="outline" size="sm" onClick={() => refetchEvents()} disabled={eventsLoading}>
                   <RefreshCw className={`h-4 w-4 ${eventsLoading ? "animate-spin" : ""}`} />
                 </Button>
@@ -3689,7 +3689,7 @@ export default function QboConsolePage() {
               onChange={(e) => setItemLinkQboId(e.target.value)}
               className="mt-2"
             />
-            <p className="text-xs text-muted-foreground mt-2">
+            <p className="text-helper text-muted-foreground mt-2">
               Search for QBO items above to find the correct ID.
             </p>
           </div>

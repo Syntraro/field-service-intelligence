@@ -38,10 +38,10 @@
  * │     consistency outweighs Radix-AlertDialog's built-in role.    │
  * │                                                                 │
  * │ Typography contract (locked here, not in callers):              │
- * │   ModalTitle        text-section-title font-semibold text-slate-900 │
+ * │   ModalTitle        text-header font-semibold text-slate-900 │
  * │   ModalDescription  text-row text-slate-600 leading-normal      │
  * │   ModalBody         text-row text-slate-700 leading-normal      │
- * │   ModalFooter caption  text-caption text-slate-500 (helper text) │
+ * │   ModalFooter caption  text-row text-slate-500 (helper text) │
  * │                                                                 │
  * │ Structural contract (locked here):                              │
  * │   ModalShell        p-0  +  sm:rounded-md  +  sm:max-w-[440px] │
@@ -49,7 +49,7 @@
  * │   ModalBody         px-5 py-4                                   │
  * │   ModalFooter       px-5 py-3 border-t border-slate-200 +       │
  * │                     flex justify-end gap-2                      │
- * │   Action buttons    size="sm" (matches Scheduling Issues modal) │
+ * │   Action buttons    size="sm" → 32px / text-row (canonical h-8)  │
  * └─────────────────────────────────────────────────────────────────┘
  */
 import * as React from "react";
@@ -147,7 +147,7 @@ export interface ModalTitleProps
 
 /**
  * `ModalTitle` locks the heading typography to the canonical
- * `text-section-title font-semibold text-slate-900` triple. Don't
+ * `text-header font-semibold text-slate-900` triple. Don't
  * pass size / weight overrides — that's the whole point of this
  * primitive. Color overrides for state (e.g. destructive) are OK
  * via className but discouraged.
@@ -162,7 +162,7 @@ export const ModalTitle = React.forwardRef<
       // Locked typography. The DialogTitle default (`text-modal-title
       // leading-none tracking-tight text-[#0F172A]`) is overridden
       // here to match the spec's section-title scale + slate-900.
-      "text-section-title font-semibold text-slate-900 leading-snug tracking-tight",
+      "text-header font-semibold text-slate-900 leading-snug tracking-tight",
       className,
     )}
     {...props}
@@ -189,7 +189,7 @@ export const ModalDescription = React.forwardRef<
   <DialogDescription
     ref={ref}
     className={cn(
-      // DialogDescription's canonical default is text-caption (14/20).
+      // DialogDescription's canonical default is text-row (14/20).
       // Modal body copy reads at the next step up so the description
       // is comfortably scannable without becoming a heading.
       "text-row text-slate-600 leading-normal",
@@ -441,7 +441,7 @@ export interface ConfirmModalProps {
  * ("Archive", "Apply template") confirms.
  *
  * Typography contract:
- *   title         ModalTitle (text-section-title font-semibold)
+ *   title         ModalTitle (text-header font-semibold)
  *   description   ModalDescription (text-row text-slate-600)
  *   emphasis      text-row font-medium + destructive/secondary color
  *   cancel        ModalSecondaryAction (outline sm)

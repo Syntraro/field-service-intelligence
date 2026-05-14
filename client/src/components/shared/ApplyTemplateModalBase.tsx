@@ -168,7 +168,7 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
                     </div>
                     <span className="font-medium text-sm">{m === "replace" ? "Replace" : "Merge"}</span>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground ml-6">
+                  <p className="mt-1 text-helper text-muted-foreground ml-6">
                     {m === "replace"
                       ? "Remove existing line items and add template items"
                       : "Add template items, skip duplicates (same product)"}
@@ -183,7 +183,7 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
             <div className="p-3 bg-muted/50 rounded-md text-sm">
               <p className="font-medium">{selectedTemplate.name}</p>
               {selectedTemplate.description && (
-                <p className="text-muted-foreground text-xs mt-1">{selectedTemplate.description}</p>
+                <p className="text-muted-foreground text-helper mt-1">{selectedTemplate.description}</p>
               )}
             </div>
           )}

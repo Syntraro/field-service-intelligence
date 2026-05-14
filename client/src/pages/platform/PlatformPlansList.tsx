@@ -44,7 +44,7 @@ export default function PlatformPlansList() {
     <PlatformLayout>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">Plans</h2>
+          <h2 className="text-title font-semibold">Plans</h2>
           <p className="text-sm text-muted-foreground">Subscription plans and their feature configuration.</p>
         </div>
       </div>

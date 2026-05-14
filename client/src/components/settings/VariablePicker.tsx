@@ -25,7 +25,7 @@ export function VariablePicker({
   if (!variables.length) return null;
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs font-medium text-muted-foreground">{label}:</span>
+      <span className="text-helper font-medium text-muted-foreground">{label}:</span>
       {variables.map((v) => (
         <Button
           key={v}

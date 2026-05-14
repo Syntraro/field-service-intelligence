@@ -242,7 +242,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
               <CardTitle className="text-base">
                 {entityLabel(entityType)} email template
               </CardTitle>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Customize the outbound email sent when you send a {entityType}.
               </p>
             </div>
@@ -292,7 +292,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           </div>
 
           <div className="space-y-2">
-            <Label className="text-[13px] uppercase tracking-wider text-muted-foreground">
+            <Label className="text-label tracking-wider text-muted-foreground">
               Insert variable
             </Label>
             <VariablePicker
@@ -301,7 +301,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
               disabled={isLoading}
               label=""
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               Click a chip to insert the token at your cursor. Focus the Subject field first to insert there.
             </p>
           </div>
@@ -349,7 +349,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
               <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
             )}
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-helper text-muted-foreground">
             Sample values shown for preview. Real values are substituted when the email is sent.
           </p>
         </CardHeader>
@@ -361,7 +361,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           )}
 
           <div>
-            <div className="text-[13px] uppercase tracking-wider text-muted-foreground mb-1">
+            <div className="text-label tracking-wider text-muted-foreground mb-1">
               Subject
             </div>
             <div className="rounded-md border bg-background px-3 py-2 text-sm font-medium break-words min-h-[38px]" data-testid={`preview-subject-${entityType}`}>
@@ -372,7 +372,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           </div>
 
           <div>
-            <div className="text-[13px] uppercase tracking-wider text-muted-foreground mb-1">
+            <div className="text-label tracking-wider text-muted-foreground mb-1">
               Body
             </div>
             <div

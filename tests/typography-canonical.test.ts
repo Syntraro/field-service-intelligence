@@ -12,12 +12,12 @@
  *
  *   2. Not use the legacy size ramp (`text-xs / -sm / -base / -lg /
  *      -xl / -2xl`). Use canonical role tokens instead
- *      (`text-row` / `text-row-emphasis` / `text-caption` /
- *      `text-helper` / `text-label` / `text-section-title`).
+ *      (`text-row` / `text-emphasis` / `text-row` /
+ *      `text-helper` / `text-label` / `text-header`).
  *
  *   3. Not use heavier weights (`font-bold`, `font-semibold`) layered
  *      on top of canonical role tokens — the role tokens already bake
- *      in the right weight (e.g. `text-row-emphasis` is fw 500).
+ *      in the right weight (e.g. `text-emphasis` is fw 500).
  *
  *   4. Not use arbitrary text-`[Npx]` values.
  *
@@ -25,7 +25,7 @@
  * --------------------------
  * Source-pin tests in earlier phases checked that a CANONICAL token
  * STRING appeared in a file. They didn't catch the systemic drift —
- * a file could include `text-row-emphasis` once and still re-derive a
+ * a file could include `text-emphasis` once and still re-derive a
  * fork of the same class via a local `*_CLASS` constant. This guard
  * catches the architectural failure mode (local re-derivation) in
  * addition to the surface-level rule violations (legacy ramp / heavy
@@ -78,7 +78,7 @@ const LEGACY_ALLOWLIST: ReadonlySet<string> = new Set<string>([
 const LOCAL_TYPOGRAPHY_CONST_RE =
   /^\s*(?:export\s+)?(?:const|let)\s+\w+\s*=\s*"[^"\n]*\btext-[a-z][a-z-]*\b[^"\n]*"/m;
 
-/** Legacy size ramp on rendered text. Excludes `text-row` / `text-caption` etc. */
+/** Legacy size ramp on rendered text. Excludes `text-row` / `text-row` etc. */
 const FORBIDDEN_LEGACY_RAMP_RE = /\btext-(xs|sm|base|lg|xl|2xl)\b/;
 
 /** Heavier weights — role tokens already bake in the right weight. */
@@ -141,16 +141,16 @@ import {
 
 describe("typography canonical primitives — class constants", () => {
   it("ENTITY_NAME_CLASS pins the canonical primary-name token (operational density)", () => {
-    // 2026-05-07 recalibration: composition is `text-caption font-medium`
+    // 2026-05-07 recalibration: composition is `text-row font-medium`
     // (14px / fw 500) — operational CRM row density, matches the
-    // `OperationalAlertsCard` row labels. Was `text-row-emphasis`
+    // `OperationalAlertsCard` row labels. Was `text-emphasis`
     // (15px / fw 500). The recalibration was made at the canonical
     // primitive layer so every dependent surface inherits automatically.
-    expect(ENTITY_NAME_CLASS).toBe("text-caption font-medium truncate");
+    expect(ENTITY_NAME_CLASS).toBe("text-row font-medium truncate");
   });
   it("ENTITY_NAME_LINK_CLASS pins primary + brand-green link styling", () => {
     expect(ENTITY_NAME_LINK_CLASS).toBe(
-      "text-caption font-medium truncate text-brand hover:underline",
+      "text-row font-medium truncate text-brand hover:underline",
     );
   });
   it("ENTITY_META_CLASS pins the canonical secondary token (text-helper, muted)", () => {
@@ -233,7 +233,7 @@ describe("typography canonical guard — feature components", () => {
 
       expect(
         FORBIDDEN_LEGACY_RAMP_RE.test(codeOnly),
-        `${rel} uses legacy size ramp (text-xs/sm/base/lg/xl/2xl) — use canonical role tokens (text-row / text-helper / text-caption / text-label / text-section-title)`,
+        `${rel} uses legacy size ramp (text-xs/sm/base/lg/xl/2xl) — use canonical role tokens (text-row / text-helper / text-row / text-label / text-header)`,
       ).toBe(false);
 
       expect(

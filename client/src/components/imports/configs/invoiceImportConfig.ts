@@ -28,7 +28,6 @@ export const invoiceImportConfig: ImportWizardConfig = {
   presets: [jobberInvoicesPreset],
   // Custom fields are intentionally NOT enabled for invoice import (MVP).
   // Source-specific detail that doesn't map to a canonical invoice field is
-  // preserved verbatim in the invoice's `notesInternal` snapshot by the
-  // server-side adapter. If a future source has a field that truly needs
-  // structured preservation, add it here then.
+  // preserved in workDescription by the server-side adapter. If a future
+  // source has a field that truly needs structured preservation, add it here.
 };

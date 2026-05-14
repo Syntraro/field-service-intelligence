@@ -153,7 +153,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="py-4 text-xs text-muted-foreground flex items-center gap-2">
+        <CardContent className="py-4 text-helper text-muted-foreground flex items-center gap-2">
           <Clock className="h-3.5 w-3.5 animate-pulse" />
           Loading email delivery…
         </CardContent>
@@ -175,7 +175,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
   if (!latest) {
     return (
       <Card>
-        <CardContent className="py-4 text-xs text-muted-foreground flex items-center gap-2">
+        <CardContent className="py-4 text-helper text-muted-foreground flex items-center gap-2">
           <Mail className="h-3.5 w-3.5" />
           No emails sent yet for this {entityType}.
         </CardContent>
@@ -237,7 +237,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
         <div className="flex items-center justify-between gap-2 pt-1">
           <button
             type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
+            className="text-helper text-muted-foreground hover:text-foreground"
             onClick={() => setShowHistory((v) => !v)}
             data-testid="button-toggle-delivery-history"
           >

@@ -95,7 +95,7 @@ function ForecastKPITile({
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-2 min-h-[100px]"
       data-testid={testId}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {label}
       </div>
       <div className="text-2xl font-semibold tabular-nums text-foreground">
@@ -136,7 +136,7 @@ function PartsNeededCard({
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-xs text-muted-foreground tabular-nums w-5 text-right">
+                  <span className="text-helper text-muted-foreground tabular-nums w-5 text-right">
                     {idx + 1}
                   </span>
                   <div className="min-w-0">
@@ -409,7 +409,7 @@ export default function ReportsPartsForecast() {
               >
                 Parts Forecast
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Forecast parts required for upcoming PM visits — sourced from
                 location parts templates only.
               </p>

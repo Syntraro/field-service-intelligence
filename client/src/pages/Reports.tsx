@@ -104,7 +104,7 @@ function ComparisonRow({
   const colorClass = trendColorClass(pct, polarity);
   const Icon = pct == null || pct === 0 ? null : pct > 0 ? ArrowUp : ArrowDown;
   return (
-    <div className="flex items-center justify-between text-xs text-muted-foreground">
+    <div className="flex items-center justify-between text-helper text-muted-foreground">
       <span>{label}</span>
       <div className="flex items-center gap-1.5 font-medium tabular-nums">
         <span className="text-foreground/80">{formatMetricValue(value, unit)}</span>
@@ -125,7 +125,7 @@ function MetricTile({ metric }: { metric: MetricCardData }) {
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-2 min-h-[140px]"
       data-testid={`metric-card-${testIdSuffix}`}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {metric.label}
       </div>
       {metric.hasData ? (
@@ -220,7 +220,7 @@ function ARBucketTile({ bucket }: { bucket: ARBucket }) {
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-1"
       data-testid={`ar-bucket-${testIdSuffix}`}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {bucket.label}
       </div>
       <div
@@ -229,7 +229,7 @@ function ARBucketTile({ bucket }: { bucket: ARBucket }) {
       >
         {formatMetricValue(bucket.amount, "currency")}
       </div>
-      <div className="text-xs text-muted-foreground">
+      <div className="text-helper text-muted-foreground">
         {bucket.invoiceCount === 0
           ? "No invoices"
           : `${bucket.invoiceCount} ${bucket.invoiceCount === 1 ? "invoice" : "invoices"}`}
@@ -389,7 +389,7 @@ function InsightsSection({ insights }: { insights: Insight[] }) {
                   <div className="text-sm font-medium text-foreground">
                     {i.title}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-helper text-muted-foreground mt-0.5">
                     {i.description}
                   </p>
                 </div>
@@ -597,7 +597,7 @@ function PaymentBreakdownCard({
               </div>
             </div>
           ))}
-          <div className="text-xs text-muted-foreground pt-2 border-t">
+          <div className="text-helper text-muted-foreground pt-2 border-t">
             Total: {formatMetricValue(section.totalAmount, "currency")} ·{" "}
             {section.totalCount} payment{section.totalCount === 1 ? "" : "s"}
           </div>
@@ -632,13 +632,13 @@ function FinancialARSection({ section }: { section: FinancialResponse["arAging"]
                   className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-1"
                   data-testid={`financial-ar-bucket-${b.key}`}
                 >
-                  <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+                  <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
                     {b.label}
                   </div>
                   <div className={cn("text-2xl font-semibold tabular-nums", accent)}>
                     {formatMetricValue(b.amount, "currency")}
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-helper text-muted-foreground">
                     {b.invoiceCount === 0
                       ? "No invoices"
                       : `${b.invoiceCount} ${b.invoiceCount === 1 ? "invoice" : "invoices"}`}
@@ -647,7 +647,7 @@ function FinancialARSection({ section }: { section: FinancialResponse["arAging"]
               );
             })}
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-helper text-muted-foreground">
             Total outstanding:{" "}
             <span className="font-medium tabular-nums text-foreground">
               {formatMetricValue(section.totalOutstanding, "currency")}
@@ -683,12 +683,12 @@ function InvoiceStatusCard({
               className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-3"
               data-testid={`invoice-status-${item.key}`}
             >
-              <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+              <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
                 {item.label}
               </div>
               <div className="flex items-baseline justify-between mt-1">
                 <span className="text-xl font-semibold tabular-nums">{item.count}</span>
-                <span className="text-xs text-muted-foreground tabular-nums">
+                <span className="text-helper text-muted-foreground tabular-nums">
                   {formatMetricValue(item.totalAmount, "currency")}
                 </span>
               </div>
@@ -743,7 +743,7 @@ function TopOutstandingClientsCard({
               data-testid={`top-client-row-${idx}`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span className="text-xs text-muted-foreground tabular-nums w-5 text-right">
+                <span className="text-helper text-muted-foreground tabular-nums w-5 text-right">
                   {idx + 1}
                 </span>
                 <span className="text-sm font-medium truncate" data-testid={`top-client-name-${idx}`}>
@@ -937,7 +937,7 @@ function JobStatusBreakdownCard({
               </div>
             </div>
           ))}
-          <div className="text-xs text-muted-foreground pt-2 border-t">
+          <div className="text-helper text-muted-foreground pt-2 border-t">
             Total: {section.totalCount.toLocaleString()} job
             {section.totalCount === 1 ? "" : "s"}
           </div>
@@ -1058,7 +1058,7 @@ function UnbillableBreakdownCard({
               </div>
             </div>
           ))}
-          <div className="text-xs text-muted-foreground pt-2 border-t">
+          <div className="text-helper text-muted-foreground pt-2 border-t">
             Total: {formatMetricValue(section.totalCost, "currency")} ·{" "}
             {section.totalHours.toFixed(1)}h · {section.totalCount} entr
             {section.totalCount === 1 ? "y" : "ies"}
@@ -1380,7 +1380,7 @@ function StatusBreakdownList({
           </div>
         </div>
       ))}
-      <div className="text-xs text-muted-foreground pt-2 border-t">
+      <div className="text-helper text-muted-foreground pt-2 border-t">
         Total: {totalCount.toLocaleString()} {noun}
         {totalCount === 1 ? "" : "s"}
       </div>
@@ -1567,7 +1567,7 @@ export default function Reports() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3">
             <FileText className="h-7 w-7 text-primary" />
-            <h1 className="text-2xl font-semibold" data-testid="reports-title">
+            <h1 className="text-title font-semibold" data-testid="reports-title">
               Reports
             </h1>
           </div>

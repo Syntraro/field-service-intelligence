@@ -237,7 +237,7 @@ export default function PaymentsDashboardPage({ embedded = false }: { embedded?:
             >
               Payments
             </h1>
-            <p className="text-caption text-muted-foreground">
+            <p className="text-row text-muted-foreground">
               Track online payments, payouts, and disputes.
             </p>
           </div>
@@ -406,7 +406,7 @@ function OverviewTab(props: {
           {payoutSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : payoutSummary.isError ? (
-            <span className="text-caption text-destructive">Couldn&apos;t load</span>
+            <span className="text-row text-destructive">Couldn&apos;t load</span>
           ) : (
             <>
               <div className="text-2xl font-semibold">
@@ -444,7 +444,7 @@ function OverviewTab(props: {
           {payoutSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : payoutSummary.isError ? (
-            <span className="text-caption text-destructive">Couldn&apos;t load</span>
+            <span className="text-row text-destructive">Couldn&apos;t load</span>
           ) : (
             <div className="text-2xl font-semibold">
               {formatCurrency(payoutSummary.data?.paidLast30Days ?? "0")}
@@ -467,7 +467,7 @@ function OverviewTab(props: {
           {disputeSummary.isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : disputeSummary.isError ? (
-            <span className="text-caption text-destructive">Couldn&apos;t load</span>
+            <span className="text-row text-destructive">Couldn&apos;t load</span>
           ) : (
             <>
               <div className="text-2xl font-semibold">
@@ -528,7 +528,7 @@ function AnomalyBanner({
 
 function CapabilityFlag(props: { label: string; enabled: boolean }) {
   return (
-    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+    <div className="flex items-center gap-1.5 text-helper text-muted-foreground">
       {props.enabled ? (
         <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
       ) : (
@@ -1085,7 +1085,7 @@ function SummaryCard(props: {
         {props.loading ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         ) : props.error ? (
-          <span className="text-caption text-destructive">Couldn&apos;t load</span>
+          <span className="text-row text-destructive">Couldn&apos;t load</span>
         ) : (
           <div className="text-2xl font-semibold">{props.value}</div>
         )}
@@ -1096,7 +1096,7 @@ function SummaryCard(props: {
 
 function EmptyRow({ message }: { message: string }) {
   return (
-    <div className="py-6 text-caption text-muted-foreground text-center">
+    <div className="py-6 text-row text-muted-foreground text-center">
       {message}
     </div>
   );

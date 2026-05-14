@@ -306,7 +306,7 @@ function CollectionsQueueRail({
             >
               <p
                 className={cn(
-                  "text-caption truncate",
+                  "text-row truncate",
                   isActive && "font-medium",
                 )}
               >
@@ -366,7 +366,7 @@ function InvoiceRow({ invoice, selected, onToggle }: InvoiceRowProps) {
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <Link href={`/invoices/${invoice.id}`}>
               <a
-                className="text-caption font-medium text-primary hover:underline shrink-0"
+                className="text-row font-medium text-primary hover:underline shrink-0"
                 data-testid={`collections-invoice-link-${invoice.id}`}
               >
                 #{invoice.invoiceNumber ?? "—"}
@@ -381,7 +381,7 @@ function InvoiceRow({ invoice, selected, onToggle }: InvoiceRowProps) {
           <div className="flex items-center gap-1.5 shrink-0">
             <StatusChip tone={meta.tone}>{meta.label}</StatusChip>
             <span className={cn(
-              "text-caption font-medium tabular-nums",
+              "text-row font-medium tabular-nums",
               invoice.isPastDue ? "text-destructive" : "text-foreground",
             )}>
               {formatCurrency(invoice.balance)}
@@ -884,15 +884,15 @@ export function ClientCollectionsModal({
                   <Link href={profilePath}>
                     <a data-testid="collections-customer-name">
                       {customerDisplayName
-                        ? <h2 className="text-page-title hover:underline">{customerDisplayName}</h2>
-                        : <h2 className="text-page-title text-muted-foreground">Loading…</h2>}
+                        ? <h2 className="text-title hover:underline">{customerDisplayName}</h2>
+                        : <h2 className="text-title text-muted-foreground">Loading…</h2>}
                     </a>
                   </Link>
                 ) : (
                   <span data-testid="collections-customer-name">
                     {customerDisplayName
-                      ? <h2 className="text-page-title">{customerDisplayName}</h2>
-                      : <h2 className="text-page-title text-muted-foreground">Loading…</h2>}
+                      ? <h2 className="text-title">{customerDisplayName}</h2>
+                      : <h2 className="text-title text-muted-foreground">Loading…</h2>}
                   </span>
                 )}
                 {hasPastDue && (
@@ -906,33 +906,33 @@ export function ClientCollectionsModal({
               {customer && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1" data-testid="collections-contact-metadata">
                   {customer.primaryContactName && (
-                    <span className="text-caption text-muted-foreground" data-testid="collections-contact-name">
+                    <span className="text-row text-muted-foreground" data-testid="collections-contact-name">
                       {customer.primaryContactName}
                     </span>
                   )}
                   {customer.phone && (
-                    <a href={`tel:${customer.phone}`} className="inline-flex items-center gap-1 text-caption text-primary hover:underline" data-testid="collections-contact-phone">
+                    <a href={`tel:${customer.phone}`} className="inline-flex items-center gap-1 text-row text-primary hover:underline" data-testid="collections-contact-phone">
                       <Phone className="h-3 w-3" />{customer.phone}
                     </a>
                   )}
                   {customer.email && (
-                    <a href={`mailto:${customer.email}`} className="inline-flex items-center gap-1 text-caption text-primary hover:underline" data-testid="collections-contact-email">
+                    <a href={`mailto:${customer.email}`} className="inline-flex items-center gap-1 text-row text-primary hover:underline" data-testid="collections-contact-email">
                       <Mail className="h-3 w-3" />{customer.email}
                     </a>
                   )}
                   {customer.billingAddress && (
-                    <span className="inline-flex items-center gap-1 text-caption text-muted-foreground" data-testid="collections-billing-address">
+                    <span className="inline-flex items-center gap-1 text-row text-muted-foreground" data-testid="collections-billing-address">
                       <MapPin className="h-3 w-3" />{customer.billingAddress}
                     </span>
                   )}
                   {!customer.billingAddress && customer.serviceLocationCount > 0 && (
-                    <span className="inline-flex items-center gap-1 text-caption text-muted-foreground" data-testid="collections-location-count">
+                    <span className="inline-flex items-center gap-1 text-row text-muted-foreground" data-testid="collections-location-count">
                       <MapPin className="h-3 w-3" />
                       {customer.serviceLocationCount} service location{customer.serviceLocationCount !== 1 ? "s" : ""}
                     </span>
                   )}
                   {customer.paymentTermsDays != null && (
-                    <span className="text-caption text-muted-foreground" data-testid="collections-payment-terms">
+                    <span className="text-row text-muted-foreground" data-testid="collections-payment-terms">
                       Net {customer.paymentTermsDays} days
                     </span>
                   )}
@@ -951,7 +951,7 @@ export function ClientCollectionsModal({
                 <div className="flex items-center gap-3 mt-2 flex-wrap" data-testid="collections-kpi-row">
                   <div className="flex items-center gap-1.5">
                     <span className="text-helper text-muted-foreground">Outstanding</span>
-                    <span className="text-caption font-semibold tabular-nums" data-testid="collections-total-outstanding">
+                    <span className="text-row font-semibold tabular-nums" data-testid="collections-total-outstanding">
                       {formatCurrency(totals.totalOutstanding)}
                     </span>
                   </div>
@@ -961,7 +961,7 @@ export function ClientCollectionsModal({
                       <div className="flex items-center gap-1.5">
                         <span className="text-helper text-muted-foreground">Past Due</span>
                         <span
-                          className="text-caption font-semibold tabular-nums text-destructive"
+                          className="text-row font-semibold tabular-nums text-destructive"
                           data-testid="collections-past-due-total"
                         >
                           {formatCurrency(totals.pastDueTotal)}
@@ -975,7 +975,7 @@ export function ClientCollectionsModal({
                       <div className="flex items-center gap-1.5">
                         <span className="text-helper text-muted-foreground">Current</span>
                         <span
-                          className="text-caption font-semibold tabular-nums"
+                          className="text-row font-semibold tabular-nums"
                           data-testid="collections-current-total"
                         >
                           {formatCurrency(totals.currentTotal)}
@@ -1111,7 +1111,7 @@ export function ClientCollectionsModal({
                 value={noteText}
                 onChange={(e) => setNoteText(e.target.value)}
                 placeholder="Add a follow-up note…"
-                className="text-caption min-h-[60px] resize-none mb-2"
+                className="text-row min-h-[60px] resize-none mb-2"
                 data-testid="collections-note-textarea"
               />
               {/* Invoice selector — note is linked to at least one invoice */}
@@ -1231,13 +1231,13 @@ export function ClientCollectionsModal({
               {customer?.createdAt && (
                 <div className="mb-1.5" data-testid="collections-customer-since">
                   <p className="text-helper text-muted-foreground">Customer since</p>
-                  <p className="text-caption text-foreground">{formatDate(customer.createdAt)}</p>
+                  <p className="text-row text-foreground">{formatDate(customer.createdAt)}</p>
                 </div>
               )}
               {lastPayment ? (
                 <div className="space-y-0.5">
                   <p className="text-helper text-muted-foreground">Last payment</p>
-                  <p className="text-caption font-medium tabular-nums">{formatCurrency(lastPayment.amount)}</p>
+                  <p className="text-row font-medium tabular-nums">{formatCurrency(lastPayment.amount)}</p>
                   <p className="text-helper text-muted-foreground">
                     {formatDate(lastPayment.receivedAt)}
                     {daysSince !== null && daysSince > 0 && ` (${daysSince}d ago)`}
@@ -1297,7 +1297,7 @@ export function ClientCollectionsModal({
                   className="mt-0.5"
                 />
                 <Label htmlFor="scope-account" className="cursor-pointer">
-                  <span className="font-medium text-caption">Entire account</span>
+                  <span className="font-medium text-row">Entire account</span>
                   <span className="block text-helper text-muted-foreground">
                     All qualifying invoices across all locations
                   </span>
@@ -1314,14 +1314,14 @@ export function ClientCollectionsModal({
                   className="mt-0.5"
                 />
                 <Label htmlFor="scope-location" className="cursor-pointer">
-                  <span className="font-medium text-caption">Specific location</span>
+                  <span className="font-medium text-row">Specific location</span>
                 </Label>
               </div>
               {statementScopeType === "location" && (
                 <div className="pl-6">
                   <select
                     aria-label="Select location"
-                    className="w-full text-caption bg-background border border-input rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
+                    className="w-full text-row bg-background border border-input rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring"
                     value={statementLocationId ?? ""}
                     onChange={(e) => setStatementLocationId(e.target.value || null)}
                     data-testid="statement-scope-location-select"

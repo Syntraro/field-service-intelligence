@@ -174,7 +174,7 @@ function AccessDenied({ cap }: { cap: PlatformCapability }) {
       data-capability={cap}
     >
       <div className="text-sm font-semibold mb-1">No access to this section</div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-helper text-muted-foreground">
         Your internal role doesn't include the{" "}
         <code className="font-mono text-[11px]">{cap}</code> capability.
         Contact a platform admin if you need access.

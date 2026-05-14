@@ -180,7 +180,7 @@ describe("Jobs list — both column variants render through secondaryLocationLin
     // duplicate visual returns even though the helper still returns
     // null/empty.
     expect(jobsSrc).toMatch(
-      /\{secondary && \(\s*<div\s+className="text-caption text-slate-500 font-normal truncate">\{secondary\}<\/div>\s*\)\}/,
+      /\{secondary && \(\s*<div\s+className="text-row text-slate-500 font-normal truncate">\{secondary\}<\/div>\s*\)\}/,
     );
   });
 

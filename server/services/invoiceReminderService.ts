@@ -55,6 +55,12 @@ export interface SendOneInput {
   createdByUserId?: string | null;
   /** When true, sweep path skips the gate error and returns `{ skipped: true }`. */
   softGate?: boolean;
+  /**
+   * When true, the caller is a human explicitly requesting a send.
+   * Bypasses the eligibility() gate entirely — users can remind any invoice
+   * on demand. Automated sweep paths must NOT set this flag.
+   */
+  manual?: boolean;
 }
 
 export interface SendOneResult {
@@ -116,11 +122,15 @@ async function defaultRecipients(tenantId: string, invoice: any): Promise<string
 async function sendOne(input: SendOneInput): Promise<SendOneResult> {
   const invoice = await storage.getInvoice(input.tenantId, input.invoiceId);
 
-  const ok = eligibility(invoice);
-  if (ok !== true) {
-    if (input.softGate) return { sent: false, skipped: true, skipReason: ok };
-    if (ok === "not_found") throw createError(404, "Invoice not found");
-    throw new ReminderGateError(409, ok.toUpperCase(), `Reminder not sent: ${ok}`);
+  if (!input.manual) {
+    const ok = eligibility(invoice);
+    if (ok !== true) {
+      if (input.softGate) return { sent: false, skipped: true, skipReason: ok };
+      if (ok === "not_found") throw createError(404, "Invoice not found");
+      throw new ReminderGateError(409, ok.toUpperCase(), `Reminder not sent: ${ok}`);
+    }
+  } else if (!invoice) {
+    throw createError(404, "Invoice not found");
   }
 
   const recipients = (input.recipients && input.recipients.length > 0)

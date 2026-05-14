@@ -375,8 +375,8 @@ describe("Client Detail Equipment panel — compact equipment cards", () => {
     const endIdx = pageSrc.indexOf("function ClientPartsPanelBody", startIdx);
     const slice = pageSrc.slice(startIdx, endIdx > 0 ? endIdx : startIdx + 5000);
 
-    // Title uses text-section-title.
-    expect(slice).toMatch(/<h4\s+className="[^"]*\btext-section-title\b/);
+    // Title uses text-header.
+    expect(slice).toMatch(/<h4\s+className="[^"]*\btext-header\b/);
     // Labels use text-label + text-text-secondary; values use text-row + text-text-primary.
     expect(slice).toMatch(/text-label text-text-secondary/);
     expect(slice).toMatch(/text-row text-text-primary/);
@@ -468,7 +468,7 @@ describe("Client Detail Parts panel — real PM-parts data + canonical add flow"
     const endIdx = pageSrc.indexOf("function ", startIdx);
     const slice = pageSrc.slice(startIdx, endIdx > 0 ? endIdx : startIdx + 5000);
 
-    expect(slice).toMatch(/<h4\s+className="[^"]*\btext-section-title\b/);
+    expect(slice).toMatch(/<h4\s+className="[^"]*\btext-header\b/);
     expect(slice).toMatch(/text-label text-text-secondary/);
     expect(slice).toMatch(/text-row text-text-primary/);
     expect(slice).not.toMatch(/text-\[10px\]/);
@@ -595,8 +595,8 @@ describe("Client Detail Maintenance panel — real recurring templates", () => {
   it("uses canonical typography role tokens (no ad-hoc tiny text inside the card slice)", () => {
     // Locate the maintenance-card slice precisely and assert that
     // none of the deprecated/raw small-text classes leak into it.
-    // Canonical tokens (`text-section-title`, `text-row`, `text-label`,
-    // `text-caption`, `text-helper`) live in tailwind.config.ts:68–79
+    // Canonical tokens (`text-header`, `text-row`, `text-label`,
+    // `text-row`, `text-helper`) live in tailwind.config.ts:68–79
     // and 124–165.
     const startIdx = pageSrc.indexOf('data-testid="client-maintenance-panel-body"');
     expect(startIdx).toBeGreaterThan(-1);
@@ -612,20 +612,20 @@ describe("Client Detail Maintenance panel — real recurring templates", () => {
     expect(slice).not.toMatch(/\btext-xs\b/);
   });
 
-  it("card title uses text-section-title (canonical 18px/600 token)", () => {
+  it("card title uses text-header (canonical 18px/600 token)", () => {
     expect(pageSrc).toMatch(
-      /<h4\s+className="[^"]*\btext-section-title\b[^"]*"[\s\S]{0,200}?\{t\.title\}/,
+      /<h4\s+className="[^"]*\btext-header\b[^"]*"[\s\S]{0,200}?\{t\.title\}/,
     );
   });
 
-  it("status badge uses text-caption (14px/20px) — readable, not microscopic", () => {
+  it("status badge uses text-row (14px/20px) — readable, not microscopic", () => {
     // The Badge element renders className BEFORE the data-testid
     // attribute, so search the slice BEFORE the testid for the
     // canonical class.
     const startIdx = pageSrc.indexOf('data-testid="client-maintenance-card-status"');
     expect(startIdx).toBeGreaterThan(-1);
     const before = pageSrc.slice(Math.max(0, startIdx - 800), startIdx);
-    expect(before).toMatch(/text-caption/);
+    expect(before).toMatch(/text-row/);
     // Inverse pin: badge must not regress to an arbitrary tiny size.
     const around = pageSrc.slice(Math.max(0, startIdx - 800), startIdx + 200);
     expect(around).not.toMatch(/text-\[10px\]/);
@@ -690,13 +690,13 @@ describe("Client Detail Maintenance panel — real recurring templates", () => {
     );
   });
 
-  it("action link copy uses text-caption (canonical 14px) — no ad-hoc shrinking", () => {
+  it("action link copy uses text-row (canonical 14px) — no ad-hoc shrinking", () => {
     // The Link element renders className BEFORE the data-testid,
     // so look behind the testid for the canonical class.
     const startIdx = pageSrc.indexOf('data-testid="client-maintenance-card-action"');
     expect(startIdx).toBeGreaterThan(-1);
     const before = pageSrc.slice(Math.max(0, startIdx - 800), startIdx);
-    expect(before).toMatch(/text-caption/);
+    expect(before).toMatch(/text-row/);
     const around = pageSrc.slice(Math.max(0, startIdx - 800), startIdx + 200);
     expect(around).not.toMatch(/text-\[11px\]/);
   });

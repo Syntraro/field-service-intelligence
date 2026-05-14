@@ -400,7 +400,7 @@ export function TimeEntryModal({
                 {isLocked && <Lock className="h-4 w-4 text-amber-500" />}
               </DialogTitle>
               {isEdit && entry && (
-                <p className="text-xs text-muted-foreground mt-0.5">
+                <p className="text-helper text-muted-foreground mt-0.5">
                   {techName} — {format(new Date(entry.startAt), "MMM d, yyyy")}
                 </p>
               )}
@@ -443,7 +443,7 @@ export function TimeEntryModal({
                           <SelectItem key={tech.id} value={tech.id}>
                             {getMemberDisplayName(tech)}
                             {assignedTechnicianIds.includes(tech.id) && (
-                              <span className="ml-1 text-xs text-muted-foreground">(assigned)</span>
+                              <span className="ml-1 text-helper text-muted-foreground">(assigned)</span>
                             )}
                           </SelectItem>
                         ))}
@@ -459,7 +459,7 @@ export function TimeEntryModal({
                     </div>
                   ) : (
                     <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-helper text-muted-foreground">$</span>
                       <Input
                         type="number"
                         step="0.01"

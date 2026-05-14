@@ -441,7 +441,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                         <button
                           type="button"
                           onClick={() => setEmbNotesOpen(false)}
-                          className="text-xs text-muted-foreground hover:text-foreground"
+                          className="text-helper text-muted-foreground hover:text-foreground"
                           data-testid="emb-task-notes-collapse"
                         >
                           −
@@ -460,7 +460,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   <button
                     type="button"
                     onClick={() => setEmbNotesOpen(true)}
-                    className="text-xs font-medium text-muted-foreground hover:text-foreground inline-flex items-center gap-1 py-1"
+                    className="text-helper font-medium text-muted-foreground hover:text-foreground inline-flex items-center gap-1 py-1"
                     data-testid="emb-task-notes-expand"
                   >
                     + Add instructions
@@ -552,7 +552,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                 <button
                   type="button"
                   onClick={() => setType("SUPPLIER_VISIT")}
-                  className="text-xs font-medium text-muted-foreground hover:text-foreground flex w-full justify-start items-center gap-1 py-1.5 px-2 rounded"
+                  className="text-helper font-medium text-muted-foreground hover:text-foreground flex w-full justify-start items-center gap-1 py-1.5 px-2 rounded"
                   data-testid="emb-task-supplier-expand"
                 >
                   + Add supplier visit
@@ -568,7 +568,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   data-testid="task-supplier-visit-section"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs font-semibold tracking-wide uppercase text-muted-foreground">
+                    <div className="text-helper font-semibold tracking-wide uppercase text-muted-foreground">
                       Supplier Visit Details
                     </div>
                     {embedded && (
@@ -584,7 +584,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                           setSupplierLocationId(undefined);
                           setPoNumber("");
                         }}
-                        className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                        className="text-helper font-medium text-muted-foreground hover:text-foreground"
                         data-testid="emb-task-supplier-collapse"
                       >
                         Remove supplier visit

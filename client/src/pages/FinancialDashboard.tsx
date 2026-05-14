@@ -544,10 +544,10 @@ export default function FinancialDashboard() {
         {/* Header */}
         <div className="mb-4 flex items-start justify-between gap-3 border-b border-card-border pb-2">
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-foreground tracking-tight">
+            <h1 className="text-header text-foreground tracking-tight">
               Business Dashboard
             </h1>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-helper text-muted-foreground mt-0.5">
               Pipeline, collections, scheduled revenue, and today's schedule — at a glance.
             </p>
           </div>
@@ -1808,7 +1808,7 @@ function TodaysScheduleCard({
                         name / duration via inherited
                         `text-decoration-line`. */}
                     <div
-                      className={`flex-1 min-w-0 grid items-baseline gap-2 text-sm ${isMuted ? "text-text-muted line-through" : isTimeOff ? "text-amber-800" : isTask ? "text-indigo-800" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
+                      className={`flex-1 min-w-0 grid items-baseline gap-2 text-row ${isMuted ? "text-text-muted line-through" : isTimeOff ? "text-amber-800" : isTask ? "text-indigo-800" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
                       style={{ gridTemplateColumns: "110px minmax(0, 1fr) auto" }}
                     >
                       <span className={`tabular-nums font-medium ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-700" : isTask ? "text-indigo-700" : isOpen ? "text-emerald-700" : "text-slate-600"}`}>
@@ -1816,7 +1816,7 @@ function TodaysScheduleCard({
                       </span>
                       <span className="flex items-baseline gap-1.5 min-w-0">
                         <span className={`shrink-0 ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-400" : isTask ? "text-indigo-400" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
-                        <span className="font-semibold truncate">{nameLabel}</span>
+                        <span className={`font-semibold truncate${!isOpen && !isTask && !isTimeOff ? " text-list-primary" : ""}`}>{nameLabel}</span>
                       </span>
                       <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-600" : isTask ? "text-indigo-600" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
                     </div>
@@ -1878,7 +1878,7 @@ function TodaysScheduleCard({
                     : ""
                 }`}
               >
-                <div className="px-3 py-2 text-[13px] font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
+                <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
                   {tech.name}
                   {isOffShift && (
                     <span className="ml-1.5 text-[10px] font-medium text-amber-700 align-middle">
@@ -1961,7 +1961,7 @@ function TodaysScheduleCard({
                               2026-04-30: muted state mirrors the
                               single-tech view above. */}
                           <div
-                            className={`grid items-baseline gap-1.5 text-xs ${
+                            className={`grid items-baseline gap-1.5 text-row ${
                               isMuted
                                 ? "text-text-muted line-through"
                                 : isTimeOff
@@ -1991,7 +1991,7 @@ function TodaysScheduleCard({
                             </span>
                             <span className="flex items-baseline gap-1 min-w-0">
                               <span className={`shrink-0 ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-400" : isTask ? "text-indigo-400" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
-                              <span className="font-semibold truncate">{nameLabel}</span>
+                              <span className={`font-semibold truncate${!isOpen && !isTask && !isTimeOff ? " text-list-primary" : ""}`}>{nameLabel}</span>
                             </span>
                             <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-600" : isTask ? "text-indigo-600" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
                           </div>
@@ -2090,7 +2090,7 @@ function TodaysScheduleCard({
                         data-testid={isTaskRow ? `schedule-unassigned-task-${row.taskId}` : `schedule-unassigned-row-${row.visitId}`}
                       >
                         <div
-                          className={`grid items-baseline gap-1.5 text-xs ${isTaskRow ? "text-indigo-800" : "text-[#111827]"}`}
+                          className={`grid items-baseline gap-1.5 text-row ${isTaskRow ? "text-indigo-800" : "text-[#111827]"}`}
                           style={{
                             gridTemplateColumns: "96px minmax(0, 1fr) auto",
                           }}
@@ -2105,7 +2105,7 @@ function TodaysScheduleCard({
                             >
                               •
                             </span>
-                            <span className="font-semibold truncate">
+                            <span className={`font-semibold truncate${!isTaskRow ? " text-list-primary" : ""}`}>
                               {nameLabel}
                             </span>
                           </span>
@@ -2161,7 +2161,7 @@ function TodaysScheduleCard({
                 }`}
                 data-testid="schedule-available-column"
               >
-                <div className="px-3 py-2 text-[13px] font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
+                <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
                   Available
                 </div>
                 <div className="py-0.5">
@@ -2201,7 +2201,7 @@ function TodaysScheduleCard({
                             : "cursor-default opacity-70"
                         }`}
                       >
-                        <span className="flex-1 text-xs font-medium text-slate-700 dark:text-gray-200 truncate">
+                        <span className="flex-1 text-helper font-medium text-slate-700 dark:text-gray-200 truncate">
                           {tech.name}
                           {isOffShift && !hasTimeOff && (
                             <span className="ml-1 text-[10px] font-normal text-amber-700 align-middle">

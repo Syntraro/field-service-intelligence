@@ -212,7 +212,7 @@ describe("AddressBlock — invoice variant suppresses location-name row when fal
     // `{locationName && (...)}`. The label header + street/city lines
     // render unconditionally so the section's structure remains.
     expect(addressBlockSrc).toMatch(
-      /\{locationName && \(\s*<div[\s\S]+?className="text-row-emphasis text-text-primary"[\s\S]+?data-testid=\{testId\}[\s\S]+?>\s*\{locationName\}\s*<\/div>\s*\)\}/,
+      /\{locationName && \(\s*<div[\s\S]+?className="text-emphasis text-text-primary"[\s\S]+?data-testid=\{testId\}[\s\S]+?>\s*\{locationName\}\s*<\/div>\s*\)\}/,
     );
   });
 

@@ -118,7 +118,7 @@ export function OpenCapacityCard({
         ) : (
           <>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="text-2xl font-bold text-foreground tabular-nums leading-none">
+              <span className="text-display text-foreground tabular-nums leading-none">
                 {formatHours(totalMinutes)}
               </span>
               <span className="text-xs text-slate-500">available</span>
@@ -227,7 +227,7 @@ export function JobsSnapshotCard({
         ) : (
           <>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="text-2xl font-bold text-foreground tabular-nums leading-none">
+              <span className="text-display text-foreground tabular-nums leading-none">
                 {total}
               </span>
               <span className="text-xs text-slate-500">jobs today</span>

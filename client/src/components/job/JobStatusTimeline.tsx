@@ -131,7 +131,7 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
               <Clock className="h-4 w-4 text-[#64748b]" />
               Status Timeline
               {hasEvents && (
-                <span className="text-xs text-muted-foreground font-normal">
+                <span className="text-helper text-muted-foreground font-normal">
                   ({displayEvents.length})
                 </span>
               )}

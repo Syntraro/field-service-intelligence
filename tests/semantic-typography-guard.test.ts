@@ -33,10 +33,10 @@
  *      `text-modal-title`, `text-row-emphasis`, `text-table-header`,
  *      `text-table-cell`, `text-input`, `text-email-body`,
  *      `text-empty-state`, `text-form-label`, `text-form-helper`,
- *      `text-select-label`, `text-select-item`. Replaced by the
+ *      `text-select-label`, `text-select-item`, `text-caption`. Replaced by the
  *      preferred visual-hierarchy set: `text-display`, `text-title`,
  *      `text-header`, `text-subheader`, `text-body`, `text-row`,
- *      `text-emphasis`, `text-caption`, `text-label`, `text-helper`,
+ *      `text-emphasis`, `text-list-primary`, `text-list-body`, `text-label`, `text-helper`,
  *      `text-error`. See `docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md`.
  *
  * Out of scope for this PR (intentionally not yet enforced)
@@ -114,9 +114,11 @@ const ARBITRARY_TEXT_RE = /\btext-\[[^\]]+\]/g;
  *  visual-hierarchy set replaces these; the live tailwind config keeps
  *  these tokens defined so existing code renders unchanged. */
 const DEPRECATED_ALIAS_NAMES = [
+  // Heading aliases removed 2026-05-14 (consolidated into preferred set).
   "page-title",
   "section-title",
   "subhead",
+  // Component-specific aliases removed 2026-05-08 Phase S1.
   "modal-title",
   "row-emphasis",
   "table-header",
@@ -128,6 +130,8 @@ const DEPRECATED_ALIAS_NAMES = [
   "form-helper",
   "select-label",
   "select-item",
+  // Duplicate row tokens removed 2026-05-14 (consolidated into text-row).
+  "caption",
 ] as const;
 const DEPRECATED_ALIAS_RE = new RegExp(
   `\\btext-(?:${DEPRECATED_ALIAS_NAMES.join("|")})\\b`,
@@ -142,7 +146,8 @@ const PREFERRED_TOKEN_NAMES = [
   "text-body",
   "text-row",
   "text-emphasis",
-  "text-caption",
+  "text-list-primary",
+  "text-list-body",
   "text-label",
   "text-helper",
   "text-error",
@@ -298,8 +303,8 @@ describe("semantic typography drift guard", () => {
     const lines: string[] = [
       "Use preferred visual-hierarchy typography tokens instead:",
       "  text-display, text-title, text-header, text-subheader,",
-      "  text-body, text-row, text-emphasis, text-caption, text-label,",
-      "  text-helper, text-error.",
+      "  text-body, text-row, text-emphasis, text-list-primary,",
+      "  text-list-body, text-label, text-helper, text-error.",
       "",
       "See `/style-guide/typography` for the visual reference,",
       "`docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md` for the deprecated-alias",

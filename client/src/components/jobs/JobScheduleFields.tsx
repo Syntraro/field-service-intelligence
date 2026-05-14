@@ -364,7 +364,7 @@ export function JobScheduleFields({
         </Label>
         <div className="flex flex-wrap gap-1.5">
           {value.assignedTechnicianIds.length === 0 && (
-            <span className="text-xs text-muted-foreground italic leading-6">Unassigned</span>
+            <span className="text-helper text-muted-foreground italic leading-6">Unassigned</span>
           )}
           {value.assignedTechnicianIds.map((techId) => {
             const tech = technicianOptions.find(t => t.id === techId);
@@ -406,7 +406,7 @@ export function JobScheduleFields({
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
-              <div className="text-xs font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
+              <div className="text-helper font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
                 Select team member
               </div>
               {(() => {
@@ -415,7 +415,7 @@ export function JobScheduleFields({
                 );
                 if (available.length === 0) {
                   return (
-                    <div className="text-xs text-muted-foreground px-2 py-2">
+                    <div className="text-helper text-muted-foreground px-2 py-2">
                       No available team members
                     </div>
                   );

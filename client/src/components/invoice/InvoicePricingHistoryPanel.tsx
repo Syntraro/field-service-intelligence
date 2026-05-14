@@ -72,7 +72,7 @@ function PricingRow({
           <span className="tabular-nums">{format(new Date(item.date), "MMM d, yyyy")}</span>
         </p>
       </div>
-      <span className="shrink-0 text-row-emphasis tabular-nums text-text-primary">
+      <span className="shrink-0 text-emphasis tabular-nums text-text-primary">
         {formatCurrency(item.unitPrice)}
       </span>
     </div>

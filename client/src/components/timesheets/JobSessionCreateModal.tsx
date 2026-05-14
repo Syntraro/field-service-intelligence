@@ -522,7 +522,7 @@ export function JobSessionCreateModal({
                           <Loader2 className="h-4 w-4 animate-spin" />
                         </div>
                       ) : (jobQuery.data ?? []).length === 0 ? (
-                        <p className="p-3 text-xs text-muted-foreground">No matches.</p>
+                        <p className="p-3 text-helper text-muted-foreground">No matches.</p>
                       ) : (
                         (jobQuery.data ?? []).map((job) => (
                           <button
@@ -537,7 +537,7 @@ export function JobSessionCreateModal({
                               {job.locationName ? `· ${job.locationName}` : ""}
                             </p>
                             {job.summary && (
-                              <p className="truncate text-xs text-muted-foreground">
+                              <p className="truncate text-helper text-muted-foreground">
                                 {job.summary}
                               </p>
                             )}

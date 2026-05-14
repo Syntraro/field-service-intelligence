@@ -103,7 +103,7 @@ export default function CustomFieldsPage() {
             </Button>
           </div>
           {atLimit && (
-            <p className="text-xs text-muted-foreground px-1">Maximum of 20 fields reached.</p>
+            <p className="text-helper text-muted-foreground px-1">Maximum of 20 fields reached.</p>
           )}
           {/* Filter tabs */}
           <div className="flex gap-1 pt-2">
@@ -134,7 +134,7 @@ export default function CustomFieldsPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b text-left text-muted-foreground text-xs">
+                  <tr className="border-b text-left text-muted-foreground text-helper">
                     <th className="px-4 py-2 font-medium">Label</th>
                     <th className="px-4 py-2 font-medium">Applies To</th>
                     <th className="px-4 py-2 font-medium">Searchable</th>
@@ -157,7 +157,7 @@ export default function CustomFieldsPage() {
                         {d.searchable ? (
                           <span className="flex items-center gap-1 text-xs text-emerald-600"><Search className="h-3 w-3" /> Yes</span>
                         ) : (
-                          <span className="text-xs text-muted-foreground">No</span>
+                          <span className="text-helper text-muted-foreground">No</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5">

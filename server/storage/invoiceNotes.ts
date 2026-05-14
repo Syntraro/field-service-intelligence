@@ -9,9 +9,8 @@ import { resolveTechnicianName } from "../lib/resolveTechnicianName";
  *
  * 2026-05-03: introduced as the canonical first-class invoice notes
  * surface. Previously the invoice detail page borrowed entity-owned
- * notes from the linked job (when present) and fell back to the flat
- * `invoices.notes_internal` column otherwise — neither path supported
- * attachments cleanly nor worked for no-job invoices.
+ * notes from the linked job (when present) and fell back to the
+ * deprecated `notes_internal` column (dropped 2026-05-14) otherwise.
  *
  * This repository is a direct port of `JobNotesRepository` minus the
  * equipment-linkage validation (invoices don't carry equipment context).

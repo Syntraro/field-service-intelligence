@@ -91,8 +91,8 @@ describe("ReceivablesPage", () => {
     expect(receivablesPage).toMatch(/<InvoicesWorkspaceTab/);
   });
 
-  it("does not carry font-semibold on text-page-title", () => {
-    expect(receivablesPage).not.toMatch(/text-page-title font-semibold/);
+  it("does not carry font-semibold on text-title", () => {
+    expect(receivablesPage).not.toMatch(/text-title font-semibold/);
   });
 
   it("does NOT import or render QueueTab", () => {
@@ -470,8 +470,8 @@ describe("InvoiceListPanel", () => {
   });
 
   it("SummaryCard metric value uses font-medium, not font-bold (canonical typography)", () => {
-    expect(invoiceListPanel).toMatch(/text-page-title font-medium/);
-    expect(invoiceListPanel).not.toMatch(/text-page-title font-bold/);
+    expect(invoiceListPanel).toMatch(/text-title font-medium/);
+    expect(invoiceListPanel).not.toMatch(/text-title font-bold/);
   });
 });
 
@@ -483,7 +483,7 @@ describe("InsightsTab", () => {
     expect(insightsTab).toMatch(/data-testid="insights-tab-coming-soon"/);
     expect(insightsTab).toMatch(/Coming soon/);
     expect(insightsTab).not.toMatch(/MOCK_METRICS/);
-    expect(insightsTab).not.toMatch(/text-page-title font-semibold/);
+    expect(insightsTab).not.toMatch(/text-title font-semibold/);
   });
 });
 

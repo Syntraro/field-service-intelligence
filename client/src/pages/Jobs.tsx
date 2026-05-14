@@ -19,7 +19,6 @@ import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-f
 import { apiRequest } from "@/lib/queryClient";
 import { useLocation, useSearch } from "wouter";
 import {
-  Plus,
   Calendar as CalendarIcon,
   Search, ArrowLeft,
 } from "lucide-react";
@@ -95,9 +94,9 @@ function formatCurrency(amount: number): string {
 function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
   return (
     <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
-      <div className="text-caption font-medium text-slate-500 mb-1">{label}</div>
-      <div className="text-page-title font-bold text-slate-900 tabular-nums">{value}</div>
-      <div className="text-caption text-slate-500 mt-1">{note}</div>
+      <div className="text-row font-medium text-slate-500 mb-1">{label}</div>
+      <div className="text-title font-bold text-slate-900 tabular-nums">{value}</div>
+      <div className="text-row text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -538,17 +537,16 @@ export default function Jobs() {
         {/* ── 1. Header Row ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-page-title font-semibold text-slate-900">Jobs</h1>
+            <h1 className="text-title font-semibold text-slate-900">Jobs</h1>
             <p className="text-row text-slate-500 mt-0.5">Job activity and performance overview with full job list.</p>
           </div>
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              className="gap-1.5 h-9 rounded-md"
+              className="gap-1.5"
               onClick={() => setShowCreateDialog(true)}
               data-testid="button-new-job"
             >
-              <Plus className="h-4 w-4" />
               New Job
             </Button>
           </div>
@@ -635,7 +633,7 @@ export default function Jobs() {
               )}
             </>
           ) : (
-            <Button variant="ghost" size="sm" className="h-7 text-caption gap-1" onClick={() => setIsHistoryMode(false)}>
+            <Button variant="ghost" size="sm" className="h-7 text-row gap-1" onClick={() => setIsHistoryMode(false)}>
               <ArrowLeft className="h-3.5 w-3.5" />
               Back to recent jobs
             </Button>
@@ -654,7 +652,7 @@ export default function Jobs() {
         {!isHistoryMode && searchQuery.trim().length > 0 && (
           <button
             onClick={() => setIsHistoryMode(true)}
-            className="w-full py-1.5 text-center text-caption text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-md transition-colors"
+            className="w-full py-1.5 text-center text-row text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-md transition-colors"
           >
             Not finding a job? <span className="font-medium underline underline-offset-2">Search all job history</span>
           </button>

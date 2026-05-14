@@ -1988,11 +1988,6 @@ export const invoices = pgTable("invoices", {
   sentAt: timestamp("sent_at"), // When invoice was sent to client
   sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: "set null" }), // Who sent the invoice
   viewedAt: timestamp("viewed_at"), // When client viewed the invoice
-  // Notes (legacy columns — Phase 2 will drop after import pipeline cutover)
-  // TODO(Phase 2): notesInternal — legacy QBO PrivateNote / import snapshot; stop writing, then DROP
-  notesInternal: text("notes_internal"),
-  // TODO(Phase 2): notesCustomer — backfilled → clientMessage (migration 2026_05_13); stop writing, then DROP
-  notesCustomer: text("notes_customer"),
   // 2026-05-03: canonical invoice title/summary. Short, editable, used
   // as the page-level header label. Distinct from workDescription
   // (long body) and from the linked job's summary (separate entity).
@@ -2058,6 +2053,7 @@ export const invoices = pgTable("invoices", {
   followUpAt: timestamp("follow_up_at"),           // user-scheduled next-action; NOT cleared on paid
   promisedPaymentAt: timestamp("promised_payment_at"), // set when promise_to_pay note created; cleared on paid
   isDisputed: boolean("is_disputed").notNull().default(false), // set when dispute note created; cleared on paid
+  lastContactedAt: timestamp("last_contacted_at"),  // set when communication note created; used by no-recent-contact view
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync (legacy)
   // 2026-04-09: isActive + deletedAt REMOVED — invoices use permanent-delete model.
@@ -2247,9 +2243,8 @@ export type InvoiceLine = typeof invoiceLines.$inferSelect;
 // behavior, same R2 attachment plumbing — extending the existing
 // fileUploadService adapter map covers the upload pipeline. Invoice
 // notes live and die with the invoice (cascade on delete), independent
-// of any job. `notesInternal` stays on the invoices table for QBO
-// `PrivateNote` mapping + import snapshots, but is no longer the
-// primary user-facing notes surface.
+// of any job. The legacy `notes_internal` / `notes_customer` columns
+// on the invoices table have been dropped (migration 2026_05_14).
 export const invoiceNotes = pgTable("invoice_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -7863,6 +7858,7 @@ export const receivablesNoteTypeEnum = [
   "dispute",
   "escalation",
   "payment_received",
+  "communication",
 ] as const;
 export type ReceivablesNoteType = (typeof receivablesNoteTypeEnum)[number];
 
@@ -7877,6 +7873,9 @@ export const receivablesNotes = pgTable("receivables_notes", {
   noteText: text("note_text").notNull(),
   promisedAt: timestamp("promised_at"),
   contactMethod: text("contact_method"),
+  outcome: text("outcome"),
+  contactPersonId: varchar("contact_person_id").references(() => contactPersons.id, { onDelete: "set null" }),
+  communicatedAt: timestamp("communicated_at", { withTimezone: true }),
   createdBySystem: boolean("created_by_system").notNull().default(false),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -7905,6 +7904,9 @@ export const insertReceivablesNoteSchema = createInsertSchema(receivablesNotes).
   noteType: z.enum(receivablesNoteTypeEnum),
   promisedAt: z.string().datetime({ offset: true }).nullable().optional(),
   contactMethod: z.string().max(100).nullable().optional(),
+  outcome: z.string().max(100).nullable().optional(),
+  contactPersonId: z.string().uuid().nullable().optional(),
+  communicatedAt: z.string().datetime({ offset: true }).nullable().optional(),
 });
 
 export const updateReceivablesNoteSchema = z.object({
@@ -7912,6 +7914,9 @@ export const updateReceivablesNoteSchema = z.object({
   noteType: z.enum(receivablesNoteTypeEnum).optional(),
   promisedAt: z.string().datetime({ offset: true }).nullable().optional(),
   contactMethod: z.string().max(100).nullable().optional(),
+  outcome: z.string().max(100).nullable().optional(),
+  contactPersonId: z.string().uuid().nullable().optional(),
+  communicatedAt: z.string().datetime({ offset: true }).nullable().optional(),
 });
 
 export type InsertReceivablesNoteInput = z.infer<typeof insertReceivablesNoteSchema>;

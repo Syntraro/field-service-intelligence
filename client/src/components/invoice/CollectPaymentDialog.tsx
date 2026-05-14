@@ -308,16 +308,19 @@ export function CollectPaymentDialog({
 
   const validationError = (() => {
     if (selectedDrafts.length === 0) return "Select at least one invoice to apply payment to.";
-    if (totalCents <= 0) return "Total payment amount must be greater than zero.";
     if (!isCardMode && !transactionDate) return "Transaction date is required.";
     for (const d of selectedDrafts) {
       const inv = invoicesById.get(d.invoiceId);
       if (!inv) continue;
       const amt = parseFloat(d.amount || "0");
-      if (!Number.isFinite(amt) || amt <= 0) {
-        return `Enter an amount for invoice ${inv.invoiceNumber ?? "—"}.`;
+      if (!Number.isFinite(amt) || amt < 0) {
+        return `Amount for invoice ${inv.invoiceNumber ?? "—"} cannot be negative.`;
       }
       const balance = parseFloat(inv.balance ?? "0");
+      // Zero allocation is only valid when the invoice balance is also zero.
+      if (amt === 0 && balance > 0) {
+        return `Enter an amount for invoice ${inv.invoiceNumber ?? "—"}.`;
+      }
       if (amt > balance + 0.0049) {
         return `Allocation $${amt.toFixed(2)} exceeds invoice ${inv.invoiceNumber ?? "—"} balance $${balance.toFixed(2)}.`;
       }
@@ -335,7 +338,7 @@ export function CollectPaymentDialog({
 
   // ── Manual save mutation. ──
   type CollectPaymentResponse = {
-    payment: { id: string; amount: string };
+    payment: { id: string | null; amount: string } | null;
     invoices: Array<{ id: string; status: string; balance: string }>;
     receiptEmailRequested: boolean;
     receiptEmailQueued: boolean;
@@ -484,32 +487,28 @@ export function CollectPaymentDialog({
 
         {/* Body — scrolls between header + sticky footer. */}
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-3">
-          {/* Compact total summary. */}
+          {/* Payment summary — two neutral cards side by side. */}
           <div
-            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2"
+            className="grid grid-cols-2 gap-3"
             data-testid="collect-payment-total-summary"
           >
-            <p className="text-[10px] uppercase tracking-wide text-emerald-700 font-semibold">
-              Total payment
-            </p>
-            <p className="text-2xl font-bold text-emerald-900 tabular-nums leading-tight">
-              {formatCurrency(totalAmount)}
-            </p>
-            {context && (
-              <p className="text-[11px] text-emerald-800 mt-0.5">
-                Account balance:{" "}
-                <span className="tabular-nums font-medium">
-                  {formatCurrency(context.accountBalance)}
-                </span>
-                {selectedDrafts.length > 0 && (
-                  <>
-                    {" · "}
-                    {selectedDrafts.length} invoice
-                    {selectedDrafts.length === 1 ? "" : "s"} selected
-                  </>
-                )}
+            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+              <p className="text-label text-muted-foreground mb-0.5">Total payment</p>
+              <p className="text-xl font-semibold text-slate-900 tabular-nums leading-tight">
+                {formatCurrency(totalAmount)}
               </p>
-            )}
+              {selectedDrafts.length > 0 && (
+                <p className="text-helper text-muted-foreground mt-0.5">
+                  {selectedDrafts.length} invoice{selectedDrafts.length === 1 ? "" : "s"} selected
+                </p>
+              )}
+            </div>
+            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+              <p className="text-label text-muted-foreground mb-0.5">Account balance</p>
+              <p className="text-xl font-semibold text-slate-900 tabular-nums leading-tight">
+                {context ? formatCurrency(context.accountBalance) : "—"}
+              </p>
+            </div>
           </div>
 
           {/* Method + date row. Two-column on md+; stacked on mobile. */}
@@ -575,18 +574,18 @@ export function CollectPaymentDialog({
           {/* Outstanding invoices list. */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <h3 className="text-xs font-semibold text-slate-900 uppercase tracking-wide">
+              <h3 className="text-caption font-semibold text-slate-900">
                 Outstanding invoices
               </h3>
               {context && (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-caption text-muted-foreground">
                   {context.invoices.length} outstanding
                 </span>
               )}
             </div>
 
             {contextLoading ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground py-4 justify-center">
+              <div className="flex items-center gap-2 text-helper text-muted-foreground py-4 justify-center">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Loading…
               </div>
@@ -622,13 +621,13 @@ export function CollectPaymentDialog({
                           data-testid={`collect-payment-select-${inv.id}`}
                         />
                       </div>
-                      <div className="flex-1 min-w-0 text-[11px] space-y-0.5">
+                      <div className="flex-1 min-w-0 space-y-0.5">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <a
                             href={`/invoices/${inv.id}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="font-semibold text-slate-900 hover:text-primary"
+                            className="text-caption font-semibold text-slate-900 hover:text-primary"
                           >
                             #{inv.invoiceNumber ?? inv.id.slice(0, 8)}
                           </a>
@@ -638,12 +637,12 @@ export function CollectPaymentDialog({
                             </Badge>
                           )}
                           {inv.dueDate && (
-                            <span className="text-muted-foreground">
+                            <span className="text-caption text-muted-foreground">
                               Due {format(new Date(inv.dueDate), "MMM d, yyyy")}
                             </span>
                           )}
                         </div>
-                        <div className="text-muted-foreground tabular-nums">
+                        <div className="text-caption text-muted-foreground tabular-nums">
                           Total {formatCurrency(inv.total)} · Balance{" "}
                           <span className="font-medium text-slate-800">
                             {formatCurrency(inv.balance)}
@@ -658,7 +657,7 @@ export function CollectPaymentDialog({
                           onChange={(e) => setDraft(inv.id, { amount: e.target.value })}
                           disabled={!draft.selected || isCardMode && !!cardIntent}
                           placeholder="0.00"
-                          className="text-right tabular-nums h-8 text-xs"
+                          className="text-right tabular-nums h-8 text-caption"
                           aria-label={`Payment amount for invoice ${inv.invoiceNumber ?? ""}`}
                           data-testid={`collect-payment-amount-${inv.id}`}
                         />
@@ -721,7 +720,7 @@ export function CollectPaymentDialog({
                       </AlertDescription>
                     </Alert>
                   ) : cardIntentMutation.isPending ? (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                    <div className="flex items-center gap-2 text-helper text-muted-foreground py-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       Preparing secure payment…
                     </div>

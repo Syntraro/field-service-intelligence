@@ -42,6 +42,7 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+import * as archiver from "archiver";
 // 2026-05-03: tenant tax-registration identity (multi-row).
 // Loaded alongside the company row and passed to the PDF service so
 // every active registration renders as its own line under the
@@ -634,6 +635,7 @@ router.post(
           tenantId: companyId,
           invoiceId,
           createdByUserId: userId,
+          manual: true,
         });
         succeeded.push(invoiceId);
       } catch (err: any) {
@@ -654,6 +656,98 @@ router.post(
       skipped,
       failed,
     });
+  }),
+);
+
+// POST /api/invoices/bulk-pdf
+//
+// Returns a ZIP archive containing one PDF per requested invoice.
+// Reuses the canonical generateInvoicePdf() service — no duplicate PDF
+// logic here. Company-level data (branding, settings, tax registrations)
+// is fetched once and shared across all invoices in the batch.
+//
+// Registered BEFORE any /:id/* routes so Express does not treat the
+// path segment "bulk-pdf" as an invoice-id lookup.
+//
+// Hard cap at 50 invoices per request to bound memory and latency.
+const bulkPdfSchema = z.object({
+  invoiceIds: z.array(z.string().uuid()).min(1).max(50),
+}).strict();
+
+router.post(
+  "/bulk-pdf",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { invoiceIds } = validateSchema(bulkPdfSchema, req.body);
+    const companyId = req.companyId!;
+
+    const [company, tenantSettings, taxRegistrations] = await Promise.all([
+      storage.getCompanyById(companyId),
+      storage.getCompanySettings(companyId),
+      companyTaxRegistrationRepository.list(companyId),
+    ]);
+    if (!company) throw createError(500, "Company not found");
+
+    const { resolveInvoiceDisplayPolicy } = await import("@shared/invoiceDisplayPolicy");
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="Invoices-${dateStr}.zip"`);
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    archive.pipe(res);
+
+    for (const invoiceId of invoiceIds) {
+      const invoice = await storage.getInvoice(companyId, invoiceId);
+      if (!invoice) continue;
+
+      const [lines, location] = await Promise.all([
+        storage.getInvoiceLines(companyId, invoiceId),
+        storage.getClient(companyId, invoice.locationId),
+      ]);
+      if (!location) continue;
+
+      let customerCompany = null;
+      const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
+      if (customerCompanyId) {
+        customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
+      }
+      let jobNumber: string | null = null;
+      if (invoice.jobId) {
+        const job = await storage.getJob(companyId, invoice.jobId);
+        jobNumber = job?.jobNumber ? String(job.jobNumber) : null;
+      }
+
+      const policy = resolveInvoiceDisplayPolicy({
+        tenantSettings: tenantSettings as any,
+        invoice: invoice as any,
+      });
+
+      const pdfBuffer = await generateInvoicePdf({
+        invoice: invoice as any,
+        lines,
+        company,
+        location: {
+          companyName: location.companyName ?? "",
+          address: location.address,
+          address2: location.address2,
+          city: location.city,
+          provinceState: location.province,
+          postalCode: location.postalCode,
+          phone: location.phone,
+          email: location.email,
+        },
+        customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
+        taxRegistrations,
+        policy,
+        jobNumber,
+      });
+
+      const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;
+      archive.append(pdfBuffer, { name: filename });
+    }
+
+    await archive.finalize();
   }),
 );
 
@@ -1560,6 +1654,86 @@ router.post(
       body: rendered.body,
       recipients: recipients ?? [],
     });
+  }),
+);
+
+// POST /api/invoices/:id/render-reminder-email — Preview rendered reminder WITHOUT sending.
+// Same data path as render-email but uses the "invoice_reminder" template row/default.
+router.post(
+  "/:id/render-reminder-email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+
+    const data = await templateDataBuilder.buildInvoiceTemplateData(tenantId, invoiceId);
+    const rendered = await communicationTemplatesService.renderTemplateForEntity(
+      tenantId,
+      "invoice_reminder",
+      "email",
+      data,
+    );
+    if (!rendered) {
+      throw createError(500, "No template or default available for invoice reminder email");
+    }
+
+    res.json({ subject: rendered.subject, body: rendered.body });
+  }),
+);
+
+// POST /api/invoices/:id/send-reminder-email — Send an invoice reminder with optional
+// subject/body/recipient overrides. Called by the Receivables "Send Reminder" modal.
+// Uses templateEntityType "invoice_reminder" so the reminder template is rendered.
+// No status transition — reminders are communication events only.
+const sendReminderEmailBodySchema = z.object({
+  recipients: z.array(z.string().email()).min(1),
+  cc: z.array(z.string().email()).optional(),
+  subjectOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "subjectOverride cannot be blank" }),
+  bodyOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "bodyOverride cannot be blank" }),
+}).strict();
+
+router.post(
+  "/:id/send-reminder-email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+
+    const invoice = await storage.getInvoice(tenantId, invoiceId);
+    if (!invoice) throw createError(404, "Invoice not found");
+
+    const { recipients, cc, subjectOverride, bodyOverride } = validateSchema(
+      sendReminderEmailBodySchema,
+      req.body ?? {},
+    );
+
+    const dispatch = await emailDispatchService.sendInvoiceEmail({
+      tenantId,
+      invoiceId,
+      recipients,
+      cc,
+      subjectOverride,
+      bodyOverride,
+      attachPdf: true,
+      createdByUserId: req.user?.id ?? null,
+      templateEntityType: "invoice_reminder",
+    });
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "invoice.reminder_sent",
+      entityType: "invoice",
+      entityId: invoiceId,
+      summary: `Reminder sent for invoice #${invoice.invoiceNumber}`,
+      meta: { invoiceNumber: invoice.invoiceNumber, recipients: dispatch.recipients },
+    });
+
+    res.json({ dispatch: { emailId: dispatch.emailId } });
   }),
 );
 

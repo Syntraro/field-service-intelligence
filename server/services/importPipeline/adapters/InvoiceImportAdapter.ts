@@ -26,8 +26,9 @@
  *     pollution (productId stays null). "Imported Expense" is skipped —
  *     the Jobber invoice export does not expose a distinct expense total;
  *     the jobs export does, so that's JobImportAdapter's domain.
- *   • Raw source detail is snapshotted into `invoices.notesInternal` so
- *     the human-readable breakdown is always recoverable after import.
+ *   • Import provenance (source invoice #, job #, line-item text) is written
+ *     into `workDescription` on the created invoice so the breakdown is
+ *     visible without any legacy column dependency.
  */
 
 import { eq, and, inArray, isNotNull } from "drizzle-orm";
@@ -772,8 +773,7 @@ export const invoiceImportAdapter: ImportAdapter<
     // AND the parsed amounts sum to the source subtotal within $0.05, write
     // one canonical line per item. Otherwise fall back to the original
     // single summarized "Imported Line Item" — imports never fail on
-    // unrecognised line-items text. Parser warnings are appended to the
-    // notesInternal snapshot so the user has them after commit too.
+    // unrecognised line-items text.
     const lineItemParseWarnings: string[] = [];
     const parse = parseJobberLineItems(row.lineItemsText);
     let lines: InvoiceLinePayload[];
@@ -802,33 +802,6 @@ export const invoiceImportAdapter: ImportAdapter<
         );
       }
     }
-
-    // ---- Notes snapshot --------------------------------------------------
-    const noteParts: string[] = ["--- Imported Historical Invoice Details ---"];
-    if (row.invoiceNumber) noteParts.push(`Source Invoice #: ${row.invoiceNumber}`);
-    if (row.jobNumbers) noteParts.push(`Source Job #(s): ${row.jobNumbers}`);
-    if (row.status) noteParts.push(`Source Status: ${row.status}`);
-    if (row.subject) noteParts.push(`Subject: ${row.subject}`);
-    if (row.lineItemsText) noteParts.push(`Line Items: ${row.lineItemsText}`);
-    if (row.subtotal) noteParts.push(`Pre-tax Total: $${row.subtotal}`);
-    if (row.taxAmount) noteParts.push(`Tax: $${row.taxAmount}`);
-    if (row.total) noteParts.push(`Total: $${row.total}`);
-    if (row.balance) noteParts.push(`Balance: $${row.balance}`);
-    if (row.deposit) noteParts.push(`Deposit: $${row.deposit}`);
-    if (row.discount) noteParts.push(`Discount: $${row.discount}`);
-    if (row.paidDate) noteParts.push(`Marked Paid: ${row.paidDate}`);
-    if (row.visitsAssignedTo) noteParts.push(`Visits Assigned To: ${row.visitsAssignedTo}`);
-    if (row.billingStreet || row.billingCity) {
-      const billAddr = [row.billingStreet, row.billingCity, row.billingProvince, row.billingPostalCode]
-        .filter(Boolean)
-        .join(", ");
-      if (billAddr) noteParts.push(`Billing Address: ${billAddr}`);
-    }
-    if (lineItemParseWarnings.length > 0) {
-      noteParts.push("", "--- Line-Item Parse Notes ---");
-      for (const w of lineItemParseWarnings) noteParts.push(`• ${w}`);
-    }
-    const notesInternal = noteParts.join("\n");
 
     // ---- Invoice-number collision → drop the override ---------------------
     const existingRow = await tx
@@ -863,7 +836,6 @@ export const invoiceImportAdapter: ImportAdapter<
         amountPaid: amountPaidN.toFixed(2),
         balance: balanceStr,
         workDescription: row.subject ?? null,
-        notesInternal,
       },
       lines,
       "IMPORT_ROUTE",

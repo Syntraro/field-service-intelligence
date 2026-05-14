@@ -359,7 +359,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
             <div className="border-t px-4 pb-4 pt-3 space-y-3 text-sm">
               {!pmTemplate ? (
                 <div className="text-center py-2 space-y-3">
-                  <p className="text-muted-foreground text-xs">No PM schedule configured for this location.</p>
+                  <p className="text-muted-foreground text-helper">No PM schedule configured for this location.</p>
                   {/* PM Phase 2B: Route creation to the dedicated wizard */}
                   <Button
                     size="sm"
@@ -476,7 +476,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                     <div className="pt-0.5">
                       <button
                         type="button"
-                        className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                        className="text-helper text-muted-foreground hover:text-destructive transition-colors"
                         onClick={() => setHardDeleteDialogOpen(true)}
                         data-testid="pm-hard-delete-btn"
                       >

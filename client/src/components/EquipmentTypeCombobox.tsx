@@ -144,20 +144,20 @@ export function EquipmentTypeCombobox({
               }
             }}
             placeholder="Search or type to add..."
-            className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent text-helper outline-none placeholder:text-muted-foreground"
             data-testid="input-equipment-type-search"
           />
         </div>
         <div className="max-h-[220px] overflow-y-auto p-1" style={{ scrollbarWidth: "thin" }}>
           {isLoading ? (
-            <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
+            <div className="flex items-center justify-center py-3 text-helper text-muted-foreground">
               <Loader2 className="mr-2 h-3 w-3 animate-spin" />
               Loading types...
             </div>
           ) : (
             <>
               {filtered.length === 0 && !canCreate && (
-                <div className="py-3 text-center text-xs text-muted-foreground">
+                <div className="py-3 text-center text-helper text-muted-foreground">
                   {types.length === 0 ? "No types yet — start typing to add one." : "No matches."}
                 </div>
               )}

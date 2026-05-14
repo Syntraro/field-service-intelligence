@@ -206,7 +206,7 @@ function SettingsLinkCard({ card }: { card: LinkCard }) {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">{card.title}</p>
-          <p className="text-xs text-muted-foreground">{card.description}</p>
+          <p className="text-helper text-muted-foreground">{card.description}</p>
         </div>
         <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
       </CardContent>
@@ -457,7 +457,7 @@ function RegionalFields({ registerSave }: { registerSave: (fn: () => void) => vo
   return (
     <Card className="shadow-sm">
       <CardContent className="pt-4 space-y-3">
-        <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+        <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
           <Globe className="h-3.5 w-3.5" /> Regional
         </p>
         <div className="grid grid-cols-2 gap-3">
@@ -568,7 +568,7 @@ export default function SettingsPage() {
     <div className="p-6 max-w-7xl mx-auto space-y-6" data-testid="settings-page">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
+        <h1 className="text-title">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">Manage your application preferences</p>
       </div>
 

@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
  * UI typography standard (see docs/UI_TYPOGRAPHY.md).
  *
  * Phase C (2026-04-29): DialogDescription default migrated to
- * canonical `text-caption text-text-muted`.
+ * canonical `text-row text-text-muted`.
  * Phase E (2026-05-03): DialogTitle default migrated to canonical
  * `text-modal-title leading-none tracking-tight text-[#0F172A]`.
  *
@@ -148,7 +148,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn("text-caption text-text-muted", className)}
+    className={cn("text-row text-text-muted", className)}
     {...props}
   />
 ))

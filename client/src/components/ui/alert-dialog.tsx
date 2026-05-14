@@ -3,7 +3,7 @@
  *
  * 2026-05-06 modal canonicalization:
  *  - Title default migrated from `text-lg font-semibold` (legacy
- *    shadcn) to canonical `text-section-title font-semibold
+ *    shadcn) to canonical `text-header font-semibold
  *    text-slate-900 leading-snug tracking-tight` — same triple
  *    `ModalTitle` locks. Every existing AlertDialog consumer gains
  *    canonical typography by inheritance with zero call-site changes.
@@ -109,7 +109,7 @@ const AlertDialogTitle = React.forwardRef<
   <AlertDialogPrimitive.Title
     ref={ref}
     className={cn(
-      "text-section-title font-semibold text-slate-900 leading-snug tracking-tight",
+      "text-header font-semibold text-slate-900 leading-snug tracking-tight",
       className,
     )}
     {...props}

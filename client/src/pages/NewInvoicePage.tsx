@@ -60,7 +60,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 // 2026-05-08 (create-page rail canonicalization): Eye icon for the
 // Visibility tab, mirrors the saved Invoice detail page rail.
-import { Eye } from "lucide-react";
+import { Eye, MessageSquare } from "lucide-react";
 // 2026-05-08 (create-page rail canonicalization): mount the same canonical
 // `<DetailRightRail>` the saved Invoice detail page uses. Create mode
 // hosts only the Visibility tab — Notes and Payments both need a saved
@@ -837,8 +837,8 @@ export default function NewInvoicePage() {
           rides up the right side. CanonicalDetailHeader stays inline
           inside the body wrapper so it scrolls with content (matches
           the saved page's single-scroll layout). The prior
-          "Save invoice before adding notes" placeholder card is gone —
-          notes simply aren't a tab in create mode. */}
+          Notes placeholder card renders below the client message card
+          in the left column (data-testid="invoice-notes-save-first"). */}
       <div
         className="flex h-full flex-col lg:flex-row bg-app-bg"
         data-testid="new-invoice-page"
@@ -1044,6 +1044,26 @@ export default function NewInvoicePage() {
               saveButtonTestId="button-save-client-message"
               disabled={!selectedLocation}
             />
+
+            {/* Notes placeholder — invoices require a saved invoiceId before
+                notes can be written via POST /api/invoices/:id/notes. This
+                card matches the DraftNotesCard / EntityNotesSection header
+                chrome so the right side of the page looks consistent with
+                the saved Invoice detail page. */}
+            <div
+              className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card"
+              data-testid="invoice-notes-save-first"
+            >
+              <div className="flex items-center px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]">
+                <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-[#64748b]" />
+                  Notes
+                </span>
+              </div>
+              <div className="px-3 py-4 text-center text-muted-foreground">
+                <p className="text-xs">Save the invoice before adding notes.</p>
+              </div>
+            </div>
           </div>
         </div>
         {/* ═══ /LEFT COLUMN ═══ */}
@@ -1052,9 +1072,9 @@ export default function NewInvoicePage() {
             2026-05-08 (create-page rail canonicalization): canonical
             <DetailRightRail> aside replaces the prior stacked-cards
             rightRail slot. Visibility is the only valid tab in create
-            mode; the prior "Save invoice before adding notes"
-            placeholder card was retired (notes simply aren't a tab
-            here). The rail rides the full right side, mirroring the
+            mode. The notes placeholder lives in the left column below
+            the client message card. The rail rides the full right side,
+            mirroring the
             saved Invoice detail page. */}
         <aside
           className={cn(

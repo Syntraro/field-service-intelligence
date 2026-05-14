@@ -13,14 +13,14 @@
  *   - Job ("job" variant) uses heavier label typography
  *     (`font-semibold` + `tracking-[0.08em]`) and a heavier
  *     location-name weight (`text-row font-semibold`, NOT the
- *     canonical `text-row-emphasis` which is weight 500). Every
+ *     canonical `text-emphasis` which is weight 500). Every
  *     line carries `truncate`. The whole block is hidden when no
  *     values are set. The wrapper has `mb-3` so the section breathes
  *     against the metadata stack below.
  *
  *   - Invoice ("invoice" variant) uses the canonical `text-label`
  *     token defaults (weight 500, tracking 0.04em) and renders the
- *     location name as `text-row-emphasis text-text-primary`. No
+ *     location name as `text-emphasis text-text-primary`. No
  *     `truncate`. No wrapper margin because the parent
  *     `InvoiceMetaCard` lays the two blocks out with explicit
  *     `<div className="my-2 border-t …" />` dividers.
@@ -132,7 +132,7 @@ export function AddressBlock({
       <div className="text-label uppercase text-text-muted mb-0.5">{label}</div>
       {locationName && (
         <div
-          className="text-row-emphasis text-text-primary"
+          className="text-emphasis text-text-primary"
           data-testid={testId}
         >
           {locationName}

@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
  * `<TableHead>` overrides with `text-label` separately (see below).
  */
 // 2026-05-03 Phase E: root table size migrated from `text-row` (15px)
-// to the dedicated `text-table-cell` semantic role token. Pixel-
+// to the dedicated `text-row` semantic role token. Pixel-
 // identical (alias of text-row). Cells inherit this root size; the
 // rename makes table-row content semantically distinct from generic
 // row content (e.g., card row metadata) so future tweaks don't
@@ -24,7 +24,7 @@ const Table = React.forwardRef<
   <div className="relative w-full overflow-auto">
     <table
       ref={ref}
-      className={cn("w-full caption-bottom text-table-cell", className)}
+      className={cn("w-full caption-bottom text-row", className)}
       {...props}
     />
   </div>
@@ -81,7 +81,7 @@ const TableRow = React.forwardRef<
 ))
 TableRow.displayName = "TableRow"
 
-// 2026-05-03 Phase E: TableHead reads from `text-table-header`, the
+// 2026-05-03 Phase E: TableHead reads from `text-label`, the
 // canonical semantic token for table column headers (alias of
 // text-label — same 13px / 500 / 0.04em + uppercase via @layer).
 // `font-semibold` (600) overrides to a heavier weight than the
@@ -92,7 +92,7 @@ TableRow.displayName = "TableRow"
 // grep-ability and zero behavior change.
 // 2026-05-03 Phase E: migrated from `text-label` (compact uppercase
 // tracked label — used for KPI labels, "BILL TO" metadata keys, etc.)
-// to the dedicated `text-table-header` semantic role token. Both
+// to the dedicated `text-label` semantic role token. Both
 // tokens are pixel-identical (same tuple values + same `@layer
 // components` uppercase rule), so visual output is unchanged. The
 // rename makes table-header surfaces explicit so future refactors
@@ -105,7 +105,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-4 text-left align-middle text-table-header font-semibold uppercase tracking-wide text-[#4b5563] dark:text-gray-400 [&:has([role=checkbox])]:pr-0",
+      "h-10 px-4 text-left align-middle text-label font-semibold uppercase tracking-wide text-[#4b5563] dark:text-gray-400 [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}
@@ -126,17 +126,17 @@ const TableCell = React.forwardRef<
 TableCell.displayName = "TableCell"
 
 // 2026-05-03 Phase E: migrated from raw `text-sm` (17.1px) to the
-// canonical `text-caption` semantic token (14px / 20px). Captions
+// canonical `text-row` semantic token (14px / 20px). Captions
 // now read from the same token everywhere they appear in the app.
 // Slight pixel refinement (17.1px → 14px) — captions are secondary
-// metadata and `text-caption` is the canonical role.
+// metadata and `text-row` is the canonical role.
 const TableCaption = React.forwardRef<
   HTMLTableCaptionElement,
   React.HTMLAttributes<HTMLTableCaptionElement>
 >(({ className, ...props }, ref) => (
   <caption
     ref={ref}
-    className={cn("mt-4 text-caption text-muted-foreground", className)}
+    className={cn("mt-4 text-row text-muted-foreground", className)}
     {...props}
   />
 ))

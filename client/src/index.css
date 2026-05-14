@@ -399,14 +399,6 @@
   .text-label {
     @apply uppercase;
   }
-  /* 2026-05-03 Phase E: `text-table-header` is an alias of `text-label`
-   * for the table-column-header semantic role. Same uppercase rule
-   * applies — it's part of the role's identity. Without this @layer
-   * rule, table headers using `text-table-header` would render at
-   * 13px sentence case instead of 13px uppercase. */
-  .text-table-header {
-    @apply uppercase;
-  }
 
   /* ────────────────────────────────────────────────────────────────
    * 2026-05-06 — operational-action modal chrome semantic classes.

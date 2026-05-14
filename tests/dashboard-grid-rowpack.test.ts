@@ -790,7 +790,7 @@ describe("DashboardCustomizeDrawer — relocated-drag helper copy", () => {
     expect(code).toMatch(/Toggle widgets to show or hide them/);
   });
 
-  it("renders the helper copy with the canonical text-caption + text-text-muted tokens", () => {
-    expect(code).toMatch(/SheetDescription[^>]*className="text-caption text-text-muted"/);
+  it("renders the helper copy with the canonical text-row + text-text-muted tokens", () => {
+    expect(code).toMatch(/SheetDescription[^>]*className="text-row text-text-muted"/);
   });
 });

@@ -59,10 +59,10 @@ describe("ClientCollectionsModal — modal primitive", () => {
   });
 
   it("uses canonical typography tokens", () => {
-    expect(SRC).toMatch(/text-page-title/);
+    expect(SRC).toMatch(/text-title/);
     expect(SRC).toMatch(/text-label/);
     expect(SRC).toMatch(/text-helper/);
-    expect(SRC).toMatch(/text-caption/);
+    expect(SRC).toMatch(/text-row/);
   });
 
   it("does not contain hex color literals", () => {

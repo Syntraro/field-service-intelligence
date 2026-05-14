@@ -298,7 +298,7 @@ export function MembersTab({ onSelectMember }: Props) {
                         </Avatar>
                         <div className="min-w-0">
                           <p className="font-medium truncate">{getMemberDisplayName(m)}</p>
-                          <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                          <p className="text-helper text-muted-foreground truncate flex items-center gap-1">
                             <Mail className="h-3 w-3" />
                             {m.email}
                           </p>

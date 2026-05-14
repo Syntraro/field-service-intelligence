@@ -102,9 +102,9 @@ describe("Phase 4E — ContactDetailsPanel source pins", () => {
     expect(panelSrc).toMatch(/SectionLabel/);
     // No raw legacy classes in this file's body.
     expect(panelSrc).not.toMatch(/font-bold/);
-    // Phase H2 explicit: the dense right panel must NOT use text-caption
+    // Phase H2 explicit: the dense right panel must NOT use text-row
     // for secondary metadata — drop to text-helper via EntityMeta.
-    expect(panelSrc).not.toMatch(/\btext-caption\b/);
+    expect(panelSrc).not.toMatch(/\btext-row\b/);
   });
 });
 
@@ -651,7 +651,7 @@ describe("Phase H2 — ContactDetailsPanel uses canonical typography primitives"
     expect(panelSrc).not.toMatch(/\btext-base\b/);
     expect(panelSrc).not.toMatch(/\btext-lg\b/);
     expect(panelSrc).not.toMatch(/\btext-xl\b/);
-    // No heavier weights than the canonical tokens (text-row-emphasis
+    // No heavier weights than the canonical tokens (text-emphasis
     // bakes weight 500). No font-bold / font-semibold layered on top.
     expect(panelSrc).not.toMatch(/font-bold/);
     expect(panelSrc).not.toMatch(/font-semibold/);

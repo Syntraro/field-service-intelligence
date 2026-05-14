@@ -785,7 +785,7 @@ export default function PMTemplateEditorPage() {
                   <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
                 <span className="text-sm font-semibold">Line Items</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="text-helper text-muted-foreground">
                   Optional · {lineItems.length === 0 ? "none" : `${lineItems.length} item${lineItems.length === 1 ? "" : "s"}`}
                 </span>
               </div>

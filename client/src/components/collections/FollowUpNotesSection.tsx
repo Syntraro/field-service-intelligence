@@ -63,7 +63,7 @@ export function FollowUpNotesSection({ customerCompanyId, limit = 3, profilePath
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Add a follow-up note…"
-        className="text-caption min-h-[72px] resize-none"
+        className="text-row min-h-[72px] resize-none"
         data-testid="collections-note-textarea"
       />
       <Button

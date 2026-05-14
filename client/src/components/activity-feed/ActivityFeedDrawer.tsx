@@ -61,7 +61,7 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
       >
         {view === "feed" ? (
           <div className="flex items-center justify-between gap-2 px-4 h-12 border-b border-border shrink-0">
-            <h2 className="text-row-emphasis text-foreground truncate">Activity Feed</h2>
+            <h2 className="text-emphasis text-foreground truncate">Activity Feed</h2>
             <div className="flex items-center gap-0.5">
               <Button
                 variant="ghost"
@@ -98,7 +98,7 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
               </Button>
-              <h2 className="text-row-emphasis text-foreground truncate">
+              <h2 className="text-emphasis text-foreground truncate">
                 Customize Feed
               </h2>
             </div>
@@ -144,7 +144,7 @@ export function ActivityFeedDrawer({ open, onOpenChange }: ActivityFeedDrawerPro
                 className="flex flex-col items-center justify-center py-12 px-6 text-center"
                 data-testid="activity-feed-empty"
               >
-                <p className="text-row-emphasis text-foreground">No matching activity yet.</p>
+                <p className="text-emphasis text-foreground">No matching activity yet.</p>
                 <p className="text-helper text-muted-foreground mt-1">
                   Visits, payments, and quote responses will land here.
                 </p>

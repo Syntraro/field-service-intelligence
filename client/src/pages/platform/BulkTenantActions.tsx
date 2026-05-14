@@ -157,7 +157,7 @@ export function BulkTenantActions({
           </span>
         )}
 
-        <span className="text-muted-foreground text-xs mx-1">Actions:</span>
+        <span className="text-muted-foreground text-helper mx-1">Actions:</span>
 
         <Button
           size="sm"
@@ -440,7 +440,7 @@ function BulkActionDialog({
                   +14 days
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 New trial end = current trialEndsAt (or now if already expired) + extension.
               </p>
             </div>
@@ -464,7 +464,7 @@ function BulkActionDialog({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Plan name is written; subscription status moves to <span className="font-medium">active</span>.
               </p>
             </div>

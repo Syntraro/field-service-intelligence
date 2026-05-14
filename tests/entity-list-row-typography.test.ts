@@ -141,9 +141,9 @@ describe("EntityListTable.kindCellClasses — canonical typography baseline", ()
     );
     // text-list-primary bakes 15px / 20px LH / 500 — no separate font-medium needed.
     expect(primaryBranch).toMatch(/\btext-list-primary\b/);
-    expect(primaryBranch).not.toMatch(/\btext-caption\b/);
+    expect(primaryBranch).not.toMatch(/\btext-row\b/);
     expect(primaryBranch).not.toMatch(/\btext-helper\b/);
-    expect(primaryBranch).not.toMatch(/text-row-emphasis/);
+    expect(primaryBranch).not.toMatch(/text-emphasis/);
   });
 
   it("text cells apply text-list-body (normalized 2026-05-09: 15px / 20px / 400)", () => {
@@ -336,7 +336,7 @@ describe("Jobs list — column definitions use canonical row typography", () => 
     expect(locBlock).toMatch(/type:\s*"entity-primary"/);
     expect(locBlock).toMatch(/secondary:\s*\(job\)/);
     // Inverse: no manual truncate-div or hardcoded secondary class in the literal.
-    expect(locBlock).not.toMatch(/className="text-caption text-slate-500 font-normal/);
+    expect(locBlock).not.toMatch(/className="text-row text-slate-500 font-normal/);
   });
 
   it("liveJobColumns:jobNumber does not render jobType sub-line (Maintenance label removed 2026-05-09)", () => {
@@ -371,7 +371,7 @@ describe("Invoice list — column definitions use canonical row typography", () 
     expect(cols).not.toMatch(FORBIDDEN_SIZE_RE);
   });
 
-  it("Description column uses entity-text descriptor (no text-caption inline)", () => {
+  it("Description column uses entity-text descriptor (no text-row inline)", () => {
     // 2026-05-08: description migrated from customRender to entity-text.
     // The component applies text-list-body (via kindCellClasses) — no manual
     // size class in the column definition.
@@ -379,7 +379,7 @@ describe("Invoice list — column definitions use canonical row typography", () 
     const descBlock = cols.match(/id:\s*"description",[\s\S]+?(?=\{\s*id:\s*")/)?.[0] ?? "";
     expect(descBlock, "description column block must exist").toBeTruthy();
     expect(descBlock).toMatch(/type:\s*"entity-text"/);
-    expect(descBlock).not.toMatch(/text-caption/);
+    expect(descBlock).not.toMatch(/text-row/);
   });
 
   it("Client column uses entity-primary descriptor with testId (migrated from customRender 2026-05-09)", () => {
@@ -539,7 +539,7 @@ describe("Secondary metadata sub-lines — ENTITY_SECONDARY_CLASS contract", () 
     // secondary: prop triggers ENTITY_SECONDARY_CLASS inside renderCellContent.
     expect(locBlock).toMatch(/secondary:\s*\(job\)/);
     // Inverse: no hardcoded copy of the canonical secondary class string.
-    expect(locBlock).not.toMatch(/className="text-caption text-slate-500 font-normal/);
+    expect(locBlock).not.toMatch(/className="text-row text-slate-500 font-normal/);
   });
 
   it("Leads entity-primary client column provides secondary: prop (component applies ENTITY_SECONDARY_CLASS)", () => {
@@ -548,7 +548,7 @@ describe("Secondary metadata sub-lines — ENTITY_SECONDARY_CLASS contract", () 
     const clientBlock = leadsSrc.match(/id:\s*"client",[\s\S]+?(?=\{\s*id:\s*")/)?.[0] ?? "";
     expect(clientBlock, "client column block must exist").toBeTruthy();
     expect(clientBlock).toMatch(/secondary:\s*\(lead\)/);
-    expect(clientBlock).not.toMatch(/className="text-caption text-slate-500 font-normal/);
+    expect(clientBlock).not.toMatch(/className="text-row text-slate-500 font-normal/);
   });
 
   it("Invoice client uses entity-primary — secondary applied by shared renderer (not hardcoded in page)", () => {
@@ -560,7 +560,7 @@ describe("Secondary metadata sub-lines — ENTITY_SECONDARY_CLASS contract", () 
     expect(clientBlock).toMatch(/type:\s*"entity-primary"/);
     expect(clientBlock).toMatch(/secondary:/);
     expect(clientBlock).not.toMatch(/ENTITY_SECONDARY_CLASS/);
-    expect(clientBlock).not.toMatch(/className="text-caption text-slate-500 font-normal/);
+    expect(clientBlock).not.toMatch(/className="text-row text-slate-500 font-normal/);
   });
 
   it("Quote client uses entity-primary — secondary applied by shared renderer (not hardcoded in page)", () => {
@@ -569,7 +569,7 @@ describe("Secondary metadata sub-lines — ENTITY_SECONDARY_CLASS contract", () 
     expect(clientBlock).toMatch(/type:\s*"entity-primary"/);
     expect(clientBlock).toMatch(/secondary:/);
     expect(clientBlock).not.toMatch(/ENTITY_SECONDARY_CLASS/);
-    expect(clientBlock).not.toMatch(/className="text-caption text-slate-500 font-normal/);
+    expect(clientBlock).not.toMatch(/className="text-row text-slate-500 font-normal/);
   });
 });
 
@@ -633,8 +633,8 @@ describe("text-list-primary — cn() survival (tailwind-merge keeps the token)",
     expect(result).not.toMatch(/\btext-base\b/);
   });
 
-  it("cn('text-caption', 'text-list-primary') → text-list-primary present", () => {
-    const result = cn("text-caption", "text-list-primary");
+  it("cn('text-row', 'text-list-primary') → text-list-primary present", () => {
+    const result = cn("text-row", "text-list-primary");
     expect(result).toMatch(/\btext-list-primary\b/);
   });
 
@@ -675,9 +675,9 @@ describe("EntityListTable — text-list-primary on the visible element (not via 
     expect(stripped).not.toMatch(/<div[^>]*\btext-base\b[^>]*>/);
   });
 
-  it("primary line does NOT fall back to text-caption", () => {
+  it("primary line does NOT fall back to text-row", () => {
     const stripped = stripComments(entityPrimaryCase);
-    expect(stripped).not.toMatch(/<div[^>]*\btext-caption\b[^>]*>/);
+    expect(stripped).not.toMatch(/<div[^>]*\btext-row\b[^>]*>/);
   });
 
   it("primary line does NOT use an arbitrary text-[N]px class", () => {
@@ -727,11 +727,11 @@ describe("kind normalization — text / body / date / money all map to text-list
     expect(moneyBranch).not.toMatch(/\btext-helper\b/);
   });
 
-  it("no standard kind uses text-caption", () => {
-    expect(stripped).not.toMatch(/case\s+"text"[\s\S]+?text-caption\b/);
-    expect(stripped).not.toMatch(/case\s+"body"[\s\S]+?text-caption\b/);
-    expect(stripped).not.toMatch(/case\s+"date"[\s\S]+?text-caption\b/);
-    expect(stripped).not.toMatch(/case\s+"money"[\s\S]+?text-caption\b/);
+  it("no standard kind uses text-row", () => {
+    expect(stripped).not.toMatch(/case\s+"text"[\s\S]+?text-row\b/);
+    expect(stripped).not.toMatch(/case\s+"body"[\s\S]+?text-row\b/);
+    expect(stripped).not.toMatch(/case\s+"date"[\s\S]+?text-row\b/);
+    expect(stripped).not.toMatch(/case\s+"money"[\s\S]+?text-row\b/);
   });
 
   it("primary kind uses text-list-primary (500 weight — heavier than standard body)", () => {

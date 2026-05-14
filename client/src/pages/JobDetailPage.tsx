@@ -266,7 +266,7 @@ function KpiTile({
       </div>
       <div
         className={cn(
-          "text-section-title font-bold tabular-nums leading-none mt-0.5",
+          "text-header font-bold tabular-nums leading-none mt-0.5",
           accent ? "text-white" : "text-text-primary",
         )}
       >
@@ -317,7 +317,7 @@ function Avatar({
       .slice(0, 2)
       .join("")
       .toUpperCase() || "?";
-  const dim = size === "md" ? "h-8 w-8 text-caption" : "h-6 w-6 text-label";
+  const dim = size === "md" ? "h-8 w-8 text-row" : "h-6 w-6 text-label";
   return (
     <span
       className={cn(
@@ -347,7 +347,7 @@ function EmptyState({
 }) {
   return (
     <div className="px-6 py-10 text-center">
-      <div className="text-subhead text-text-primary">{title}</div>
+      <div className="text-subheader text-text-primary">{title}</div>
       {hint && (
         <div className="text-row text-text-muted mt-1.5 max-w-[320px] mx-auto leading-relaxed">
           {hint}
@@ -1654,7 +1654,7 @@ export default function JobDetailPage() {
   //
   // Empty case (no entries) is intentionally NOT inside the
   // descriptor — the existing page-level `<EmptyState>` (large
-  // empty state with `text-subhead` title + 320px hint) is preserved
+  // empty state with `text-subheader` title + 320px hint) is preserved
   // by short-circuiting in the rail-tab content renderer below.
   const buildJobLabourPanelDescriptor = (
     techGroups: LabourTechGroup[],
@@ -1749,7 +1749,7 @@ export default function JobDetailPage() {
             data-testid="job-summary-equipment-card"
           >
             <div className="flex items-center justify-between px-3 py-2.5">
-              <h4 className="text-row-emphasis text-text-primary">Equipment</h4>
+              <h4 className="text-emphasis text-text-primary">Equipment</h4>
               <button
                 type="button"
                 onClick={() => setShowAddEquipmentDialog(true)}
@@ -1853,11 +1853,11 @@ export default function JobDetailPage() {
           {/* 2026-05-07 Phase 7 — Labour migrated to the data-driven
               renderer. Empty case (`jobTimeEntries.length === 0`)
               keeps the page-level `<EmptyState>` (larger
-              text-subhead title + hint chrome) verbatim. Populated
+              text-subheader title + hint chrome) verbatim. Populated
               case mounts `<RailPanelRenderer>` with a
               `kind: "grouped"` descriptor — the renderer owns the
               panel-header totals, per-tech group spacing, the
-              `text-section-title` heading, the per-(tech, date)
+              `text-header` heading, the per-(tech, date)
               card sectionHeader + subrow chrome, the inter-entry
               divider, and every typography token. */}
           {jobTimeEntries.length === 0 ? (
@@ -2283,7 +2283,7 @@ export default function JobDetailPage() {
                         <div className="min-w-0 flex-1">
                           <div className="font-medium text-text-primary truncate">{e.description || "Expense"}</div>
                           {(e.category || e.receiptUrl) && (
-                            <div className="text-caption text-text-muted mt-0.5 flex items-center gap-1.5">
+                            <div className="text-row text-text-muted mt-0.5 flex items-center gap-1.5">
                               {e.category && <span>{e.category}</span>}
                               {e.category && e.receiptUrl && <span className="text-text-disabled">·</span>}
                               {e.receiptUrl && (
@@ -2320,7 +2320,7 @@ export default function JobDetailPage() {
                       <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(taxAmount)}</dd>
                     </dl>
                     <div className="grid grid-cols-[1fr_auto] gap-x-8 mt-3 pt-3 border-t-2 border-text-primary/12 items-baseline">
-                      <span className="text-caption font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
+                      <span className="text-row font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
                       <span className="text-display font-bold tabular-nums font-mono text-brand leading-none" data-testid="text-total">
                         {formatCurrency(grandTotal)}
                       </span>

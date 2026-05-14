@@ -51,7 +51,7 @@ export function PmBillingFields({
             <SelectItem value="do_not_bill">Do Not Bill — No invoice expected</SelectItem>
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-helper text-muted-foreground">
           Determines how PM jobs are billed at completion. This is stamped onto each generated job.
         </p>
       </div>

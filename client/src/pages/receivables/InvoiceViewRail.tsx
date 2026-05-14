@@ -25,7 +25,6 @@ interface ViewItem {
   countsKey?: keyof ViewCounts;
 }
 
-// Primary views — operational/urgent
 const PRIMARY_VIEWS: ViewItem[] = [
   { value: "all",              label: "All Invoices",       icon: FileText,      countsKey: "all" },
   { value: "needs-follow-up",  label: "Needs Follow-up",    icon: Bell,          countsKey: "needsFollowUp" },
@@ -35,7 +34,6 @@ const PRIMARY_VIEWS: ViewItem[] = [
   { value: "disputed",         label: "Disputed",           icon: Scale,         countsKey: "disputed" },
 ];
 
-// Secondary views — analytics/reporting
 const SECONDARY_VIEWS: ViewItem[] = [
   { value: "no-recent-contact", label: "No Recent Contact", icon: Users,         countsKey: "noRecentContact" },
   { value: "sent-this-week",    label: "Sent This Week",    icon: Send,          countsKey: "sentThisWeek" },
@@ -66,17 +64,16 @@ function ViewButton({
   const Icon = item.icon;
   return (
     <button
-      key={item.value}
       type="button"
       onClick={() => onViewChange(item.value)}
       aria-current={isActive ? "page" : undefined}
       data-testid={`invoice-view-${item.value}`}
       className={cn(
-        "flex items-center gap-2.5 w-full rounded-md px-3 py-2 text-left transition-colors",
-        "text-caption",
+        "flex items-center gap-2 w-full h-[34px] rounded-lg px-[10px] text-left transition-colors",
+        "text-row",
         isActive
           ? "bg-primary/10 text-primary font-medium"
-          : "text-foreground hover:bg-muted/60 hover:text-foreground"
+          : "text-foreground hover:bg-muted/60 hover:text-foreground",
       )}
     >
       <Icon
@@ -86,10 +83,10 @@ function ViewButton({
       {count != null && count > 0 && (
         <span
           className={cn(
-            "ml-1 tabular-nums rounded-full px-1.5 py-0.5 text-[11px] leading-tight",
+            "ml-1 tabular-nums rounded-full text-[11px] leading-none flex items-center justify-center min-w-[18px] h-[18px] px-[5px]",
             isActive
               ? "bg-primary/15 text-primary"
-              : "bg-muted text-muted-foreground"
+              : "bg-muted text-muted-foreground",
           )}
         >
           {count > 999 ? "999+" : count}
@@ -104,12 +101,12 @@ function ViewButton({
 export function InvoiceViewRail({ activeView, onViewChange, counts }: InvoiceViewRailProps) {
   return (
     <nav
-      className="flex flex-col gap-0.5 py-3 px-2"
+      className="flex flex-col gap-0.5 py-3 px-3"
       aria-label="Invoice views"
       data-testid="invoice-view-rail"
     >
-      {/* Primary group */}
-      <div className="px-2 pb-1 text-label text-muted-foreground uppercase tracking-wide">
+      {/* First section label — 0px top margin, 6px bottom (4px mb + 2px gap) */}
+      <div className="mb-[4px] text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.04em]">
         Invoice Views
       </div>
       {PRIMARY_VIEWS.map((view) => (
@@ -122,8 +119,8 @@ export function InvoiceViewRail({ activeView, onViewChange, counts }: InvoiceVie
         />
       ))}
 
-      {/* Secondary group */}
-      <div className="px-2 pt-3 pb-1 text-label text-muted-foreground uppercase tracking-wide">
+      {/* Second section label — 14px top (12px mt + 2px gap), 6px bottom (4px mb + 2px gap) */}
+      <div className="mt-[12px] mb-[4px] text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.04em]">
         More Views
       </div>
       {SECONDARY_VIEWS.map((view) => (

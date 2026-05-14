@@ -67,7 +67,7 @@ function ReportRow({
             )}
           </div>
           <p
-            className="text-xs text-muted-foreground mt-1"
+            className="text-helper text-muted-foreground mt-1"
             data-testid={`library-report-desc-${report.id}`}
           >
             {report.description}
@@ -101,7 +101,7 @@ function CategoryCard({
         <CardTitle className="text-sm font-semibold flex items-center justify-between">
           <span>{category.label}</span>
           <span
-            className="text-xs font-normal text-muted-foreground tabular-nums"
+            className="text-helper font-normal text-muted-foreground tabular-nums"
             data-testid={`library-category-count-${category.id}`}
           >
             {activeCount} active · {category.reports.length} total
@@ -141,7 +141,7 @@ export default function ReportsLibrary() {
               >
                 All reports
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Index of every report grouped by category. Active reports open
                 the matching section in the Reports page.
               </p>

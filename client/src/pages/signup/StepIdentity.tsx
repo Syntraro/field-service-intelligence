@@ -94,7 +94,7 @@ export function StepIdentity({
               <div className="text-sm font-medium text-foreground">
                 Business info (optional)
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-helper text-muted-foreground mt-1">
                 Optional business details can be added later.
               </p>
             </div>

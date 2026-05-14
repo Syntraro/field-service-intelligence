@@ -40,7 +40,7 @@ export function TeamMembersListColumn({
       data-testid="communications-team-column"
     >
       <div className="flex items-center justify-between px-3 h-12 border-b border-border shrink-0">
-        <h1 className="text-subhead text-foreground">Team Chat</h1>
+        <h1 className="text-subheader text-foreground">Team Chat</h1>
       </div>
 
       <div className="flex-1 overflow-y-auto" data-testid="team-list-scroll">

@@ -213,7 +213,6 @@ describe("invoicePdfService — render-time text contract", () => {
       total: "113.00",
       amountPaid: "0.00",
       balance: "113.00",
-      notesCustomer: null,
       workDescription: null,
       showQuantity: true,
       showUnitPrice: true,

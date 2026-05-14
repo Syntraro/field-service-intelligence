@@ -183,7 +183,7 @@ export default function PlatformTrialsPipeline() {
         <Clock className="h-5 w-5 text-primary" />
         <h2 className="text-xl font-semibold">Trial Pipeline</h2>
         {data?.generatedAt && (
-          <span className="text-xs text-muted-foreground">
+          <span className="text-helper text-muted-foreground">
             as of {format(new Date(data.generatedAt), "HH:mm:ss")}
           </span>
         )}
@@ -570,7 +570,7 @@ function AssignPlanDialog({
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               Status becomes <span className="font-medium">active</span>; the
               lifecycle event is audited automatically.
             </p>

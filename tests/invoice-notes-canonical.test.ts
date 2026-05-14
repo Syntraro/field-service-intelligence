@@ -521,3 +521,131 @@ describe("Invoice notes — quote notesCustomer intentionally preserved (Phase 2
     expect(quotePageSrc).toMatch(/notesCustomer/);
   });
 });
+
+// ── Phase 3: final blocker removed — import adapter + schema drop (2026-05-14) ─
+
+describe("Invoice notes — InvoiceImportAdapter no longer writes notesInternal (Phase 3)", () => {
+  const adapterSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "services", "importPipeline", "adapters", "InvoiceImportAdapter.ts"),
+    "utf-8",
+  );
+
+  it("does not build a notesInternal snapshot string", () => {
+    expect(adapterSrc).not.toMatch(/const notesInternal\s*=/);
+  });
+
+  it("does not pass notesInternal to createImportedInvoice", () => {
+    expect(adapterSrc).not.toMatch(/notesInternal,$/m);
+    expect(adapterSrc).not.toMatch(/notesInternal:\s*notesInternal/);
+  });
+
+  it("does not reference the '--- Imported Historical Invoice Details ---' snapshot header", () => {
+    expect(adapterSrc).not.toMatch(/Imported Historical Invoice Details/);
+  });
+});
+
+describe("Invoice notes — createImportedInvoice storage no longer writes notesInternal (Phase 3)", () => {
+  const storageSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "storage", "invoices.ts"),
+    "utf-8",
+  );
+
+  it("createImportedInvoice params interface no longer has notesInternal", () => {
+    const start = storageSrc.indexOf("createImportedInvoice(");
+    const end   = storageSrc.indexOf("creationSource: InvoiceCreationSource,", start);
+    const block = storageSrc.slice(start, end);
+    expect(block).not.toMatch(/notesInternal/);
+  });
+
+  it("createImportedInvoice UPDATE set no longer writes notesInternal", () => {
+    const start = storageSrc.indexOf("createImportedInvoice(");
+    const nextFn = storageSrc.indexOf("\n  async ", start + 1);
+    const block  = storageSrc.slice(start, nextFn > start ? nextFn : undefined);
+    expect(block).not.toMatch(/notesInternal:\s*params\.notesInternal/);
+  });
+
+  it("invoice SELECT projections no longer include notesInternal or notesCustomer", () => {
+    expect(storageSrc).not.toMatch(/notesInternal:\s*invoices\.notesInternal/);
+    expect(storageSrc).not.toMatch(/notesCustomer:\s*invoices\.notesCustomer/);
+  });
+});
+
+describe("Invoice notes — deleteImportedInvoices script no longer uses notes_internal filter (Phase 3)", () => {
+  const scriptSrc = fs.readFileSync(
+    path.join(repoRoot, "scripts", "deleteImportedInvoices.ts"),
+    "utf-8",
+  );
+
+  it("does not filter by notes_internal column", () => {
+    expect(scriptSrc).not.toMatch(/notes_internal/);
+  });
+
+  it("still identifies imported invoices by invoice_lines.source = 'imported'", () => {
+    expect(scriptSrc).toMatch(/source\s*=\s*'imported'/);
+  });
+});
+
+describe("Invoice notes — shared schema invoice table no longer has legacy columns (Phase 3)", () => {
+  const schemaSrc = fs.readFileSync(
+    path.join(repoRoot, "shared", "schema.ts"),
+    "utf-8",
+  );
+
+  it("invoice table definition does not include notes_internal column", () => {
+    // Find the invoices pgTable definition and confirm no notes_internal column.
+    const tableStart = schemaSrc.indexOf('export const invoices = pgTable("invoices"');
+    const tableEnd   = schemaSrc.indexOf(");", tableStart);
+    const block = schemaSrc.slice(tableStart, tableEnd);
+    expect(block).not.toMatch(/notes_internal/);
+    expect(block).not.toMatch(/notesInternal/);
+  });
+
+  it("invoice table definition does not include notes_customer column", () => {
+    const tableStart = schemaSrc.indexOf('export const invoices = pgTable("invoices"');
+    const tableEnd   = schemaSrc.indexOf(");", tableStart);
+    const block = schemaSrc.slice(tableStart, tableEnd);
+    expect(block).not.toMatch(/notes_customer/);
+    expect(block).not.toMatch(/notesCustomer/);
+  });
+
+  it("quotes table still has notesInternal column (intentional)", () => {
+    const quotesStart = schemaSrc.indexOf('export const quotes = pgTable("quotes"');
+    const quotesEnd   = schemaSrc.indexOf(");", quotesStart);
+    const block = schemaSrc.slice(quotesStart, quotesEnd);
+    expect(block).toMatch(/notes_internal/);
+  });
+
+  it("quotes table still has notesCustomer column (intentional)", () => {
+    const quotesStart = schemaSrc.indexOf('export const quotes = pgTable("quotes"');
+    const quotesEnd   = schemaSrc.indexOf(");", quotesStart);
+    const block = schemaSrc.slice(quotesStart, quotesEnd);
+    expect(block).toMatch(/notes_customer/);
+  });
+});
+
+describe("Invoice notes — drop migration exists and targets only invoice columns (Phase 3)", () => {
+  const migrationSrc = fs.readFileSync(
+    path.join(repoRoot, "migrations", "2026_05_14_drop_invoice_legacy_note_columns.sql"),
+    "utf-8",
+  );
+
+  it("migration file exists", () => {
+    expect(migrationSrc.length).toBeGreaterThan(0);
+  });
+
+  it("drops notes_internal on invoices table", () => {
+    expect(migrationSrc).toMatch(/ALTER TABLE invoices DROP COLUMN.*notes_internal/i);
+  });
+
+  it("drops notes_customer on invoices table", () => {
+    expect(migrationSrc).toMatch(/ALTER TABLE invoices DROP COLUMN.*notes_customer/i);
+  });
+
+  it("does NOT drop any quotes columns", () => {
+    expect(migrationSrc).not.toMatch(/ALTER TABLE quotes/i);
+  });
+
+  it("uses IF EXISTS to be safe on already-applied columns", () => {
+    expect(migrationSrc).toMatch(/DROP COLUMN IF EXISTS/i);
+  });
+});

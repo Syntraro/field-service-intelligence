@@ -810,7 +810,7 @@ export function EditVisitModal({
                 {jobNumber !== undefined && (
                   <Link
                     href={`/jobs/${jobId}`}
-                    className="text-caption text-text-muted hover:text-[#76B054] hover:underline whitespace-nowrap"
+                    className="text-row text-text-muted hover:text-[#76B054] hover:underline whitespace-nowrap"
                     onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
                     data-testid="link-job-number"
                   >
@@ -838,7 +838,7 @@ export function EditVisitModal({
                       size="sm"
                       onClick={() => handleComplete({ outcome: "completed" })}
                       disabled={isPending}
-                      className="h-8 px-2 text-caption bg-emerald-500 hover:bg-emerald-600 text-white font-semibold"
+                      className="h-8 px-2 text-row bg-emerald-500 hover:bg-emerald-600 text-white font-semibold"
                       data-testid="button-complete-visit"
                     >
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Complete
@@ -849,7 +849,7 @@ export function EditVisitModal({
                           size="sm"
                           variant="outline"
                           disabled={isPending}
-                          className="h-8 px-2 text-caption border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold"
+                          className="h-8 px-2 text-row border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold"
                           data-testid="button-follow-up"
                         >
                           Follow-up
@@ -876,7 +876,7 @@ export function EditVisitModal({
                         variant="outline"
                         onClick={handleUnschedule}
                         disabled={isPending}
-                        className="h-8 px-2 text-caption font-semibold"
+                        className="h-8 px-2 text-row font-semibold"
                         data-testid="button-unschedule-visit"
                       >
                         Unschedule
@@ -902,14 +902,14 @@ export function EditVisitModal({
               {customerName && customerCompanyId ? (
                 <Link
                   href={`/clients/${customerCompanyId}`}
-                  className="text-lg font-semibold text-slate-900 hover:text-emerald-700 hover:underline truncate block"
+                  className="text-header text-slate-900 hover:text-emerald-700 hover:underline truncate block"
                   onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
                   data-testid="link-customer-name"
                 >
                   {customerName}
                 </Link>
               ) : (
-                <h3 className="text-lg font-semibold text-slate-900 truncate" data-testid="text-customer-name">
+                <h3 className="text-header text-slate-900 truncate" data-testid="text-customer-name">
                   {customerName || "—"}
                 </h3>
               )}
@@ -1405,7 +1405,7 @@ function ServiceMultiSelect({
                    user hasn't typed anything (`trimmed === ""`). Once typing
                    starts, the typeahead query takes over below. */}
               {showingSuggestions && suggestionsLoading && (
-                <div className="px-3 py-3 text-xs text-muted-foreground flex items-center gap-2">
+                <div className="px-3 py-3 text-helper text-muted-foreground flex items-center gap-2">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Loading…
                 </div>
@@ -1441,7 +1441,7 @@ function ServiceMultiSelect({
 
               {/* Typeahead path — fires once user types ≥ 2 chars. */}
               {!showingSuggestions && isLoading && (
-                <div className="px-3 py-3 text-xs text-muted-foreground flex items-center gap-2">
+                <div className="px-3 py-3 text-helper text-muted-foreground flex items-center gap-2">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Searching…
                 </div>

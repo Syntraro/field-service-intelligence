@@ -73,7 +73,7 @@ export function ConversationListColumn({
     >
       {/* Title */}
       <div className="flex items-center justify-between px-3 h-12 border-b border-border shrink-0">
-        <h1 className="text-subhead text-foreground">Messages</h1>
+        <h1 className="text-subheader text-foreground">Messages</h1>
       </div>
 
       {/* Search */}

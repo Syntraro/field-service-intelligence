@@ -54,7 +54,7 @@ export function ProductsServicesToolbar({
 }: ProductsServicesToolbarProps) {
   return (
     <>
-      {/* Header - standardized typography: text-lg font-semibold text-foreground */}
+      {/* Header - standardized typography: text-header text-foreground */}
       <div className="flex items-center gap-3">
         <Link href="/settings">
           <Button variant="ghost" size="icon" data-testid="button-back-settings">
@@ -62,7 +62,7 @@ export function ProductsServicesToolbar({
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-lg font-semibold text-foreground">Pricebook</h1>
+          <h1 className="text-header text-foreground">Pricebook</h1>
           <p className="text-sm text-muted-foreground">Manage your saved products and services.</p>
         </div>
         <div className="flex items-center gap-2">

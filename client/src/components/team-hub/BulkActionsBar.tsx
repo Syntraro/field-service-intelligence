@@ -213,7 +213,7 @@ export function BulkActionsBar({ selectedIds, members, onClear }: Props) {
         <span className="text-sm font-medium">
           {count} selected
         </span>
-        <span className="text-xs text-muted-foreground hidden md:inline">
+        <span className="text-helper text-muted-foreground hidden md:inline">
           {selectedMembers
             .slice(0, 3)
             .map((m) => m.firstName || m.fullName || m.email)

@@ -458,7 +458,7 @@ export default function TaxBillingRulesPage() {
       {/* Invoice Payment Terms — compact card */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
             <Calendar className="h-3.5 w-3.5" /> Invoice Payment Terms
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
@@ -479,7 +479,7 @@ export default function TaxBillingRulesPage() {
               <FormLabel htmlFor="custom-days">Or custom days</FormLabel>
               <div className="flex items-center gap-2">
                 <Input id="custom-days" type="number" min="0" max="365" value={paymentTermsDays} onChange={(e) => setPaymentTermsDays(e.target.value)} className="w-20 h-8 text-sm" data-testid="input-custom-days" />
-                <span className="text-xs text-muted-foreground">days</span>
+                <span className="text-helper text-muted-foreground">days</span>
               </div>
             </FormField>
           </div>
@@ -495,13 +495,13 @@ export default function TaxBillingRulesPage() {
       {/* Tax Registrations — multi-row list editor. 2026-05-03 */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
             <Receipt className="h-3.5 w-3.5" /> Tax Registrations
           </p>
           <FormHelperText>These appear on customer-facing invoices.</FormHelperText>
 
           {taxRegistrationRows.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-2">
+            <p className="text-helper text-muted-foreground py-2">
               No tax registrations. Add one to display it on customer-facing invoices.
             </p>
           ) : (

@@ -145,7 +145,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
           {/* Key metrics */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">Total</div>
+              <div className="text-helper text-muted-foreground mb-0.5">Total</div>
               <div
                 className="text-sm font-semibold tabular-nums text-slate-800"
                 data-testid="preview-total"
@@ -154,7 +154,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
               </div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">Balance Due</div>
+              <div className="text-helper text-muted-foreground mb-0.5">Balance Due</div>
               <div
                 className={`text-sm font-semibold tabular-nums ${
                   parseFloat(invoice.balance) === 0
@@ -170,7 +170,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
             </div>
             {invoice.dueDate && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Due Date</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Due Date</div>
                 <div
                   className={`text-sm ${
                     invoice.isPastDue
@@ -185,7 +185,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
             )}
             {issueDateStr && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Issued</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Issued</div>
                 <div className="text-sm text-slate-700" data-testid="preview-issue-date">
                   {formatDate(issueDateStr)}
                 </div>
@@ -193,7 +193,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
             )}
             {invoice.paymentTermsDays != null && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Terms</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Terms</div>
                 <div className="text-sm text-slate-700" data-testid="preview-terms">
                   Net {invoice.paymentTermsDays}
                 </div>
@@ -204,7 +204,7 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
           {/* Work description */}
           {invoice.workDescription && (
             <div>
-              <div className="text-xs text-muted-foreground mb-1">Description</div>
+              <div className="text-helper text-muted-foreground mb-1">Description</div>
               <p
                 className="text-sm text-slate-700 line-clamp-3"
                 data-testid="preview-description"
@@ -217,11 +217,11 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
           {/* Line items */}
           {lines.length > 0 && (
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1.5">
+              <div className="text-helper font-medium text-muted-foreground mb-1.5">
                 Line Items
               </div>
               <div className="border border-border rounded overflow-hidden text-sm">
-                <div className="grid grid-cols-[1fr_56px_72px_72px] bg-slate-50 border-b border-border px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                <div className="grid grid-cols-[1fr_56px_72px_72px] bg-slate-50 border-b border-border px-3 py-1.5 text-helper font-medium text-muted-foreground">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
                   <span className="text-right pr-1">Rate</span>

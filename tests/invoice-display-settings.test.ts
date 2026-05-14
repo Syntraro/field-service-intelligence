@@ -406,7 +406,6 @@ describe("Regression: PDF generation when line items are hidden", () => {
     total: "113.00",
     amountPaid: "0.00",
     balance: "113.00",
-    notesCustomer: null,
     clientMessage: null,
     workDescription: null,
     showQuantity: true,

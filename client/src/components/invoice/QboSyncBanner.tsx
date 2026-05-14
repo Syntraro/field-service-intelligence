@@ -77,7 +77,7 @@ export function QboSyncBanner({ invoice, className }: QboSyncBannerProps) {
             </p>
           )}
           {invoice.qboOutOfSyncAt && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               Out of sync since: {formatDate(invoice.qboOutOfSyncAt)}
             </p>
           )}
@@ -96,7 +96,7 @@ export function QboSyncBanner({ invoice, className }: QboSyncBannerProps) {
       <AlertTitle className="flex items-center gap-2">
         Synced to QuickBooks
         {invoice.qboInvoiceId && (
-          <span className="text-xs font-normal text-muted-foreground">
+          <span className="text-helper font-normal text-muted-foreground">
             (QBO ID: {invoice.qboInvoiceId})
           </span>
         )}
@@ -107,7 +107,7 @@ export function QboSyncBanner({ invoice, className }: QboSyncBannerProps) {
           If you edit this invoice, you must manually make the same adjustments in QuickBooks.
         </p>
         {invoice.qboLastSyncedAt && (
-          <p className="text-xs text-muted-foreground mt-2">
+          <p className="text-helper text-muted-foreground mt-2">
             Last synced: {formatDate(invoice.qboLastSyncedAt)}
           </p>
         )}

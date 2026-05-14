@@ -24,7 +24,7 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { receivablesNoteTypeEnum } from "@shared/schema";
-import { receivablesNotesRepository } from "../storage/receivablesNotes";
+import { receivablesNotesRepository, type LogCommunicationInput } from "../storage/receivablesNotes";
 import { getInvoicesFeed } from "../storage/invoicesFeed";
 import { getQueryCtx } from "../lib/queryCtx";
 
@@ -78,6 +78,62 @@ const markDisputedSchema = z
     contactMethod: z.string().max(100).nullable().optional(),
   })
   .strict();
+
+const COMMUNICATION_OUTCOMES = [
+  "spoke_with",
+  "left_message",
+  "no_answer",
+  "email_sent",
+  "text_sent",
+  "other",
+] as const;
+
+const COMMUNICATION_METHODS = [
+  "phone_call",
+  "email",
+  "text_message",
+  "in_person",
+  "other",
+] as const;
+
+const communicateSchema = z
+  .object({
+    outcome: z.enum(COMMUNICATION_OUTCOMES),
+    contactPersonId: z.string().uuid().nullable().optional(),
+    contactedName: z.string().max(200).nullable().optional(),
+    method: z.enum(COMMUNICATION_METHODS),
+    communicatedAt: z.string().datetime({ offset: true }),
+    notes: z.string().max(500).optional(),
+    promiseToPay: z
+      .object({
+        enabled: z.boolean(),
+        promisedAt: z.string().datetime({ offset: true }).optional(),
+      })
+      .optional(),
+    followUp: z
+      .object({
+        enabled: z.boolean(),
+        followUpAt: z.string().datetime({ offset: true }).optional(),
+      })
+      .optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.promiseToPay?.enabled && !val.promiseToPay.promisedAt) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["promiseToPay", "promisedAt"],
+        message: "promisedAt is required when promiseToPay.enabled is true",
+      });
+    }
+    if (val.followUp?.enabled && !val.followUp.followUpAt) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["followUp", "followUpAt"],
+        message: "followUpAt is required when followUp.enabled is true",
+      });
+    }
+  });
 
 // ============================================================================
 // VIEW COUNTS
@@ -141,7 +197,7 @@ router.get(
         COUNT(*) FILTER (
           WHERE company_id = ${companyId}
           AND follow_up_at <= NOW()
-          AND status NOT IN ('paid', 'voided')
+          AND status NOT IN ('draft', 'paid', 'voided')
         )::int AS "needsFollowUp",
 
         COUNT(*) FILTER (
@@ -154,8 +210,8 @@ router.get(
           AND balance > 0
           AND status NOT IN ('draft', 'paid', 'voided')
           AND (
-            last_emailed_at IS NULL
-            OR last_emailed_at < NOW() - (${NO_RECENT_CONTACT_DAYS} || ' days')::interval
+            COALESCE(last_contacted_at, last_emailed_at) IS NULL
+            OR COALESCE(last_contacted_at, last_emailed_at) < NOW() - (${NO_RECENT_CONTACT_DAYS} || ' days')::interval
           )
         )::int AS "noRecentContact",
 
@@ -490,6 +546,50 @@ router.patch(
       invoiceId,
       userId,
       parsed.data,
+    );
+
+    res.status(201).json(note);
+  }),
+);
+
+/**
+ * POST /api/receivables/invoices/:id/communicate
+ * Body: LogCommunicationInput schema.
+ *
+ * Single-transaction endpoint for the Contact Client modal:
+ *   - Creates a "communication" receivables note.
+ *   - Sets invoices.last_contacted_at.
+ *   - Optionally sets invoices.follow_up_at.
+ *   - Optionally creates a promise_to_pay note + sets invoices.promised_payment_at.
+ */
+router.post(
+  "/invoices/:id/communicate",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.user!.companyId;
+    const userId = req.user!.id;
+    const invoiceId = req.params.id;
+
+    const parsed = communicateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues[0]?.message ?? "Invalid input");
+    }
+
+    const input: LogCommunicationInput = {
+      outcome: parsed.data.outcome,
+      contactPersonId: parsed.data.contactPersonId ?? null,
+      contactedName: parsed.data.contactedName ?? null,
+      method: parsed.data.method,
+      communicatedAt: parsed.data.communicatedAt,
+      notes: parsed.data.notes,
+      promiseToPay: parsed.data.promiseToPay,
+      followUp: parsed.data.followUp,
+    };
+
+    const note = await receivablesNotesRepository.logCommunication(
+      companyId,
+      invoiceId,
+      userId,
+      input,
     );
 
     res.status(201).json(note);

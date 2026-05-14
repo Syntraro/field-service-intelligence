@@ -143,7 +143,7 @@ export default function ResetPassword() {
                 required
                 data-testid="input-reset-new-password"
               />
-              <p className="text-xs text-muted-foreground">At least 8 characters.</p>
+              <p className="text-helper text-muted-foreground">At least 8 characters.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="reset-confirm-password">Confirm password</Label>

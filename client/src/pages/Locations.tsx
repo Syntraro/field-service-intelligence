@@ -350,7 +350,7 @@ export default function Locations() {
         {/* Bulk actions when rows selected */}
         {someSelected && (
           <div className="flex items-center gap-2 ml-2 border-l pl-3">
-            <span className="text-xs font-medium text-muted-foreground">{selectedRows.size} selected</span>
+            <span className="text-helper font-medium text-muted-foreground">{selectedRows.size} selected</span>
             <Button size="sm" variant="outline" className="h-8" onClick={() => setBulkModalOpen(true)}>
               <Tag className="h-3.5 w-3.5 mr-1.5" />
               Bulk Edit Tags

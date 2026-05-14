@@ -40,7 +40,6 @@ import {
   FileText,
   FilePlus,
   Copy,
-  Plus,
   Search,
   Sparkles,
   Loader2,
@@ -180,7 +179,7 @@ function ModePicker({
               <Icon className="h-5 w-5" />
             </div>
             <div className="font-semibold text-sm">{c.title}</div>
-            <div className="text-xs text-muted-foreground mt-1 leading-snug flex-1">
+            <div className="text-helper text-muted-foreground mt-1 leading-snug flex-1">
               {c.description}
             </div>
             <div className="mt-3 inline-flex items-center text-xs font-medium text-primary group-hover:underline">
@@ -237,12 +236,11 @@ function TemplatePicker({
         <FileText className="h-10 w-10 text-muted-foreground/40" />
         <div>
           <div className="font-semibold text-sm">No templates yet</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
+          <div className="text-helper text-muted-foreground mt-0.5">
             Save a reusable PM template to start plans faster.
           </div>
         </div>
         <Button onClick={onCreateNew} size="sm" data-testid="create-pm-template-empty-cta">
-          <Plus className="h-4 w-4 mr-1.5" />
           Create Template
         </Button>
       </div>
@@ -285,7 +283,7 @@ function TemplatePicker({
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-sm truncate">{t.name}</div>
                   {subtitleParts.length > 0 && (
-                    <div className="text-xs text-muted-foreground truncate mt-0.5">
+                    <div className="text-helper text-muted-foreground truncate mt-0.5">
                       {subtitleParts.join(" · ")}
                     </div>
                   )}
@@ -348,7 +346,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
         <FileText className="h-10 w-10 text-muted-foreground/40" />
         <div>
           <div className="font-semibold text-sm">No service plans yet</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
+          <div className="text-helper text-muted-foreground mt-0.5">
             Once you create your first plan, you can duplicate it from here.
           </div>
         </div>
@@ -397,7 +395,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
                     )}
                   </div>
                   {p.clientName && (
-                    <div className="text-xs text-muted-foreground truncate mt-0.5">
+                    <div className="text-helper text-muted-foreground truncate mt-0.5">
                       {p.clientName}
                       {locParts.length > 0 ? ` · ${locParts.join(", ")}` : ""}
                     </div>

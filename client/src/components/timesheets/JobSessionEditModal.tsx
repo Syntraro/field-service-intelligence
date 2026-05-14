@@ -442,7 +442,7 @@ export function JobSessionEditModal({
                     <Loader2 className="h-4 w-4 animate-spin" />
                   </div>
                 ) : (jobQuery.data ?? []).length === 0 ? (
-                  <p className="p-3 text-xs text-muted-foreground">No matches.</p>
+                  <p className="p-3 text-helper text-muted-foreground">No matches.</p>
                 ) : (
                   (jobQuery.data ?? []).map((job) => (
                     <button
@@ -457,7 +457,7 @@ export function JobSessionEditModal({
                         {job.locationName ? `· ${job.locationName}` : ""}
                       </p>
                       {job.summary && (
-                        <p className="truncate text-xs text-muted-foreground">
+                        <p className="truncate text-helper text-muted-foreground">
                           {job.summary}
                         </p>
                       )}
@@ -671,7 +671,7 @@ function SessionSection({
           className="w-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           data-testid={`job-session-${sectionKey}-duration-hours`}
         />
-        <span className="text-xs text-muted-foreground">h</span>
+        <span className="text-helper text-muted-foreground">h</span>
         <Input
           type="number"
           inputMode="numeric"
@@ -684,7 +684,7 @@ function SessionSection({
           className="w-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           data-testid={`job-session-${sectionKey}-duration-minutes`}
         />
-        <span className="text-xs text-muted-foreground">m</span>
+        <span className="text-helper text-muted-foreground">m</span>
       </div>
     </div>
   );

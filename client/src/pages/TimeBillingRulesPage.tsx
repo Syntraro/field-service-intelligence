@@ -251,7 +251,7 @@ export default function TimeBillingRulesPage() {
       {/* Rounding & Minimums */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
             <Clock className="h-3.5 w-3.5" /> Rounding & Minimums
           </p>
           <div className="grid gap-3 sm:grid-cols-3">
@@ -291,7 +291,7 @@ export default function TimeBillingRulesPage() {
       {/* Billable Types */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
             <Wrench className="h-3.5 w-3.5" /> Billable Entry Types
           </p>
           <div className="space-y-2">
@@ -323,19 +323,19 @@ export default function TimeBillingRulesPage() {
       {/* Rate Multipliers */}
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          <p className="text-helper font-medium text-muted-foreground flex items-center gap-1.5">
             <DollarSign className="h-3.5 w-3.5" /> Rate Multipliers
           </p>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
               <Label htmlFor="travelMult" className="text-xs">Travel Multiplier</Label>
               <Input id="travelMult" type="text" value={travelMultiplier} onChange={(e) => { setTravelMultiplier(e.target.value); handleChange(); }} className="h-8 text-sm w-24" disabled={!billTravel} />
-              <p className="text-xs text-muted-foreground">{parseFloat(travelMultiplier || "1") * 100}% of base</p>
+              <p className="text-helper text-muted-foreground">{parseFloat(travelMultiplier || "1") * 100}% of base</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="onSiteMult" className="text-xs">On-Site Multiplier</Label>
               <Input id="onSiteMult" type="text" value={onSiteMultiplier} onChange={(e) => { setOnSiteMultiplier(e.target.value); handleChange(); }} className="h-8 text-sm w-24" />
-              <p className="text-xs text-muted-foreground">{parseFloat(onSiteMultiplier || "1") * 100}% of base</p>
+              <p className="text-helper text-muted-foreground">{parseFloat(onSiteMultiplier || "1") * 100}% of base</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="maxTravel" className="text-xs">Max Travel Min/Job/Day</Label>

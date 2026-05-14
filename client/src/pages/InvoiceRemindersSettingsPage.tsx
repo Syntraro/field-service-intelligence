@@ -197,7 +197,7 @@ export default function InvoiceRemindersSettingsPage() {
       </div>
 
       <div>
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
+        <h1 className="text-title font-semibold flex items-center gap-2">
           <Bell className="h-5 w-5" />
           Invoice Reminders
         </h1>
@@ -287,7 +287,7 @@ export default function InvoiceRemindersSettingsPage() {
                   )}
                 </FormField>
 
-                <div className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+                <div className="rounded-md bg-muted/40 p-3 text-helper text-muted-foreground">
                   Reminders continue until the invoice is paid, voided, or
                   paused/snoozed from its detail page.
                 </div>
@@ -407,13 +407,13 @@ export default function InvoiceRemindersSettingsPage() {
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <div className="text-xs text-muted-foreground mb-1">Subject</div>
+              <div className="text-helper text-muted-foreground mb-1">Subject</div>
               <div className="rounded border bg-background p-2 text-xs font-medium">
                 {previewSubject ?? "—"}
               </div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground mb-1">Body</div>
+              <div className="text-helper text-muted-foreground mb-1">Body</div>
               {/* Typography pass (2026-04-16): preview body renders in
                   Inter at the same 12px scale as the editor so the user
                   sees exactly what their customer will read. */}

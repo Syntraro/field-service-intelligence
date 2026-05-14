@@ -230,7 +230,7 @@ function NotificationItem({
               </p>
             )}
 
-            <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-3 mt-2 text-helper text-muted-foreground">
               <span className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />
                 {notification.timeAgo}
@@ -249,7 +249,7 @@ function NotificationItem({
         {isSnoozable && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+              <Button variant="ghost" size="icon" className="shrink-0">
                 <MoreVertical className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>

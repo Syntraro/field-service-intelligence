@@ -148,7 +148,7 @@ export default function PlatformPlanDetail() {
     <PlatformLayout>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">{plan.displayName}</h2>
+          <h2 className="text-title font-semibold">{plan.displayName}</h2>
           <p className="text-sm text-muted-foreground">
             <span className="font-mono">{plan.name}</span> — plan configuration and feature matrix
           </p>
@@ -206,7 +206,7 @@ function PlanForm({ plan, onSave, pending }: { plan: SubscriptionPlan; onSave: (
         <div>
           <Label>Plan key</Label>
           <Input value={plan.name} disabled className="font-mono" />
-          <p className="text-xs text-muted-foreground mt-1">Plan key is immutable.</p>
+          <p className="text-helper text-muted-foreground mt-1">Plan key is immutable.</p>
         </div>
         <div>
           <Label htmlFor="displayName">Display name</Label>
@@ -314,7 +314,7 @@ function FeatureRow({ feature, planFeature, onChange }: { feature: Feature; plan
           {feature.isCore && <Badge variant="outline" className="text-xs">Core</Badge>}
           <Badge variant="outline" className="text-xs">{feature.limitType}</Badge>
         </div>
-        <div className="text-xs text-muted-foreground font-mono">{feature.featureKey}</div>
+        <div className="text-helper text-muted-foreground font-mono">{feature.featureKey}</div>
       </div>
       <div className="w-32">
         {hasLimit ? (
@@ -330,7 +330,7 @@ function FeatureRow({ feature, planFeature, onChange }: { feature: Feature; plan
             disabled={!enabled}
           />
         ) : (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-helper text-muted-foreground">—</span>
         )}
       </div>
       <Switch

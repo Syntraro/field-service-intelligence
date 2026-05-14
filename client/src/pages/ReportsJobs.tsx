@@ -114,7 +114,7 @@ function ComparisonRow({
   const colorClass = trendColorClass(pct, polarity);
   const Icon = pct == null || pct === 0 ? null : pct > 0 ? ArrowUp : ArrowDown;
   return (
-    <div className="flex items-center justify-between text-xs text-muted-foreground">
+    <div className="flex items-center justify-between text-helper text-muted-foreground">
       <span>{label}</span>
       <div className="flex items-center gap-1.5 font-medium tabular-nums">
         <span className="text-foreground/80">{formatMetricValue(value, unit)}</span>
@@ -134,7 +134,7 @@ function MetricTile({ metric }: { metric: MetricCardData }) {
       className="rounded-md border border-[#e2e8f0] dark:border-gray-700 bg-white dark:bg-gray-900 p-4 flex flex-col gap-2 min-h-[140px]"
       data-testid={`metric-card-${testIdSuffix}`}
     >
-      <div className="text-xs uppercase tracking-[0.04em] text-muted-foreground font-medium">
+      <div className="text-helper uppercase tracking-[0.04em] text-muted-foreground font-medium">
         {metric.label}
       </div>
       {metric.hasData ? (
@@ -323,7 +323,7 @@ function JobStatusBreakdownCard({
               </div>
             </div>
           ))}
-          <div className="text-xs text-muted-foreground pt-2 border-t">
+          <div className="text-helper text-muted-foreground pt-2 border-t">
             Total: {section.totalCount.toLocaleString()} job
             {section.totalCount === 1 ? "" : "s"}
           </div>
@@ -410,7 +410,7 @@ function UnbillableBreakdownCard({
               </div>
             </div>
           ))}
-          <div className="text-xs text-muted-foreground pt-2 border-t">
+          <div className="text-helper text-muted-foreground pt-2 border-t">
             Total: {formatMetricValue(section.totalCost, "currency")} ·{" "}
             {section.totalHours.toFixed(1)}h · {section.totalCount} entr
             {section.totalCount === 1 ? "y" : "ies"}
@@ -464,7 +464,7 @@ function CompletedJobsCard({
                   #{row.jobNumber}
                 </TableCell>
                 <TableCell className="text-xs">{row.clientName}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">
+                <TableCell className="text-helper text-muted-foreground">
                   {row.locationName ?? "—"}
                 </TableCell>
                 <TableCell className="text-xs tabular-nums">
@@ -522,7 +522,7 @@ export default function ReportsJobs() {
               >
                 Job Performance
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 Completion volume, status mix, invoice values, unbillable
                 time, and a recent-completion log.
               </p>

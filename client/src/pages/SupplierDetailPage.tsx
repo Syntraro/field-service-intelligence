@@ -273,7 +273,7 @@ export default function SupplierDetailPage() {
           <Button variant="ghost" size="icon" onClick={() => setLocation("/suppliers")}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <h1 className="text-lg font-semibold text-foreground">
+          <h1 className="text-header text-foreground">
             {isCreateMode ? "New Supplier" : "Supplier Details"}
           </h1>
         </div>

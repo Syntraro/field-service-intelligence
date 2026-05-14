@@ -164,7 +164,7 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
             <Calendar className="h-4 w-4" />
             Lead visits
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
+          <p className="text-helper text-muted-foreground mt-0.5">
             Pre-sales onsite appointments. Completing the last open visit
             marks the lead as "Needs review".
           </p>
@@ -180,11 +180,11 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
       </div>
 
       {isLoading ? (
-        <p className="text-xs text-muted-foreground py-4">Loading…</p>
+        <p className="text-helper text-muted-foreground py-4">Loading…</p>
       ) : visits.length === 0 ? (
         <div className="text-center py-6">
           <Calendar className="h-8 w-8 mx-auto text-muted-foreground/40 mb-2" />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-helper text-muted-foreground">
             No visits scheduled yet.
           </p>
         </div>
@@ -215,19 +215,19 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
                       {fmtDateTime(v.scheduledStart)}
                     </span>
                     {v.estimatedDurationMinutes && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-helper text-muted-foreground">
                         · {v.estimatedDurationMinutes} min
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                  <div className="text-helper text-muted-foreground mt-0.5 flex items-center gap-1.5">
                     <User2 className="h-3 w-3" />
                     {techNames.length > 0
                       ? techNames.join(", ")
                       : "Unassigned"}
                   </div>
                   {v.visitNotes && (
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                    <p className="text-helper text-muted-foreground mt-1 line-clamp-2">
                       {v.visitNotes}
                     </p>
                   )}

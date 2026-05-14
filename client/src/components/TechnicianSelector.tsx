@@ -147,7 +147,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search team..."
-            className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
+            className="flex-1 text-helper bg-transparent outline-none placeholder:text-muted-foreground"
             autoFocus
           />
         </div>
@@ -169,7 +169,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
           )}
 
           {filtered.length === 0 ? (
-            <div className="text-xs text-muted-foreground text-center py-3">No team members found</div>
+            <div className="text-helper text-muted-foreground text-center py-3">No team members found</div>
           ) : (
             filtered.map((tech) => {
               const selected = isSelected(tech.id);
@@ -207,7 +207,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
         {/* Footer (multi mode) */}
         {mode === "multi" && selectedIds.length > 0 && (
           <div className="border-t px-2 py-1.5 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">{selectedIds.length} selected</span>
+            <span className="text-helper text-muted-foreground">{selectedIds.length} selected</span>
             <button
               type="button"
               className="text-xs text-primary hover:underline"

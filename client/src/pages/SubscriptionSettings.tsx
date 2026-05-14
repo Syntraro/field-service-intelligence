@@ -381,7 +381,7 @@ export default function SubscriptionSettings() {
                 <div className="text-right">
                   <span className="text-sm font-medium">{endDateFormatted}</span>
                   {daysUntilEnd != null && daysUntilEnd > 0 && (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-helper text-muted-foreground">
                       {daysUntilEnd} day{daysUntilEnd !== 1 ? "s" : ""} remaining
                     </p>
                   )}
@@ -399,7 +399,7 @@ export default function SubscriptionSettings() {
                   <RefreshCw className="h-4 w-4 text-muted-foreground" />
                   <div>
                     <span className="text-sm">Auto-renew</span>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-helper text-muted-foreground">
                       {subscription.autoRenewAnnual
                         ? "Will renew automatically at term end"
                         : "Will convert to monthly at term end"}
@@ -528,7 +528,7 @@ export default function SubscriptionSettings() {
                 Enable auto-renewal (recommended)
               </Label>
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
+            <p className="text-helper text-muted-foreground mt-2">
               {selectedAutoRenew
                 ? "Your subscription will automatically renew each year."
                 : "You'll be notified before expiry. Without renewal, it will convert to monthly."}

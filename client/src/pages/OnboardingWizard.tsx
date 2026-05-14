@@ -178,7 +178,7 @@ export default function OnboardingWizard() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               Detected from your browser: {getBrowserTimezone()}
             </p>
           </div>

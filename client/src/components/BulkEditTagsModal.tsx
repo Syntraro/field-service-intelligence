@@ -249,7 +249,7 @@ export default function BulkEditTagsModal({
 
             {canCreate && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Color:</span>
+                <span className="text-helper text-muted-foreground">Color:</span>
                 <div className="flex gap-1">
                   {TAG_COLORS.map((c) => (
                     <button
@@ -285,7 +285,7 @@ export default function BulkEditTagsModal({
 
           {/* Section A: Tags to Add */}
           <div className="space-y-1.5">
-            <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
+            <h4 className="text-helper font-semibold uppercase text-muted-foreground tracking-wider">
               Add tags
             </h4>
             <div className="max-h-32 overflow-y-auto space-y-0.5">
@@ -310,14 +310,14 @@ export default function BulkEditTagsModal({
                 );
               })}
               {addableTags.length === 0 && (
-                <p className="text-xs text-muted-foreground py-1">No tags available</p>
+                <p className="text-helper text-muted-foreground py-1">No tags available</p>
               )}
             </div>
           </div>
 
           {/* Section B: Tags to Remove */}
           <div className="space-y-1.5">
-            <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">
+            <h4 className="text-helper font-semibold uppercase text-muted-foreground tracking-wider">
               Remove tags
             </h4>
             <div className="max-h-32 overflow-y-auto space-y-0.5">
@@ -342,7 +342,7 @@ export default function BulkEditTagsModal({
                 );
               })}
               {removableTags.length === 0 && (
-                <p className="text-xs text-muted-foreground py-1">No tags available</p>
+                <p className="text-helper text-muted-foreground py-1">No tags available</p>
               )}
             </div>
           </div>
@@ -409,7 +409,7 @@ export default function BulkEditTagsModal({
 
           {/* Entity name preview */}
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <p className="text-helper font-medium text-muted-foreground uppercase tracking-wider">
               {config.listLabel}
             </p>
             <ul className="text-sm space-y-0.5">

@@ -88,16 +88,16 @@ describe("RailContentCard module — exports the slot primitives", () => {
 });
 
 describe("RailContentCard slot primitives — canonical typography baked in", () => {
-  it("RailContentCardTitle bakes `text-row-emphasis text-text-primary truncate` (Phase H2)", () => {
+  it("RailContentCardTitle bakes `text-emphasis text-text-primary truncate` (Phase H2)", () => {
     // Phase H2 (2026-05-07): the prior `text-row font-semibold` composition
-    // was replaced by the canonical role token `text-row-emphasis` (15px /
+    // was replaced by the canonical role token `text-emphasis` (15px /
     // 500). The architectural typography guard forbids weight-on-weight
     // stacking — role tokens already bake the correct weight.
     const idx = primitiveSrc.indexOf("export function RailContentCardTitle");
     expect(idx).toBeGreaterThan(-1);
     const slice = primitiveSrc.slice(idx, idx + 800);
     expect(slice).toMatch(
-      /text-row-emphasis\s+text-text-primary\s+truncate\s+min-w-0/,
+      /text-emphasis\s+text-text-primary\s+truncate\s+min-w-0/,
     );
     expect(slice).not.toMatch(/font-semibold/);
   });
@@ -112,16 +112,16 @@ describe("RailContentCard slot primitives — canonical typography baked in", ()
   });
 
   it("RailContentCardMeta bakes `text-helper text-text-secondary` + auto-spacing", () => {
-    // 2026-05-07: migrated from `text-caption` (14px) to canonical
+    // 2026-05-07: migrated from `text-row` (14px) to canonical
     // `text-helper` (13px) per CLAUDE.md > Typography Primitives —
     // rails / panels use `text-helper` for dense-secondary text;
-    // `text-caption` is reserved for tabular metadata.
+    // `text-row` is reserved for tabular metadata.
     const idx = primitiveSrc.indexOf("export function RailContentCardMeta");
     const slice = primitiveSrc.slice(idx, idx + 800);
     expect(slice).toMatch(/text-helper\s+text-text-secondary/);
     expect(slice).toMatch(/mt-1\.5\s+first:mt-0/);
     // Inverse pin — the prior 14px scale must not creep back in.
-    expect(slice).not.toMatch(/text-caption\s+text-text-secondary/);
+    expect(slice).not.toMatch(/text-row\s+text-text-secondary/);
   });
 
   it("RailContentCardFooter bakes `border-t border-slate-100` + canonical helper typography", () => {
@@ -131,11 +131,11 @@ describe("RailContentCard slot primitives — canonical typography baked in", ()
     const slice = primitiveSrc.slice(idx, idx + 800);
     expect(slice).toMatch(/mt-2\s+pt-2\s+border-t\s+border-slate-100/);
     expect(slice).toMatch(/text-helper\s+text-text-secondary/);
-    expect(slice).not.toMatch(/text-caption\s+text-text-secondary/);
+    expect(slice).not.toMatch(/text-row\s+text-text-secondary/);
   });
 
   it("RailContentCardChip bakes the compact `text-helper font-medium px-1.5 py-0.5 rounded` token set", () => {
-    // 2026-05-07 v4 — chips were `text-caption px-2 py-0.5` (14px)
+    // 2026-05-07 v4 — chips were `text-row px-2 py-0.5` (14px)
     // and read as too dominant inside Notes / Contacts cards. v4
     // drops one size step + tightens padding so chips never visually
     // compete with body content (text-row, 15px). Status pills
@@ -144,9 +144,9 @@ describe("RailContentCard slot primitives — canonical typography baked in", ()
     const idx = primitiveSrc.indexOf("export function RailContentCardChip");
     const slice = primitiveSrc.slice(idx, idx + 1500);
     expect(slice).toMatch(/text-helper\s+font-medium\s+px-1\.5\s+py-0\.5\s+rounded/);
-    // Inverse pin — the prior `text-caption px-2 py-0.5` baseline
+    // Inverse pin — the prior `text-row px-2 py-0.5` baseline
     // must not creep back in.
-    expect(slice).not.toMatch(/text-caption\s+font-medium\s+px-2\s+py-0\.5\s+rounded/);
+    expect(slice).not.toMatch(/text-row\s+font-medium\s+px-2\s+py-0\.5\s+rounded/);
   });
 
   it("RailContentCardChip exposes the canonical variant set", () => {
@@ -338,7 +338,7 @@ describe.skip("Job Detail Notes (EntityNotesSection cardStyle) — body-first la
 // ── 3c. Compact chip token (2026-05-07 v4) ─────────────────────────
 //
 // Pin the new chip baseline so a future refactor can't bring back
-// the `text-caption px-2 py-0.5` size that overpowered Notes cards.
+// the `text-row px-2 py-0.5` size that overpowered Notes cards.
 
 describe("RailContentCardChip — v4 compact sizing", () => {
   it("baked class string is `text-helper font-medium px-1.5 py-0.5 rounded shrink-0`", () => {
@@ -347,11 +347,11 @@ describe("RailContentCardChip — v4 compact sizing", () => {
     );
   });
 
-  it("does NOT use `text-caption` baseline (would be visually too strong)", () => {
+  it("does NOT use `text-row` baseline (would be visually too strong)", () => {
     const idx = primitiveSrc.indexOf("export function RailContentCardChip");
     const slice = primitiveSrc.slice(idx, idx + 1500);
-    // The chip's baseline class string must not reference text-caption.
-    expect(slice).not.toMatch(/text-caption\s+font-medium\s+px-2/);
+    // The chip's baseline class string must not reference text-row.
+    expect(slice).not.toMatch(/text-row\s+font-medium\s+px-2/);
   });
 
   it("does NOT use `text-row` (would be the same size as body)", () => {

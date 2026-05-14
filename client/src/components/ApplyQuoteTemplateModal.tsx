@@ -40,7 +40,7 @@ export function ApplyQuoteTemplateModal({ open, onOpenChange, quoteId, quoteNumb
       renderTemplateExtra={(t) => (
         <>
           {t.isDefault && (
-            <span className="ml-1 text-xs text-muted-foreground">(Default)</span>
+            <span className="ml-1 text-helper text-muted-foreground">(Default)</span>
           )}
         </>
       )}

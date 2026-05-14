@@ -63,14 +63,14 @@ export function DashboardCustomizeDrawer({
         data-testid="dashboard-customize-drawer"
       >
         <SheetHeader className="px-5 pt-5 pb-3 border-b border-card-border space-y-1">
-          <SheetTitle className="text-section-title text-text-primary">
+          <SheetTitle className="text-header text-text-primary">
             Customize Dashboard
           </SheetTitle>
           {/* 2026-05-07 RALPH (drag relocation): drag/reorder lives on
               the dashboard grid itself now. The drawer is a pure
               toggle surface. Copy reflects the new split: toggle here,
               reorder out there. */}
-          <SheetDescription className="text-caption text-text-muted">
+          <SheetDescription className="text-row text-text-muted">
             Drag widgets directly on the dashboard to reorder. Toggle widgets to show or hide them.
           </SheetDescription>
         </SheetHeader>
@@ -106,7 +106,7 @@ export function DashboardCustomizeDrawer({
           )}
           {layout.error && (
             <div
-              className="mt-3 px-3 py-2 rounded-md bg-danger/10 text-caption text-danger"
+              className="mt-3 px-3 py-2 rounded-md bg-danger/10 text-row text-danger"
               role="alert"
               data-testid="dashboard-customize-error"
             >

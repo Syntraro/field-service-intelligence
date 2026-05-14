@@ -208,13 +208,13 @@ export function MemberOverviewPanel({ selectedMemberId }: Props) {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t">
           <div>
-            <p className="text-xs text-muted-foreground">Last login</p>
+            <p className="text-helper text-muted-foreground">Last login</p>
             <p className="text-sm" data-testid="overview-last-login">
               {lastLogin}
             </p>
           </div>
           <div>
-            <p className="text-xs text-muted-foreground">Joined</p>
+            <p className="text-helper text-muted-foreground">Joined</p>
             <p className="text-sm" data-testid="overview-joined-date">
               {joinedDate}
             </p>
@@ -234,7 +234,7 @@ export function MemberOverviewPanel({ selectedMemberId }: Props) {
           </Button>
           <div className="flex items-center gap-2">
             {dirty.isDirty && (
-              <span className="text-xs text-muted-foreground">Unsaved changes</span>
+              <span className="text-helper text-muted-foreground">Unsaved changes</span>
             )}
             <Button
               onClick={() => saveProfile.mutate()}

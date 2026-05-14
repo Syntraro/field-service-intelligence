@@ -23,12 +23,12 @@ export function PmServiceWindowInputs({
   return (
     <div className="space-y-2">
       <Label>Service window</Label>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-helper text-muted-foreground">
         Acceptable date range around the ideal PM date.
       </p>
       <div className="flex items-center gap-3">
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Days before</Label>
+          <Label className="text-helper text-muted-foreground">Days before</Label>
           <Input
             type="number"
             min={0}
@@ -40,7 +40,7 @@ export function PmServiceWindowInputs({
           />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Days after</Label>
+          <Label className="text-helper text-muted-foreground">Days after</Label>
           <Input
             type="number"
             min={0}

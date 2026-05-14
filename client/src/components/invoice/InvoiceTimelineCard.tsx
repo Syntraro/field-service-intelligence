@@ -136,7 +136,7 @@ export function InvoiceTimelineCard({ invoiceId }: InvoiceTimelineCardProps) {
           <Clock className="h-4 w-4 text-muted-foreground" />
           Activity
           {events.length > 0 && (
-            <span className="text-xs font-normal text-muted-foreground">
+            <span className="text-helper font-normal text-muted-foreground">
               ({events.length})
             </span>
           )}

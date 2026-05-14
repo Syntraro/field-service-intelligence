@@ -400,11 +400,18 @@ export class PaymentRepository extends BaseRepository {
       let totalCents = 0;
       for (const a of allocations) {
         const amt = parseFloat(a.allocatedAmount);
-        if (!Number.isFinite(amt) || amt <= 0) {
-          throw createError(400, "Allocation amount must be greater than zero");
+        if (!Number.isFinite(amt) || amt < 0) {
+          throw createError(400, "Allocation amount cannot be negative");
         }
         const inv = byId.get(a.invoiceId)!;
         const currentBalance = parseFloat(inv.balance ?? "0");
+        // Zero allocation is only valid when the invoice already has zero balance.
+        if (amt === 0 && currentBalance > 0) {
+          throw createError(
+            400,
+            `Allocation amount for invoice ${inv.invoiceNumber ?? inv.id} must be greater than zero`,
+          );
+        }
         if (amt > currentBalance + 0.0049) {
           throw createError(
             400,
@@ -415,38 +422,51 @@ export class PaymentRepository extends BaseRepository {
       }
       const totalAmount = (totalCents / 100).toFixed(2);
 
-      // 3. Insert the parent payment row. invoiceId is NULL even for
-      //    single-invoice manual entries on this path — allocations are
-      //    the source of truth. providerSource defaults to "manual".
-      const trimmedReference = input.reference?.trim() ?? "";
-      const [payment] = await tx
-        .insert(payments)
-        .values({
-          companyId,
-          invoiceId: null,
-          amount: totalAmount,
-          method: input.method as any,
-          reference: trimmedReference.length > 0 ? trimmedReference : null,
-          notes: input.notes ?? null,
-          receivedAt: input.receivedAt ? new Date(input.receivedAt) : new Date(),
-        })
-        .returning();
-
-      // 4. Insert allocation rows in a single batch.
-      await tx.insert(paymentAllocations).values(
-        allocations.map((a) => ({
-          companyId,
-          paymentId: payment.id,
-          invoiceId: a.invoiceId,
-          allocatedAmount: a.allocatedAmount,
-        })),
+      // Partition: invoices with a real amount to pay vs. zero-balance
+      // invoices being closed administratively with a $0.00 allocation.
+      // Only positive allocations go into the payment ledger row — the
+      // DB constraint payments_ledger_shape_chk requires amount > 0.
+      const positiveAllocations = allocations.filter(
+        (a) => parseFloat(a.allocatedAmount) > 0,
+      );
+      const zeroCloseAllocations = allocations.filter(
+        (a) => parseFloat(a.allocatedAmount) === 0,
       );
 
-      // 5. Per-invoice direct update — same pattern as the multi-invoice
-      //    Stripe webhook handler. Subtract allocated amount, bump
-      //    amountPaid, transition status. Single UPDATE per invoice.
+      // 3. Insert the parent payment row only when there are positive
+      //    allocations. invoiceId is NULL — allocations are source of truth.
+      let paymentRow: (typeof payments.$inferInsert & { id: string }) | null = null;
+      if (positiveAllocations.length > 0) {
+        const trimmedReference = input.reference?.trim() ?? "";
+        const [row] = await tx
+          .insert(payments)
+          .values({
+            companyId,
+            invoiceId: null,
+            amount: totalAmount,
+            method: input.method as any,
+            reference: trimmedReference.length > 0 ? trimmedReference : null,
+            notes: input.notes ?? null,
+            receivedAt: input.receivedAt ? new Date(input.receivedAt) : new Date(),
+          })
+          .returning();
+        paymentRow = row as typeof row & { id: string };
+
+        // 4. Insert allocation rows for positive allocations only.
+        await tx.insert(paymentAllocations).values(
+          positiveAllocations.map((a) => ({
+            companyId,
+            paymentId: paymentRow!.id,
+            invoiceId: a.invoiceId,
+            allocatedAmount: a.allocatedAmount,
+          })),
+        );
+      }
+
+      // 5. Per-invoice direct update for positive allocations — subtract
+      //    amount, bump amountPaid, transition status.
       const updatedInvoices: Array<typeof rows[number]> = [];
-      for (const a of allocations) {
+      for (const a of positiveAllocations) {
         const inv = byId.get(a.invoiceId)!;
         const allocatedDollars = parseFloat(a.allocatedAmount);
         const currentBalance = parseFloat(inv.balance ?? "0");
@@ -480,7 +500,26 @@ export class PaymentRepository extends BaseRepository {
         updatedInvoices.push(updated);
       }
 
-      return { payment, invoices: updatedInvoices };
+      // 6. Close zero-balance invoices — status transition only, balance
+      //    and amountPaid are already correct (no money changes hands).
+      for (const a of zeroCloseAllocations) {
+        const [updated] = await tx
+          .update(invoices)
+          .set({
+            status: "paid",
+            updatedAt: new Date(),
+            promisedPaymentAt: null,
+            isDisputed: false,
+          })
+          .where(and(eq(invoices.id, a.invoiceId), eq(invoices.companyId, companyId)))
+          .returning();
+        updatedInvoices.push(updated);
+      }
+
+      return {
+        payment: paymentRow as { id: string; amount: string } | null,
+        invoices: updatedInvoices,
+      };
     });
   }
 

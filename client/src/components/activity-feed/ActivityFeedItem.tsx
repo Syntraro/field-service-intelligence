@@ -104,7 +104,7 @@ export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
       {/*
         Typography is anchored on canonical Phase E tokens so this row
         feels like a compact operational log, not a notification card:
-          - Title:                          text-row-emphasis (15px / 500)
+          - Title:                          text-emphasis (15px / 500)
           - Subtitle / Detail / Timestamp:  text-helper (13px / lh 16px)
         Same size for the three muted lines so the column reads as one
         stacked detail block; position alone does the hierarchy work.
@@ -113,7 +113,7 @@ export function ActivityFeedItem({ item, onNavigate }: ActivityFeedItemProps) {
       */}
       <div className="min-w-0 flex-1">
         <div
-          className="text-row-emphasis text-foreground line-clamp-2"
+          className="text-emphasis text-foreground line-clamp-2"
           data-testid="activity-feed-item-title"
         >
           {display.title}

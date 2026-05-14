@@ -160,7 +160,7 @@ export function CanonicalCreateHeader({
             <ArrowLeft className="h-3 w-3" />
           </button>
           <h1
-            className="m-0 text-page-title font-semibold leading-tight text-text-primary"
+            className="m-0 text-title font-semibold leading-tight text-text-primary"
             data-testid={`${testId}-label`}
           >
             {entityLabel}

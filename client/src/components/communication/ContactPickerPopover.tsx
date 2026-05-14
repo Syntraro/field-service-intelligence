@@ -102,7 +102,7 @@ export function ContactPickerPopover({
     >
       <div className="max-h-64 overflow-y-auto py-1">
         {loading ? (
-          <div className="px-3 py-2 text-xs text-muted-foreground">Loading contacts…</div>
+          <div className="px-3 py-2 text-helper text-muted-foreground">Loading contacts…</div>
         ) : error ? (
           <div className="px-3 py-2 text-xs text-destructive">{error}</div>
         ) : (
@@ -123,14 +123,14 @@ export function ContactPickerPopover({
               >
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate">{c.name}</div>
-                  <div className="text-xs text-muted-foreground truncate">{c.email}</div>
+                  <div className="text-helper text-muted-foreground truncate">{c.email}</div>
                 </div>
                 {isBilling && (
                   <span className="text-xs rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-medium">
                     Billing
                   </span>
                 )}
-                <span className="text-xs text-muted-foreground">
+                <span className="text-helper text-muted-foreground">
                   {c.source === "location" ? "Location" : "Company"}
                 </span>
               </button>

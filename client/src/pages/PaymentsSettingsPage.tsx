@@ -443,7 +443,7 @@ export default function PaymentsSettingsPage() {
                 testId="row-details-submitted"
               />
               {account.disabledReason ? (
-                <div className="text-caption text-destructive">
+                <div className="text-row text-destructive">
                   <span className="font-medium">Reason:</span>{" "}
                   <span data-testid="text-disabled-reason">
                     {account.disabledReason}
@@ -592,7 +592,7 @@ function PageHeader() {
           >
             Payments
           </h1>
-          <p className="text-caption text-muted-foreground">
+          <p className="text-row text-muted-foreground">
             Set up online card payments and bank-account payouts.
           </p>
         </div>

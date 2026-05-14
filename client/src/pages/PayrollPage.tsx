@@ -646,10 +646,10 @@ export default function PayrollPage() {
       <div className="flex items-center gap-3 flex-wrap">
         {viewMode === "week" && (
           <div className="flex items-center gap-1.5">
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPreviousWeek}><ChevronLeft className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" onClick={goToPreviousWeek}><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={weekCalendarOpen} onOpenChange={setWeekCalendarOpen}>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-2 font-medium text-row min-w-[200px] justify-center">
+                <Button variant="outline" size="sm" className="gap-2 min-w-[200px] justify-center">
                   <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
                   {format(parseISO(weekStart), "MMM d")} – {format(parseISO(weekEnd), "MMM d, yyyy")}
                 </Button>
@@ -668,13 +668,13 @@ export default function PayrollPage() {
                 />
               </PopoverContent>
             </Popover>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToNextWeek}><ChevronRight className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" onClick={goToNextWeek}><ChevronRight className="h-4 w-4" /></Button>
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={goToCurrentWeek}>Today</Button>
           </div>
         )}
         {viewMode === "day" && (
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={goToPreviousDay} aria-label="Previous day"><ChevronLeft className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" className="hover:bg-slate-100" onClick={goToPreviousDay} aria-label="Previous day"><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="h-9 gap-2 font-semibold text-row px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
@@ -686,7 +686,7 @@ export default function PayrollPage() {
                 <Calendar mode="single" selected={parseISO(dayViewDate)} onSelect={(date) => { if (date) { setDayViewDate(format(date, "yyyy-MM-dd")); setCalendarOpen(false); } }} initialFocus />
               </PopoverContent>
             </Popover>
-            <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={goToNextDay} aria-label="Next day"><ChevronRight className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" className="hover:bg-slate-100" onClick={goToNextDay} aria-label="Next day"><ChevronRight className="h-4 w-4" /></Button>
             <button
               type="button"
               onClick={goToToday}

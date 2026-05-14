@@ -91,7 +91,7 @@ export function ContactsListColumn({
       data-testid="communications-contacts-column"
     >
       <div className="flex items-center justify-between px-3 h-12 border-b border-border shrink-0">
-        <h1 className="text-subhead text-foreground">Contacts</h1>
+        <h1 className="text-subheader text-foreground">Contacts</h1>
       </div>
 
       <div className="px-3 py-2 shrink-0">
@@ -184,7 +184,7 @@ export function ContactsListColumn({
                     <div className="flex items-center justify-between gap-2">
                       <EntityName className="min-w-0">{c.displayName}</EntityName>
                       <span
-                        className="shrink-0 inline-flex items-center gap-1 text-caption text-muted-foreground"
+                        className="shrink-0 inline-flex items-center gap-1 text-row text-muted-foreground"
                         data-testid={`contact-row-kind-${c.kind}`}
                       >
                         <Icon className="h-3 w-3" />

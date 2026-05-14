@@ -73,7 +73,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
               <Calendar className="h-4 w-4 text-[#64748b]" />
               Scheduling History
               {history.length > 0 && (
-                <span className="text-xs text-muted-foreground">({history.length})</span>
+                <span className="text-helper text-muted-foreground">({history.length})</span>
               )}
             </span>
             {isOpen ? (

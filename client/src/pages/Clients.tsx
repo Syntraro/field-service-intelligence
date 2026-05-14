@@ -7,7 +7,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, X, Tag, MapPin } from "lucide-react";
+import { X, Tag, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 2026-05-08 chip Phase 2: Active/Inactive status filter → FilterChip.
 // The tag filter below stays raw — it uses per-tag user-defined colors
@@ -397,7 +397,6 @@ export default function Clients() {
             All Locations
           </Button>
           <Button onClick={() => setCreateClientOpen(true)} data-testid="button-new-client">
-            <Plus className="h-4 w-4 mr-2" />
             New Client
           </Button>
         </div>
@@ -475,7 +474,7 @@ export default function Clients() {
 
         {someSelected && (
           <div className="flex items-center gap-2 ml-2 border-l pl-3">
-            <span className="text-xs font-medium text-muted-foreground">{selectedRows.size} selected</span>
+            <span className="text-helper font-medium text-muted-foreground">{selectedRows.size} selected</span>
             <Button size="sm" variant="outline" className="h-8" onClick={() => setBulkModalOpen(true)}>
               <Tag className="h-3.5 w-3.5 mr-1.5" />
               Bulk Edit Tags

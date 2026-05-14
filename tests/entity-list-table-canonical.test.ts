@@ -6,7 +6,7 @@
  *
  *   1. Header padding token matches cell padding token (no misalignment).
  *   2. Default cell padding is the canonical entity-list density: px-4 py-2.5.
- *   3. Primary kind uses text-caption (14px / 500) = ENTITY_NAME_CLASS.
+ *   3. Primary kind uses text-row (14px / 500) = ENTITY_NAME_CLASS.
  *   4. ENTITY_SECONDARY_CLASS is exported from list-surface.tsx.
  *   5. No page-level column definition passes a redundant py-2.5 cellClassName
  *      on a primary or text kind (the canonical default makes it unnecessary).
@@ -148,11 +148,11 @@ describe("EntityListTable — primary kind uses text-helper font-medium (13px / 
     expect(cellFn).toMatch(/case\s+"primary"[\s\S]+?text-helper\s+font-medium/);
   });
 
-  it("primary branch code does NOT emit text-caption (strip comments — doc-prose may reference it)", () => {
+  it("primary branch code does NOT emit text-row (strip comments — doc-prose may reference it)", () => {
     const primaryBranch = stripComments(
       cellFn.match(/case\s+"primary":[\s\S]+?(?=case\s+")/)?.[0] ?? ""
     );
-    expect(primaryBranch).not.toMatch(/\btext-caption\b/);
+    expect(primaryBranch).not.toMatch(/\btext-row\b/);
   });
 });
 
@@ -165,9 +165,9 @@ describe("list-surface.tsx — ENTITY_SECONDARY_CLASS is exported", () => {
     expect(surfaceSrc).toMatch(/export const ENTITY_SECONDARY_CLASS\s*=/);
   });
 
-  it("ENTITY_SECONDARY_CLASS uses text-caption (14px), slate-500, font-normal, truncate", () => {
+  it("ENTITY_SECONDARY_CLASS uses text-row (14px), slate-500, font-normal, truncate", () => {
     expect(surfaceSrc).toMatch(
-      /ENTITY_SECONDARY_CLASS\s*=\s*"text-caption text-slate-500 font-normal truncate"/,
+      /ENTITY_SECONDARY_CLASS\s*=\s*"text-row text-slate-500 font-normal truncate"/,
     );
   });
 });
@@ -223,10 +223,10 @@ describe("Page-level columns — no redundant py-2.5 cellClassName on primary/te
 
 describe("Page-level columns — no copy-pasted secondary class literal", () => {
   // After canonicalization, the literal string
-  // "text-caption text-slate-500 font-normal truncate" must not appear
+  // "text-row text-slate-500 font-normal truncate" must not appear
   // in any entity list page file. Callers must import ENTITY_SECONDARY_CLASS.
 
-  const COPIED_RE = /text-caption text-slate-500 font-normal truncate/;
+  const COPIED_RE = /text-row text-slate-500 font-normal truncate/;
 
   function hasCopiedSecondary(src: string): boolean {
     return COPIED_RE.test(stripComments(src));

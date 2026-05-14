@@ -566,7 +566,7 @@ export function EntityNoteDialog({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
+                          className="h-6 px-2 text-helper text-muted-foreground hover:text-destructive"
                           onClick={() => setConfirmRemoveAll(true)}
                           disabled={busy}
                           data-testid="button-remove-all-attachments"
@@ -600,7 +600,7 @@ export function EntityNoteDialog({
                             <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                             <div className="flex-1 min-w-0">
                               <p className="text-xs truncate">{a.originalName ?? "Attachment"}</p>
-                              <span className="text-xs text-muted-foreground">{formatSize(a.size)}</span>
+                              <span className="text-helper text-muted-foreground">{formatSize(a.size)}</span>
                             </div>
                             <Button
                               type="button"
@@ -647,7 +647,7 @@ export function EntityNoteDialog({
                     <Paperclip className="h-3.5 w-3.5" />
                     Attach files
                   </Button>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-helper text-muted-foreground">
                     Images ≤10 MB, PDFs ≤20 MB
                   </span>
                 </div>
@@ -674,7 +674,7 @@ export function EntityNoteDialog({
                         )}
                         <div className="flex-1 min-w-0">
                           <p className="text-xs truncate">{sf.file.name}</p>
-                          <span className="text-xs text-muted-foreground">{formatSize(sf.file.size)}</span>
+                          <span className="text-helper text-muted-foreground">{formatSize(sf.file.size)}</span>
                         </div>
                         <Button
                           type="button"
@@ -695,7 +695,7 @@ export function EntityNoteDialog({
               </div>
 
             {busy && stagedFiles.length > 0 && (
-              <div className="text-xs text-muted-foreground">
+              <div className="text-helper text-muted-foreground">
                 Uploading {Math.min(uploadIndex + 1, stagedFiles.length)} of {stagedFiles.length}
                 {" — "}
                 {Math.round(progress * 100)}%

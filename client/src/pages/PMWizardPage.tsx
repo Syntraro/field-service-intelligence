@@ -468,7 +468,7 @@ function StepBasics({
     <div className="space-y-4">
       <div>
         <h2 className="text-modal-title">Let's start with the basics</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">
+        <p className="text-helper text-muted-foreground mt-0.5">
           Who is this service plan for?
         </p>
       </div>
@@ -557,10 +557,10 @@ function StepBasics({
                       <div className="min-w-0">
                         <div className="font-medium truncate">{loc.companyName}</div>
                         {loc.location && (
-                          <div className="text-xs text-muted-foreground truncate">{loc.location}</div>
+                          <div className="text-helper text-muted-foreground truncate">{loc.location}</div>
                         )}
                         {loc.address && (
-                          <div className="text-xs text-muted-foreground truncate">
+                          <div className="text-helper text-muted-foreground truncate">
                             {loc.address}, {loc.city}
                           </div>
                         )}
@@ -596,7 +596,7 @@ function StepBasics({
         />
       </div>
 
-      <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+      <div className="rounded-md border bg-muted/40 px-3 py-2 text-helper text-muted-foreground">
         We'll show a full summary before you save.
       </div>
     </div>
@@ -688,7 +688,7 @@ function StepSchedule({
     <div className="space-y-4">
       <div>
         <h2 className="text-modal-title">Set the schedule</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">How often should this plan run?</p>
+        <p className="text-helper text-muted-foreground mt-0.5">How often should this plan run?</p>
       </div>
 
       <div className="space-y-1.5">
@@ -699,7 +699,7 @@ function StepSchedule({
           className="h-9 w-48 text-sm"
           data-testid="pm-wizard-start-date"
         />
-        <p className="text-xs text-muted-foreground leading-snug">
+        <p className="text-helper text-muted-foreground leading-snug">
           This sets the first service month. Frequency options will be based on this month.
         </p>
         {errors.startDate && (
@@ -792,7 +792,7 @@ function StepSchedule({
             data-testid="pm-wizard-gen-period-start"
           >
             <div className="font-medium text-sm">On the 1st of each service month</div>
-            <div className="text-xs text-muted-foreground mt-0.5 leading-tight">
+            <div className="text-helper text-muted-foreground mt-0.5 leading-tight">
               Work order appears on the 1st of {monthList}.
             </div>
           </button>
@@ -810,7 +810,7 @@ function StepSchedule({
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <div className="font-medium text-sm">Specific day of each service month</div>
-                <div className="text-xs text-muted-foreground mt-0.5 leading-tight">
+                <div className="text-helper text-muted-foreground mt-0.5 leading-tight">
                   Choose a day of month to create the work order.
                 </div>
               </div>
@@ -819,7 +819,7 @@ function StepSchedule({
                   className="flex items-center gap-1.5 shrink-0"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <span className="text-xs text-muted-foreground">Day</span>
+                  <span className="text-helper text-muted-foreground">Day</span>
                   <Input
                     type="number"
                     min={1}
@@ -848,7 +848,7 @@ function StepSchedule({
       <div className="rounded-md border border-border bg-card overflow-hidden" data-testid="pm-wizard-service-generation">
         <div className="px-3 pt-3 pb-2 border-b border-border">
           <h3 className="text-sm font-semibold">Service Generation</h3>
-          <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+          <p className="text-helper text-muted-foreground mt-0.5 leading-snug">
             Choose how this plan is handled when service is due.
           </p>
         </div>
@@ -869,7 +869,7 @@ function StepSchedule({
             </div>
             <div className="min-w-0">
               <div className="font-medium text-sm">Automatically create work orders</div>
-              <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+              <div className="text-helper text-muted-foreground mt-0.5 leading-snug">
                 An unscheduled work order will be created automatically on the job creation date.
               </div>
               {state.autoGenerateJobs && (
@@ -883,7 +883,7 @@ function StepSchedule({
 
         <div className="flex items-center gap-2 px-3 py-1">
           <div className="flex-1 h-px bg-border" />
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">OR</span>
+          <span className="text-helper font-medium text-muted-foreground uppercase tracking-wide">OR</span>
           <div className="flex-1 h-px bg-border" />
         </div>
 
@@ -904,7 +904,7 @@ function StepSchedule({
               </div>
               <div className="min-w-0">
                 <div className="font-medium text-sm">Notify me to create the work order</div>
-                <div className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                <div className="text-helper text-muted-foreground mt-0.5 leading-snug">
                   You'll be notified so you can manually create the work order.
                 </div>
               </div>
@@ -915,7 +915,7 @@ function StepSchedule({
             <div className="px-3 pb-3 ml-6 space-y-2.5">
               <div>
                 <div className="text-xs font-semibold">Notification window</div>
-                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                <p className="text-helper text-muted-foreground mt-0.5 leading-snug">
                   You'll be notified this many days before the work order is created. The work order should be completed within the specified days of creation or it will be marked overdue.
                 </p>
               </div>
@@ -932,7 +932,7 @@ function StepSchedule({
                     }
                     data-testid="pm-wizard-window-before"
                   />
-                  <Label className="text-xs text-muted-foreground">days before job creation</Label>
+                  <Label className="text-helper text-muted-foreground">days before job creation</Label>
                 </div>
                 <div className="flex items-center gap-2">
                   <Input
@@ -946,10 +946,10 @@ function StepSchedule({
                     }
                     data-testid="pm-wizard-window-after"
                   />
-                  <Label className="text-xs text-muted-foreground">days after job creation</Label>
+                  <Label className="text-helper text-muted-foreground">days after job creation</Label>
                 </div>
               </div>
-              <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+              <div className="rounded-md bg-muted/50 border border-border px-3 py-2 text-helper text-muted-foreground leading-relaxed">
                 Example: You'll be notified{" "}
                 <span className="font-medium text-foreground">{state.serviceWindowDaysBefore}</span>{" "}
                 days before the work order is created. The work order should be completed within{" "}
@@ -994,7 +994,7 @@ function StepPricing({
     <div className="space-y-4">
       <div>
         <h2 className="text-modal-title">Pricing and contract</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">
+        <p className="text-helper text-muted-foreground mt-0.5">
           How will this plan be billed and how long does it run?
         </p>
       </div>
@@ -1017,7 +1017,7 @@ function StepPricing({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground leading-snug">
+          <p className="text-helper text-muted-foreground leading-snug">
             Used for reporting only. Invoices are not created automatically from this setting.
           </p>
         </div>
@@ -1143,7 +1143,7 @@ function ReviewSection({
       <CardContent className="px-4 pb-3 space-y-1 text-sm">
         {rows.map((r) => (
           <div key={r.label} className="flex justify-between gap-3 leading-tight">
-            <span className="text-muted-foreground text-xs">{r.label}</span>
+            <span className="text-muted-foreground text-helper">{r.label}</span>
             <span className="font-medium text-right text-xs max-w-[60%] truncate">
               {r.value || "—"}
             </span>
@@ -1178,7 +1178,7 @@ function StepReview({ state }: { state: WizardState }) {
     <div className="space-y-3">
       <div>
         <h2 className="text-modal-title">Review your service plan</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">
+        <p className="text-helper text-muted-foreground mt-0.5">
           Please review the details below. You can go back to make changes.
         </p>
       </div>
@@ -1283,7 +1283,7 @@ function PlanPreviewCard({ state }: { state: WizardState }) {
       <CardContent className="px-4 pb-4 space-y-1.5 text-sm">
         {rows.map((r) => (
           <div key={r.label} className="flex justify-between gap-2 leading-tight">
-            <span className="text-muted-foreground text-xs">{r.label}</span>
+            <span className="text-muted-foreground text-helper">{r.label}</span>
             <span className="font-medium text-right text-xs max-w-[60%] truncate">{r.value}</span>
           </div>
         ))}
@@ -1308,7 +1308,7 @@ function FinalActionBar({
       <CardContent className="px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <div className="font-semibold text-sm">Ready to create this service plan?</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
+          <div className="text-helper text-muted-foreground mt-0.5">
             Review the details above. When you create the plan, upcoming service work will appear on the Service Plans page when due.
           </div>
         </div>

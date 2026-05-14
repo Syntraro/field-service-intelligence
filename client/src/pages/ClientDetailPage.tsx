@@ -321,7 +321,7 @@ function locationAddressLines(loc: Client | null | undefined): string[] {
 }
 
 function EmptyState({ label }: { label: string }) {
-  return <p className="py-8 text-center text-xs text-muted-foreground">{label}</p>;
+  return <p className="py-8 text-center text-helper text-muted-foreground">{label}</p>;
 }
 
 /** 2026-05-02 layout refactor: empty state shown when a tab is
@@ -1165,7 +1165,7 @@ export default function ClientDetailPage() {
   // canonical `text-helper` (13px regular weight — matches the corrected
   // rail-tab scale) and the muted slate-700 color this page uses for
   // neutral edit / add affordances. Replaces the prior
-  // `text-caption font-medium` (heavier weight + larger 14px size).
+  // `text-row font-medium` (heavier weight + larger 14px size).
   const RAIL_ACTION_BTN_CLASS = `${RAIL_HEADER_ACTION_CLASS} text-helper text-slate-700`;
 
   // 2026-05-12 RALPH: rail restructured from 7 separate tabs to 3
@@ -1331,7 +1331,7 @@ export default function ClientDetailPage() {
           {/* Left block: name, subtitle, tags */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5">
-              <h1 className="text-2xl font-bold text-slate-900 truncate">{companyName}</h1>
+              <h1 className="text-title text-slate-900 truncate">{companyName}</h1>
               {parentCompany?.isActive === false && (
                 <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-xs px-1.5 py-0">Inactive</Badge>
               )}
@@ -1384,13 +1384,13 @@ export default function ClientDetailPage() {
           {/* Right block: primary action buttons + overflow — aligned with client name */}
           <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5" data-testid="header-actions">
             <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
-              <Plus className="mr-1 h-3 w-3" />Create Job
+              Create Job
             </Button>
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
-              <Plus className="mr-1 h-3 w-3" />Create Quote
+              Create Quote
             </Button>
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
-              <Plus className="mr-1 h-3 w-3" />Create Invoice
+              Create Invoice
             </Button>
             <ActionMenu
               items={[
@@ -1446,7 +1446,7 @@ export default function ClientDetailPage() {
                 },
               ] satisfies ActionMenuItemDescriptor[]}
               trigger={
-                <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="header-overflow">
+                <Button variant="ghost" size="icon" data-testid="header-overflow">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               }
@@ -2108,7 +2108,7 @@ export default function ClientDetailPage() {
                   onChange={e => setNewLocationForm(f => ({ ...f, postalCode: e.target.value }))} />
               </div>
             </div>
-            <p className="text-xs text-muted-foreground pt-1 border-t">Primary site contact summary — manage full contacts from the Contacts tab after creating.</p>
+            <p className="text-helper text-muted-foreground pt-1 border-t">Primary site contact summary — manage full contacts from the Contacts tab after creating.</p>
             <div className="space-y-2">
               <Label>Contact Name</Label>
               <Input value={newLocationForm.contactName}
@@ -2219,7 +2219,7 @@ function MetadataSection({ title, icon, children }: { title: string; icon?: Reac
     <div>
       <div className="flex items-center gap-2 mb-2">
         {icon}
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">{title}</h3>
+        <h3 className="text-label font-semibold tracking-wider text-slate-600">{title}</h3>
       </div>
       {children}
     </div>
@@ -2450,7 +2450,7 @@ const LocContactsCompact = forwardRef<ContactsCompactRef, {
         </div>
       )}
       {locationContacts.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No contacts assigned.</p>
+        <p className="text-helper text-muted-foreground">No contacts assigned.</p>
       ) : (
         <div className="space-y-1">
           {locationContacts.map(c => (
@@ -3369,9 +3369,9 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
     enabled: Boolean(companyId),
   });
 
-  if (!companyId) return <p className="text-xs text-muted-foreground/60">—</p>;
+  if (!companyId) return <p className="text-helper text-muted-foreground/60">—</p>;
   if (isLoading) return <Skeleton className="h-5 w-24" />;
-  if (activity.length === 0) return <p className="text-xs text-muted-foreground/60">No activity yet.</p>;
+  if (activity.length === 0) return <p className="text-helper text-muted-foreground/60">No activity yet.</p>;
 
   return (
     <div className="space-y-1.5">
@@ -3380,7 +3380,7 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
           <div className="h-1.5 w-1.5 rounded-full bg-slate-300 flex-shrink-0 mt-1.5" />
           <div className="flex-1 min-w-0">
             <p className="text-foreground truncate">{evt.description || evt.action || "Event"}</p>
-            <p className="text-muted-foreground text-xs">
+            <p className="text-muted-foreground text-helper">
               {evt.createdAt ? format(new Date(evt.createdAt), "MMM dd, h:mm a") : ""}
             </p>
           </div>
@@ -3472,7 +3472,7 @@ function ActiveWorkTab({
       {activeJobs.length > 0 && (
         <section>
           <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+            <h3 className="text-label font-semibold tracking-wider text-slate-600">
               Active Jobs
             </h3>
             <span className="text-xs text-slate-400">{activeJobs.length}</span>
@@ -3493,7 +3493,7 @@ function ActiveWorkTab({
       {unpaidInvoices.length > 0 && (
         <section>
           <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+            <h3 className="text-label font-semibold tracking-wider text-slate-600">
               Unpaid Invoices
             </h3>
             <span className="text-xs text-slate-400">{unpaidInvoices.length}</span>
@@ -3540,7 +3540,7 @@ function ActiveWorkTab({
       {openQuotes.length > 0 && (
         <section>
           <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+            <h3 className="text-label font-semibold tracking-wider text-slate-600">
               Open Quotes
             </h3>
             <span className="text-xs text-slate-400">{openQuotes.length}</span>
@@ -3756,7 +3756,7 @@ function LocEquipmentTab({
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
+        <h3 className="text-label font-semibold tracking-wider text-slate-600">Equipment</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400">{equipment.length} units</span>
           <Button variant="outline" size="sm" className="h-6 text-xs" onClick={onAdd}>
@@ -3883,7 +3883,7 @@ function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () 
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">PM Parts</h3>
+        <h3 className="text-label font-semibold tracking-wider text-slate-600">PM Parts</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400">{pmParts.length} items</span>
           <Button variant="outline" size="sm" className="h-6 text-xs" onClick={onAdd}>

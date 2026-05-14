@@ -230,7 +230,7 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
                   )}
                 </div>
                 {row.notes && (
-                  <p className="text-xs text-muted-foreground mt-0.5">{row.notes}</p>
+                  <p className="text-helper text-muted-foreground mt-0.5">{row.notes}</p>
                 )}
               </div>
               {!readOnly && (

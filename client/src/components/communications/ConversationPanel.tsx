@@ -82,7 +82,7 @@ export function ConversationPanel({
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
               <div
-                className="text-row-emphasis text-foreground truncate"
+                className="text-emphasis text-foreground truncate"
                 data-testid="conversation-panel-title"
               >
                 {thread.contact.displayName}

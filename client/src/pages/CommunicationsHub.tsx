@@ -398,7 +398,7 @@ function PlaceholderColumn({ module }: { module: CommunicationModule }) {
       data-testid={`placeholder-list-${module}`}
     >
       <div className="flex items-center px-3 h-12 border-b border-border shrink-0">
-        <h1 className="text-subhead text-foreground capitalize">
+        <h1 className="text-subheader text-foreground capitalize">
           {moduleLabel(module)}
         </h1>
       </div>
@@ -415,7 +415,7 @@ function ModulePlaceholder({ module }: { module: CommunicationModule }) {
       className="flex-1 min-w-0 flex flex-col items-center justify-center bg-card text-center px-6"
       data-testid={`placeholder-center-${module}`}
     >
-      <p className="text-row-emphasis text-foreground">
+      <p className="text-emphasis text-foreground">
         {moduleLabel(module)} coming soon
       </p>
       <p className="text-helper text-muted-foreground mt-1 max-w-md">

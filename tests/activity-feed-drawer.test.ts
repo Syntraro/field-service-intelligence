@@ -493,11 +493,11 @@ describe("Activity Feed — item renderer uses the formatter", () => {
   });
 
   it("uses canonical compact typography tokens for the row hierarchy", () => {
-    // Title: medium-weight via the baked-in `text-row-emphasis` token
+    // Title: medium-weight via the baked-in `text-emphasis` token
     // (15px / fw 500). This is intentionally LIGHTER and smaller than
     // the prior `text-sm font-semibold` so the rail reads like a
     // compact operational log, not a notification card.
-    expect(itemSrc).toMatch(/text-row-emphasis/);
+    expect(itemSrc).toMatch(/text-emphasis/);
     // Detail/timestamp lines: `text-helper` (13px) — smallest token in
     // the canonical Phase E ramp, paired with `text-muted-foreground`.
     expect(itemSrc).toMatch(/text-helper/);

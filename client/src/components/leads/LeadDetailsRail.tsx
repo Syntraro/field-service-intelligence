@@ -15,7 +15,7 @@
  * canonical `<RailContentCard>` family (`RailContentCardHeader` /
  * `RailContentCardTitle` for the "Details" row, `RailContentCardFieldList`
  * + `RailContentCardField` for the label/value rows). Typography drift
- * — `text-xs`, `text-[11px]`, ad-hoc `text-muted-foreground` — replaced
+ * — `text-helper`, `text-[11px]`, ad-hoc `text-muted-foreground` — replaced
  * by canonical role tokens via the field primitive's `<dt class="text-label">`
  * / `<dd class="text-row">` bindings. Behavior + content + saved/draft
  * branching unchanged.

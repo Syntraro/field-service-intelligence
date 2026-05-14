@@ -8,7 +8,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
-  Plus, Search, FileText, Users, Briefcase, TrendingUp,
+  Search, FileText, Users, Briefcase, TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // 2026-05-08 chip Phase 2: status filter buttons → FilterChip.
@@ -135,10 +135,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-caption font-medium text-slate-500">{label}</div>
+        <div className="text-row font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-caption text-slate-500 mt-1">{note}</div>
+      <div className="text-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-row text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -205,13 +205,12 @@ export default function LeadsPage() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-page-title font-semibold text-slate-900">Leads</h1>
+            <h1 className="text-title font-semibold text-slate-900">Leads</h1>
             <p className="text-row text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
           </div>
           {/* 2026-05-06: navigates to the full-page /leads/new flow.
               The data-testid is preserved so existing test pins still match. */}
-          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
-            <Plus className="h-4 w-4" />
+          <Button size="sm" className="gap-1.5" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
             New Lead
           </Button>
         </div>

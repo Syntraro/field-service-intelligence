@@ -68,7 +68,7 @@ export default function PlatformTenantDetail() {
     <PlatformLayout>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold" data-testid="tenant-name">{displayName}</h2>
+          <h2 className="text-title font-semibold" data-testid="tenant-name">{displayName}</h2>
           <div className="mt-1 flex gap-2 items-center flex-wrap">
             <Badge variant="outline">{company.subscriptionStatus ?? "—"}</Badge>
             {company.subscriptionPlan && <Badge variant="secondary">{company.subscriptionPlan}</Badge>}
@@ -216,7 +216,7 @@ function TenantHealthSummary({ health }: { health: TenantHealth | null | undefin
               >
                 {health.score}
               </span>
-              <span className="text-xs text-muted-foreground leading-none pb-1">/ 100</span>
+              <span className="text-helper text-muted-foreground leading-none pb-1">/ 100</span>
               <span
                 className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${tone.badge}`}
                 data-testid="tenant-health-status"
@@ -255,7 +255,7 @@ function TenantHealthSummary({ health }: { health: TenantHealth | null | undefin
                 Top reasons
               </div>
               {topReasons.length === 0 ? (
-                <span className="text-xs text-muted-foreground">No penalties.</span>
+                <span className="text-helper text-muted-foreground">No penalties.</span>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {topReasons.map((r) => (
@@ -498,12 +498,12 @@ function EntitlementRow({
           {ent.isCore && <Badge variant="outline" className="text-xs">Core</Badge>}
           <Badge variant={sourceColor as any} className="text-xs">{ent.source}</Badge>
         </div>
-        <div className="text-xs text-muted-foreground font-mono">{ent.featureKey}</div>
+        <div className="text-helper text-muted-foreground font-mono">{ent.featureKey}</div>
       </div>
       <div className="text-sm min-w-[8rem] text-right">
         {ent.enabled ? <Badge variant="secondary">Enabled</Badge> : <Badge variant="outline">Disabled</Badge>}
       </div>
-      <div className="text-xs text-muted-foreground min-w-[6rem] text-right font-mono">
+      <div className="text-helper text-muted-foreground min-w-[6rem] text-right font-mono">
         {usageDisplay ?? limitDisplay}
       </div>
       <div className="flex gap-1">

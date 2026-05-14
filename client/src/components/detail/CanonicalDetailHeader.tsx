@@ -629,12 +629,12 @@ export function CanonicalDetailHeader({
                     maxLength={titleEdit.maxLength ?? 500}
                     placeholder={titleEdit.placeholder ?? ""}
                     autoFocus
-                    className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                    className="w-full max-w-[520px] text-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
                     data-testid={`${testId}-title-input`}
                   />
                 ) : (
                   <h1
-                    className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
+                    className="m-0 text-title font-semibold leading-tight text-text-primary break-words min-w-0"
                     data-testid={`${testId}-title`}
                   >
                     {title}
@@ -751,7 +751,7 @@ export function CanonicalDetailHeader({
                     {clientHref ? (
                       <Link href={clientHref}>
                         <span
-                          className="text-section-title text-text-primary hover:text-brand transition-colors cursor-pointer truncate block"
+                          className="text-header text-text-primary hover:text-brand transition-colors cursor-pointer truncate block"
                           data-testid={`${testId}-client`}
                         >
                           {clientName}
@@ -759,7 +759,7 @@ export function CanonicalDetailHeader({
                       </Link>
                     ) : (
                       <span
-                        className="text-section-title text-text-primary truncate block"
+                        className="text-header text-text-primary truncate block"
                         data-testid={`${testId}-client`}
                       >
                         {clientName}

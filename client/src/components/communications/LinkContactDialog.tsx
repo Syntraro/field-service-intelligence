@@ -209,7 +209,7 @@ export function LinkContactDialog({
                       >
                         <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
                         <div className="min-w-0 flex-1 leading-snug">
-                          <div className="text-row-emphasis text-foreground truncate">
+                          <div className="text-emphasis text-foreground truncate">
                             {c.displayName}
                           </div>
                           {c.subline && (
@@ -254,7 +254,7 @@ export function LinkContactDialog({
                 >
                   <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
                   <div className="min-w-0 flex-1 leading-snug">
-                    <div className="text-row-emphasis text-foreground truncate">
+                    <div className="text-emphasis text-foreground truncate">
                       {m.displayName}
                     </div>
                     <div className="text-helper text-muted-foreground truncate">
@@ -318,7 +318,7 @@ function LinkActionRow({ icon: Icon, title, hint, onClick, disabled, testid }: L
     >
       <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
       <div className="min-w-0 flex-1 leading-snug">
-        <div className="text-row-emphasis text-foreground">{title}</div>
+        <div className="text-emphasis text-foreground">{title}</div>
         <div className="text-helper text-muted-foreground">{hint}</div>
       </div>
     </Button>

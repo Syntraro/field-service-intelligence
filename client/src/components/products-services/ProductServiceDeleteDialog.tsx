@@ -221,7 +221,7 @@ export function ImportDialog({
           <FileText className="h-8 w-8 text-muted-foreground" />
           <div>
             <p className="font-medium text-sm">{fileName}</p>
-            <p className="text-xs text-muted-foreground">{fileContent.split("\n").length - 1} rows</p>
+            <p className="text-helper text-muted-foreground">{fileContent.split("\n").length - 1} rows</p>
           </div>
         </div>
         <div className="flex items-center gap-2">

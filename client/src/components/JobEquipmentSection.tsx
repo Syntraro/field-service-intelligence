@@ -373,13 +373,13 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
             {!locationId ? (
               <div className="text-center py-4 text-text-muted">
                 <Info className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                <p className="text-caption">No location assigned to this job.</p>
+                <p className="text-row">No location assigned to this job.</p>
               </div>
             ) : jobEquipment.length === 0 ? (
               <div className="text-center py-4 text-text-muted">
                 <Wrench className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                <p className="text-caption">No equipment linked to this job.</p>
-                <p className="text-caption mt-1">Use the + button to link or create equipment.</p>
+                <p className="text-row">No equipment linked to this job.</p>
+                <p className="text-row mt-1">Use the + button to link or create equipment.</p>
               </div>
             ) : cardStyle ? (
               // 2026-05-07 Phase 8 — data-driven rail card path.
@@ -441,7 +441,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                       </div>
                       {/* Secondary meta: collapsed onto a single line. */}
                       {(metaParts.length > 0 || je.notes) && (
-                        <div className="mt-0.5 pl-[22px] text-xs text-muted-foreground">
+                        <div className="mt-0.5 pl-[22px] text-helper text-muted-foreground">
                           {metaParts.length > 0 && (
                             <div className="truncate">{metaParts.join(" · ")}</div>
                           )}

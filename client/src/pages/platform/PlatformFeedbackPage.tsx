@@ -82,7 +82,7 @@ export default function PlatformFeedbackPage() {
             <TableBody>
               {data?.rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer hover-elevate" onClick={() => setSelected(r)}>
-                  <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
+                  <TableCell className="text-helper text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
                   <TableCell className="text-sm">{r.tenantName ?? <span className="font-mono text-xs">{r.companyId.slice(0,8)}…</span>}</TableCell>
                   <TableCell>{r.category}</TableCell>
                   <TableCell>{r.userEmail}</TableCell>
@@ -92,7 +92,7 @@ export default function PlatformFeedbackPage() {
                   <TableCell className="text-sm">
                     {r.assigneeName
                       ?? r.assigneeEmail
-                      ?? (r.assignedTo ? <span className="font-mono text-xs">{r.assignedTo.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
+                      ?? (r.assignedTo ? <span className="font-mono text-helper">{r.assignedTo.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
                   </TableCell>
                 </TableRow>
               ))}
@@ -155,7 +155,7 @@ function FeedbackDetailDialog({ item, canTriage, onClose }: { item: FeedbackRow;
             <Label>Assignee user id</Label>
             <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} disabled={!canTriage} />
             {(item.assigneeName || item.assigneeEmail) && (
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-helper text-muted-foreground">
                 Current: {item.assigneeName ?? item.assigneeEmail}
                 {item.assigneeName && item.assigneeEmail ? ` (${item.assigneeEmail})` : null}
               </p>

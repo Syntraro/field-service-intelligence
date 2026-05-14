@@ -224,6 +224,13 @@ export interface EntityListTableProps<Row> {
   sortField?: string;
   sortDirection?: "asc" | "desc";
   onSort?: (key: string) => void;
+  /**
+   * Optional inline row detail renderer (receivables workspace).
+   * Called for each row after it renders. When it returns a non-null node,
+   * that node is rendered immediately below the row in document flow.
+   * The detail spans the full container width naturally (block flow).
+   */
+  inlineRowDetail?: (row: Row, rowKey: string) => React.ReactNode | null | undefined;
 }
 
 // ─── Default per-kind track sizing ──────────────────────────────────────────
@@ -440,6 +447,7 @@ export function EntityListTable<Row>({
   sortField,
   sortDirection,
   onSort,
+  inlineRowDetail,
 }: EntityListTableProps<Row>) {
   const gridTemplate = React.useMemo(
     () => buildGridTemplate(columns as EntityListColumn<unknown>[]),
@@ -533,9 +541,19 @@ export function EntityListTable<Row>({
           sortDirection,
         })
       ) : (
-        rows.map((row) =>
-          renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, selectedHighlightClass, gridTemplate }),
-        )
+        rows.map((row) => {
+          const key = rowKey(row);
+          const rowNode = renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, selectedHighlightClass, gridTemplate });
+          if (!inlineRowDetail) return rowNode;
+          const detail = inlineRowDetail(row, key);
+          if (!detail) return rowNode;
+          return (
+            <React.Fragment key={key}>
+              {rowNode}
+              {detail}
+            </React.Fragment>
+          );
+        })
       )}
     </div>
   );
@@ -653,7 +671,7 @@ function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNo
         {groupKey !== null && (
           <div
             className={cn(
-              "border-b border-[#e5e7eb] dark:border-gray-800 px-4 py-2 text-row-emphasis text-slate-700 bg-slate-50/70 dark:bg-gray-900/40",
+              "border-b border-[#e5e7eb] dark:border-gray-800 px-4 py-2 text-emphasis text-slate-700 bg-slate-50/70 dark:bg-gray-900/40",
             )}
             style={{ gridTemplateColumns: "1fr" }}
             data-testid={`entity-list-group-${groupKey}`}

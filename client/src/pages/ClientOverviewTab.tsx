@@ -155,10 +155,10 @@ function FinancialPerformanceCard({ data, className }: FinancialPerformanceCardP
                 className="grid grid-cols-4 gap-2 py-1.5 border-b border-card-border last:border-0 items-center"
               >
                 <span className={cn(ENTITY_META_CLASS, "col-span-1")}>{row.label}</span>
-                <span className="text-caption font-medium tabular-nums text-foreground text-right">
+                <span className="text-row font-medium tabular-nums text-foreground text-right">
                   {row.l30}
                 </span>
-                <span className="text-caption font-medium tabular-nums text-foreground text-right">
+                <span className="text-row font-medium tabular-nums text-foreground text-right">
                   {row.l12}
                 </span>
                 <span
@@ -287,10 +287,10 @@ function TopItemsSoldCard({ data }: TopItemsSoldCardProps) {
                 <span className={cn(ENTITY_META_CLASS, "truncate")} title={item.name}>
                   {item.name || "—"}
                 </span>
-                <span className="text-caption font-medium tabular-nums text-foreground text-right">
+                <span className="text-row font-medium tabular-nums text-foreground text-right">
                   {item.quantity}
                 </span>
-                <span className="text-caption font-medium tabular-nums text-foreground text-right">
+                <span className="text-row font-medium tabular-nums text-foreground text-right">
                   {formatCurrency(item.revenue)}
                 </span>
               </div>
@@ -409,7 +409,7 @@ function InsightsCard({ data }: InsightsCardProps) {
                   <InsightIcon className="h-3.5 w-3.5 text-slate-600" />
                 </div>
                 <div>
-                  <p className="text-caption font-medium text-foreground">{insight.title}</p>
+                  <p className="text-row font-medium text-foreground">{insight.title}</p>
                   <p className={cn(ENTITY_META_CLASS, "mt-0.5")}>{insight.body}</p>
                 </div>
               </div>
@@ -509,7 +509,7 @@ function CompactKpiSummary({ data, activeJobsCount, onHoldJobsCount }: CompactKp
               </div>
               <div className="min-w-0">
                 <p className={SECTION_LABEL_CLASS}>{m.label}</p>
-                <p className="text-caption font-medium tabular-nums text-foreground">{m.value}</p>
+                <p className="text-row font-medium tabular-nums text-foreground">{m.value}</p>
                 {m.sub && <p className={ENTITY_META_CLASS}>{m.sub}</p>}
               </div>
             </div>
@@ -541,7 +541,7 @@ function HealthRow({
       )}
     >
       <span className={ENTITY_META_CLASS}>{label}</span>
-      <span className="text-caption font-medium tabular-nums text-foreground">{value}</span>
+      <span className="text-row font-medium tabular-nums text-foreground">{value}</span>
     </div>
   );
 }

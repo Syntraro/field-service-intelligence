@@ -45,7 +45,7 @@ export function FiltersButton({
         <Button
           variant="outline"
           size="sm"
-          className={cn("h-9 gap-1.5", className)}
+          className={cn("gap-1.5", className)}
           data-testid="filters-button"
         >
           <Filter className="h-3.5 w-3.5" />
@@ -90,7 +90,7 @@ export function FilterSection({
 }) {
   return (
     <div>
-      <div className="text-xs font-medium text-muted-foreground mb-2">{label}</div>
+      <div className="text-helper font-medium text-muted-foreground mb-2">{label}</div>
       {children}
     </div>
   );

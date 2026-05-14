@@ -154,7 +154,7 @@ export function TeamMemberWorkspace({
                 {isInactive ? "Inactive" : "Active"}
               </Badge>
             </div>
-            <p className="text-xs text-muted-foreground truncate">
+            <p className="text-helper text-muted-foreground truncate">
               {member?.email ?? ""}
             </p>
           </div>

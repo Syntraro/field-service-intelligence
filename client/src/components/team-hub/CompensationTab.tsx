@@ -172,7 +172,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
                             {getMemberDisplayName({ fullName: t.fullName, email: t.email })}
                           </div>
                           {t.laborCostPerHour && (
-                            <div className="text-xs text-muted-foreground">
+                            <div className="text-helper text-muted-foreground">
                               ${t.laborCostPerHour}/hr cost
                             </div>
                           )}
@@ -217,7 +217,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
-                    <p className="text-xs text-muted-foreground">{member.email}</p>
+                    <p className="text-helper text-muted-foreground">{member.email}</p>
                   </div>
                   <Link href={`/manage-team/${member.id}`}>
                     <Button
@@ -305,7 +305,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
 
               <div className="flex justify-end items-center gap-2 pt-2">
                 {dirty.isDirty && (
-                  <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                  <span className="text-helper text-muted-foreground">Unsaved changes</span>
                 )}
                 <Button
                   onClick={() => saveProfile.mutate()}

@@ -276,7 +276,7 @@ function LocationCombobox({
               </CommandGroup>
             )}
             {searchLoading && (
-              <div className="px-3 py-2 text-xs text-muted-foreground flex items-center gap-1.5">
+              <div className="px-3 py-2 text-helper text-muted-foreground flex items-center gap-1.5">
                 <Loader2 className="h-3 w-3 animate-spin" />Searching...
               </div>
             )}
@@ -2337,7 +2337,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         data-testid="input-recurring-interval"
                       />
                     </CompactFormField>
-                    <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
+                    <span className="text-helper text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
                   </div>
 
                   {/* Weekly: day-of-week buttons */}
@@ -2453,7 +2453,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   onCheckedChange={handleUnscheduledChange}
                   data-testid="checkbox-unscheduled"
                 />
-                <span className="text-xs text-muted-foreground">Unscheduled (backlog)</span>
+                <span className="text-helper text-muted-foreground">Unscheduled (backlog)</span>
               </label>
             </div>
 
@@ -2750,7 +2750,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   </Button>
                 </div>
                 {!capacityData ? (
-                  <p className="text-xs text-muted-foreground italic">
+                  <p className="text-helper text-muted-foreground italic">
                     Loading availability…
                   </p>
                 ) : embedded ? (
@@ -2784,7 +2784,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     if (techList.length === 0) {
                       return (
                         <p
-                          className="text-xs text-muted-foreground italic"
+                          className="text-helper text-muted-foreground italic"
                           data-testid="find-availability-empty"
                         >
                           No technicians in scope.
@@ -2805,7 +2805,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                               </div>
                               {gaps.length === 0 ? (
                                 <div
-                                  className="text-xs text-muted-foreground italic"
+                                  className="text-helper text-muted-foreground italic"
                                   data-testid={`find-availability-no-slots-${tech.technicianId}`}
                                 >
                                   No availability
@@ -2839,7 +2839,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   })()
                 ) : availabilityGroups.length === 0 ? (
                   <p
-                    className="text-xs text-muted-foreground italic"
+                    className="text-helper text-muted-foreground italic"
                     data-testid="find-availability-empty"
                   >
                     {`No matching availability for ${
@@ -3137,7 +3137,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                   data-testid="input-recurring-interval"
                                 />
                               </CompactFormField>
-                              <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
+                              <span className="text-helper text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
                             </div>
                             {recurringKind === "weekly" && (
                               <CompactFormField label="Days" labelClassName="mb-1.5">

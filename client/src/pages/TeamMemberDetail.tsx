@@ -264,7 +264,7 @@ export default function TeamMemberDetail() {
             <h1 className="text-xl font-semibold truncate" data-testid="text-member-name">
               {getMemberDisplayName(member)}
             </h1>
-            <p className="text-xs text-muted-foreground truncate">
+            <p className="text-helper text-muted-foreground truncate">
               {member.email} · {currentRoleName}
             </p>
           </div>
@@ -359,7 +359,7 @@ export default function TeamMemberDetail() {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 text-helper text-muted-foreground">
                 <span>
                   Joined {new Date(member.createdAt).toLocaleDateString()}
                   {member.lastLoginAt ? ` · Last login ${new Date(member.lastLoginAt).toLocaleDateString()}` : " · Never logged in"}
@@ -408,7 +408,7 @@ export default function TeamMemberDetail() {
         </Card>
 
         {/* Pointer to hub — schedule/compensation/permissions moved there. */}
-        <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground flex items-center justify-between">
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-helper text-muted-foreground flex items-center justify-between">
           <span>
             Schedule, compensation, and access for this member are managed from the Team hub.
           </span>

@@ -779,6 +779,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   }, [scheduleValue, toast, refetchAll, overdueJobs, primaryJobs, secondaryJobs, rescheduleVisit, scheduleVisit]);
 
   // ── Create invoice action (ready_to_invoice) ──
+  // Creates the invoice via the canonical from-job endpoint, then navigates
+  // directly to the new invoice detail page. No success toast — navigation
+  // is the primary feedback. Modal is closed before navigating so no stale
+  // overlay remains.
   const handleCreateInvoice = useCallback(async (jobId: string) => {
     setActionLoading(jobId);
     try {
@@ -786,18 +790,14 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         method: "POST",
         body: JSON.stringify({ markJobCompleted: false }),
       });
-      toast({ title: "Invoice Created", description: `Invoice #${result.invoiceNumber || ""} created.` });
-      refetchAll();
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      handleOpenChange(false);
+      setLocation(`/invoices/${result.id}`);
     } catch (err: any) {
       toast({ title: "Error", description: err.message || "Failed to create invoice", variant: "destructive" });
     } finally {
       setActionLoading(null);
     }
-  }, [toast, refetchAll]);
+  }, [toast, handleOpenChange, setLocation]);
 
   // ── PM job-generation mutation ──────────────────────────────────────────
   //

@@ -193,7 +193,7 @@ export default function EditTagsModal({
           {/* Color picker row (visible when creating) */}
           {canCreate && (
             <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Color:</span>
+              <span className="text-helper text-muted-foreground">Color:</span>
               <div className="flex gap-1">
                 {TAG_COLORS.map((c) => (
                   <button
@@ -249,7 +249,7 @@ export default function EditTagsModal({
         )}
 
         {availableTags.length === 0 && !canCreate && search.trim() && (
-          <p className="text-xs text-muted-foreground text-center py-2">
+          <p className="text-helper text-muted-foreground text-center py-2">
             No matching tags found
           </p>
         )}

@@ -122,7 +122,7 @@ export function RailPanelRenderer({
               data-testid={group.testId}
             >
               <div className="flex items-center gap-2">
-                <span className="text-section-title text-text-primary truncate min-w-0">
+                <span className="text-header text-text-primary truncate min-w-0">
                   {group.heading}
                 </span>
               </div>
@@ -212,7 +212,7 @@ function RailGroupedPanelHeaderRow({
         {header.values.map((v, idx) => (
           <Fragment key={idx}>
             {idx > 0 && <span className="text-text-disabled">·</span>}
-            <span className="text-row-emphasis tabular-nums text-text-primary">
+            <span className="text-emphasis tabular-nums text-text-primary">
               {v}
             </span>
           </Fragment>
@@ -268,7 +268,7 @@ function RailCardFromDescriptor({ card }: { card: RailCardDescriptor }) {
               the per-date total. The date-card aggregate now renders
               in the same sans-serif family as Equipment / Notes meta;
               `tabular-nums` keeps the value column-aligned. */}
-          <span className="text-caption tabular-nums text-text-primary shrink-0">
+          <span className="text-row tabular-nums text-text-primary shrink-0">
             {card.sectionHeader.value}
           </span>
         </RailContentCardHeader>
@@ -404,7 +404,7 @@ function RailFooterFromDescriptor({
           // Phase H2: footer link composes the canonical ENTITY_LINK_CLASS
           // (brand-green + hover underline) with the per-callsite layout
           // (compact helper sizing + focus-visible ring + rounded box).
-          // 2026-05-07 typography sweep: dropped `text-caption font-medium`
+          // 2026-05-07 typography sweep: dropped `text-row font-medium`
           // (14px / 500) for `text-helper` (13px / 400) so the footer
           // link rides the same dense-secondary scale as the rest of
           // the rail panel meta. Brand color comes from ENTITY_LINK_CLASS;
@@ -426,7 +426,7 @@ function RailFooterFromDescriptor({
     // `flex items-center justify-between` so the label sits above
     // the body rather than across from it. Lines render at body
     // typography (`text-row text-text-primary`); the fallback
-    // inherits the Footer slot's `text-caption text-text-secondary`
+    // inherits the Footer slot's `text-row text-text-secondary`
     // baseline + an italic emphasis.
     const hasLines = footer.lines !== undefined && footer.lines.length > 0;
     return (
@@ -629,7 +629,7 @@ function RailMetaRowFromDescriptor({
  *     truncate min-w-0`) — NOT card-title typography. Subrows are
  *     entry rows nested inside a card, not mini-cards. Routing them
  *     through `<RailContentCardTitle>` (which bakes
- *     `text-row-emphasis` = 17/600) made each entry print at
+ *     `text-emphasis` = 17/600) made each entry print at
  *     card-title scale and stacked 3+ heavy lines per (tech, date)
  *     card. Row-level typography matches the body/meta hierarchy
  *     used by Equipment + Notes.
@@ -659,7 +659,7 @@ function RailSubrowFromDescriptor({
       <div className="flex items-baseline justify-between gap-2">
         {/* 2026-05-08 Labour typography remap — subrow title prints at
             row-level, NOT card-title-level. The prior
-            `<RailContentCardTitle>` baked text-row-emphasis (17/600)
+            `<RailContentCardTitle>` baked text-emphasis (17/600)
             so every Labour entry "On-site" / "Travel" rendered at the
             same scale as the technician group heading. Truncation +
             min-width are preserved so long values still clip. */}
@@ -669,7 +669,7 @@ function RailSubrowFromDescriptor({
         {subrow.title.chip && <RailChipFromDescriptor chip={subrow.title.chip} />}
         {subrow.title.value && (
           /* 2026-05-08 Labour typography remap — trailing value moves
-             from text-row-emphasis font-mono (17/600 mono) to
+             from text-emphasis font-mono (17/600 mono) to
              text-row sans-serif. tabular-nums keeps the value column-
              aligned without the family swap. */
           <span className="text-row tabular-nums text-text-primary shrink-0">

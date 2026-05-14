@@ -22,7 +22,7 @@
  *     anywhere in the shared header
  *   - drops the canonical `RAIL_HEADER_ACTION_CLASS` export
  *   - regresses `RAIL_HEADER_ACTION_CLASS` to the prior heavier scale
- *     (`text-caption font-medium`)
+ *     (`text-row font-medium`)
  *   - reintroduces the literal-hex `text-[#76B054]` action color in
  *     JobDetailPage (canonical token is `text-brand`)
  *   - reintroduces an inline action-button class string in
@@ -138,7 +138,7 @@ describe("DetailRightRail — canonical action-button class export (structural-o
     );
   });
 
-  it("does NOT bake any typography token (`text-helper` / `text-caption` / `text-label` / etc.) — typography lives at the call site to satisfy the canonical typography guard", () => {
+  it("does NOT bake any typography token (`text-helper` / `text-row` / `text-label` / etc.) — typography lives at the call site to satisfy the canonical typography guard", () => {
     // The canonical typography guard scans the `detail-rail/` directory
     // and forbids local typography constants whose value contains a
     // `text-*` class. By keeping `RAIL_HEADER_ACTION_CLASS` purely
@@ -150,10 +150,10 @@ describe("DetailRightRail — canonical action-button class export (structural-o
     expect(constMatch).not.toBeNull();
     const value = constMatch?.[1] ?? "";
     expect(value).not.toMatch(/\btext-helper\b/);
-    expect(value).not.toMatch(/\btext-caption\b/);
+    expect(value).not.toMatch(/\btext-row\b/);
     expect(value).not.toMatch(/\btext-label\b/);
     expect(value).not.toMatch(/\btext-row\b/);
-    expect(value).not.toMatch(/\btext-section-title\b/);
+    expect(value).not.toMatch(/\btext-header\b/);
   });
 
   it("does NOT bake `font-medium` / `font-semibold` / `font-bold`", () => {
@@ -217,9 +217,9 @@ describe("ClientDetailPage — rail action buttons compose onto the canonical cl
     );
   });
 
-  it("does NOT keep an inline `text-caption font-medium` action button class string anywhere", () => {
+  it("does NOT keep an inline `text-row font-medium` action button class string anywhere", () => {
     expect(clientSrc).not.toMatch(
-      /inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium/,
+      /inline-flex items-center gap-1 h-7 px-2 rounded text-row font-medium/,
     );
   });
 });
@@ -265,9 +265,9 @@ describe("JobDetailPage — rail action buttons compose onto the canonical class
     }
   });
 
-  it("does NOT keep an inline `text-caption font-medium` rail action button class string", () => {
+  it("does NOT keep an inline `text-row font-medium` rail action button class string", () => {
     expect(jobSrc).not.toMatch(
-      /inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium/,
+      /inline-flex items-center gap-1 h-7 px-2 rounded text-row font-medium/,
     );
   });
 });

@@ -98,10 +98,10 @@ export default function PlatformIssuesPage() {
             <TableBody>
               {data?.rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer hover-elevate" onClick={() => setSelected(r)}>
-                  <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
+                  <TableCell className="text-helper text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
                   <TableCell className="text-sm">
                     {r.tenantName
-                      ?? (r.tenantId ? <span className="font-mono text-xs">{r.tenantId.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
+                      ?? (r.tenantId ? <span className="font-mono text-helper">{r.tenantId.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
                   </TableCell>
                   <TableCell>{r.title}</TableCell>
                   <TableCell><Badge variant={sevColor(r.severity) as any}>{r.severity}</Badge></TableCell>
@@ -240,7 +240,7 @@ function IssueDetailDialog({ issue, canTriage, onClose }: { issue: Issue; canTri
             <Label>Assignee user id</Label>
             <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} disabled={!canTriage} />
             {(issue.assigneeName || issue.assigneeEmail) && (
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-helper text-muted-foreground">
                 Current: {issue.assigneeName ?? issue.assigneeEmail}
                 {issue.assigneeName && issue.assigneeEmail ? ` (${issue.assigneeEmail})` : null}
               </p>

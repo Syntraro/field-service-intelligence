@@ -484,11 +484,11 @@ export default function UniversalSearch() {
             </div>
           )}
           {sr.subtitle && (
-            <div className="text-xs text-muted-foreground truncate">{sr.subtitle}</div>
+            <div className="text-helper text-muted-foreground truncate">{sr.subtitle}</div>
           )}
         </div>
         {sr.match && (
-          <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">
+          <span className="text-helper text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">
             {sr.match}
           </span>
         )}
@@ -498,7 +498,7 @@ export default function UniversalSearch() {
 
   // ------ Section header ------
   const sectionHeader = (label: string) => (
-    <div className="px-3 py-1.5 text-[13px] font-medium text-muted-foreground uppercase tracking-wider select-none">
+    <div className="px-3 py-1.5 text-label font-medium text-muted-foreground tracking-wider select-none">
       {label}
     </div>
   );
@@ -585,7 +585,7 @@ export default function UniversalSearch() {
                       const typeResults = groupedResults[type];
                       return (
                         <div key={type}>
-                          <div className="px-3 py-1 text-[13px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+                          <div className="px-3 py-1 text-label font-medium text-muted-foreground/70 tracking-wider">
                             {TYPE_LABELS[type]}
                           </div>
                           {typeResults.map((sr) => {
@@ -617,7 +617,7 @@ export default function UniversalSearch() {
           </div>
 
           {/* Footer with keyboard hints */}
-          <div className="border-t px-3 py-1.5 text-xs text-muted-foreground flex items-center gap-3">
+          <div className="border-t px-3 py-1.5 text-helper text-muted-foreground flex items-center gap-3">
             <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
             <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
             <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>

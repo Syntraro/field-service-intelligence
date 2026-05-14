@@ -29,7 +29,7 @@ export function SummaryCards({ items }: { items: SummaryItem[] }) {
               <Icon className="h-3.5 w-3.5" />
               {item.label}
             </div>
-            <div className="mt-1 text-2xl font-bold tabular-nums">{item.value}</div>
+            <div className="mt-1 text-display tabular-nums">{item.value}</div>
           </div>
         );
       })}

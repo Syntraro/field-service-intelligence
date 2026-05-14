@@ -186,7 +186,7 @@ export default function TagsSettingsPage() {
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
-          <h1 className="text-2xl font-semibold">Manage Tags</h1>
+          <h1 className="text-title font-semibold">Manage Tags</h1>
         </div>
         <div className="flex items-center justify-center h-64">
           <div className="text-muted-foreground">Loading tags...</div>
@@ -203,7 +203,7 @@ export default function TagsSettingsPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>
-        <h1 className="text-2xl font-semibold">Manage Tags</h1>
+        <h1 className="text-title font-semibold">Manage Tags</h1>
       </div>
       {/* Create new tag form */}
       <div className="flex items-end gap-3 flex-wrap">

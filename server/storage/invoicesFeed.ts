@@ -389,7 +389,7 @@ export async function getInvoicesFeed(
       and(
         isNotNull(invoices.followUpAt),
         sql`${invoices.followUpAt} <= NOW()`,
-        sql`${invoices.status} NOT IN ('paid', 'voided')`,
+        sql`${invoices.status} NOT IN ('draft', 'paid', 'voided')`,
       )
     );
   }
@@ -407,8 +407,8 @@ export async function getInvoicesFeed(
         sql`CAST(${invoices.balance} AS numeric) > 0`,
         sql`${invoices.status} NOT IN ('draft', 'paid', 'voided')`,
         or(
-          isNull(invoices.lastEmailedAt),
-          sql`${invoices.lastEmailedAt} < ${noContactBefore.toISOString()}::timestamptz`,
+          sql`COALESCE(${invoices.lastContactedAt}, ${invoices.lastEmailedAt}) IS NULL`,
+          sql`COALESCE(${invoices.lastContactedAt}, ${invoices.lastEmailedAt}) < ${noContactBefore.toISOString()}::timestamptz`,
         )
       )
     );

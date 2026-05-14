@@ -287,7 +287,7 @@ export default function CategoryManagementPage() {
         </Link>
         <div className="flex-1 min-w-0">
           <h1 className="text-title" data-testid="text-title">Category Management</h1>
-          <p className="text-caption text-muted-foreground mt-0.5">
+          <p className="text-row text-muted-foreground mt-0.5">
             Organize your products and services. Deleting a category will not delete any items
             — items will be moved to Uncategorized automatically.
           </p>

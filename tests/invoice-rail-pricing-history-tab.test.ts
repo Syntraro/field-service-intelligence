@@ -245,8 +245,8 @@ describe("InvoicePricingHistoryPanel — internals", () => {
     expect(pricingSrc).toMatch(/<RailContentCard/);
   });
 
-  it("price values use text-row-emphasis for visual prominence", () => {
-    expect(pricingSrc).toMatch(/text-row-emphasis/);
+  it("price values use text-emphasis for visual prominence", () => {
+    expect(pricingSrc).toMatch(/text-emphasis/);
   });
 
   it("does not show similar clients or broad averages", () => {

@@ -139,7 +139,7 @@ function SessionsTable({
           <TableRow key={s.id}>
             <TableCell>
               <div className="text-sm">{s.tenantName ?? <span className="font-mono text-xs">{s.companyId.slice(0, 8)}…</span>}</div>
-              {s.reason && <div className="text-xs text-muted-foreground max-w-xs truncate">{s.reason}</div>}
+              {s.reason && <div className="text-helper text-muted-foreground max-w-xs truncate">{s.reason}</div>}
             </TableCell>
             <TableCell>
               <Badge variant={s.accessMode === "impersonation" ? "default" : "outline"}>
@@ -149,16 +149,16 @@ function SessionsTable({
             <TableCell>{statusBadge(s.status)}</TableCell>
             <TableCell>
               <div className="text-sm">{s.ownerName ?? s.ownerEmail ?? <span className="font-mono text-xs">{s.ownerUserId.slice(0, 8)}…</span>}</div>
-              {s.ownerEmail && s.ownerName && <div className="text-xs text-muted-foreground">{s.ownerEmail}</div>}
+              {s.ownerEmail && s.ownerName && <div className="text-helper text-muted-foreground">{s.ownerEmail}</div>}
             </TableCell>
             <TableCell>
               {s.accessMode === "impersonation" ? (
                 <>
                   <div className="text-sm">{s.targetName ?? s.targetEmail ?? "—"}</div>
-                  {s.targetEmail && s.targetName && <div className="text-xs text-muted-foreground">{s.targetEmail}</div>}
+                  {s.targetEmail && s.targetName && <div className="text-helper text-muted-foreground">{s.targetEmail}</div>}
                 </>
               ) : (
-                <span className="text-xs text-muted-foreground">—</span>
+                <span className="text-helper text-muted-foreground">—</span>
               )}
             </TableCell>
             <TableCell className="text-xs">{new Date(s.createdAt).toLocaleString()}</TableCell>

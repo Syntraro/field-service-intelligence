@@ -128,7 +128,7 @@ export type RailTitleTrailing =
 
 export interface RailCardTitleDescriptor {
   /** Title text. Renders inside `<RailContentCardTitle>` which bakes
-   *  `text-row-emphasis text-text-primary truncate min-w-0` (the
+   *  `text-emphasis text-text-primary truncate min-w-0` (the
    *  canonical 15px / 500 role token; no `font-semibold` modifier). */
   text: string;
   /** Inline secondary text appended after `text` with subdued
@@ -218,7 +218,7 @@ export interface RailMetaRowDescriptor {
  * and the per-date totals sit right with a `border-b` separator.
  *
  * Renders `text-label uppercase tracking-wide text-text-muted` for
- * the label and `text-caption tabular-nums text-text-primary
+ * the label and `text-row tabular-nums text-text-primary
  * font-mono` for the value. Separator: `pb-2 border-b
  * border-slate-100` baked in.
  *
@@ -230,7 +230,7 @@ export interface RailCardSectionHeader {
    *  `text-label uppercase tracking-wide text-text-muted` chrome. */
   label: string;
   /** Compact value rendered on the right with
-   *  `text-caption tabular-nums text-text-primary font-mono`. Use
+   *  `text-row tabular-nums text-text-primary font-mono`. Use
    *  for per-section totals (Labour: minutes · cost). */
   value: string;
   /** Forwarded `data-testid` on the rendered section header. */
@@ -250,7 +250,7 @@ export interface RailCardSectionHeader {
  *     every sub-row after the first, so the page never specifies
  *     them).
  *   - Top-row layout (`flex items-baseline justify-between gap-2`).
- *   - Bottom-row meta typography (`text-caption text-text-secondary
+ *   - Bottom-row meta typography (`text-row text-text-secondary
  *     font-mono` on the meta line; tabular-nums on values).
  *
  * Pages provide only the labels, the optional warning chip, the
@@ -271,19 +271,19 @@ export interface RailSubrowDescriptor {
    *  value on the right. */
   title: {
     /** Primary text — rendered through `<RailContentCardTitle>` so
-     *  the typography matches card titles (text-row-emphasis,
+     *  the typography matches card titles (text-emphasis,
      *  the canonical 15px / 500 role token). */
     text: string;
     /** Optional inline chip in the title row (e.g. "Running"
      *  warning indicator with Clock icon). */
     chip?: RailChipDescriptor;
     /** Optional trailing value on the right side of the title row.
-     *  Rendered with `text-row-emphasis tabular-nums text-text-primary
+     *  Rendered with `text-emphasis tabular-nums text-text-primary
      *  font-mono shrink-0` — used for Labour's per-entry cost. */
     value?: string;
   };
   /** Optional bottom row: left text + right text. Both render with
-   *  `text-caption tabular-nums text-text-secondary font-mono`. Used
+   *  `text-row tabular-nums text-text-secondary font-mono`. Used
    *  for Labour's time-range / duration row. */
   meta?: {
     leftText: string;
@@ -438,7 +438,7 @@ export type RailFooterDescriptor =
       lines?: string[];
       /** Italic muted fallback line shown when `lines` is missing
        *  or empty. Rendered in the Footer slot's default
-       *  `text-caption text-text-secondary` baseline + `italic`. */
+       *  `text-row text-text-secondary` baseline + `italic`. */
       fallback?: string;
     };
 
@@ -474,7 +474,7 @@ export interface RailEmptyDescriptor {
  * + cost across every tech and date.
  *
  * Renders `text-label uppercase tracking-wide text-text-muted` on the
- * left and a sequence of `text-row-emphasis tabular-nums
+ * left and a sequence of `text-emphasis tabular-nums
  * text-text-primary` values on the right (separated by
  * thin `text-text-disabled` `·` dividers when there are multiple).
  *
@@ -505,7 +505,7 @@ export interface RailGroupDescriptor {
    *  `labour-tech-group-${technicianId}`). */
   testId?: string;
   /** Section heading rendered above the cards in canonical
-   *  `text-section-title text-text-primary` chrome (the 18px / 600
+   *  `text-header text-text-primary` chrome (the 18px / 600
    *  role token bakes the weight; no `font-semibold` modifier). */
   heading: string;
   /** Cards in the section. Each can carry a section-header + sub-rows

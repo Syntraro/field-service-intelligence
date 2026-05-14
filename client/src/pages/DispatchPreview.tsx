@@ -1564,7 +1564,7 @@ export default function DispatchPreview() {
         <div className="text-center">
           <AlertCircle className="mx-auto h-8 w-8 text-red-400 mb-2" />
           <p className="text-sm font-medium text-foreground">Failed to load dispatch data</p>
-          <p className="text-xs text-muted-foreground mt-1">{error.message}</p>
+          <p className="text-helper text-muted-foreground mt-1">{error.message}</p>
         </div>
       </div>
     );
@@ -1773,7 +1773,7 @@ export default function DispatchPreview() {
             <div className="flex flex-1 items-center justify-center">
               <div className="text-center">
                 <Loader2 className="mx-auto h-6 w-6 animate-spin text-slate-400 mb-2" />
-                <p className="text-xs text-muted-foreground">Loading dispatch board...</p>
+                <p className="text-helper text-muted-foreground">Loading dispatch board...</p>
               </div>
             </div>
           ) : activeView === "day" ? (

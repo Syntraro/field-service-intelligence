@@ -103,8 +103,6 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
     paidAt: null,
     voidedAt: null,
     closedAt: null,
-    notesInternal: null,
-    notesCustomer: null,
     workDescription: "Annual HVAC system tune-up and filter replacement.",
     clientMessage: "Thank you for choosing us.",
     showQuantity: true,
@@ -229,7 +227,6 @@ describe("invoicePdfService — render-time smoke", () => {
     const company = makeCompany();
     const invoice = makeInvoice({
       workDescription: null,
-      notesCustomer: null,
       clientMessage: null,
     });
     const lines = [makeLine(1), makeLine(2)];

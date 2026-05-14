@@ -92,7 +92,7 @@ export function CustomizeActivityFeedView() {
               data-testid={`activity-category-row-${cat.key}`}
             >
               <Label htmlFor={id} className="flex-1 cursor-pointer">
-                <div className="text-row-emphasis text-foreground">{cat.label}</div>
+                <div className="text-emphasis text-foreground">{cat.label}</div>
                 <div className="text-helper text-muted-foreground font-normal mt-0.5">
                   {cat.description}
                 </div>

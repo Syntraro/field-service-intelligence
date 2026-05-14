@@ -79,18 +79,19 @@ export default {
         // no new pixel sizes, no visual delta. The renaming is a pure
         // role-naming improvement.
         //
-        //   text-display    32/40/700  — biggest visible value (KPI hero)
-        //   text-title      30/36/700  — page title (h1)
-        //   text-header     18/24/600  — card / panel / modal title (h2)
-        //   text-subheader  16/22/500  — sub-grouping (h3)
-        //   text-body       15/22/400  — default reading text
-        //   text-row        14/20/400  — default list/table row content (2026-05-08: 15→14, LH 22→20)
-        //   text-emphasis   15/22/500  — emphasized row value / entity name
-        //   text-caption    14/20/400  — secondary text alongside rows
-        //   text-label      13/16/500/0.04em UPPERCASE — labels, eyebrows
-        //   text-helper     13/16/400  — hint / footnote / dense secondary
-        //   text-error      15.2/22.8/500 — validation error (pair with
-        //                                   text-destructive for color)
+        //   text-display        32/40/700  — biggest visible value (KPI hero)
+        //   text-title          30/36/700  — page title (h1)
+        //   text-header         18/24/600  — card / panel / modal title (h2)
+        //   text-subheader      16/22/500  — sub-grouping (h3)
+        //   text-body           15/22/400  — default reading text
+        //   text-emphasis       15/22/500  — emphasized inline / non-list content
+        //   text-list-primary   15/20/500  — EntityListTable primary cell (entity names)
+        //   text-list-body      15/20/400  — EntityListTable body-content cells
+        //   text-row            14/20/400  — default list/table row content
+        //   text-label          13/16/500/0.04em UPPERCASE — table headers, eyebrows
+        //   text-helper         13/16/400  — hint / footnote / dense secondary
+        //   text-error          15.2/22.8/500 — validation error (pair with
+        //                                       text-destructive for color)
         //
         // See docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md for the canonical usage
         // table + the deprecated-alias mapping. text-label still relies
@@ -102,20 +103,10 @@ export default {
         title:           ["30px", { lineHeight: "36px", fontWeight: "700" }],
         header:          ["18px", { lineHeight: "24px", fontWeight: "600" }],
         subheader:       ["16px", { lineHeight: "22px", fontWeight: "500" }],
-        // Deprecated aliases of the heading roles above — kept at their
-        // original specs so existing consumers render unchanged.
-        // Migration mapping documented in SEMANTIC_TYPOGRAPHY_SYSTEM.md.
-        "page-title":    ["30px", { lineHeight: "36px", fontWeight: "700" }],
-        "section-title": ["18px", { lineHeight: "24px", fontWeight: "600" }],
-        subhead:         ["16px", { lineHeight: "22px", fontWeight: "500" }],
         // Body
         body:            ["15px", { lineHeight: "22px" }],
         row:             ["14px", { lineHeight: "20px" }],
         emphasis:        ["15px", { lineHeight: "22px", fontWeight: "500" }],
-        // Deprecated alias.
-        "row-emphasis":  ["15px", { lineHeight: "22px", fontWeight: "500" }],
-        // Small
-        caption:         ["14px", { lineHeight: "20px" }],
         // EntityListTable primary cell identifier (entity names, client names, job titles).
         // 15px / 20px / 500 — readable at dense row height; weight 500 differentiates from the
         // helper-weight (400) secondary sub-line at 13px.
@@ -132,72 +123,18 @@ export default {
         "nav-compact":   ["12px", { lineHeight: "14px", fontWeight: "500" }],
 
         // ──────────────────────────────────────────────────────────────
-        // 2026-05-03 Phase E — semantic role tokens for app-wide
-        // typography enforcement. Each new token is either an ALIAS of
-        // an existing token (preserves pixel output exactly) OR a new
-        // size that pixel-matches a current approved primitive class.
+        // Special-purpose tokens (not part of the visual hierarchy ramp
+        // above — retained because they serve distinct component roles
+        // with no exact size match in the preferred set).
         //
-        // Goal: every typography-bearing surface uses a SEMANTIC token
-        // by role rather than a raw `text-xs`/`text-sm` etc. The role
-        // names map 1:1 to the user's stated role list:
-        //   text-label         (compact uppercase tracked — table heads,
-        //                       KPI labels, "BILL TO" metadata keys)
-        //   text-helper        (compact non-uppercase — tooltips,
-        //                       "as of" timestamps)
-        //   text-body          (default reading text)
-        //   text-caption       (secondary text alongside row content)
-        //   text-section-title (h2 inside a card / panel / modal body)
-        //   text-table-header  ALIAS of label — for column headers
-        //   text-table-cell    ALIAS of row — for table cells
-        //   text-input         ALIAS of body — for form input/textarea
-        //   text-email-body    ALIAS of body — for email composition
-        //   text-modal-title   NEW 21.4px/600 — pixel-matches the
-        //                       legacy `text-lg font-semibold` that
-        //                       DialogTitle currently uses
-        //   text-error         NEW 15.2px/500 — pixel-matches the
-        //                       legacy `text-xs font-medium` that
-        //                       FormMessage uses (color via separate
-        //                       `text-destructive` utility — fontSize
-        //                       tuples can't carry color)
-        //   text-empty-state   NEW 15.2px — pixel-matches the legacy
-        //                       `text-xs` empty-state copy in
-        //                       reports / lists / modals
-        //
-        // Note: form-context labels/helpers (Label, FormDescription,
-        // SelectLabel, SelectItem) intentionally remain on raw
-        // `text-xs` (15.2px) because the existing `text-label` /
-        // `text-helper` tokens are 13px UPPERCASE TRACKED — a
-        // different visual role from sentence-case form labels.
-        // Migrating those primitives to `text-label` would change
-        // both size (15.2px → 13px) and case (sentence → upper) which
-        // violates the "preserve current approved visual output"
-        // rule. The raw classes are documented as the form-label /
-        // form-helper canonical pattern in those primitives' source.
+        // text-modal-title: 21.4px/600 — DialogTitle; larger than
+        //   text-header (18px) by design (modal chrome reads at a
+        //   different hierarchy than card chrome).
+        // text-error: 15.2px/500 rem-based — validation error copy;
+        //   paired with text-destructive for color.
+        // text-empty-state: 15.2px rem-based — empty state copy.
         // ──────────────────────────────────────────────────────────────
-        // 2026-05-08 Phase S1: every component-specific token below is
-        // DEPRECATED in favour of the visual-hierarchy preferred set
-        // above (text-title / text-header / text-subheader / text-body
-        // / text-row / text-emphasis / text-caption / text-label /
-        // text-helper / text-error). The values stay at their original
-        // specs so existing consumers render unchanged. The drift guard
-        // in tests/semantic-typography-guard.test.ts blocks new usage.
-        // See docs/SEMANTIC_TYPOGRAPHY_SYSTEM.md for the alias map +
-        // which mappings are exact vs. need-design-decision.
-        //
-        // Exact aliases (rebrand-only):
-        //   text-table-header → text-label
-        //   text-table-cell   → text-row
-        //   text-input        → text-body
-        //   text-email-body   → text-body
-        // Imperfect (different size or different role identity):
-        //   text-modal-title  ≈ text-header (different size: 21.4 vs 18)
-        //   text-empty-state  ≈ text-body   (different size: 15.2 vs 15)
-        // text-error remains canonical (kept in the preferred set above).
         "modal-title":  ["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }],
-        "table-header": ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
-        "table-cell":   ["14px", { lineHeight: "20px" }],  // 2026-05-08: synced to text-row (was 15/22)
-        input:          ["15px", { lineHeight: "22px" }],
-        "email-body":   ["15px", { lineHeight: "22px" }],
         error:          ["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }],
         "empty-state":  ["0.8rem", { lineHeight: "1.2rem" }],
 

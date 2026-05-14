@@ -31,7 +31,7 @@ export function InsightsTab() {
           <p className="font-medium text-foreground text-sm">Coming soon</p>
           <ul className="mt-2 space-y-1">
             {PLANNED_FEATURES.map((f) => (
-              <li key={f} className="text-caption text-muted-foreground flex items-center gap-1.5">
+              <li key={f} className="text-row text-muted-foreground flex items-center gap-1.5">
                 <span className="h-1 w-1 rounded-full bg-muted-foreground/50 shrink-0" />
                 {f}
               </li>

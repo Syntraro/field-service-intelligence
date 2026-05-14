@@ -157,7 +157,7 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                       (15.2px) to match canonical body text in modals. */}
                   <span className="text-xs">
                     <span className="font-medium">Use default recipients per invoice</span>
-                    <span className="block text-xs text-muted-foreground">
+                    <span className="block text-helper text-muted-foreground">
                       Each invoice uses its own billing contacts. Invoices with no recipients on file will fail and be reported in the results.
                     </span>
                   </span>
@@ -174,7 +174,7 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                   />
                   <span className="text-xs">
                     <span className="font-medium">Use the same recipients for every invoice</span>
-                    <span className="block text-xs text-muted-foreground">
+                    <span className="block text-helper text-muted-foreground">
                       One list applied to all invoices in this batch. Useful when the client asks for "all open invoices".
                     </span>
                   </span>
@@ -276,11 +276,11 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                     <XCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono text-xs text-muted-foreground truncate">
+                    <div className="font-mono text-helper text-muted-foreground truncate">
                       {r.invoiceId.slice(0, 8)}…
                     </div>
                     {r.ok ? (
-                      <div className="text-xs text-muted-foreground truncate">
+                      <div className="text-helper text-muted-foreground truncate">
                         Sent to {(r.recipients ?? []).join(", ")}
                       </div>
                     ) : (

@@ -165,7 +165,7 @@ import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverri
 import { formatCurrency } from "@/lib/formatters";
 // 2026-05-02 (Audit #2 follow-up): shared "Service Address" primitive.
 // Same JSX previously inlined in InvoiceMetaCard (~line 455). The
-// "invoice" variant preserves the canonical text-label + text-row-emphasis
+// "invoice" variant preserves the canonical text-label + text-emphasis
 // typography exactly. Billing Address block remains inline below — it
 // has a different shape (no emphasized name row) and is not duplicated
 // across surfaces.

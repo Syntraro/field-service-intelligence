@@ -324,7 +324,7 @@ export default function ManageRoles() {
                               </Badge>
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground truncate">
+                          <p className="text-helper text-muted-foreground truncate">
                             {role.description || (isSystem ? SYSTEM_ROLE_HELPER_COPY : "No description")}
                           </p>
                         </div>
@@ -481,7 +481,7 @@ export default function ManageRoles() {
                             )}
                           </CollapsibleTrigger>
                           <CollapsibleContent className="pt-2">
-                            <p className="text-xs text-muted-foreground px-3 pb-2">
+                            <p className="text-helper text-muted-foreground px-3 pb-2">
                               {pack.description}
                             </p>
                             <div className="space-y-1 pl-2">
@@ -501,7 +501,7 @@ export default function ManageRoles() {
                                   onOpenChange={() => toggleAdvanced(pack.id)}
                                 >
                                   <CollapsibleTrigger
-                                    className="flex items-center gap-2 text-xs text-muted-foreground py-2 pl-3 hover:text-foreground"
+                                    className="flex items-center gap-2 text-helper text-muted-foreground py-2 pl-3 hover:text-foreground"
                                     data-testid={`advanced-trigger-${pack.id}`}
                                   >
                                     {advancedOpen.has(pack.id) ? (
@@ -538,7 +538,7 @@ export default function ManageRoles() {
                         onOpenChange={() => toggleAdvanced("__unmapped__")}
                       >
                         <CollapsibleTrigger
-                          className="flex items-center gap-2 text-xs text-muted-foreground py-2 pl-3 hover:text-foreground"
+                          className="flex items-center gap-2 text-helper text-muted-foreground py-2 pl-3 hover:text-foreground"
                           data-testid="advanced-trigger-unmapped"
                         >
                           {advancedOpen.has("__unmapped__") ? (
@@ -602,7 +602,7 @@ export default function ManageRoles() {
                 rows={3}
               />
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               The internal name is auto-generated from the display name. After creating,
               select the new role on the left and click "Edit" to assign permissions.
             </p>
@@ -701,7 +701,7 @@ function renderPermissionRow(
           )}
         </div>
         {perm.description && (
-          <p className="text-xs text-muted-foreground">{perm.description}</p>
+          <p className="text-helper text-muted-foreground">{perm.description}</p>
         )}
         <p className="text-[10px] text-muted-foreground/70 font-mono mt-0.5">{perm.name}</p>
       </div>

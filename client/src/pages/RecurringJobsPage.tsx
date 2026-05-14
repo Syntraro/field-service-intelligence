@@ -435,7 +435,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                 ("Recurring Jobs") still names the listed templates
                 because they ARE recurring-job records — that's
                 behavior copy, not a destination label. */}
-            <h1 className="text-page-title font-bold">Service Plans</h1>
+            <h1 className="text-title font-bold">Service Plans</h1>
             <p className="text-muted-foreground">
               Manage recurring job templates and generate backlog jobs automatically.
             </p>
@@ -522,26 +522,26 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                     <TableCell>
                       <div className="max-w-[180px]">
                         {template.locationName && <div className="text-row font-medium">{template.locationName}</div>}
-                        {template.locationAddress && <div className="text-caption text-muted-foreground">{template.locationAddress}</div>}
+                        {template.locationAddress && <div className="text-row text-muted-foreground">{template.locationAddress}</div>}
                         {!template.locationName && !template.locationAddress && "—"}
                       </div>
                     </TableCell>
                     <TableCell>{formatRecurrence(template)}</TableCell>
                     <TableCell>
                       {!template.isActive ? (
-                        <span className="text-caption text-muted-foreground">Paused</span>
+                        <span className="text-row text-muted-foreground">Paused</span>
                       ) : template.nextOccurrence ? (
                         <span className={
                           isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
-                            ? "text-caption text-destructive font-medium"
+                            ? "text-row text-destructive font-medium"
                             : isToday(parseISO(template.nextOccurrence))
-                              ? "text-caption text-primary font-medium"
-                              : "text-caption"
+                              ? "text-row text-primary font-medium"
+                              : "text-row"
                         }>
                           {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
                         </span>
                       ) : (
-                        <span className="text-caption text-muted-foreground">None scheduled</span>
+                        <span className="text-row text-muted-foreground">None scheduled</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -589,19 +589,19 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                     <TableCell>{template.startDate}</TableCell>
                     <TableCell>
                       {!template.isActive ? (
-                        <span className="text-caption text-muted-foreground">Paused</span>
+                        <span className="text-row text-muted-foreground">Paused</span>
                       ) : template.nextOccurrence ? (
                         <span className={
                           isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
-                            ? "text-caption text-destructive font-medium"
+                            ? "text-row text-destructive font-medium"
                             : isToday(parseISO(template.nextOccurrence))
-                              ? "text-caption text-primary font-medium"
-                              : "text-caption"
+                              ? "text-row text-primary font-medium"
+                              : "text-row"
                         }>
                           {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
                         </span>
                       ) : (
-                        <span className="text-caption text-muted-foreground">None scheduled</span>
+                        <span className="text-row text-muted-foreground">None scheduled</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -824,7 +824,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                   <SelectItem value="on_hold">On Hold (requires reason)</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-caption text-muted-foreground">
+              <p className="text-row text-muted-foreground">
                 All generated jobs have status "Open". This controls the optional sub-status.
               </p>
             </div>
@@ -931,7 +931,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                             </Button>
                           </div>
                         ) : instance.status === "generated" ? (
-                          <span className="text-caption text-muted-foreground">Open job to modify</span>
+                          <span className="text-row text-muted-foreground">Open job to modify</span>
                         ) : null}
                       </TableCell>
                     </TableRow>

@@ -18,7 +18,7 @@ export function ActivityTab() {
       >
         <Clock className="h-8 w-8 text-muted-foreground mb-3" />
         <p className="font-medium text-foreground">Coming soon</p>
-        <p className="text-caption text-muted-foreground mt-1 max-w-xs">
+        <p className="text-row text-muted-foreground mt-1 max-w-xs">
           The global activity feed is not yet available. Receivables notes and actions are visible in the Invoices tab.
         </p>
       </div>

@@ -177,7 +177,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
           {/* Primary fields */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">Total</div>
+              <div className="text-helper text-muted-foreground mb-0.5">Total</div>
               <div
                 className="text-sm font-semibold tabular-nums text-slate-800"
                 data-testid="particulars-total"
@@ -186,7 +186,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
               </div>
             </div>
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">Balance Due</div>
+              <div className="text-helper text-muted-foreground mb-0.5">Balance Due</div>
               <div
                 className={`text-sm font-semibold tabular-nums ${
                   parseFloat(invoice.balance) === 0
@@ -202,7 +202,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
             </div>
             {issueDateStr && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Issued</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Issued</div>
                 <div className="text-sm text-slate-700" data-testid="particulars-issue-date">
                   {formatDate(issueDateStr)}
                 </div>
@@ -210,7 +210,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
             )}
             {invoice.dueDate && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Due Date</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Due Date</div>
                 <div
                   className={`text-sm ${
                     invoice.isPastDue ? "text-destructive font-medium" : "text-slate-700"
@@ -223,7 +223,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
             )}
             {invoice.paymentTermsDays != null && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Terms</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Terms</div>
                 <div className="text-sm text-slate-700" data-testid="particulars-terms">
                   Net {invoice.paymentTermsDays}
                 </div>
@@ -231,7 +231,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
             )}
             {data?.job && (
               <div>
-                <div className="text-xs text-muted-foreground mb-0.5">Linked Job</div>
+                <div className="text-helper text-muted-foreground mb-0.5">Linked Job</div>
                 <div className="text-sm text-slate-700" data-testid="particulars-linked-job">
                   Job #{data.job.jobNumber}
                 </div>
@@ -242,7 +242,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
           {/* Description / Summary */}
           {(invoice.summary || invoice.workDescription) && (
             <div>
-              <div className="text-xs text-muted-foreground mb-1">
+              <div className="text-helper text-muted-foreground mb-1">
                 {invoice.summary ? "Summary" : "Description"}
               </div>
               {invoice.summary && (
@@ -267,9 +267,9 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
           {/* Line Items */}
           {lines.length > 0 && (
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1.5">Line Items</div>
+              <div className="text-helper font-medium text-muted-foreground mb-1.5">Line Items</div>
               <div className="border border-border rounded overflow-hidden text-sm">
-                <div className="grid grid-cols-[1fr_48px_72px_72px] bg-slate-50 border-b border-border px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                <div className="grid grid-cols-[1fr_48px_72px_72px] bg-slate-50 border-b border-border px-3 py-1.5 text-helper font-medium text-muted-foreground">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
                   <span className="text-right pr-1">Rate</span>
@@ -340,7 +340,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
 
           {/* Notes — from canonical invoice_notes table */}
           <div className="border-t border-border pt-3">
-            <div className="text-xs font-medium text-muted-foreground mb-1.5">Notes</div>
+            <div className="text-helper font-medium text-muted-foreground mb-1.5">Notes</div>
             {notesLoading ? (
               <p className="text-sm text-muted-foreground" data-testid="particulars-notes-loading">
                 Loading…
@@ -354,7 +354,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
                 {recentNotes.map((note) => (
                   <div key={note.id} className="space-y-0.5" data-testid={`particulars-note-${note.id}`}>
                     <p className="text-sm text-slate-700">{note.noteText}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-helper text-muted-foreground">
                       {formatDistanceToNow(new Date(note.createdAt), { addSuffix: true })}
                     </p>
                   </div>
@@ -369,7 +369,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
 
           {/* Payment Summary — derived from invoice.amountPaid; no separate endpoint needed */}
           <div className="border-t border-border pt-3">
-            <div className="text-xs font-medium text-muted-foreground mb-1.5">Payment History</div>
+            <div className="text-helper font-medium text-muted-foreground mb-1.5">Payment History</div>
             {hasPaid ? (
               <p className="text-sm text-slate-700" data-testid="particulars-payment-summary">
                 {formatCurrency(invoice.amountPaid)} paid

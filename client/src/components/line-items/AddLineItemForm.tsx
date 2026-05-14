@@ -148,7 +148,7 @@ export function AddLineItemForm({
       {showCost && (
         <td className="py-2.5 px-3 align-top w-[110px]">
           <div className="relative">
-            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-helper text-muted-foreground pointer-events-none">$</span>
             <Input
               type="number"
               inputMode="decimal"
@@ -165,7 +165,7 @@ export function AddLineItemForm({
       )}
       <td className="py-2.5 px-3 align-top w-32">
         <div className="relative">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-helper text-muted-foreground pointer-events-none">$</span>
           <Input
             type="number"
             inputMode="decimal"

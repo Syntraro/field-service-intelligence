@@ -124,8 +124,6 @@ export class InvoiceRepository extends BaseRepository {
       sentAt: invoices.sentAt,
       sentByUserId: invoices.sentByUserId,
       viewedAt: invoices.viewedAt,
-      notesInternal: invoices.notesInternal,
-      notesCustomer: invoices.notesCustomer,
       workDescription: invoices.workDescription,
       clientMessage: invoices.clientMessage,
       showQuantity: invoices.showQuantity,
@@ -248,8 +246,6 @@ export class InvoiceRepository extends BaseRepository {
         sentAt: invoices.sentAt,
         sentByUserId: invoices.sentByUserId,
         viewedAt: invoices.viewedAt,
-        notesInternal: invoices.notesInternal,
-        notesCustomer: invoices.notesCustomer,
         // 2026-05-03: canonical short invoice title.
         summary: invoices.summary,
         workDescription: invoices.workDescription,
@@ -1080,12 +1076,6 @@ export class InvoiceRepository extends BaseRepository {
     }
 
     // Validation checks
-    const hasLegacyLabor = labor.length > 0;
-    const hasTimeEntries = timeTrackingEntries.length > 0;
-    if (parts.length === 0 && !hasLegacyLabor && !hasTimeEntries) {
-      errors.push("Cannot create invoice: no billable items (parts or labor)");
-    }
-
     if (partsTotal === 0 && parts.length > 0) {
       warnings.push("All parts have $0 price");
     }
@@ -1957,9 +1947,8 @@ export class InvoiceRepository extends BaseRepository {
    * Called from the InvoiceImportAdapter inside the import pipeline's
    * transaction. Reuses `createInvoiceShell` for atomic invoice-number
    * assignment + the guarded INSERT, then applies source-provided
-   * overrides (issueDate, dueDate, source status, final totals,
-   * notesInternal) in a single UPDATE, and inserts the summarized line
-   * items in one batch.
+   * overrides (issueDate, dueDate, source status, final totals) in a
+   * single UPDATE, and inserts the summarized line items in one batch.
    *
    * KEY DESIGN CHOICES:
    *   • Imported invoices carry FINALIZED historical totals from the source
@@ -1969,8 +1958,8 @@ export class InvoiceRepository extends BaseRepository {
    *     bypass tax application entirely (lines are persisted with their
    *     pre-computed taxAmount / lineTotal).
    *   • `invoiceNumber` override is optional. Callers that detect a
-   *     collision with an existing invoice number upstream pass null and
-   *     preserve the source number in notesInternal so nothing is lost.
+   *     collision with an existing invoice number upstream pass null; the
+   *     auto-assigned number is kept instead.
    *   • No line creation loop with per-line recalculation — single
    *     bulk INSERT.
    */
@@ -1993,7 +1982,6 @@ export class InvoiceRepository extends BaseRepository {
       amountPaid: string;
       balance: string;
       workDescription: string | null;
-      notesInternal: string;
     },
     lines: Array<{
       description: string;
@@ -2047,9 +2035,8 @@ export class InvoiceRepository extends BaseRepository {
 
     // Single UPDATE to apply source-truth overrides the shell can't accept
     // (issueDate/dueDate are shell-derived from "today"; status/taxTotal/
-    // amountPaid/notesInternal have no override slots). Historical imports
-    // must preserve the original dates + status + finalized tax, so we
-    // overwrite in one statement.
+    // amountPaid have no override slots). Historical imports must preserve
+    // the original dates + status + finalized tax, so we overwrite in one statement.
     const [finalInvoice] = await txHandle
       .update(invoices)
       .set({
@@ -2059,7 +2046,6 @@ export class InvoiceRepository extends BaseRepository {
         status: params.status,
         taxTotal: params.taxTotal,
         amountPaid: params.amountPaid,
-        notesInternal: params.notesInternal,
         updatedAt: new Date(),
       })
       .where(and(eq(invoices.id, shell.id), eq(invoices.companyId, companyId)))

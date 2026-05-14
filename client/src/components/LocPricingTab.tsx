@@ -154,7 +154,7 @@ export default function LocPricingTab({
           ))}
         </div>
       ) : items.length === 0 ? (
-        <p className="py-8 text-center text-xs text-muted-foreground" data-testid="pricing-empty">
+        <p className="py-8 text-center text-helper text-muted-foreground" data-testid="pricing-empty">
           {hasSearch ? "No pricing matches this search." : "No pricing history yet."}
         </p>
       ) : (

@@ -1325,7 +1325,7 @@ function AppContent() {
               {/* More menu — Settings, Feedback, Logout */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="h-8 w-8 text-slate-400 hover:text-white hover:bg-white/10">
+                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="text-slate-400 hover:text-white hover:bg-white/10">
                     <MoreHorizontal className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>

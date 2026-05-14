@@ -205,7 +205,7 @@ export default function Login() {
           </div>
           {/* 2026-04-22 Phase 1 Platform Auth Separation: platform admins
               authenticate via a separate surface. */}
-          <div className="mt-3 text-center text-xs text-muted-foreground">
+          <div className="mt-3 text-center text-helper text-muted-foreground">
             Platform admin?{" "}
             <button
               data-testid="link-platform-login"

@@ -51,10 +51,11 @@ export interface SendCommunicationModalProps {
 
 function defaultTitle(entityType: CommunicationEntityType): string {
   switch (entityType) {
-    case "invoice":   return "Send Invoice";
-    case "quote":     return "Send Quote";
-    case "job":       return "Send Email";
-    case "statement": return "Send Statement";
+    case "invoice":          return "Send Invoice";
+    case "quote":            return "Send Quote";
+    case "job":              return "Send Email";
+    case "statement":        return "Send Statement";
+    case "invoice_reminder": return "Send Reminder";
   }
 }
 
@@ -95,9 +96,9 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
   const [ccFocused, setCcFocused] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
 
-  const showContactPicker = entityType === "invoice" || entityType === "statement";
+  const showContactPicker = entityType === "invoice" || entityType === "statement" || entityType === "invoice_reminder";
   const contactsPath =
-    entityType === "invoice"
+    entityType === "invoice" || entityType === "invoice_reminder"
       ? `/api/invoices/${entityId}/email-contacts`
       : `/api/customer-companies/${entityId}/statement-contacts`;
 
@@ -164,7 +165,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
             {loading ? "Loading email preview." : "Compose and send."}
           </DialogDescription>
           {loading && (
-            <p className="text-xs text-muted-foreground">Loading email preview…</p>
+            <p className="text-helper text-muted-foreground">Loading email preview…</p>
           )}
         </DialogHeader>
 
@@ -337,7 +338,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                   <Paperclip className="h-3.5 w-3.5" />
                   Add images
                 </Button>
-                <span className="text-xs text-muted-foreground">
+                <span className="text-helper text-muted-foreground">
                   {attachments.length}/{MAX_SEND_IMAGE_ATTACHMENTS} · from system
                 </span>
               </div>
@@ -352,7 +353,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                     >
                       <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                       <span className="flex-1 min-w-0 text-xs truncate">{a.filename}</span>
-                      <span className="text-xs text-muted-foreground shrink-0">
+                      <span className="text-helper text-muted-foreground shrink-0">
                         {formatSize(a.sizeBytes)}
                       </span>
                       <Button
@@ -368,7 +369,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                       </Button>
                     </div>
                   ))}
-                  <p className={`text-xs ${imageTotalExceeded ? "text-destructive" : "text-muted-foreground"}`}>
+                  <p className={`text-helper ${imageTotalExceeded ? "text-destructive" : "text-muted-foreground"}`}>
                     Total images: {formatSize(imageTotalBytes)}
                     {imageTotalExceeded
                       ? " — total attachments exceed the 25 MB limit."

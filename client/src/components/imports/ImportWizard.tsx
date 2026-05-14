@@ -576,7 +576,7 @@ export function ImportWizard({
               <Icon className="h-5 w-5 text-[#76B054]" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-[#111827] tracking-tight">{config.title}</h1>
+              <h1 className="text-header text-[#111827] tracking-tight">{config.title}</h1>
               <p className="text-xs text-[#4b5563] mt-0.5">{config.description}</p>
             </div>
           </div>

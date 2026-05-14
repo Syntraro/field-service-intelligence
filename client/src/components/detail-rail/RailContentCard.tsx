@@ -128,9 +128,9 @@ export function RailContentCardHeader({
   );
 }
 
-/** Card title — `text-row-emphasis text-text-primary` with truncate.
+/** Card title — `text-emphasis text-text-primary` with truncate.
  *  Phase H2: the prior `text-row font-semibold` composition is
- *  replaced by the canonical role token `text-row-emphasis` (15px / 500)
+ *  replaced by the canonical role token `text-emphasis` (15px / 500)
  *  so we don't layer a heavier weight on top of a base size token. The
  *  `as` prop allows a non-heading element when needed. */
 export function RailContentCardTitle({
@@ -141,7 +141,7 @@ export function RailContentCardTitle({
 }: HTMLAttributes<HTMLHeadingElement> & { as?: "h3" | "h4" | "h5" | "span" }) {
   return (
     <As
-      className={cn("text-row-emphasis text-text-primary truncate min-w-0", className)}
+      className={cn("text-emphasis text-text-primary truncate min-w-0", className)}
       {...rest}
     >
       {children}
@@ -150,9 +150,9 @@ export function RailContentCardTitle({
 }
 
 /** Subordinate text under a title — `text-helper text-text-secondary truncate`.
- *  2026-05-07: migrated from `text-caption` (14px) to canonical
+ *  2026-05-07: migrated from `text-row` (14px) to canonical
  *  `text-helper` (13px) per CLAUDE.md > Typography Primitives — rails
- *  and panels use `text-helper` for dense-secondary text; `text-caption`
+ *  and panels use `text-helper` for dense-secondary text; `text-row`
  *  is reserved for tabular metadata. */
 export function RailContentCardSubtitle({
   children,
@@ -171,7 +171,7 @@ export function RailContentCardSubtitle({
 
 /** Secondary meta line — `text-helper text-text-secondary` with
  *  auto-spacing from previous siblings (`mt-1.5 first:mt-0`).
- *  2026-05-07: migrated from `text-caption` (14px) to canonical
+ *  2026-05-07: migrated from `text-row` (14px) to canonical
  *  `text-helper` (13px) — matches the dense-secondary token role for
  *  rail/panel surfaces. Affects every descriptor-driven panel that
  *  emits a `meta` / `metaRows` slot (Client + Job rail panels). */
@@ -211,7 +211,7 @@ export function RailContentCardBody({
 }
 
 /** Footer — `mt-2 pt-2 border-t border-slate-100` separator + meta typography.
- *  2026-05-07: migrated from `text-caption` (14px) to canonical
+ *  2026-05-07: migrated from `text-row` (14px) to canonical
  *  `text-helper` (13px) so the footer aligns with the rest of the
  *  rail-panel dense-secondary scale. */
 export function RailContentCardFooter({

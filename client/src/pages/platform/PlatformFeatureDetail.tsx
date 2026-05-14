@@ -86,7 +86,7 @@ export default function PlatformFeatureDetail() {
     <PlatformLayout>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">{feature.displayName}</h2>
+          <h2 className="text-title font-semibold">{feature.displayName}</h2>
           <p className="text-sm text-muted-foreground"><span className="font-mono">{feature.featureKey}</span></p>
         </div>
         <div className="flex gap-2">
@@ -101,7 +101,7 @@ export default function PlatformFeatureDetail() {
           <div>
             <Label>feature_key</Label>
             <Input value={feature.featureKey} disabled className="font-mono" />
-            <p className="text-xs text-muted-foreground mt-1">feature_key is immutable. All enforcement logic keys off this value.</p>
+            <p className="text-helper text-muted-foreground mt-1">feature_key is immutable. All enforcement logic keys off this value.</p>
           </div>
           <div>
             <Label htmlFor="displayName">Display name</Label>

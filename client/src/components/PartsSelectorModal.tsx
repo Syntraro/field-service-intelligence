@@ -397,7 +397,7 @@ function PartsSelectorRow({
     <div className="border rounded-md p-3 space-y-2" data-testid={`row-pm-part-${index}`}>
       {/* Row header: search/select + qty + remove */}
       <div className="flex items-start gap-2">
-        <span className="text-xs font-medium text-muted-foreground w-6 shrink-0 mt-2">#{index + 1}</span>
+        <span className="text-helper font-medium text-muted-foreground w-6 shrink-0 mt-2">#{index + 1}</span>
 
         <div className="flex-1 min-w-0">
           <CreateOrSelectField<ProductOption>
@@ -428,7 +428,7 @@ function PartsSelectorRow({
         </div>
 
         <div className="flex items-center gap-1 shrink-0 mt-1">
-          <span className="text-xs text-muted-foreground">Qty:</span>
+          <span className="text-helper text-muted-foreground">Qty:</span>
           <Input
             type="number"
             min={0.01}

@@ -225,7 +225,7 @@ export function InvoiceCompositionDialog(props: Props) {
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                     <Package className="h-4 w-4 text-slate-500" /> Parts
-                    <span className="text-xs font-normal text-muted-foreground">
+                    <span className="text-helper font-normal text-muted-foreground">
                       {partsItems.length > 0 ? `${partsItems.length} items · $${preview!.partsSubtotal}` : "No eligible parts"}
                     </span>
                   </div>
@@ -272,7 +272,7 @@ export function InvoiceCompositionDialog(props: Props) {
         {hasAnyItems && (
           <div className="border-t mt-3 pt-3 text-sm">
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground text-xs">
+              <span className="text-muted-foreground text-helper">
                 {selectedCount} {selectedCount === 1 ? "item" : "items"} selected · tax applied on save
               </span>
               <span className="font-semibold tabular-nums" data-testid="composition-subtotal">

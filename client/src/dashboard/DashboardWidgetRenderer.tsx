@@ -17,7 +17,7 @@
  * ---------------
  * Single row layout:
  *   Title                                              [   ●━━ ]
- *   Description (optional, text-caption muted)
+ *   Description (optional, text-row muted)
  *
  * Spacing matches the canonical settings pattern (px-3 py-2.5,
  * gap-3). Typography uses the existing tokens — no one-off classes.
@@ -53,7 +53,7 @@ export function DashboardWidgetRenderer({
         {widget.description && (
           <div
             id={descriptionId}
-            className="text-caption text-text-muted mt-0.5"
+            className="text-row text-text-muted mt-0.5"
           >
             {widget.description}
           </div>

@@ -470,7 +470,7 @@ describe("EntityNotesPanel — visibility chips use canonical EntityChip", () =>
 //
 // 2026-05-08 chip Phase 2: Quotes / Jobs / InvoicesListPage / LeadsPage /
 // Clients all migrated their `<Button variant={isActive?"default":
-// "outline"} size="sm" className="h-7 text-caption rounded-full">`
+// "outline"} size="sm" className="h-7 text-row rounded-full">`
 // status filters onto canonical `<FilterChip selected={...}>`. Pin
 // per page so a future revert can't slip a Button-shaped filter back in.
 //
@@ -532,12 +532,12 @@ describe("Phase 2 — list-page status filters use canonical <FilterChip>", () =
       const fullSrc = readFileSync(resolve(__dirname, "..", pin.file), "utf-8");
       const window = getSectionWindow(fullSrc);
       // Pre-migration shape: <Button variant={...?"default":"outline"}
-      // size="sm" className="h-7 text-caption rounded-full">. The
+      // size="sm" className="h-7 text-row rounded-full">. The
       // post-migration section must contain none of those Button
       // shells. Tight regex so we don't false-match unrelated Button
       // uses (FilterSection itself doesn't render Buttons).
       expect(window).not.toMatch(
-        /<Button[\s\S]{0,200}h-7\s+text-caption\s+rounded-full/,
+        /<Button[\s\S]{0,200}h-7\s+text-row\s+rounded-full/,
       );
     });
   }

@@ -63,7 +63,7 @@ export function PlatformLayout({ children }: Props) {
       <header className="border-b bg-card">
         <div className="flex items-center gap-4 px-6 py-3">
           <Shield className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">Platform Ops</h1>
+          <h1 className="text-header">Platform Ops</h1>
           <Badge variant="secondary">Internal</Badge>
           <nav className="ml-4 flex gap-1">
             {visibleNav.map((item) => {

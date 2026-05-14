@@ -135,7 +135,7 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange, sh
   // --- Disabled state: no location selected ---
   if (!locationId) {
     return (
-      <p className="text-xs text-muted-foreground italic">Select location first</p>
+      <p className="text-helper text-muted-foreground italic">Select location first</p>
     );
   }
 
@@ -201,7 +201,7 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange, sh
             {/* Results */}
             <div className="max-h-[200px] overflow-y-auto p-1" style={{ scrollbarWidth: "thin" }}>
               {filtered.length === 0 ? (
-                <div className="text-xs text-muted-foreground text-center py-3">
+                <div className="text-helper text-muted-foreground text-center py-3">
                   {available.length === 0
                     ? "No equipment at this location"
                     : "No matches found"}

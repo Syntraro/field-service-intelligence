@@ -773,7 +773,7 @@ export default function CreateQuotePage() {
                 <div className="space-y-1.5">
                   <Label className="text-sm font-medium">
                     Template{" "}
-                    <span className="text-xs font-normal text-muted-foreground">
+                    <span className="text-helper font-normal text-muted-foreground">
                       (optional)
                     </span>
                   </Label>
@@ -867,7 +867,7 @@ export default function CreateQuotePage() {
                                     )}
                                   </div>
                                   {t.description && (
-                                    <div className="text-xs text-muted-foreground truncate">
+                                    <div className="text-helper text-muted-foreground truncate">
                                       {t.description}
                                     </div>
                                   )}

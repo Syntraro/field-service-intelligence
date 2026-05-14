@@ -161,17 +161,17 @@ export default function InvoiceDisplaySettingsPage() {
     <div className="w-full px-6 py-6 space-y-6">
       {/* ── Header. */}
       <div>
-        <Button variant="ghost" size="sm" asChild className="-ml-2 h-9">
+        <Button variant="ghost" size="sm" asChild className="-ml-2">
           <Link href="/settings"><ArrowLeft className="h-4 w-4 mr-1" /> Settings</Link>
         </Button>
-        <h1 className="text-2xl font-semibold tracking-tight mt-2">Invoice display</h1>
+        <h1 className="text-title font-semibold tracking-tight mt-2">Invoice display</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Choose what appears on client-facing invoices.
         </p>
         {/* Tenant changes seed new invoices only — they never re-sync per-
             invoice settings on existing rows. Matches the create-only
             prefill contract enforced in server/storage/invoices.ts. */}
-        <p className="text-xs text-muted-foreground mt-2">
+        <p className="text-helper text-muted-foreground mt-2">
           Changes apply to new invoices by default. Existing invoices keep their current invoice-level settings unless reset.
         </p>
       </div>
@@ -334,7 +334,7 @@ export default function InvoiceDisplaySettingsPage() {
             rows={3}
             maxLength={2000}
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-helper text-muted-foreground">
             {form.invoiceShowClientMessage
               ? "New invoices will prefill this message; per-invoice edits don't affect this default."
               : "Client message is currently turned off. Turn it on above to prefill new invoices."}
@@ -371,13 +371,13 @@ function SectionCard({
 }) {
   return (
     <Card>
-      {/* Canonical card title uses `text-section-title` (18/24/600) — see
-          tailwind.config.ts:70. Description uses `text-caption` for the
+      {/* Canonical card title uses `text-header` (18/24/600) — see
+          tailwind.config.ts:70. Description uses `text-row` for the
           smaller secondary tone consistent with the rest of the app. */}
       <CardHeader className="pb-2">
-        <CardTitle className="text-section-title">{title}</CardTitle>
+        <CardTitle className="text-header">{title}</CardTitle>
         {description ? (
-          <CardDescription className="text-caption">{description}</CardDescription>
+          <CardDescription className="text-row">{description}</CardDescription>
         ) : null}
       </CardHeader>
       <CardContent className="p-0">

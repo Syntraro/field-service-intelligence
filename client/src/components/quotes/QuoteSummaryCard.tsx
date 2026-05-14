@@ -52,7 +52,7 @@ export function QuoteSummaryCard({ subtotal, taxTotal, total }: QuoteSummaryCard
       {/* Total row — border-t separator with emphasis value */}
       <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-baseline">
         <span className="text-label text-text-secondary">Total</span>
-        <span className="text-row-emphasis text-text-primary" data-testid="text-quote-total">
+        <span className="text-emphasis text-text-primary" data-testid="text-quote-total">
           {formatCurrency(total)}
         </span>
       </div>

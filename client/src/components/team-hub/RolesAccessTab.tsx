@@ -314,7 +314,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                         </Avatar>
                         <div className="flex-1 min-w-0">
                           <div className="truncate">{getMemberDisplayName(m)}</div>
-                          <div className="text-xs text-muted-foreground truncate">
+                          <div className="text-helper text-muted-foreground truncate">
                             {memberRoleDisplay(m)}
                           </div>
                         </div>
@@ -351,7 +351,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
               <CardHeader className="pb-2 flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
-                  <p className="text-xs text-muted-foreground">{member.email}</p>
+                  <p className="text-helper text-muted-foreground">{member.email}</p>
                 </div>
                 <Link href="/manage-roles">
                   <Button variant="ghost" size="sm" data-testid="button-manage-roles">
@@ -435,7 +435,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                           <CardTitle className="text-base">
                             Advanced Controls
                           </CardTitle>
-                          <p className="text-xs text-muted-foreground mt-0.5">
+                          <p className="text-helper text-muted-foreground mt-0.5">
                             Advanced controls for fine-tuning access. Most
                             users should not need this.
                           </p>
@@ -460,7 +460,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                           <Shield className="h-4 w-4" />
                           Permission overrides
                         </p>
-                        <p className="text-xs text-muted-foreground mt-1">
+                        <p className="text-helper text-muted-foreground mt-1">
                           {rolePermissions.length} permissions inherited from{" "}
                           <span className="font-medium">
                             {roles.find((r) => r.id === member.roleId)?.displayName ?? member.role}
@@ -509,7 +509,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                         {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                       </CollapsibleTrigger>
                       <CollapsibleContent className="pt-2">
-                        <p className="text-xs text-muted-foreground px-3 pb-2">
+                        <p className="text-helper text-muted-foreground px-3 pb-2">
                           {pack.description}
                         </p>
                         <div className="space-y-1 pl-1">
@@ -522,7 +522,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                               onOpenChange={() => toggleCat(`${pack.id}::advanced`)}
                             >
                               <CollapsibleTrigger
-                                className="flex items-center gap-2 text-xs text-muted-foreground py-1.5 pl-3 hover:text-foreground"
+                                className="flex items-center gap-2 text-helper text-muted-foreground py-1.5 pl-3 hover:text-foreground"
                                 data-testid={`override-advanced-trigger-${pack.id}`}
                               >
                                 {expanded.has(`${pack.id}::advanced`) ? (
@@ -558,7 +558,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                     onOpenChange={() => toggleCat("__unmapped__")}
                   >
                     <CollapsibleTrigger
-                      className="flex items-center gap-2 text-xs text-muted-foreground py-2 pl-3 hover:text-foreground"
+                      className="flex items-center gap-2 text-helper text-muted-foreground py-2 pl-3 hover:text-foreground"
                       data-testid="override-advanced-trigger-unmapped"
                     >
                       {expanded.has("__unmapped__") ? (
@@ -592,7 +592,7 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
                     </Button>
                     <div className="flex items-center gap-2">
                       {dirty.isDirty && (
-                        <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                        <span className="text-helper text-muted-foreground">Unsaved changes</span>
                       )}
                       <Button
                         onClick={() => savePerms.mutate()}
@@ -693,7 +693,7 @@ function EffectiveAccessPanel({
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-xs text-muted-foreground">Loading…</p>
+          <p className="text-helper text-muted-foreground">Loading…</p>
         </CardContent>
       </Card>
     );
@@ -706,7 +706,7 @@ function EffectiveAccessPanel({
           <Eye className="h-4 w-4" />
           Access Summary
         </CardTitle>
-        <p className="text-xs text-muted-foreground mt-1">
+        <p className="text-helper text-muted-foreground mt-1">
           Resolved from <span className="font-medium">{roleDisplayName}</span>
           {" + "}
           {data.grantedByOverride.length} grant
@@ -740,7 +740,7 @@ function EffectiveAccessPanel({
             until expanded. */}
         <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
           <CollapsibleTrigger
-            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-1.5 text-helper font-medium text-muted-foreground hover:text-foreground transition-colors"
             data-testid="effective-details-trigger"
           >
             {detailsOpen ? (
@@ -811,7 +811,7 @@ function PackStatusRow({
         </span>
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5">{label}</p>
-          <p className="text-xs text-muted-foreground leading-4 truncate">
+          <p className="text-helper text-muted-foreground leading-4 truncate">
             {description}
           </p>
         </div>
@@ -853,17 +853,17 @@ function BreakdownSection({
   if (total === 0) {
     return (
       <div data-testid={`effective-breakdown-${testIdSuffix}`}>
-        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+        <h4 className="text-helper font-semibold uppercase tracking-wider text-muted-foreground mb-1">
           {label} <span className="font-normal text-muted-foreground/70">(0)</span>
         </h4>
-        <p className="text-xs text-muted-foreground italic px-2">None.</p>
+        <p className="text-helper text-muted-foreground italic px-2">None.</p>
       </div>
     );
   }
   // Render packs in canonical order so all three sub-lists agree.
   return (
     <div data-testid={`effective-breakdown-${testIdSuffix}`}>
-      <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+      <h4 className="text-helper font-semibold uppercase tracking-wider text-muted-foreground mb-1">
         {label} <span className="font-normal text-muted-foreground/70">({total})</span>
       </h4>
       <div data-testid={`effective-breakdown-${testIdSuffix}-list`} className="space-y-1.5">
@@ -997,7 +997,7 @@ function renderOverrideRow(
           )}
         </div>
         {p.description && (
-          <p className="text-xs text-muted-foreground">{p.description}</p>
+          <p className="text-helper text-muted-foreground">{p.description}</p>
         )}
         <p className="text-[10px] text-muted-foreground/70 font-mono mt-0.5">{p.name}</p>
       </div>

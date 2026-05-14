@@ -89,7 +89,7 @@ export function ContactCenterSummary({
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1 leading-snug">
-            <div className="text-section-title text-foreground truncate">
+            <div className="text-header text-foreground truncate">
               {contact.displayName}
             </div>
             <div className="mt-0.5 inline-flex items-center gap-1 text-helper text-muted-foreground">

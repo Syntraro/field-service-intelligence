@@ -93,7 +93,7 @@ export function TeamMetricsStrip() {
           >
             <div className="flex items-center gap-2">
               <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <span className="text-xs text-muted-foreground truncate">{t.label}</span>
+              <span className="text-helper text-muted-foreground truncate">{t.label}</span>
             </div>
             <div className="mt-1 flex items-baseline gap-1.5">
               <span className="text-xl font-semibold leading-none">{t.value}</span>

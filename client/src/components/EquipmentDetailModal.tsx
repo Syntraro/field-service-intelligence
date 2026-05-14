@@ -224,7 +224,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
                   // font-normal` (19px) to `text-xs` (15.2px) so it
                   // reads as secondary metadata next to the title
                   // rather than competing with the title's weight.
-                  className="ml-2 text-xs font-normal text-muted-foreground"
+                  className="ml-2 text-helper font-normal text-muted-foreground"
                   data-testid="equipment-type-inline"
                 >
                   ({eq.equipmentType})

@@ -28,7 +28,7 @@ export default function IntegrationsPage() {
                   <Cloud className="h-6 w-6 text-green-600 dark:text-green-400" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">QuickBooks Online</CardTitle>
+                  <CardTitle className="text-header">QuickBooks Online</CardTitle>
                   <CardDescription>
                     Connect QuickBooks and import customers.
                   </CardDescription>
@@ -48,7 +48,7 @@ export default function IntegrationsPage() {
               <Cloud className="h-6 w-6 text-muted-foreground" />
             </div>
             <div>
-              <CardTitle className="text-lg text-muted-foreground">More Integrations</CardTitle>
+              <CardTitle className="text-header text-muted-foreground">More Integrations</CardTitle>
               <CardDescription>
                 Payment processors and additional services coming soon
               </CardDescription>

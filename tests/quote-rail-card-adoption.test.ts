@@ -14,7 +14,7 @@
  *     `<RailContentCard>` + slot primitives.
  *   - Canonicalises typography (removes text-sm, text-xs, text-lg, font-bold,
  *     font-semibold, text-[#...], arbitrary bg colours) in favour of canonical
- *     role tokens (text-row-emphasis, text-label, text-row, text-helper, etc.)
+ *     role tokens (text-emphasis, text-label, text-row, text-helper, etc.)
  *
  * Pure source-string assertions — no React render pipeline.
  */

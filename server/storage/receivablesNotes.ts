@@ -46,7 +46,27 @@ export interface CreateReceivablesNoteInput {
   noteText: string;
   promisedAt?: string | null;
   contactMethod?: string | null;
+  outcome?: string | null;
+  contactPersonId?: string | null;
+  communicatedAt?: string | null;
   createdBySystem?: boolean;
+}
+
+export interface LogCommunicationInput {
+  outcome: string;
+  contactPersonId?: string | null;
+  contactedName?: string | null;
+  method: string;
+  communicatedAt: string;
+  notes?: string;
+  promiseToPay?: {
+    enabled: boolean;
+    promisedAt?: string;
+  };
+  followUp?: {
+    enabled: boolean;
+    followUpAt?: string;
+  };
 }
 
 export interface UpdateReceivablesNoteInput {
@@ -54,6 +74,9 @@ export interface UpdateReceivablesNoteInput {
   noteType?: ReceivablesNoteType;
   promisedAt?: string | null;
   contactMethod?: string | null;
+  outcome?: string | null;
+  contactPersonId?: string | null;
+  communicatedAt?: string | null;
 }
 
 export class ReceivablesNotesRepository extends BaseRepository {
@@ -98,6 +121,9 @@ export class ReceivablesNotesRepository extends BaseRepository {
         noteText: receivablesNotes.noteText,
         promisedAt: receivablesNotes.promisedAt,
         contactMethod: receivablesNotes.contactMethod,
+        outcome: receivablesNotes.outcome,
+        contactPersonId: receivablesNotes.contactPersonId,
+        communicatedAt: receivablesNotes.communicatedAt,
         createdBySystem: receivablesNotes.createdBySystem,
         createdAt: receivablesNotes.createdAt,
         updatedAt: receivablesNotes.updatedAt,
@@ -222,6 +248,9 @@ export class ReceivablesNotesRepository extends BaseRepository {
           noteText: input.noteText,
           promisedAt: input.promisedAt ? new Date(input.promisedAt) : null,
           contactMethod: input.contactMethod ?? null,
+          outcome: input.outcome ?? null,
+          contactPersonId: input.contactPersonId ?? null,
+          communicatedAt: input.communicatedAt ? new Date(input.communicatedAt) : null,
           createdBySystem: input.createdBySystem ?? false,
         })
         .returning();
@@ -313,6 +342,11 @@ export class ReceivablesNotesRepository extends BaseRepository {
       setFields.promisedAt = input.promisedAt ? new Date(input.promisedAt) : null;
     }
     if (input.contactMethod !== undefined) setFields.contactMethod = input.contactMethod;
+    if (input.outcome !== undefined) setFields.outcome = input.outcome;
+    if (input.contactPersonId !== undefined) setFields.contactPersonId = input.contactPersonId;
+    if (input.communicatedAt !== undefined) {
+      setFields.communicatedAt = input.communicatedAt ? new Date(input.communicatedAt) : null;
+    }
 
     const [updated] = await db
       .update(receivablesNotes)
@@ -510,6 +544,127 @@ export class ReceivablesNotesRepository extends BaseRepository {
       return note;
     });
   }
+
+  /**
+   * Log a communication with a client.
+   *
+   * Atomically in one transaction:
+   *   1. Inserts a "communication" receivables note.
+   *   2. Sets invoices.last_contacted_at to the communication timestamp.
+   *   3. If followUp.enabled: sets invoices.follow_up_at.
+   *   4. If promiseToPay.enabled: inserts a promise_to_pay note and sets
+   *      invoices.promised_payment_at.
+   */
+  async logCommunication(
+    companyId: string,
+    invoiceId: string,
+    userId: string,
+    input: LogCommunicationInput,
+  ) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(invoiceId, "invoiceId");
+    this.validateUUID(userId, "userId");
+
+    const [invoice] = await db
+      .select({ id: invoices.id, customerCompanyId: invoices.customerCompanyId })
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+      .limit(1);
+
+    if (!invoice) throw this.notFoundError("Invoice");
+    if (!invoice.customerCompanyId) {
+      throw this.validationError(
+        "Invoice has no customer company — cannot create receivables note",
+      );
+    }
+
+    const communicatedAt = new Date(input.communicatedAt);
+    const noteText =
+      input.notes?.trim() ||
+      `${outcomeLabel(input.outcome)} via ${methodLabel(input.method)}.`;
+
+    return db.transaction(async (tx) => {
+      // 1. Insert communication note.
+      const [note] = await tx
+        .insert(receivablesNotes)
+        .values({
+          companyId,
+          customerCompanyId: invoice.customerCompanyId!,
+          invoiceId,
+          userId,
+          noteType: "communication",
+          noteText,
+          contactMethod: input.method,
+          outcome: input.outcome,
+          contactPersonId: input.contactPersonId ?? null,
+          communicatedAt,
+          createdBySystem: false,
+        })
+        .returning();
+
+      // 2. Advance last_contacted_at.
+      await tx
+        .update(invoices)
+        .set({ lastContactedAt: communicatedAt, updatedAt: new Date() })
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+
+      // 3. Optionally set follow-up.
+      if (input.followUp?.enabled && input.followUp.followUpAt) {
+        await tx
+          .update(invoices)
+          .set({ followUpAt: new Date(input.followUp.followUpAt), updatedAt: new Date() })
+          .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+      }
+
+      // 4. Optionally record promise to pay.
+      if (input.promiseToPay?.enabled && input.promiseToPay.promisedAt) {
+        const promisedAt = new Date(input.promiseToPay.promisedAt);
+        await tx
+          .insert(receivablesNotes)
+          .values({
+            companyId,
+            customerCompanyId: invoice.customerCompanyId!,
+            invoiceId,
+            userId,
+            noteType: "promise_to_pay",
+            noteText: `Promised to pay by ${promisedAt.toLocaleDateString()}.`,
+            promisedAt,
+            contactMethod: input.method,
+            createdBySystem: false,
+          });
+
+        await tx
+          .update(invoices)
+          .set({ promisedPaymentAt: promisedAt, updatedAt: new Date() })
+          .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+      }
+
+      return note;
+    });
+  }
+}
+
+function outcomeLabel(outcome: string): string {
+  const labels: Record<string, string> = {
+    spoke_with: "Spoke with client",
+    left_message: "Left message",
+    no_answer: "No answer",
+    email_sent: "Email sent",
+    text_sent: "Text sent",
+    other: "Contacted client",
+  };
+  return labels[outcome] ?? "Contacted client";
+}
+
+function methodLabel(method: string): string {
+  const labels: Record<string, string> = {
+    phone_call: "Phone Call",
+    email: "Email",
+    text_message: "Text Message",
+    in_person: "In Person",
+    other: "Other",
+  };
+  return labels[method] ?? method;
 }
 
 export const receivablesNotesRepository = new ReceivablesNotesRepository();

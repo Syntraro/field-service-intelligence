@@ -8,7 +8,6 @@
  *             actions, making it reusable in the Receivables workspace.
  */
 import { useSearch, Link } from "wouter";
-import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InvoiceListPanel, type InvoiceView } from "@/components/invoices/InvoiceListPanel";
 
@@ -48,12 +47,11 @@ export default function InvoicesListPage({ embedded = false }: { embedded?: bool
         <div className="p-6 pb-0">
           <div className="flex items-start justify-between mb-5">
             <div>
-              <h1 className="text-page-title font-medium text-slate-900">Invoices</h1>
+              <h1 className="text-title font-medium text-slate-900">Invoices</h1>
               <p className="text-row text-slate-500 mt-0.5">Invoice performance overview with full invoice list.</p>
             </div>
             <Link href="/invoices/new">
-              <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="button-new-invoice">
-                <Plus className="h-4 w-4" />
+              <Button size="sm" className="rounded-lg px-3.5" data-testid="button-new-invoice">
                 New Invoice
               </Button>
             </Link>

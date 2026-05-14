@@ -5,7 +5,7 @@
  *             Preview line (single, truncated)   · unread dot
  *
  * Typography (canonical compact tokens):
- *   • Name:    text-row-emphasis (15px / 500)
+ *   • Name:    text-emphasis (15px / 500)
  *   • Preview: text-helper (13px / muted)
  *   • Time:    text-helper (13px / muted)
  *

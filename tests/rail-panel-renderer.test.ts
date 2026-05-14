@@ -35,7 +35,7 @@ const rendererSrc = readFileSync(RENDERER_PATH, "utf-8");
 // 2026-05-08 Labour typography remap helper — strip block + line +
 // JSX comments so inverse pins don't false-match against doc text
 // that names the old token (e.g. a comment that says "was
-// text-row-emphasis font-mono"). Anchored slice tests use this to
+// text-emphasis font-mono"). Anchored slice tests use this to
 // scan code only.
 function stripComments(src: string): string {
   return src
@@ -294,7 +294,7 @@ describe("RailPanelRenderer — footer rendering (Phase 2)", () => {
     // A wouter <Link> wrapped in <RailContentCardFooter className="justify-end">.
     // 2026-05-07: widened the inter-element bounds to accommodate the
     // expanded inline doc comment that records the typography migration
-    // (text-caption font-medium → text-helper). Test intent unchanged.
+    // (text-row font-medium → text-helper). Test intent unchanged.
     expect(rendererSrc).toMatch(
       /<RailContentCardFooter\s+className="justify-end">[\s\S]{0,800}?<Link[\s\S]{0,1500}?className=\{cn\([\s\S]{0,400}?ENTITY_LINK_CLASS/,
     );
@@ -683,11 +683,11 @@ describe("RailPanelRenderer — grouped panel dispatch (Phase 7)", () => {
     expect(headerFnIdx).toBeGreaterThan(-1);
     const slice = rendererCode.slice(headerFnIdx, headerFnIdx + 1500);
     expect(slice).not.toMatch(/text-label\s+uppercase\s+tracking-wide/);
-    // Panel-header value still uses `text-row-emphasis tabular-nums
+    // Panel-header value still uses `text-emphasis tabular-nums
     // text-text-primary` — the panel's headline aggregate stays at the
     // emphasized scale.
     expect(rendererSrc).toMatch(
-      /text-row-emphasis\s+tabular-nums\s+text-text-primary[\s\S]{0,200}?\{v\}/,
+      /text-emphasis\s+tabular-nums\s+text-text-primary[\s\S]{0,200}?\{v\}/,
     );
     // 2026-05-08 Labour typography remap — parent values wrapper no
     // longer applies `font-mono`. Each value's `tabular-nums` keeps
@@ -709,13 +709,13 @@ describe("RailPanelRenderer — grouped panel dispatch (Phase 7)", () => {
     expect(slice).toMatch(/className="space-y-2"/);
   });
 
-  it("group heading renders in canonical `text-section-title text-text-primary` (Phase H2)", () => {
-    // Phase H2: `text-section-title` already bakes weight 600. The prior
+  it("group heading renders in canonical `text-header text-text-primary` (Phase H2)", () => {
+    // Phase H2: `text-header` already bakes weight 600. The prior
     // explicit `font-semibold` overlay is dropped — the architectural
     // guard forbids font-bold/font-semibold layered on canonical role
     // tokens.
     expect(rendererSrc).toMatch(
-      /text-section-title\s+text-text-primary[\s\S]{0,300}?\{group\.heading\}/,
+      /text-header\s+text-text-primary[\s\S]{0,300}?\{group\.heading\}/,
     );
     const groupBranchStart = rendererSrc.indexOf('panel.kind === "grouped"');
     const groupBranchEnd = rendererSrc.indexOf('// kind === "list"', groupBranchStart);
@@ -761,12 +761,12 @@ describe("RailPanelRenderer — section header rendering (Phase 7)", () => {
     expect(slice).not.toMatch(/text-label\s+uppercase\s+tracking-wide/);
   });
 
-  it("section header value uses `text-caption tabular-nums text-text-primary` without `font-mono` (2026-05-08 Labour remap)", () => {
+  it("section header value uses `text-row tabular-nums text-text-primary` without `font-mono` (2026-05-08 Labour remap)", () => {
     // 2026-05-08 Labour typography remap — per-date totals drop
     // `font-mono`. `tabular-nums` keeps the value column-aligned;
     // sans-serif now matches Equipment / Notes meta lines.
     expect(rendererSrc).toMatch(
-      /text-caption\s+tabular-nums\s+text-text-primary\s+shrink-0[\s\S]{0,300}?\{card\.sectionHeader\.value\}/,
+      /text-row\s+tabular-nums\s+text-text-primary\s+shrink-0[\s\S]{0,300}?\{card\.sectionHeader\.value\}/,
     );
     const sectionValueIdx = rendererCode.indexOf("card.sectionHeader.value");
     expect(sectionValueIdx).toBeGreaterThan(-1);
@@ -800,7 +800,7 @@ describe("RailPanelRenderer — subrow rendering (Phase 7)", () => {
     );
     // 2026-05-08 Labour typography remap — subrow title prints at
     // row-level (text-row), NOT card-title-level. The prior
-    // `<RailContentCardTitle as="span">` baked text-row-emphasis
+    // `<RailContentCardTitle as="span">` baked text-emphasis
     // (17/600) so each entry rendered at the same scale as the
     // technician group heading. Truncation + min-width preserved.
     expect(rendererSrc).toMatch(
@@ -825,7 +825,7 @@ describe("RailPanelRenderer — subrow rendering (Phase 7)", () => {
 
   it("subrow optional title value renders with `text-row tabular-nums text-text-primary` and no `font-mono` (2026-05-08 Labour remap)", () => {
     // 2026-05-08 Labour typography remap — trailing value moves from
-    // `text-row-emphasis font-mono` (17/600 mono) to `text-row` sans.
+    // `text-emphasis font-mono` (17/600 mono) to `text-row` sans.
     // Tabular-nums keeps the value column-aligned; family swap
     // removed so cost values read in the same font as Equipment /
     // Notes meta.
@@ -837,10 +837,10 @@ describe("RailPanelRenderer — subrow rendering (Phase 7)", () => {
     );
     expect(subrowFnIdx).toBeGreaterThan(-1);
     const subrowSlice = rendererCode.slice(subrowFnIdx, subrowFnIdx + 3000);
-    // The trailing-value span must NOT include text-row-emphasis or
+    // The trailing-value span must NOT include text-emphasis or
     // font-mono any more. Scan code only so doc text that names the
     // prior token doesn't false-match.
-    expect(subrowSlice).not.toMatch(/text-row-emphasis/);
+    expect(subrowSlice).not.toMatch(/text-emphasis/);
     expect(subrowSlice).not.toMatch(/font-mono/);
   });
 

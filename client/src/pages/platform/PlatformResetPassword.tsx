@@ -83,7 +83,7 @@ export default function PlatformResetPassword() {
         <CardHeader className="space-y-3">
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-primary" />
-            <span className="text-xs uppercase tracking-widest text-muted-foreground">
+            <span className="text-helper uppercase tracking-widest text-muted-foreground">
               Internal
             </span>
           </div>
