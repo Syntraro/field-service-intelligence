@@ -8,6 +8,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { receivablesKeys } from "@/lib/receivablesQueryKeys";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -585,7 +586,7 @@ export default function InvoiceDetailPage() {
     createProductResolverRef.current = null;
   };
 
-  const handleCreateProductSave = async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
+  const handleCreateProductSave = async (data: { name: string; description?: string; sku?: string; cost: string; markupPercent?: string; unitPrice: string; estimatedDurationMinutes?: number | null; category?: string; isTaxable?: boolean; isActive?: boolean; type: string }) => {
     setSavingCreatedProduct(true);
     try {
       // 2026-04-29: Backend `createOrGetItem` is type-agnostic — when an
@@ -602,8 +603,14 @@ export default function InvoiceDetailPage() {
           name: data.name,
           type: data.type,
           ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
           ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
           ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
         }),
       });
       const matched = response?._matched === true;
@@ -805,6 +812,8 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       setShowVoidConfirm(false);
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -830,8 +839,10 @@ export default function InvoiceDetailPage() {
     mutationFn: () => apiRequest(`/api/invoices/${invoiceId}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Invoice deleted" });
-      setLocation("/invoices");
+      setLocation("/receivables?tab=invoices");
     },
     onError: (error: Error) => {
       toast({ title: "Failed to delete invoice", description: error.message, variant: "destructive" });
@@ -849,6 +860,8 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Refresh from job can change line items/totals — invalidate invoices list + dashboard
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       qboOverride.closeModal();
       setQboOverridePending(false);
       if (response?._qboWarning) {
@@ -881,6 +894,8 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       setShowPaymentDialog(false);
       setPaymentAmount("");
       setPaymentMethod("e-transfer");
@@ -915,6 +930,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Line item added" });
     },
     onError: (error: Error) => toast({ title: "Failed to add line item", description: error.message, variant: "destructive" }),
@@ -939,6 +956,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Line item updated" });
     },
     onError: (error: Error) => toast({ title: "Failed to update line item", description: error.message, variant: "destructive" }),
@@ -950,6 +969,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Line item removed" });
     },
     onError: (error: Error) => toast({ title: "Failed to remove line item", description: error.message, variant: "destructive" }),
@@ -972,6 +993,8 @@ export default function InvoiceDetailPage() {
     onSuccess: (response: any) => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       qboOverride.closeModal();
       setQboOverridePending(false);
       if (response?._qboWarning) {
@@ -1016,6 +1039,8 @@ export default function InvoiceDetailPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Payment terms updated" });
     },
     onError: (error: Error) => {
@@ -1057,6 +1082,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Invoice updated" });
     },
     onError: (error: Error) => {
@@ -1137,6 +1164,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       setTaxSelectorOpen(false);
       toast({ title: "Tax updated" });
     },
@@ -1215,6 +1244,8 @@ export default function InvoiceDetailPage() {
       // Invalidate queries to refresh data
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: isSent ? "Invoice marked as sent" : "Sent status removed" });
     } catch (error: any) {
       toast({ title: "Failed to update sent status", description: error.message, variant: "destructive" });
@@ -1560,7 +1591,7 @@ export default function InvoiceDetailPage() {
     return (
       <div className="p-6 space-y-3" data-testid="invoice-not-found">
         <p className="text-sm text-muted-foreground">Invoice not found.</p>
-        <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+        <Button variant="outline" size="sm" onClick={() => setLocation("/receivables?tab=invoices")}>Back to invoices</Button>
       </div>
     );
   }
@@ -1601,7 +1632,7 @@ export default function InvoiceDetailPage() {
               Retry
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+          <Button variant="outline" size="sm" onClick={() => setLocation("/receivables?tab=invoices")}>Back to invoices</Button>
         </div>
       </div>
     );
@@ -2621,6 +2652,8 @@ export default function InvoiceDetailPage() {
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
           queryClient.invalidateQueries({ queryKey: ["invoices"] });
+          queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+          queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
           toast({ title: "Invoice sent" });
         }}
       />
@@ -2739,6 +2772,8 @@ export default function InvoiceDetailPage() {
           onRefreshed={() => {
             queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
             queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+            queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
           }}
         />
       )}

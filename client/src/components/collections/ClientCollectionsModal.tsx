@@ -1,13 +1,16 @@
 /**
- * ClientCollectionsModal — 3-column AR collections workspace.
+ * ClientCollectionsModal — AR collections workspace and single-customer modal.
  *
- * Layout:
- *   Col 1 (queue rail, collapsible ~220px): ordered customer list with outstanding AR.
+ * Variants:
+ *   "workspace" (default): 3-column layout with left queue rail for multi-customer navigation.
+ *   "modal": 2-column layout, single-customer scoped — no queue rail, no AR-queue fetch.
+ *
+ * Layout (workspace):
+ *   Col 1 (queue rail, collapsible): ordered customer list with outstanding AR.
  *   Col 2 (middle, flex-1): client header + compact KPI row + invoice list + recent activity.
- *   Col 3 (right rail, ~240px): primary actions + follow-up note form + recent notes + payment info.
+ *   Col 3 (right rail, 260px): primary actions + follow-up note form + recent notes + payment info.
  *
  * Note architecture (2026-05-12):
- *   - Automatic actions (statement sent, reminder sent) → events table only (no client notes).
  *   - Human follow-up notes → invoice_notes table, linked to selected AR invoices.
  *   - Right rail shows: Collections Activity (events) + Invoice Notes (invoice_notes).
  *
@@ -155,6 +158,8 @@ interface ServiceLocation {
 const COMM_RESULT_OPTIONS = [
   { value: "left_voicemail", label: "Left voicemail" },
   { value: "spoke_with_customer", label: "Spoke with customer" },
+  { value: "reminder_sent", label: "Reminder sent" },
+  { value: "statement_sent", label: "Statement sent" },
   { value: "promise_to_pay", label: "Promise to pay" },
   { value: "needs_follow_up", label: "Needs follow-up" },
 ] as const;
@@ -237,6 +242,7 @@ function CollectionsQueueRail({
         {expanded && (
           <div className="flex-1 min-w-0">
             <p className="text-label font-medium text-foreground">Collections Queue</p>
+            <p className="text-helper text-muted-foreground">Past due high → low</p>
           </div>
         )}
         <button
@@ -590,19 +596,27 @@ export interface ClientCollectionsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   customerCompanyId: string;
+  /**
+   * "workspace" (default): renders the left customer queue rail — used when
+   *   the modal is the full receivables workspace (multi-customer navigation).
+   * "modal": single-customer context — hides the queue rail and skips the
+   *   AR-queue fetch. Used from the dashboard Collections widget.
+   */
+  variant?: "workspace" | "modal";
 }
 
 export function ClientCollectionsModal({
   open,
   onOpenChange,
   customerCompanyId,
+  variant = "workspace",
 }: ClientCollectionsModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const [activeCustomerCompanyId, setActiveCustomerCompanyId] = useState(customerCompanyId);
   const [queueExpanded, setQueueExpanded] = useState(
-    () => typeof window !== "undefined" && window.innerWidth >= 1024,
+    () => variant === "workspace" && typeof window !== "undefined" && window.innerWidth >= 1024,
   );
 
   const { data, isLoading, isError, refetch } = useQuery<ARSummaryResponse>({
@@ -616,7 +630,7 @@ export function ClientCollectionsModal({
   const { data: queueData, isLoading: queueLoading } = useQuery<ARQueueResponse>({
     queryKey: ["ar-queue"],
     queryFn: () => apiRequest<ARQueueResponse>("/api/customer-companies/ar-queue"),
-    enabled: open,
+    enabled: open && variant === "workspace",
     refetchIntervalInBackground: false,
   });
 
@@ -678,7 +692,7 @@ export function ClientCollectionsModal({
 
   // Saves a collections note linked to selected invoices.
   // One invoice_notes row is created per selected invoice (same text, preserves invoice-level traceability).
-  const saveInvoiceNotesMutation = useMutation({
+  const saveNoteMutation = useMutation({
     mutationFn: async ({ text, invoiceIds }: { text: string; invoiceIds: string[] }) => {
       await Promise.all(
         invoiceIds.map((id) =>
@@ -713,8 +727,8 @@ export function ClientCollectionsModal({
       fullText = trimmed;
     }
     if (!fullText || noteInvoiceIds.size === 0) return;
-    saveInvoiceNotesMutation.mutate({ text: fullText, invoiceIds: Array.from(noteInvoiceIds) });
-  }, [commResult, noteText, noteInvoiceIds, saveInvoiceNotesMutation]);
+    saveNoteMutation.mutate({ text: fullText, invoiceIds: Array.from(noteInvoiceIds) });
+  }, [commResult, noteText, noteInvoiceIds, saveNoteMutation]);
 
   const pastDueInvoices = data?.pastDueInvoices ?? [];
   const currentInvoices = data?.currentInvoices ?? [];
@@ -747,13 +761,14 @@ export function ClientCollectionsModal({
   }, []);
 
   const handleQueueSelect = useCallback((id: string) => {
+    if (variant !== "workspace") return;
     if (id === activeCustomerCompanyId) return;
     setActiveCustomerCompanyId(id);
     setSelectedIds(new Set());
     setNoteText("");
     setCommResult("");
     setNoteInvoiceIds(new Set());
-  }, [activeCustomerCompanyId]);
+  }, [variant, activeCustomerCompanyId]);
 
   const pastDueAllSelected =
     pastDueInvoices.length > 0 && pastDueInvoices.every((i) => selectedIds.has(i.id));
@@ -795,12 +810,21 @@ export function ClientCollectionsModal({
     [onOpenChange, customerCompanyId],
   );
 
-  // Reminder send is logged server-side as an invoice.batch_send event — no client note needed.
   const handleReminderSuccess = useCallback(() => {
+    // Capture before clearing selection — link auto-note to the reminded invoices
+    const autoIds = selectedForReminder.length > 0
+      ? [...selectedForReminder]
+      : pastDueInvoices.length > 0 ? [pastDueInvoices[0].id] : [];
     setShowReminderModal(false);
     setSelectedIds(new Set());
     queryClient.invalidateQueries({ queryKey: activityQueryKey });
-  }, [queryClient, activityQueryKey]);
+    if (autoIds.length > 0) {
+      saveNoteMutation.mutate({
+        text: `Reminder sent for invoice${autoIds.length !== 1 ? "s" : ""}`,
+        invoiceIds: autoIds,
+      });
+    }
+  }, [queryClient, activityQueryKey, selectedForReminder, pastDueInvoices, saveNoteMutation]);
 
   // Only show a payment signal when there is actual payment history.
   const paymentSignal = (() => {
@@ -810,12 +834,12 @@ export function ClientCollectionsModal({
     return null;
   })();
 
-  const queueItems = queueData?.items ?? [];
+  const queueItems = variant === "workspace" ? (queueData?.items ?? []) : [];
 
   const canSaveNote =
     (noteText.trim().length > 0 || commResult !== "") &&
     noteInvoiceIds.size > 0 &&
-    !saveInvoiceNotesMutation.isPending;
+    !saveNoteMutation.isPending;
 
   return (
     <>
@@ -825,26 +849,30 @@ export function ClientCollectionsModal({
         className="w-[calc(100vw-32px)] max-w-[1180px] max-h-[calc(100vh-32px)] flex flex-col"
         data-testid="client-collections-modal"
       >
-        {/* ── 3-column workspace ───────────────────────────────────── */}
+        {/* ── workspace body: 3 columns in workspace mode, 2 in modal mode ── */}
         <div
           className={cn(
             "grid flex-1 overflow-hidden",
-            queueExpanded
+            variant === "modal"
+              ? "grid-cols-[minmax(0,1fr)_260px]"
+              : queueExpanded
               ? "grid-cols-[190px_minmax(0,1fr)_260px]"
               : "grid-cols-[44px_minmax(0,1fr)_260px]",
           )}
           data-testid="collections-body"
         >
 
-          {/* Col 1: Queue Rail */}
-          <CollectionsQueueRail
-            expanded={queueExpanded}
-            onToggleExpand={() => setQueueExpanded((v) => !v)}
-            items={queueItems}
-            isLoading={queueLoading}
-            activeId={activeCustomerCompanyId}
-            onSelect={handleQueueSelect}
-          />
+          {/* Col 1: Queue Rail — workspace mode only */}
+          {variant === "workspace" && (
+            <CollectionsQueueRail
+              expanded={queueExpanded}
+              onToggleExpand={() => setQueueExpanded((v) => !v)}
+              items={queueItems}
+              isLoading={queueLoading}
+              activeId={activeCustomerCompanyId}
+              onSelect={handleQueueSelect}
+            />
+          )}
 
           {/* Col 2: Middle AR workspace */}
           <div className="flex flex-col overflow-hidden min-w-0">
@@ -904,8 +932,8 @@ export function ClientCollectionsModal({
                     </span>
                   )}
                   {customer.paymentTermsDays != null && (
-                    <span className="text-caption text-muted-foreground" data-testid="collections-payment-terms-inline">
-                      Terms: Net {customer.paymentTermsDays}
+                    <span className="text-caption text-muted-foreground" data-testid="collections-payment-terms">
+                      Net {customer.paymentTermsDays} days
                     </span>
                   )}
                 </div>
@@ -937,6 +965,20 @@ export function ClientCollectionsModal({
                           data-testid="collections-past-due-total"
                         >
                           {formatCurrency(totals.pastDueTotal)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  {totals.currentCount > 0 && (
+                    <>
+                      <span className="h-3 w-px bg-border shrink-0" />
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-helper text-muted-foreground">Current</span>
+                        <span
+                          className="text-caption font-semibold tabular-nums"
+                          data-testid="collections-current-total"
+                        >
+                          {formatCurrency(totals.currentTotal)}
                         </span>
                       </div>
                     </>
@@ -1114,7 +1156,7 @@ export function ClientCollectionsModal({
                 onClick={handleSaveNote}
                 data-testid="collections-note-submit"
               >
-                {saveInvoiceNotesMutation.isPending ? "Saving…" : "Save Note"}
+                {saveNoteMutation.isPending ? "Saving…" : "Save Note"}
               </Button>
             </div>
 
@@ -1152,12 +1194,12 @@ export function ClientCollectionsModal({
               </div>
             )}
 
-            {/* § Invoice Notes — human-entered notes linked to open AR invoices */}
+            {/* § Recent Notes — human-entered notes linked to open AR invoices */}
             {arInvoiceNotes.length > 0 && (
-              <div className="px-3 py-3" data-testid="collections-invoice-notes">
+              <div className="px-3 py-3" data-testid="collections-recent-notes">
                 <p className="text-label text-muted-foreground mb-2 flex items-center gap-1.5">
                   <StickyNote className="h-3.5 w-3.5" />
-                  Invoice Notes
+                  Recent Notes
                 </p>
                 <div className="space-y-2">
                   {arInvoiceNotes.map((note) => (
@@ -1173,6 +1215,13 @@ export function ClientCollectionsModal({
                     </div>
                   ))}
                 </div>
+                {profilePath && (
+                  <Link href={profilePath}>
+                    <a className="text-helper text-primary hover:underline mt-2 inline-block" data-testid="collections-notes-view-all">
+                      View all notes
+                    </a>
+                  </Link>
+                )}
               </div>
             )}
 
@@ -1198,7 +1247,7 @@ export function ClientCollectionsModal({
                   </Link>
                 </div>
               ) : (
-                <p className="text-helper text-muted-foreground">No payments recorded</p>
+                <p className="text-helper text-muted-foreground">No payment activity</p>
               )}
             </div>
           </div>

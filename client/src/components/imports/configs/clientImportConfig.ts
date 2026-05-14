@@ -16,6 +16,12 @@ export const clientImportConfig: ImportWizardConfig = {
   rowNoun: "client rows",
   icon: Users,
   fieldDefs: CLIENT_FIELD_DEFS.map((f) => ({ ...f })),
+  fieldGroups: [
+    { key: "Company",  label: "Identity" },
+    { key: "Billing",  label: "Billing Address" },
+    { key: "Location", label: "Service Address" },
+    { key: "Contact",  label: "Contact & Phones" },
+  ],
   template: { filename: "clients-template.csv", csv: TEMPLATE_CSV },
   uploadBanner:
     "Each row becomes one client with an optional service location and primary contact. If a client with the same name already exists, the new location and contact are added to them instead of creating a duplicate.",

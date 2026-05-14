@@ -461,6 +461,11 @@ export class PaymentRepository extends BaseRepository {
           newStatus = "partial_paid";
         }
 
+        // 2026-05-13 Receivables Phase 2A: mirror the single-invoice
+        // recalculateInvoiceBalance clearing logic for multi-invoice allocations.
+        const paidClear = newStatus === "paid"
+          ? { promisedPaymentAt: null, isDisputed: false }
+          : {};
         const [updated] = await tx
           .update(invoices)
           .set({
@@ -468,6 +473,7 @@ export class PaymentRepository extends BaseRepository {
             balance: newBalance.toFixed(2),
             status: newStatus,
             updatedAt: new Date(),
+            ...paidClear,
           })
           .where(and(eq(invoices.id, a.invoiceId), eq(invoices.companyId, companyId)))
           .returning();
@@ -898,6 +904,15 @@ export class PaymentRepository extends BaseRepository {
     // the natural non-negative invariant on the `invoices.amountPaid`
     // column so downstream readers never see a negative.
     const storedAmountPaid = Math.max(0, amountPaid);
+    // 2026-05-13 Receivables Phase 2A: clear workflow flags when invoice is
+    // fully paid. promisedPaymentAt and isDisputed become stale the moment
+    // the balance reaches zero — clearing them keeps the Receivables views
+    // (Disputed, Promised Payment) accurate without any extra sweep job.
+    // followUpAt is intentionally NOT cleared (user-managed, may still need
+    // a post-payment follow-up e.g. account reconciliation).
+    const paidClear = newStatus === "paid"
+      ? { promisedPaymentAt: null, isDisputed: false }
+      : {};
     await tx
       .update(invoices)
       .set({
@@ -905,6 +920,7 @@ export class PaymentRepository extends BaseRepository {
         balance: Math.max(0, balance).toFixed(2),
         status: newStatus,
         updatedAt: new Date(),
+        ...paidClear,
       })
       .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
   }

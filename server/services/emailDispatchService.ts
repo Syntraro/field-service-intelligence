@@ -760,7 +760,8 @@ export const emailDispatchService = {
         deliveryId: delivery.id,
         errorMessage: err?.message ?? "Resend transport error",
       }).catch(() => {});
-      throw createError(500, `Invoice email send failed: ${err?.message ?? "unknown"}`);
+      console.error("[email.invoice] Send exception", { tenantId, deliveryId: delivery.id, error: err?.message ?? String(err) });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     if (resendResult.error) {
@@ -770,7 +771,8 @@ export const emailDispatchService = {
         deliveryId: delivery.id,
         errorMessage: msg,
       }).catch(() => {});
-      throw createError(500, `Invoice email send failed: ${msg}`);
+      console.error("[email.invoice] Resend API error", { tenantId, deliveryId: delivery.id, error: msg });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     // Phase D atomicity: when an afterMarkSent callback is provided, both
@@ -950,7 +952,8 @@ export const emailDispatchService = {
           errorMessage: err?.message ?? "Resend transport error",
         })
         .catch(() => {});
-      throw createError(500, `Payment receipt send failed: ${err?.message ?? "unknown"}`);
+      console.error("[email.payment] Send exception", { tenantId, deliveryId: delivery.id, error: err?.message ?? String(err) });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     if (resendResult.error) {
@@ -962,7 +965,8 @@ export const emailDispatchService = {
           errorMessage: msg,
         })
         .catch(() => {});
-      throw createError(500, `Payment receipt send failed: ${msg}`);
+      console.error("[email.payment] Resend API error", { tenantId, deliveryId: delivery.id, error: msg });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     await emailDeliveryTrackingService
@@ -1117,10 +1121,8 @@ export const emailDispatchService = {
           errorMessage: err?.message ?? "Resend transport error",
         })
         .catch(() => {});
-      throw createError(
-        500,
-        `Multi-invoice payment receipt send failed: ${err?.message ?? "unknown"}`,
-      );
+      console.error("[email.payment.multi] Send exception", { tenantId, deliveryId: delivery.id, error: err?.message ?? String(err) });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     if (resendResult.error) {
@@ -1132,7 +1134,8 @@ export const emailDispatchService = {
           errorMessage: msg,
         })
         .catch(() => {});
-      throw createError(500, `Multi-invoice payment receipt send failed: ${msg}`);
+      console.error("[email.payment.multi] Resend API error", { tenantId, deliveryId: delivery.id, error: msg });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     await emailDeliveryTrackingService
@@ -1292,14 +1295,16 @@ export const emailDispatchService = {
         tenantId, deliveryId: delivery.id,
         errorMessage: err?.message ?? "Resend transport error",
       }).catch(() => {});
-      throw createError(500, `Quote email send failed: ${err?.message ?? "unknown"}`);
+      console.error("[email.quote] Send exception", { tenantId, deliveryId: delivery.id, error: err?.message ?? String(err) });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
     if (resendResult.error) {
       const msg = resendResult.error.message ?? resendResult.error.name ?? "unknown";
       await emailDeliveryTrackingService.markFailed({
         tenantId, deliveryId: delivery.id, errorMessage: msg,
       }).catch(() => {});
-      throw createError(500, `Quote email send failed: ${msg}`);
+      console.error("[email.quote] Resend API error", { tenantId, deliveryId: delivery.id, error: msg });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
     // Phase D atomicity — same contract as sendInvoiceEmail.
     if (afterMarkSent) {
@@ -1406,14 +1411,16 @@ export const emailDispatchService = {
         tenantId, deliveryId: delivery.id,
         errorMessage: err?.message ?? "Resend transport error",
       }).catch(() => {});
-      throw createError(500, `Job email send failed: ${err?.message ?? "unknown"}`);
+      console.error("[email.job] Send exception", { tenantId, deliveryId: delivery.id, error: err?.message ?? String(err) });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
     if (resendResult.error) {
       const msg = resendResult.error.message ?? resendResult.error.name ?? "unknown";
       await emailDeliveryTrackingService.markFailed({
         tenantId, deliveryId: delivery.id, errorMessage: msg,
       }).catch(() => {});
-      throw createError(500, `Job email send failed: ${msg}`);
+      console.error("[email.job] Resend API error", { tenantId, deliveryId: delivery.id, error: msg });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
     await emailDeliveryTrackingService.markSent({
       tenantId, deliveryId: delivery.id,

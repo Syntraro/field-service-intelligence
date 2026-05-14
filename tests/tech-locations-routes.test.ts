@@ -44,6 +44,8 @@ import {
   jobs,
   jobVisits,
   locationEquipment,
+  leads,
+  leadVisits,
 } from "@shared/schema";
 
 import { assertCanAccessTechLocation } from "../server/auth/techLocationAccess";
@@ -98,6 +100,57 @@ describe("Backend wiring — /api/tech tech-safe location reads", () => {
   });
 });
 
+describe("assertCanAccessTechLocation — lead-visit extension source pins (2026-05-13)", () => {
+  it("imports leadVisits and leads from shared schema", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../server/auth/techLocationAccess.ts"),
+      "utf-8",
+    );
+    expect(src).toMatch(/\bleadVisits\b/);
+    expect(src).toMatch(/\bleads\b/);
+  });
+
+  it("step 3 runs both job-visit and lead-visit queries in parallel (Promise.all)", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../server/auth/techLocationAccess.ts"),
+      "utf-8",
+    );
+    expect(src).toMatch(/Promise\.all/);
+    // Both table names must appear in the assignment-scope block that
+    // follows the office bypass.
+    expect(src).toMatch(/leadVisits\.assignedTechnicianIds/);
+    expect(src).toMatch(/jobVisits\.assignedTechnicianIds/);
+  });
+
+  it("lead-visit query filters leads.companyId for explicit tenant isolation", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../server/auth/techLocationAccess.ts"),
+      "utf-8",
+    );
+    expect(src).toMatch(/leads\.companyId/);
+    expect(src).toMatch(/leadVisits\.companyId/);
+  });
+
+  it("lead-visit query filters leadVisits.isActive", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../server/auth/techLocationAccess.ts"),
+      "utf-8",
+    );
+    expect(src).toMatch(/leadVisits\.isActive/);
+  });
+
+  it("access denied when BOTH queries return empty (not just one)", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../server/auth/techLocationAccess.ts"),
+      "utf-8",
+    );
+    // The guard must be a combined AND (both empty = deny), not OR.
+    expect(src).toMatch(
+      /\.length === 0 && .*\.length === 0|\.length === 0\s*&&\s*\w+\.length === 0/,
+    );
+  });
+});
+
 // ── Live-DB scoping helper coverage ──────────────────────────────────
 
 const PREFIX = "tech_locations_routes_test_";
@@ -110,6 +163,7 @@ const ownerA = uuidv4();
 const adminA = uuidv4();
 const managerA = uuidv4();
 const dispatcherA = uuidv4();
+const dispatcherLeadOnly = uuidv4(); // dispatcher with a lead-visit assignment at locA1, no job-visit
 const customerA = uuidv4();
 const locA1 = uuidv4(); // tenant A — techA has an active visit here
 const locA2 = uuidv4(); // tenant A — no assignments
@@ -117,6 +171,8 @@ const customerB = uuidv4();
 const locB = uuidv4(); // tenant B — for cross-tenant probe
 let visitA1Id: string | null = null;
 let visitA1InactiveId: string | null = null;
+let leadA1Id: string | null = null;
+let leadVisitDispatcherA1Id: string | null = null;
 
 async function setupFixtures() {
   await db.insert(companies).values([
@@ -169,6 +225,14 @@ async function setupFixtures() {
       id: dispatcherA,
       companyId: tenantA,
       email: `${PREFIX}dispatcherA_${Date.now()}@test`,
+      password: "x",
+      role: "dispatcher",
+      status: "active",
+    },
+    {
+      id: dispatcherLeadOnly,
+      companyId: tenantA,
+      email: `${PREFIX}dispatcherLeadOnly_${Date.now()}@test`,
       password: "x",
       role: "dispatcher",
       status: "active",
@@ -261,6 +325,31 @@ async function setupFixtures() {
     })
     .where(eq(jobVisits.id, vA2.id));
 
+  // Lead + active lead-visit at locA1 for dispatcherLeadOnly.
+  // No job-visit exists for this user — tests the lead-visit path exclusively.
+  const leadA1 = uuidv4();
+  leadA1Id = leadA1;
+  await db.insert(leads).values({
+    id: leadA1,
+    companyId: tenantA,
+    locationId: locA1,
+    createdByUserId: ownerA,
+    title: `${PREFIX}leadA1`,
+    status: "new",
+    sourceType: "office",
+  });
+  const lvDispatcherA1 = uuidv4();
+  leadVisitDispatcherA1Id = lvDispatcherA1;
+  await db.insert(leadVisits).values({
+    id: lvDispatcherA1,
+    companyId: tenantA,
+    leadId: leadA1,
+    status: "scheduled",
+    assignedTechnicianIds: [dispatcherLeadOnly],
+    isActive: true,
+    createdByUserId: ownerA,
+  });
+
   // Equipment row at locA1 — used to verify the equipment endpoint shape.
   await db.insert(locationEquipment).values({
     id: uuidv4(),
@@ -281,6 +370,9 @@ async function teardownFixtures() {
     await db.delete(locationEquipment).where(eq(locationEquipment.companyId, tid));
     await db.delete(jobVisits).where(eq(jobVisits.companyId, tid));
     await db.delete(jobs).where(eq(jobs.companyId, tid));
+    // lead_visits before leads (FK), leads before clientLocations (restrict FK).
+    await db.delete(leadVisits).where(eq(leadVisits.companyId, tid));
+    await db.delete(leads).where(eq(leads.companyId, tid));
     await db.delete(clientLocations).where(eq(clientLocations.companyId, tid));
     await db.delete(customerCompanies).where(eq(customerCompanies.companyId, tid));
     await db.delete(users).where(eq(users.companyId, tid));
@@ -321,11 +413,38 @@ describe("assertCanAccessTechLocation — scoping rules (live DB)", () => {
     ).rejects.toThrow(/access denied/i);
   });
 
-  it("denies a dispatcher in tenant A without an assignment", async () => {
+  it("denies a dispatcher in tenant A without any assignment", async () => {
     // Spec: only owner/admin/manager bypass; dispatcher must follow the
-    // assignment scope like a technician.
+    // assignment scope like a technician. dispatcherA has no job-visit
+    // and no lead-visit assignment anywhere.
     await expect(
       assertCanAccessTechLocation(tenantA, dispatcherA, "dispatcher", locA1),
+    ).rejects.toThrow(/access denied/i);
+  });
+
+  it("allows a dispatcher with an active lead-visit assignment at the location", async () => {
+    // dispatcherLeadOnly has a lead_visit at locA1 but NO job_visit there.
+    // The extended step 3 must find the lead-visit path and resolve.
+    await expect(
+      assertCanAccessTechLocation(
+        tenantA,
+        dispatcherLeadOnly,
+        "dispatcher",
+        locA1,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("denies a dispatcher whose lead-visit assignment is at a different location", async () => {
+    // dispatcherLeadOnly's lead-visit is at locA1, not locA2.
+    // Neither job-visit nor lead-visit path matches locA2 → 403.
+    await expect(
+      assertCanAccessTechLocation(
+        tenantA,
+        dispatcherLeadOnly,
+        "dispatcher",
+        locA2,
+      ),
     ).rejects.toThrow(/access denied/i);
   });
 

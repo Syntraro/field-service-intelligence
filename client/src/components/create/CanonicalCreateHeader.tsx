@@ -46,6 +46,8 @@ export interface CreateHeaderPrimaryAction {
   disabled?: boolean;
   isPending?: boolean;
   testId?: string;
+  /** Connects an external hint element to this button via aria-describedby. */
+  ariaDescribedBy?: string;
 }
 
 export interface CanonicalCreateHeaderProps {
@@ -74,13 +76,6 @@ export interface CanonicalCreateHeaderProps {
    * Use for entity-specific controls: template picker (quote), Add jobs (invoice).
    */
   afterClientSlot?: ReactNode;
-  /**
-   * When provided, replaces the built-in CreateOrSelectField entirely.
-   * Use for inline create-client form flows (CreateLeadPage) where the
-   * search field is temporarily replaced by a mini creation form.
-   * Section A chrome (label, border) is still owned by this component.
-   */
-  clientReplaceSlot?: ReactNode;
 
   // ── Section B: Title / Summary ────────────────────────────────────────
   /** When undefined, Section B title input is not rendered. */
@@ -128,7 +123,6 @@ export function CanonicalCreateHeader({
   clientPlaceholder = "Search clients...",
   clientDisabled = false,
   afterClientSlot,
-  clientReplaceSlot,
   titleValue,
   onTitleChange,
   titlePlaceholder = "",
@@ -194,6 +188,7 @@ export function CanonicalCreateHeader({
               onClick={primaryAction.onClick}
               disabled={primaryAction.disabled}
               data-testid={primaryAction.testId ?? `${testId}-primary`}
+              aria-describedby={primaryAction.ariaDescribedBy}
             >
               {primaryAction.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {primaryAction.label}
@@ -210,8 +205,7 @@ export function CanonicalCreateHeader({
         <h3 className="m-0 mb-2 text-label uppercase text-text-muted">
           Client / Location
         </h3>
-        {clientReplaceSlot ?? (
-          <CreateOrSelectField<LocationOption>
+        <CreateOrSelectField<LocationOption>
             label="Client / Location"
             value={selectedLocation}
             onChange={onLocationChange}
@@ -228,7 +222,6 @@ export function CanonicalCreateHeader({
             disabled={clientDisabled}
             compact
           />
-        )}
         {afterClientSlot && (
           <div className="mt-3" data-testid={`${testId}-after-client`}>
             {afterClientSlot}

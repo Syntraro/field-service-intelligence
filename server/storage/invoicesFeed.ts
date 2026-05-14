@@ -55,6 +55,21 @@ export interface InvoiceFeedFilters {
   offset?: number;
   sortBy?: "createdAt" | "dueDate" | "issueDate" | "total" | "balance" | "invoiceNumber";
   sortOrder?: "asc" | "desc";
+  // 2026-05-13 Receivables Phase 2A view predicates — applied as SQL before limit/offset.
+  // Each flag bundles its implicit status exclusions so the same semantics hold in
+  // both the view-list route and the view-counts query.
+  /** follow_up_at IS NOT NULL AND follow_up_at <= NOW() AND status NOT IN ('paid', 'voided') */
+  followUpDue?: boolean;
+  /** sent_at IS NOT NULL AND sent_at >= sentSince */
+  sentSince?: Date;
+  /** balance > 0 AND status NOT IN ('draft','paid','voided') AND (last_emailed_at IS NULL OR last_emailed_at < noContactBefore) */
+  noContactBefore?: Date;
+  /** CAST(balance AS numeric) >= minBalance AND status NOT IN ('draft','paid','voided') */
+  minBalance?: string;
+  /** is_disputed = true AND status NOT IN ('paid','voided') */
+  disputedOnly?: boolean;
+  /** promised_payment_at IS NOT NULL AND balance > 0 AND status NOT IN ('paid','voided') */
+  promisedPaymentOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +113,14 @@ export interface InvoiceFeedItem {
   // Timestamps
   sentAt: string | null;
   viewedAt: string | null;
+  lastEmailedAt: string | null;
   version: number;
   createdAt: string;
   updatedAt: string | null;
+  // 2026-05-13 Receivables Phase 2A workflow fields
+  followUpAt: string | null;
+  promisedPaymentAt: string | null;
+  isDisputed: boolean;
 }
 
 /** Aggregated invoice statistics by status. */
@@ -205,9 +225,14 @@ const feedSelectFields = {
   // Timestamps
   sentAt: invoices.sentAt,
   viewedAt: invoices.viewedAt,
+  lastEmailedAt: invoices.lastEmailedAt,
   version: invoices.version,
   createdAt: invoices.createdAt,
   updatedAt: invoices.updatedAt,
+  // 2026-05-13 Receivables Phase 2A workflow fields
+  followUpAt: invoices.followUpAt,
+  promisedPaymentAt: invoices.promisedPaymentAt,
+  isDisputed: invoices.isDisputed,
 };
 
 /** Map a raw DB row to InvoiceFeedItem with ISO strings. */
@@ -241,9 +266,13 @@ function mapFeedRow(row: any): InvoiceFeedItem {
     discountAmount: row.discountAmount ?? null,
     sentAt: toISOOrNull(row.sentAt),
     viewedAt: toISOOrNull(row.viewedAt),
+    lastEmailedAt: toISOOrNull(row.lastEmailedAt),
     version: row.version ?? 0,
     createdAt: toISOOrNull(row.createdAt) || new Date().toISOString(),
     updatedAt: toISOOrNull(row.updatedAt),
+    followUpAt: toISOOrNull(row.followUpAt),
+    promisedPaymentAt: toISOOrNull(row.promisedPaymentAt),
+    isDisputed: row.isDisputed ?? false,
   };
 }
 
@@ -277,6 +306,12 @@ export async function getInvoicesFeed(
     offset = 0,
     sortBy = "createdAt",
     sortOrder = "desc",
+    followUpDue,
+    sentSince,
+    noContactBefore,
+    minBalance,
+    disputedOnly,
+    promisedPaymentOnly,
   } = filters;
 
   let query = ctx.db
@@ -346,6 +381,62 @@ export async function getInvoicesFeed(
   }
   if (qboOutOfSync !== undefined) {
     query = query.where(eq(invoices.qboOutOfSync, qboOutOfSync));
+  }
+
+  // Receivables Phase 2A view predicates — applied as SQL before limit/offset.
+  if (followUpDue) {
+    query = query.where(
+      and(
+        isNotNull(invoices.followUpAt),
+        sql`${invoices.followUpAt} <= NOW()`,
+        sql`${invoices.status} NOT IN ('paid', 'voided')`,
+      )
+    );
+  }
+  if (sentSince) {
+    query = query.where(
+      and(
+        isNotNull(invoices.sentAt),
+        sql`${invoices.sentAt} >= ${sentSince.toISOString()}::timestamptz`,
+      )
+    );
+  }
+  if (noContactBefore) {
+    query = query.where(
+      and(
+        sql`CAST(${invoices.balance} AS numeric) > 0`,
+        sql`${invoices.status} NOT IN ('draft', 'paid', 'voided')`,
+        or(
+          isNull(invoices.lastEmailedAt),
+          sql`${invoices.lastEmailedAt} < ${noContactBefore.toISOString()}::timestamptz`,
+        )
+      )
+    );
+  }
+  if (minBalance !== undefined) {
+    query = query.where(
+      and(
+        sql`CAST(${invoices.balance} AS numeric) >= CAST(${minBalance} AS numeric)`,
+        sql`${invoices.status} NOT IN ('draft', 'paid', 'voided')`,
+      )
+    );
+  }
+  if (disputedOnly) {
+    query = query.where(
+      and(
+        eq(invoices.isDisputed, true),
+        sql`${invoices.status} NOT IN ('paid', 'voided')`,
+      )
+    );
+  }
+  if (promisedPaymentOnly) {
+    query = query.where(
+      and(
+        isNotNull(invoices.promisedPaymentAt),
+        sql`CAST(${invoices.balance} AS numeric) > 0`,
+        sql`${invoices.status} NOT IN ('paid', 'voided')`,
+      )
+    );
   }
 
   // --- Sort ---

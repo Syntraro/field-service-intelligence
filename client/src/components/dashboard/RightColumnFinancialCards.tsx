@@ -82,7 +82,7 @@ export function TopOutstandingInvoicesCard({
           Top outstanding invoices
         </CardShellTitle>
         <CardShellAction>
-          <ViewAllLink href="/invoices?filter=outstanding" />
+          <ViewAllLink href="/receivables?tab=invoices&filter=outstanding" />
         </CardShellAction>
       </CardShellHeader>
       {isLoading ? (

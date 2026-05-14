@@ -47,6 +47,10 @@ const ENTITY_TYPES = [
   "technician_document",
   // 2026-04-14 Phase 1 cleanup: receipts migrated off legacy /api/uploads.
   "job_expense_receipt",
+  // 2026-05-13 Phase 0: nameplate photos uploaded before OCR processing.
+  // ensureAttachment is a no-op — the scan record (equipment_ocr_scans) is
+  // created by the OCR route after extraction, not at upload time.
+  "equipment_nameplate",
 ] as const;
 
 const uploadRequestSchema = z.object({

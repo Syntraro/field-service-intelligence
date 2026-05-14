@@ -128,6 +128,43 @@ const SCHEMA_PATCHES: Array<{ label: string; ddl: string }> = [
       END $$
     `,
   },
+  // ── equipment_ocr_scans (Phase 0, 2026-05-13) ───────────────────────
+  // Mirrors migrations/2026_05_13_equipment_ocr_scans.sql so OCR storage
+  // tests can hit the table without running the full migration on the
+  // test DB manually.
+  {
+    label: "equipment_ocr_scans table",
+    ddl: `
+      CREATE TABLE IF NOT EXISTS equipment_ocr_scans (
+        id               varchar        PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id       varchar        NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        equipment_id     varchar        NOT NULL REFERENCES location_equipment(id) ON DELETE CASCADE,
+        file_id          varchar        NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+        raw_text         text,
+        parsed_fields    jsonb,
+        confidence       numeric(5,4)   CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+        provider         varchar        NOT NULL,
+        reviewed_at      timestamp,
+        reviewed_by_id   varchar        REFERENCES users(id),
+        applied_at       timestamp,
+        created_at       timestamp      NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `,
+  },
+  {
+    label: "equipment_ocr_scans_equipment_idx",
+    ddl: `
+      CREATE INDEX IF NOT EXISTS equipment_ocr_scans_equipment_idx
+        ON equipment_ocr_scans(company_id, equipment_id)
+    `,
+  },
+  {
+    label: "equipment_ocr_scans_file_idx",
+    ddl: `
+      CREATE INDEX IF NOT EXISTS equipment_ocr_scans_file_idx
+        ON equipment_ocr_scans(company_id, file_id)
+    `,
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════

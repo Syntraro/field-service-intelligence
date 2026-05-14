@@ -21,15 +21,13 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { parseCSV } from "@shared/csvParser";
-import { Info } from "lucide-react";
 import { UploadStep } from "./UploadStep";
 import { ColumnMapper } from "./ColumnMapper";
 import { PreviewTable } from "./PreviewTable";
 import { SummaryCards, SummaryIcons, type SummaryItem } from "./SummaryCards";
 import { CustomFieldPlanSummary } from "./CustomFieldPlanSummary";
 import type { ColumnMapping, ImportWizardConfig, PreviewResponse, CommitResponse, ValidatedRow, CustomFieldEntityId } from "./types";
-import type { SourceId, ProviderPreset } from "./presets/types";
-import { applyPresetMappings } from "./presets";
+import { applyPresetMappings, detectPreset } from "./presets";
 import {
   columnPlansFromMappings,
   customFieldPlansFromPlan,
@@ -93,19 +91,6 @@ function resolveEntityId(
   }
 }
 
-/**
- * Look up the preset for a given (source, entity). Generic CSV always
- * returns null (no preset). Jobber / Housecall Pro / other providers
- * return a preset if one is registered on the entity's config, else null
- * (triggers the "preset not yet available" fallback notice).
- */
-function findPresetFor(
-  config: ImportWizardConfig,
-  source: SourceId,
-): ProviderPreset | null {
-  if (source === "generic_csv") return null;
-  return (config.presets ?? []).find((p) => p.source === source) ?? null;
-}
 
 interface ImportWizardProps {
   config: ImportWizardConfig;
@@ -163,11 +148,6 @@ export function ImportWizard({
   >("idle");
   /** Last post-commit failure surfaced to the user (definition creation or value-write). */
   const [commitError, setCommitError] = useState<string | null>(null);
-  // 2026-04-22 explicit-source imports: the user MUST pick a source
-  // before uploading — no auto-detection, no silent switching. `null`
-  // means "not yet chosen" and the Upload step shows only the
-  // SourceSelector until the user picks one.
-  const [source, setSource] = useState<SourceId | null>(null);
 
   // Derived views of `plans` used across render + mutation call sites.
   const mappings = useMemo(() => mappingsFromPlan(plans), [plans]);
@@ -410,43 +390,35 @@ export function ImportWizard({
   // ------------------------------------------------------------------
 
   /**
-   * File uploaded. Source is already picked (the UploadStep gates the
-   * file picker behind source selection). Behavior by source:
-   *   - Generic CSV → ask backend for header suggestions (existing flow).
-   *   - Jobber / Housecall Pro (preset present) → apply preset mappings
-   *     client-side, skip the round-trip. User lands on Map step with
-   *     columns pre-mapped.
-   *   - Jobber / Housecall Pro (no preset for this entity yet, e.g. HCP)
-   *     → fall through to backend suggestions. The Map step shows a
-   *     non-blocking notice so the user knows preset mapping isn't
-   *     available for that pick.
+   * File uploaded. Auto-detect the source from CSV headers, apply the
+   * best-matching preset (or fall back to generic backend suggestions).
+   *
+   *   - Preset detected (Jobber / HCP above confidence threshold) → apply
+   *     preset mappings client-side, skip the round-trip.
+   *   - No preset detected, or confidence below threshold → generic_csv:
+   *     ask backend for header suggestions.
    */
   const handleFile = (text: string) => {
     setCsvText(text);
     setPreview(null);
     setCommit(null);
-    setStep("map");
 
-    if (!source) return; // defensive — UploadStep should never call us before source is picked
+    const { headers } = safeParseHeaders(text);
+    const detection = detectPreset(headers, config.presets ?? []);
 
-    const preset = findPresetFor(config, source);
-    if (preset) {
-      const { headers } = safeParseHeaders(text);
-      const presetMappings = applyPresetMappings(headers, preset);
+    if (detection.preset) {
+      const presetMappings = applyPresetMappings(headers, detection.preset);
       setPlans(columnPlansFromMappings(presetMappings));
-      return; // no round-trip — user will Continue from Map
+      setStep("map");
+      return;
     }
 
-    // Generic CSV, OR a provider we don't yet have a preset for on this
-    // entity → backend header suggestions (existing behavior).
+    // Generic CSV or no preset for this entity → backend header suggestions.
     previewMutation.mutate(
       { csvText: text },
       {
         onSuccess: (data) => {
           setPreview(data);
-          // Initial load: overwrite plans from backend mappings. User has
-          // not yet set any create_custom actions, so mergeBackendMappings
-          // would be equivalent but plain overwrite is clearer here.
           setPlans(columnPlansFromMappings(data.mappings));
           setStep("map");
         },
@@ -454,20 +426,6 @@ export function ImportWizard({
     );
   };
 
-  const handleSelectSource = (next: SourceId) => {
-    setSource(next);
-  };
-
-  /**
-   * User clicked "Change" on the source chip in the Upload step. Reset
-   * source + any state derived from it, return to the source-picker UI.
-   */
-  const handleResetSource = () => {
-    setSource(null);
-    setCsvText("");
-    setPlans([]);
-    setPreview(null);
-  };
 
   const handleContinueFromMap = () => {
     // Send only the map_existing subset — backend doesn't know about
@@ -505,7 +463,6 @@ export function ImportWizard({
     setPlans([]);
     setPreview(null);
     setCommit(null);
-    setSource(null);
     setCommitStage("idle");
     setCommitError(null);
   };
@@ -526,16 +483,12 @@ export function ImportWizard({
       {step === "upload" && (
         <UploadStep
           config={config}
-          source={source}
-          onSelectSource={handleSelectSource}
-          onResetSource={handleResetSource}
           onFile={handleFile}
         />
       )}
 
       {step === "map" && (
         <>
-          <MapStepNotice source={source} preset={source ? findPresetFor(config, source) : null} />
           <MapStage
             config={config}
             headers={headersPreview.headers}
@@ -645,64 +598,6 @@ export function ImportWizard({
   );
 }
 
-// ----------------------------------------------------------------------------
-// Map-step notice — surfaces preset status inline above the ColumnMapper.
-// Three states:
-//   - Preset applied (Jobber / HCP with a preset): emerald note listing
-//     what happened + the preset's limitations.
-//   - Source picked but no preset for this entity (e.g. Housecall Pro on
-//     Jobs before we ship HCP presets): slate note, non-blocking, tells
-//     the user to map manually.
-//   - Generic CSV: no note (column mapper itself is sufficient affordance).
-// ----------------------------------------------------------------------------
-
-function MapStepNotice({
-  source,
-  preset,
-}: {
-  source: SourceId | null;
-  preset: ProviderPreset | null;
-}) {
-  // Generic CSV or no source yet — nothing to say.
-  if (source == null || source === "generic_csv") return null;
-
-  if (preset) {
-    return (
-      <Alert variant="success" className="p-3 space-y-2" data-testid="preset-applied-notice">
-        <AlertDescription>
-          <div className="flex items-start gap-2">
-            <Info className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="min-w-0 text-sm">
-              <div className="font-semibold">Preset applied: {preset.label}</div>
-              <div className="text-xs mt-0.5">{preset.description}</div>
-            </div>
-          </div>
-          {preset.limitations && preset.limitations.length > 0 && (
-            <ul className="text-[11px] text-slate-600 list-disc list-inside space-y-0.5 pl-6">
-              {preset.limitations.map((l, i) => (
-                <li key={i}>{l}</li>
-              ))}
-            </ul>
-          )}
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
-  // Source picked but no preset for this (source, entity) yet.
-  const sourceLabel = source === "housecall_pro" ? "Housecall Pro" : "Jobber";
-  return (
-    <Alert variant="neutral" className="p-3" data-testid="preset-unavailable-notice">
-      <AlertDescription className="flex items-start gap-2">
-        <Info className="h-4 w-4 text-slate-500 shrink-0 mt-0.5" />
-        <div className="text-sm">
-          <span className="font-semibold">Preset mapping for {sourceLabel} is not available yet for this import type.</span>{" "}
-          Continue with manual mapping below — your file will still import normally.
-        </div>
-      </AlertDescription>
-    </Alert>
-  );
-}
 
 // ----------------------------------------------------------------------------
 // Step indicator
@@ -782,14 +677,15 @@ function MapStage({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div className="flex items-center justify-between pt-2 border-t border-[#e2e8f0]">
+      {/* Sticky bottom action bar — stays visible while scrolling the mapper */}
+      <div className="sticky bottom-0 z-10 flex items-center justify-between py-3 bg-white/95 backdrop-blur-sm border-t border-[#e2e8f0]">
         <Button variant="outline" onClick={onBack}>
           <ChevronLeft className="h-4 w-4 mr-1" />
           Back
         </Button>
         <Button onClick={onContinue} disabled={planErrors.length > 0 || loading}>
           {loading && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-          Validate & preview
+          Next: Preview
           <ChevronRight className="h-4 w-4 ml-1" />
         </Button>
       </div>

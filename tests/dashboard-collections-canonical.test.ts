@@ -236,7 +236,8 @@ describe("CollectionsOverviewCard — click behavior preserved", () => {
   });
 
   it("invoice row onClick calls onOpenInvoice with the invoice id", () => {
-    expect(CARD_SRC).toMatch(/onClick=\{.*?onOpenInvoice\(inv\.id\)/);
+    // 2-arg call: onOpenInvoice(inv.id, inv.customerCompanyId ?? null) — don't pin the closing paren.
+    expect(CARD_SRC).toMatch(/onClick=\{.*?onOpenInvoice\(inv\.id/);
   });
 });
 

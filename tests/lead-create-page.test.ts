@@ -137,23 +137,28 @@ describe("CreateLeadPage — payload contract", () => {
     expect(createLeadPageSrc).toMatch(/setLocation\(\s*["']\/leads["']\s*\)/);
   });
 
-  it("renders a 'Create Lead' submit button with data-testid='button-create-lead'", () => {
-    expect(createLeadPageSrc).toMatch(/data-testid="button-create-lead"/);
+  it("passes testId='button-create-lead' to CanonicalCreateHeader primaryAction", () => {
+    // The data-testid is rendered by CanonicalCreateHeader; CreateLeadPage
+    // owns the value passed as primaryAction.testId.
+    expect(createLeadPageSrc).toMatch(/testId:\s*["']button-create-lead["']/);
   });
 
-  it("renders a Cancel button with data-testid='button-cancel-lead'", () => {
-    expect(createLeadPageSrc).toMatch(/data-testid="button-cancel-lead"/);
+  it("passes cancelTestId='button-cancel-lead' to CanonicalCreateHeader", () => {
+    expect(createLeadPageSrc).toMatch(/cancelTestId="button-cancel-lead"/);
   });
 });
 
-// ── Client / location create-new behavior is preserved ──────────────
+// ── Client / location create-new behavior ───────────────────────────
 
-describe("CreateLeadPage — preserves search + create-new client behavior", () => {
-  it("uses the canonical CreateOrSelectField for client/location selection", () => {
-    expect(createLeadPageSrc).toMatch(
-      /from\s+["']@\/components\/shared\/CreateOrSelectField["']/,
-    );
-    expect(createLeadPageSrc).toMatch(/<CreateOrSelectField/);
+describe("CreateLeadPage — client search + canonical create-new flow", () => {
+  it("wires client search state into CanonicalCreateHeader (CreateOrSelectField lives inside the header)", () => {
+    // CreateOrSelectField is rendered by CanonicalCreateHeader — pin the
+    // props CreateLeadPage passes so the wiring contract is tested here.
+    expect(createLeadPageSrc).toMatch(/clientSearchText=\{locationSearch\}/);
+    expect(createLeadPageSrc).toMatch(/clientSearchResults=\{searchResults\}/);
+    expect(createLeadPageSrc).toMatch(/clientSearchLoading=\{searchLoading\}/);
+    expect(createLeadPageSrc).toMatch(/selectedLocation=\{selectedLocation\}/);
+    expect(createLeadPageSrc).toMatch(/onLocationChange=\{setSelectedLocation\}/);
   });
 
   it("uses useLocationSearch (same hook the modal uses) for the search feed", () => {
@@ -163,36 +168,54 @@ describe("CreateLeadPage — preserves search + create-new client behavior", () 
     expect(createLeadPageSrc).toMatch(/useLocationSearch\(\s*locationSearch\s*\)/);
   });
 
-  it("offers a 'Create new client' action that opens an inline create-client form", () => {
-    expect(createLeadPageSrc).toMatch(/createLabel="Create new client"/);
-    expect(createLeadPageSrc).toMatch(/setShowCreateClient\(true\)/);
+  it("offers a 'Create new client' action that opens the canonical CreateClientModal", () => {
+    expect(createLeadPageSrc).toMatch(/clientCreateLabel="Create new client"/);
+    expect(createLeadPageSrc).toMatch(/setCreateClientOpen\(true\)/);
   });
 
-  it("inline create-client posts to /api/clients/full-create (canonical endpoint)", () => {
+  it("imports and mounts CreateClientModal at page level (not inline)", () => {
     expect(createLeadPageSrc).toMatch(
+      /from\s+["']@\/components\/CreateClientModal["']/,
+    );
+    expect(createLeadPageSrc).toMatch(/<CreateClientModal\s+open=/);
+  });
+
+  it("does NOT contain an inline client creation form or clientReplaceSlot", () => {
+    expect(createLeadPageSrc).not.toMatch(/clientReplaceSlot/);
+    expect(createLeadPageSrc).not.toMatch(/setShowCreateClient/);
+    expect(createLeadPageSrc).not.toMatch(/newCompanyName/);
+  });
+
+  it("delegates client creation to CreateClientModal — no page-local /api/clients/full-create call", () => {
+    expect(createLeadPageSrc).not.toMatch(
       /apiRequest[^(]*\(\s*["']\/api\/clients\/full-create["']/,
     );
   });
 
-  it("invalidates ['/api/clients'] after inline client creation", () => {
+  it("handleClientCreated invalidates client queries and auto-selects the new location", () => {
+    expect(createLeadPageSrc).toMatch(/setSelectedLocation\(/);
     expect(createLeadPageSrc).toMatch(
       /queryClient\.invalidateQueries\(\s*\{\s*queryKey:\s*\[\s*["']\/api\/clients["']\s*\]\s*\}\s*\)/,
     );
   });
 
-  it("after inline client creation, the new location is auto-selected for the lead", () => {
-    expect(createLeadPageSrc).toMatch(/setSelectedLocation\(/);
+  it("preserves the typed name as CreateClientModal initialValues", () => {
+    expect(createLeadPageSrc).toMatch(/initialValues=\{\{\s*companyName:\s*createClientInitialName\s*\}\}/);
   });
 });
 
 // ── Detail-page parity (extracted shared components) ─────────────────
 
 describe("CreateLeadPage — reuses Lead Detail components in draft mode", () => {
-  it("imports LeadSummaryCard and renders it in mode='draft'", () => {
+  it("imports and mounts CanonicalCreateHeader as the page chrome (not LeadSummaryCard)", () => {
+    // The create page uses CanonicalCreateHeader rather than LeadSummaryCard.
+    // LeadSummaryCard is only used on the saved LeadDetailPage.
     expect(createLeadPageSrc).toMatch(
-      /from\s+["']@\/components\/leads\/LeadSummaryCard["']/,
+      /from\s+["']@\/components\/create\/CanonicalCreateHeader["']/,
     );
-    expect(createLeadPageSrc).toMatch(/<LeadSummaryCard\s+mode="draft"/);
+    expect(createLeadPageSrc).toMatch(/<CanonicalCreateHeader/);
+    expect(createLeadPageSrc).toMatch(/entityLabel="New Lead"/);
+    expect(createLeadPageSrc).toMatch(/testId="create-lead-header"/);
   });
 
   it("imports LeadDetailsRail and renders it in mode='draft'", () => {
@@ -228,9 +251,11 @@ describe("CreateLeadPage — reuses Lead Detail components in draft mode", () =>
     expect(createLeadPageSrc).not.toMatch(/<LeadVisitsCard[\s/>]/);
     expect(createLeadPageSrc).not.toMatch(/<EntityNotesSection[\s/>]/);
     expect(createLeadPageSrc).not.toMatch(/<EntityNotesPanel[\s/>]/);
-    expect(createLeadPageSrc).not.toMatch(/Convert to Quote/);
-    expect(createLeadPageSrc).not.toMatch(/Mark Contacted/);
-    expect(createLeadPageSrc).not.toMatch(/Archive Lead/);
+    // Text-label negatives use JSX-context patterns so they do not
+    // accidentally match inline comments that explain what's excluded.
+    expect(createLeadPageSrc).not.toMatch(/"Convert to Quote"|>\s*Convert to Quote\s*</);
+    expect(createLeadPageSrc).not.toMatch(/"Mark Contacted"|>\s*Mark Contacted\s*</);
+    expect(createLeadPageSrc).not.toMatch(/"Archive Lead"|>\s*Archive Lead\s*</);
   });
 });
 
@@ -246,10 +271,11 @@ describe("LeadSummaryCard — supports both saved and draft modes", () => {
     expect(summaryCardSrc).toMatch(/clientLocationSlot:\s*ReactNode/);
   });
 
-  it("saved mode reads the canonical status badge map from shared/leadBadges", () => {
-    expect(summaryCardSrc).toMatch(
-      /from\s+["']\.\/shared\/leadBadges["']/,
-    );
+  it("saved mode reads lead status via getLeadStatusMeta from @/lib/statusBadges", () => {
+    // Migrated from the local ./shared/leadBadges to the canonical
+    // cross-entity statusBadges library.
+    expect(summaryCardSrc).toMatch(/from\s+["']@\/lib\/statusBadges["']/);
+    expect(summaryCardSrc).toMatch(/getLeadStatusMeta/);
   });
 });
 
@@ -328,9 +354,13 @@ describe("CreateLeadPage — explains why Create Lead is disabled", () => {
 
   it("renders the hint inline beneath Create Lead with a stable test id", () => {
     expect(createLeadPageSrc).toMatch(/data-testid="text-create-lead-disabled-reason"/);
-    // ARIA wiring: button announces the reason via aria-describedby.
+  });
+
+  it("wires aria-describedby through primaryAction.ariaDescribedBy so screen readers announce the disabled reason", () => {
+    // The button lives in CanonicalCreateHeader; the page passes the
+    // hint element id via primaryAction.ariaDescribedBy.
     expect(createLeadPageSrc).toMatch(
-      /aria-describedby=\{disabledReason\s*\?\s*"create-lead-disabled-reason"\s*:\s*undefined\}/,
+      /ariaDescribedBy:\s*disabledReason\s*\?\s*"create-lead-disabled-reason"\s*:\s*undefined/,
     );
   });
 
@@ -360,9 +390,14 @@ describe("LeadDetailsRail — supports both saved and draft modes", () => {
 
   it("draft mode renders saved-only metadata as '—' placeholders, never as real values", () => {
     // Created By / Created rows in draft must not pull from any lead
-    // field — they're literal "—" strings.
-    expect(detailsRailSrc).toMatch(/label="Created By"\s+value="—"/);
-    expect(detailsRailSrc).toMatch(/label="Created"\s+value="—"/);
+    // field — they're literal "—" strings. LeadDetailsRail uses
+    // RailContentCardField with children, not a value= prop.
+    expect(detailsRailSrc).toMatch(
+      /<RailContentCardField\s+label="Created By">—<\/RailContentCardField>/,
+    );
+    expect(detailsRailSrc).toMatch(
+      /<RailContentCardField\s+label="Created">—<\/RailContentCardField>/,
+    );
   });
 });
 
@@ -408,14 +443,9 @@ describe("CreateLeadPage — required-field gating", () => {
     expect(createLeadPageSrc).toMatch(
       /canSubmit\s*=\s*[\s\S]*?!!selectedLocation\?\.id\s*&&\s*title\.trim\(\)\.length\s*>\s*0/,
     );
-    expect(createLeadPageSrc).toMatch(/disabled=\{!canSubmit\}/);
-  });
-
-  it("inline create-client button is disabled until a non-empty company name is entered", () => {
-    expect(createLeadPageSrc).toMatch(
-      /canCreateClient\s*=\s*newCompanyName\.trim\(\)\.length\s*>\s*0/,
-    );
-    expect(createLeadPageSrc).toMatch(/disabled=\{!canCreateClient\}/);
+    // disabled is passed as a property of primaryAction (rendered by
+    // CanonicalCreateHeader), not as a direct JSX attribute here.
+    expect(createLeadPageSrc).toMatch(/disabled:\s*!canSubmit/);
   });
 });
 
@@ -427,15 +457,11 @@ describe("CreateLeadPage — duplicate-submit prevention", () => {
   });
 
   it("Cancel is disabled while the create mutation is in flight", () => {
-    // Pin the Cancel button block as a unit and assert both the
-    // disabled gate AND the testid co-exist within it. JSX attribute
-    // order isn't significant, so the assertion is split into two
-    // independent matches against the same captured block.
-    const cancelMatch = createLeadPageSrc.match(
-      /<Button[^>]*data-testid="button-cancel-lead"[^>]*>/,
+    // Cancel button is rendered by CanonicalCreateHeader; CreateLeadPage
+    // passes the disabled state via the cancelDisabled prop.
+    expect(createLeadPageSrc).toMatch(
+      /cancelDisabled=\{createLeadMutation\.isPending\}/,
     );
-    expect(cancelMatch).not.toBeNull();
-    expect(cancelMatch![0]).toMatch(/disabled=\{createLeadMutation\.isPending\}/);
   });
 });
 
@@ -465,7 +491,7 @@ describe("CreateLeadPage — dirty-form guard uses AlertDialog (not window.confi
     );
   });
 
-  it("isDirty considers location, title, description, estimatedValue, priority, capturedBy, inline-create state", () => {
+  it("isDirty considers location, title, description, estimatedValue, priority, capturedBy", () => {
     // A single regex with [\s\S]*? between each clause keeps the
     // assertion robust to whitespace + reorder.
     expect(createLeadPageSrc).toMatch(
@@ -476,7 +502,8 @@ describe("CreateLeadPage — dirty-form guard uses AlertDialog (not window.confi
     expect(createLeadPageSrc).toMatch(/!!selectedLocation/);
     expect(createLeadPageSrc).toMatch(/priority\s*!==\s*DEFAULT_PRIORITY/);
     expect(createLeadPageSrc).toMatch(/capturedByUserId\s*!==\s*\(user\?\.id\s*\?\?\s*""\)/);
-    expect(createLeadPageSrc).toMatch(/showCreateClient/);
+    // Modal open state does NOT pollute the page's dirty-form guard.
+    expect(createLeadPageSrc).not.toMatch(/isDirty[\s\S]{0,200}showCreateClient/);
   });
 
   it("renders explicit Discard / Keep editing buttons in the AlertDialog", () => {

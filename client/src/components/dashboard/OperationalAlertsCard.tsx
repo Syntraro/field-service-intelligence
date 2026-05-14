@@ -37,7 +37,7 @@ import {
   Receipt,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CardShell } from "@/components/ui/card";
+import { CardShell, CardShellHeader, CardShellTitle, CardShellAction } from "@/components/ui/card";
 // 2026-05-08 chip Phase 2: severity-tinted count badge → StatusChip.
 import { StatusChip } from "@/components/ui/chip";
 import type { ChipTone } from "@/lib/chipVariants";
@@ -154,7 +154,7 @@ export function OperationalAlertsCard({
       label: "Invoices not sent",
       count: invoicesNotSentCount,
       icon: FileText,
-      iconColor: "text-slate-500",
+      iconColor: "text-muted-foreground",
       mode: "invoices_not_sent",
     },
   };
@@ -197,26 +197,26 @@ export function OperationalAlertsCard({
       className="w-full h-full flex flex-col"
       data-testid="card-operational-alerts"
     >
-      <div
-        className="w-full px-4 py-2.5 flex items-center gap-2 shrink-0 border-b border-card-border"
-        data-testid="operational-alerts-header"
-      >
-        <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
-          <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
-        </div>
-        <h3 className="text-sm font-semibold text-foreground truncate">
+      <CardShellHeader data-testid="operational-alerts-header">
+        <CardShellTitle
+          icon={AlertTriangle}
+          iconColor="text-orange-600"
+          iconBg="bg-orange-100 dark:bg-orange-950/30"
+        >
           Operational alerts
-        </h3>
+        </CardShellTitle>
         {!isLoading && (
-          <StatusChip
-            tone={badgeTone}
-            className="tabular-nums shrink-0"
-            data-testid="operational-alerts-count-badge"
-          >
-            {totalCount}
-          </StatusChip>
+          <CardShellAction>
+            <StatusChip
+              tone={badgeTone}
+              className="tabular-nums shrink-0"
+              data-testid="operational-alerts-count-badge"
+            >
+              {totalCount}
+            </StatusChip>
+          </CardShellAction>
         )}
-      </div>
+      </CardShellHeader>
       <div
         id="operational-alerts-body"
         className="flex-1 min-h-0 overflow-y-auto"

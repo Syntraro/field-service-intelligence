@@ -95,6 +95,7 @@ import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
+import { AddProductModal } from "@/components/PartsBillingCard";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 import {
   useProductSearch,
@@ -240,6 +241,8 @@ export function EditVisitModal({
     deleteVisit,
   } = useDispatchPreviewMutations();
   const { toast } = useToast();
+  const { user } = useAuth();
+  const companyId = user?.companyId ?? null;
 
   // Dialog state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -476,6 +479,57 @@ export function EditVisitModal({
         variant: "destructive",
       }),
   });
+
+  // ── Service "Create new …" modal (2026-05-13) ────────────────────────
+  // Replaces the inline createServiceMutation that used to fire POST
+  // /api/items immediately from the dropdown CommandItem. Clicking
+  // "Create service: '<name>'" now opens AddProductModal; the POST only
+  // fires when the user clicks Create inside that modal.
+  const [createServiceOpen, setCreateServiceOpen] = useState(false);
+  const [createServiceInitialName, setCreateServiceInitialName] = useState("");
+  const [createServiceSaving, setCreateServiceSaving] = useState(false);
+
+  async function handleCreateServiceSave(data: {
+    name: string; description?: string; sku?: string; cost: string;
+    markupPercent?: string; unitPrice: string; estimatedDurationMinutes?: number | null;
+    category?: string; isTaxable?: boolean; isActive?: boolean; type: string;
+  }) {
+    setCreateServiceSaving(true);
+    try {
+      const response = await apiRequest<any>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: data.name,
+          type: data.type,
+          ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
+          ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
+          ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
+        }),
+      });
+      const matched = (response as any)?._matched === true;
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
+      const product = normalizeProductRow(response);
+      recordServiceUsage(companyId, product.id);
+      addServiceMutation.mutate(product);
+      toast({
+        title: matched ? "Reusing existing item" : "Service created",
+        description: matched
+          ? `"${data.name}" already exists; selecting the existing entry.`
+          : product.name ?? data.name,
+      });
+      setCreateServiceOpen(false);
+    } catch (err: any) {
+      toast({ title: "Couldn't create service", description: err.message, variant: "destructive" });
+    } finally {
+      setCreateServiceSaving(false);
+    }
+  }
 
   // ── Save ──
   //
@@ -894,6 +948,10 @@ export function EditVisitModal({
                     onAdd={(product) => addServiceMutation.mutate(product)}
                     onAddGroup={(group) => addGroupMutation.mutate(group)}
                     onRemove={(jobPartId) => removeServiceMutation.mutate(jobPartId)}
+                    onCreateNew={(name) => {
+                      setCreateServiceInitialName(name);
+                      setCreateServiceOpen(true);
+                    }}
                     busy={
                       addServiceMutation.isPending ||
                       removeServiceMutation.isPending ||
@@ -1175,6 +1233,15 @@ export function EditVisitModal({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AddProductModal
+        open={createServiceOpen}
+        initialName={createServiceInitialName}
+        initialType="service"
+        onClose={() => setCreateServiceOpen(false)}
+        onSave={handleCreateServiceSave}
+        isSaving={createServiceSaving}
+      />
     </>
   );
 }
@@ -1203,6 +1270,7 @@ function ServiceMultiSelect({
   onAdd,
   onAddGroup,
   onRemove,
+  onCreateNew,
   busy,
 }: {
   jobId: string;
@@ -1213,13 +1281,15 @@ function ServiceMultiSelect({
    *  canonical mapper (the group itself is never persisted). */
   onAddGroup: (group: PricebookGroupSummaryDto) => void;
   onRemove: (jobPartId: string) => void;
+  /** Called when the user clicks "Create service: '<name>'". The host
+   *  opens AddProductModal with the name pre-filled; no immediate POST. */
+  onCreateNew: (name: string) => void;
   busy: boolean;
 }) {
   // jobId is intentionally unused inside this component — the parent owns
   // the mutation; we accept it for prop-shape completeness so future
   // refactors can move the mutation in here without changing callers.
   void jobId;
-  const { toast } = useToast();
   const { user } = useAuth();
   const companyId = user?.companyId ?? null;
   const [open, setOpen] = useState(false);
@@ -1296,40 +1366,6 @@ function ServiceMultiSelect({
       return false;
     });
   }, [allGroups, trimmed]);
-
-  // Inline create-service. Mirrors the canonical pattern used in
-  // QuickAddJobDialog and PartsBillingCard — POST /api/items with
-  // type="service" then auto-add via `onAdd`.
-  const createServiceMutation = useMutation({
-    mutationFn: async (name: string) => {
-      const created = await apiRequest<any>("/api/items", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          type: "service",
-          isActive: true,
-          isTaxable: true,
-        }),
-      });
-      return normalizeProductRow(created);
-    },
-    onSuccess: (product) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
-      // 2026-04-26: seed the recency overlay so a freshly-created service
-      // floats to the top of suggestions on the next empty open.
-      recordServiceUsage(companyId, product.id);
-      onAdd(product);
-      setSearchText("");
-      setOpen(false);
-    },
-    onError: () => {
-      toast({
-        title: "Could not create service",
-        description: "Try again or pick an existing service.",
-        variant: "destructive",
-      });
-    },
-  });
 
   return (
     // 2026-05-04 modal compression: single bordered container holds
@@ -1439,16 +1475,11 @@ function ServiceMultiSelect({
                 <CommandGroup heading="Not in catalog">
                   <CommandItem
                     value={`__create__${trimmed}`}
-                    onSelect={() => createServiceMutation.mutate(trimmed)}
+                    onSelect={() => { onCreateNew(trimmed); setOpen(false); }}
                     className="text-primary"
                     data-testid="option-service-create"
-                    disabled={createServiceMutation.isPending}
                   >
-                    {createServiceMutation.isPending ? (
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Plus className="mr-2 h-3.5 w-3.5" />
-                    )}
+                    <Plus className="mr-2 h-3.5 w-3.5" />
                     <span className="truncate">
                       Create service: <span className="font-medium">"{trimmed}"</span>
                     </span>

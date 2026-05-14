@@ -1,37 +1,25 @@
 /**
  * UploadStep — canonical Upload-step surface.
  *
- * 2026-04-22 — refactored for explicit source selection. The step now
- * has two visible stages on the same page:
- *
- *   1. SourceSelector — user picks Jobber / Housecall Pro / Generic CSV.
- *      The file dropzone is hidden until a source is picked.
- *   2. File dropzone + template download — shown only after source is
- *      picked, with a compact "Source: X [Change]" chip above it.
- *
- * No automatic detection anywhere in this component. The parent
- * ImportWizard owns the selected-source state and passes it down.
+ * 2026-04-22: introduced source-selector gate (user picks Jobber / HCP /
+ *   Generic before seeing the dropzone).
+ * 2026-05-13: removed the gate. Source detection now runs automatically
+ *   when the file is uploaded (see `presets/detectPreset.ts`). The dropzone
+ *   is shown immediately. A detection notice appears on the Map step.
  */
 
 import { useRef, useState } from "react";
 import { Upload, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TemplateDownloadLink } from "./TemplateDownloadLink";
-import { SourceSelector, SourceChip } from "./SourceSelector";
 import type { ImportWizardConfig } from "./types";
-import type { SourceId } from "./presets/types";
 
 interface UploadStepProps {
   config: ImportWizardConfig;
-  /** User's explicit source choice — null until they pick one. */
-  source: SourceId | null;
-  onSelectSource: (source: SourceId) => void;
-  /** Clears source so the user can pick again. Parent should also reset any state derived from the previous source. */
-  onResetSource: () => void;
-  onFile: (csvText: string, filename: string) => void;
+  onFile: (csvText: string) => void;
 }
 
-export function UploadStep({ config, source, onSelectSource, onResetSource, onFile }: UploadStepProps) {
+export function UploadStep({ config, onFile }: UploadStepProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,23 +31,12 @@ export function UploadStep({ config, source, onSelectSource, onResetSource, onFi
     }
     setError(null);
     const text = await file.text();
-    onFile(text, file.name);
+    onFile(text);
   };
 
-  // Stage 1 — user hasn't picked a source yet. Show only the selector.
-  if (source === null) {
-    return (
-      <div className="space-y-4">
-        <SourceSelector value={source} onChange={onSelectSource} />
-      </div>
-    );
-  }
-
-  // Stage 2 — source picked. Show the chip + file dropzone.
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <SourceChip source={source} onChange={onResetSource} />
         <TemplateDownloadLink template={config.template} />
       </div>
 

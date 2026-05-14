@@ -2,18 +2,12 @@
  * PostVisitCompletionDialog — canonical post-visit-completion decision
  * surface for office users.
  *
- * 2026-05-01: surfaces the 3-option decision after a visit is marked
- * complete via the canonical `EditVisitModal` flow:
- *   1. Close job and invoice now
- *   2. Close job, invoice later
- *   3. Leave job open
- *
- * When the parent job has OTHER open visits (excluding the just-
- * completed one), copy adjusts and the close-job mutation is fired
- * with `autoCompleteOpenVisits: true` — the canonical close endpoint
- * (`POST /api/jobs/:id/close`) atomically completes those visits +
- * closes the job + (if mode=invoice_now) creates the invoice
- * server-side. No client-side orchestration; no new endpoint.
+ * Options in order:
+ *   1. Close job & invoice now
+ *   2. Close job & invoice later
+ *   3. Schedule follow-up   ← keeps job open, opens AddVisitDialog
+ *   4. Leave job unscheduled ← keeps job open, no invoice, no follow-up
+ *   5. Archive without invoice ← closes/archives the job without billing
  *
  * Mounted ONCE inside `<VisitEditorLauncher>` so every consumer
  * (Dashboard, DispatchPreview, FinancialDashboard, JobDetailPage) gets
@@ -22,9 +16,10 @@
  * which sets the dialog state controlled here.
  *
  * Architecture:
- *   - No new write paths. All actions route through canonical
- *     `POST /api/jobs/:id/close` with existing modes.
- *   - "Leave job open" is a no-op (visit completion already happened).
+ *   - Options 1, 2, 5 route through canonical `POST /api/jobs/:id/close`.
+ *   - "Leave job unscheduled" is a no-op (visit completion already happened).
+ *   - "Schedule follow-up" fires `onScheduleFollowUp` → launcher mounts
+ *     `AddVisitDialog` for the job. No server action in this dialog.
  *   - The same role contract that gates the close endpoint
  *     (`requireRole(MANAGER_ROLES)` server-side) governs visibility
  *     here; non-managers see the dialog but the server rejects the
@@ -39,10 +34,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Loader2, FileText, Clock, X as XIcon } from "lucide-react";
+import { Loader2, FileText, Clock, Calendar, CalendarOff, Archive } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useJobVisits } from "@/hooks/useJobVisits";
@@ -56,9 +49,12 @@ interface PostVisitCompletionDialogProps {
    *  "remaining open" count so the dialog reflects post-completion
    *  state even before the visits refetch lands. */
   completedVisitId: string;
+  /** Called when the user picks "Schedule follow-up". The launcher
+   *  handles opening AddVisitDialog; this dialog just signals intent. */
+  onScheduleFollowUp?: () => void;
 }
 
-type CloseMode = "invoice_now" | "invoice_later";
+type CloseMode = "invoice_now" | "invoice_later" | "archive";
 
 interface JobMinimal {
   id: string;
@@ -76,6 +72,7 @@ export function PostVisitCompletionDialog({
   onOpenChange,
   jobId,
   completedVisitId,
+  onScheduleFollowUp,
 }: PostVisitCompletionDialogProps) {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -103,9 +100,6 @@ export function PostVisitCompletionDialog({
   const closeJobMutation = useMutation({
     mutationFn: async (mode: CloseMode): Promise<CloseJobResponse> => {
       if (!job) throw new Error("Job not loaded");
-      // Canonical close endpoint. `autoCompleteOpenVisits: true` only
-      // when other visits remain open — server enforces the same rule
-      // (jobs.ts:656) and would reject otherwise.
       return apiRequest<CloseJobResponse>(`/api/jobs/${jobId}/close`, {
         method: "POST",
         body: JSON.stringify({
@@ -116,8 +110,6 @@ export function PostVisitCompletionDialog({
       });
     },
     onSuccess: (result, mode) => {
-      // Family-wide invalidations matching JobHeaderCard's
-      // `closeJobMutation` so consumers refresh consistently.
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["visits"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -134,6 +126,11 @@ export function PostVisitCompletionDialog({
             : "Job closed and invoice created.",
         });
         setLocation(`/invoices/${result.invoice.id}`);
+      } else if (mode === "archive") {
+        toast({
+          title: "Job Archived",
+          description: "Job archived without invoice.",
+        });
       } else {
         toast({
           title: "Job Closed",
@@ -167,12 +164,20 @@ export function PostVisitCompletionDialog({
   const descriptionText = hasRemaining
     ? `What do you want to do? ${remainingOpenCount} other ${remainingOpenCount === 1 ? "visit is" : "visits are"} still open.`
     : "What do you want to do?";
+
   const invoiceNowLabel = hasRemaining
     ? "Complete remaining visits and invoice now"
-    : "Close job and invoice now";
+    : "Close job & invoice now";
+  const invoiceNowHelper = hasRemaining
+    ? "Marks remaining visits complete, closes the job, and creates an invoice immediately."
+    : "Completes the job and creates an invoice immediately.";
+
   const invoiceLaterLabel = hasRemaining
     ? "Complete remaining visits and invoice later"
-    : "Close job, invoice later";
+    : "Close job & invoice later";
+  const invoiceLaterHelper = hasRemaining
+    ? "Marks remaining visits complete and closes the job. Invoice can be created later."
+    : "Completes the job. Invoice can be created later.";
 
   return (
     <Dialog
@@ -195,7 +200,7 @@ export function PostVisitCompletionDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-2 py-2" data-testid="post-visit-options">
-          {/* Option 1: Invoice now */}
+          {/* Option 1: Close job & invoice now */}
           <button
             type="button"
             onClick={() => handleClose("invoice_now")}
@@ -206,18 +211,14 @@ export function PostVisitCompletionDialog({
             <FileText className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{invoiceNowLabel}</div>
-              <div className="text-xs text-text-muted mt-0.5">
-                {hasRemaining
-                  ? "Marks remaining visits complete, closes the job, and creates an invoice."
-                  : "Closes the job and creates an invoice from all eligible items."}
-              </div>
+              <div className="text-xs text-text-muted mt-0.5">{invoiceNowHelper}</div>
             </div>
             {pendingMode === "invoice_now" && isPending && (
               <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />
             )}
           </button>
 
-          {/* Option 2: Invoice later */}
+          {/* Option 2: Close job & invoice later */}
           <button
             type="button"
             onClick={() => handleClose("invoice_later")}
@@ -228,48 +229,67 @@ export function PostVisitCompletionDialog({
             <Clock className="h-4 w-4 mt-0.5 shrink-0 text-text-secondary" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{invoiceLaterLabel}</div>
-              <div className="text-xs text-text-muted mt-0.5">
-                {hasRemaining
-                  ? "Marks remaining visits complete and closes the job. Invoice later from the job."
-                  : "Closes the job. Invoice later from the job."}
-              </div>
+              <div className="text-xs text-text-muted mt-0.5">{invoiceLaterHelper}</div>
             </div>
             {pendingMode === "invoice_later" && isPending && (
               <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />
             )}
           </button>
 
-          {/* Option 3: Leave open (no-op) */}
+          {/* Option 3: Schedule follow-up */}
+          <button
+            type="button"
+            onClick={() => onScheduleFollowUp?.()}
+            disabled={isPending}
+            className="flex items-start gap-3 rounded-md border border-card-border p-3 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="option-schedule-followup"
+          >
+            <Calendar className="h-4 w-4 mt-0.5 shrink-0 text-text-secondary" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Schedule follow-up</div>
+              <div className="text-xs text-text-muted mt-0.5">
+                Keep the job open and schedule another visit.
+              </div>
+            </div>
+          </button>
+
+          {/* Option 4: Leave job unscheduled (no-op) */}
           <button
             type="button"
             onClick={() => onOpenChange(false)}
             disabled={isPending}
             className="flex items-start gap-3 rounded-md border border-card-border p-3 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="option-leave-open"
+            data-testid="option-leave-unscheduled"
           >
-            <XIcon className="h-4 w-4 mt-0.5 shrink-0 text-text-muted" />
+            <CalendarOff className="h-4 w-4 mt-0.5 shrink-0 text-text-muted" />
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">Leave job open</div>
+              <div className="text-sm font-medium">Leave job unscheduled</div>
               <div className="text-xs text-text-muted mt-0.5">
-                {hasRemaining
-                  ? "Only the current visit is marked complete. Other visits stay open."
-                  : "Job stays open. You can schedule another visit or invoice later."}
+                Visit is completed. Job remains open without a scheduled follow-up.
               </div>
             </div>
           </button>
-        </div>
 
-        <DialogFooter>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onOpenChange(false)}
-            disabled={isPending}
-            data-testid="button-dismiss"
+          {/* Option 5: Archive without invoice */}
+          <button
+            type="button"
+            onClick={() => handleClose("archive")}
+            disabled={isPending || !job}
+            className="flex items-start gap-3 rounded-md border border-card-border p-3 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="option-archive-no-invoice"
           >
-            Decide later
-          </Button>
-        </DialogFooter>
+            <Archive className="h-4 w-4 mt-0.5 shrink-0 text-text-muted" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Archive without invoice</div>
+              <div className="text-xs text-text-muted mt-0.5">
+                Archives the job without billing.
+              </div>
+            </div>
+            {pendingMode === "archive" && isPending && (
+              <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-0.5" />
+            )}
+          </button>
+        </div>
       </DialogContent>
     </Dialog>
   );

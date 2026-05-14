@@ -49,6 +49,8 @@ import {
   technicianFiles,
   recurringJobTemplates,
   users,
+  // 2026-05-13 Phase 0: nameplate photo uploads for OCR processing.
+  locationEquipment,
 } from "@shared/schema";
 import type { FileCategory, FileRecord, FileStatus } from "@shared/schema";
 import { createError } from "../middleware/errorHandler";
@@ -108,6 +110,8 @@ function resolveCategory(entityType: FileEntityType, mimeType: string): FileCate
       return "other";
     case "job_expense_receipt":
       return "job_expense_receipt";
+    case "equipment_nameplate":
+      return "equipment_nameplate";
     default: {
       const _exhaustive: never = entityType;
       return "other";
@@ -207,7 +211,11 @@ export type FileEntityType =
   // 2026-04-14 Phase 1 cleanup: receipts owned 1:1 by a job_expense row.
   // No join table — the adapter writes back to jobExpenses.receiptFileId
   // (same ownership pattern as invoice_email_attachment, but persistent).
-  | "job_expense_receipt";
+  | "job_expense_receipt"
+  // 2026-05-13 Phase 0: nameplate photos for OCR processing. No persistent
+  // join table at upload time — the scan record (equipment_ocr_scans) is
+  // created by the OCR route after extraction. ensureAttachment is a no-op.
+  | "equipment_nameplate";
 
 /** Context returned by a resolver. Carries whatever the key builder needs. */
 type EntityContext = Record<string, string> & { tenantId: string };
@@ -401,6 +409,26 @@ async function resolveTechnician(companyId: string, technicianId: string): Promi
   if (!u) throw createError(404, "Technician not found");
   // Role check is advisory — keep historical rows valid if a role changes.
   return { tenantId: companyId, technicianId: u.id };
+}
+
+// 2026-05-13 Phase 0: nameplate photos for OCR. Validates the equipment
+// exists in the tenant so the upload request is properly gated.
+async function resolveEquipmentNameplate(
+  companyId: string,
+  equipmentId: string,
+): Promise<EntityContext> {
+  const [row] = await db
+    .select({ id: locationEquipment.id })
+    .from(locationEquipment)
+    .where(
+      and(
+        eq(locationEquipment.id, equipmentId),
+        eq(locationEquipment.companyId, companyId),
+      ),
+    )
+    .limit(1);
+  if (!row) throw createError(404, "Equipment not found");
+  return { tenantId: companyId, equipmentId: row.id };
 }
 
 const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
@@ -654,6 +682,21 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
         .delete(technicianFiles)
         .where(and(eq(technicianFiles.companyId, companyId), eq(technicianFiles.fileId, fileId)));
     },
+  },
+  // 2026-05-13 Phase 0: nameplate photos.
+  // No persistent join table at upload time — the OCR route creates the
+  // equipment_ocr_scans record (with file_id) after extraction. The FK
+  // equipment_ocr_scans.file_id has ON DELETE RESTRICT, so a file that
+  // has been scanned cannot be deleted until the scan record is removed.
+  equipment_nameplate: {
+    resolve: resolveEquipmentNameplate,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/equipment/${ctx.equipmentId}/nameplates/${fileId}/${sanitizeFilename(filename)}`,
+    // No-op: the scan record is created by the OCR route, not at finalize time.
+    ensureAttachment: async () => {},
+    // No-op: no join table to clean up; the DB RESTRICT constraint on
+    // equipment_ocr_scans.file_id prevents deletion if a scan exists.
+    detachByFileId: async () => {},
   },
 };
 

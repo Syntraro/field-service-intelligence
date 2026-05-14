@@ -437,6 +437,14 @@ describe("statementPdfService — pagination and footer reserve", () => {
     expect(PDF_SRC).toContain("tableBottomY");
     expect(PDF_SRC).toMatch(/rowY\s*\+\s*needed\s*<=\s*tableBottomY/);
   });
+
+  it("footer page number Y stays within bottom margin (no phantom page 2)", () => {
+    // pageH - 38 = 754 exceeds PDFKit maxY (pageH - PAGE_MARGIN = 742) and
+    // triggers an auto-page-add, producing a blank second page on short statements.
+    expect(PDF_SRC).not.toMatch(/pageH\s*-\s*38\b/);
+    // Must reference PAGE_MARGIN so the value is always within maxY regardless of page size.
+    expect(PDF_SRC).toMatch(/pageH\s*-\s*PAGE_MARGIN\s*-\s*\d+/);
+  });
 });
 
 // ─── PDF layout — Y-tracking after wrapped addresses ─────────────────────────
@@ -737,6 +745,15 @@ describe("ContactPickerPopover — generic contactsPath prop", () => {
   it("fetches from contactsPath directly (not a hardcoded URL)", () => {
     expect(CONTACT_PICKER_SRC).toMatch(/apiRequest.*contactsPath/);
     expect(CONTACT_PICKER_SRC).not.toContain("/api/invoices/");
+  });
+});
+
+describe("SendCommunicationModal — auto-focus suppression", () => {
+  it("suppresses Radix auto-focus on open to prevent contact dropdown appearing immediately", () => {
+    // Radix Dialog auto-focuses the first focusable element (To input) on open.
+    // Without preventDefault, onFocus fires → toFocused=true → ContactPickerPopover mounts.
+    expect(MODAL_SRC).toContain("onOpenAutoFocus");
+    expect(MODAL_SRC).toContain("e.preventDefault()");
   });
 });
 

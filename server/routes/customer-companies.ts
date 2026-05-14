@@ -927,7 +927,12 @@ router.post(
     try {
       pdfBuffer = await generateStatementPdf(statementData);
     } catch (err: any) {
-      throw createError(500, `Statement PDF generation failed: ${err?.message ?? "unknown error"}`);
+      console.error("[statement.send] PDF generation failed", {
+        companyId,
+        customerCompanyId,
+        error: err?.message ?? String(err),
+      });
+      throw createError(500, "Statement PDF generation failed. Please try again.");
     }
 
     const customerName = statementData.customer.name;
@@ -979,11 +984,21 @@ router.post(
         attachments: [{ filename: pdfFilename, content: pdfBuffer }],
       });
     } catch (err: any) {
-      throw createError(500, `Email delivery failed: ${err?.message ?? "unknown error"}`);
+      console.error("[statement.send] Send exception", {
+        companyId,
+        customerCompanyId,
+        error: err?.message ?? String(err),
+      });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     if (sendResult?.error) {
-      throw createError(500, `Email delivery failed: ${JSON.stringify(sendResult.error)}`);
+      console.error("[statement.send] Resend API error", {
+        companyId,
+        customerCompanyId,
+        error: sendResult.error,
+      });
+      throw createError(500, "Email delivery failed. Please try again.");
     }
 
     logEventAsync(getQueryCtx(req), {

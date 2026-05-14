@@ -60,7 +60,16 @@ function stripComments(src: string): string {
 
 const panelCode = stripComments(panelSrc);
 
-const PAGES: ReadonlyArray<{ label: string; path: string; entityType: string; entityIdRef: string }> = [
+const PAGES: ReadonlyArray<{
+  label: string;
+  path: string;
+  /** When EntityNotesPanel is mounted inside a wrapper component rather
+   *  than directly on the page, point this at the wrapper file so the
+   *  mount and signal assertions read the right source. */
+  panelPath?: string;
+  entityType: string;
+  entityIdRef: string;
+}> = [
   {
     label: "JobDetailPage",
     path: resolve(ROOT, "client/src/pages/JobDetailPage.tsx"),
@@ -70,6 +79,13 @@ const PAGES: ReadonlyArray<{ label: string; path: string; entityType: string; en
   {
     label: "InvoiceDetailPage",
     path: resolve(ROOT, "client/src/pages/InvoiceDetailPage.tsx"),
+    // EntityNotesPanel is mounted inside InvoiceActivityPanel, not
+    // directly on InvoiceDetailPage. The signal is threaded:
+    //   InvoiceDetailPage → InvoiceActivityPanel → EntityNotesPanel
+    panelPath: resolve(
+      ROOT,
+      "client/src/components/invoice/InvoiceActivityPanel.tsx",
+    ),
     entityType: "invoice",
     entityIdRef: "invoiceId",
   },
@@ -102,8 +118,10 @@ describe("EntityNotesPanel — adoption across all detail pages", () => {
 
   it.each(PAGES)(
     "$label mounts <EntityNotesPanel entityType=\"$entityType\" entityId={...}>",
-    ({ path, entityType, entityIdRef }) => {
-      const src = readFileSync(path, "utf-8");
+    ({ path, panelPath, entityType, entityIdRef }) => {
+      // When a wrapper component owns the mount (e.g. InvoiceActivityPanel),
+      // check the wrapper source rather than the page source.
+      const src = readFileSync(panelPath ?? path, "utf-8");
       const re = new RegExp(
         `<EntityNotesPanel[\\s\\S]{0,400}?entityType="${entityType}"[\\s\\S]{0,400}?entityId=\\{${entityIdRef}\\}`,
       );
@@ -286,6 +304,12 @@ describe("EntityNoteDialog — create-success UX (no redundant toast)", () => {
     // Silent edits are hard to confirm; keep the "Note updated" toast.
     expect(dialogSrc).toMatch(/title:\s*["']Note updated["']/);
   });
+
+  it('ClientScopedNotesPanel does not fire a "Note added" success toast on inline create', () => {
+    // Location / company note inline form: note appears immediately in the
+    // list; the success toast is redundant noise, same as the modal path.
+    expect(panelSrc).not.toMatch(/title:\s*["']Note added["']/);
+  });
 });
 
 // ── 8. Page-level rail tab descriptors own title / count / +Add ─────
@@ -293,12 +317,22 @@ describe("EntityNoteDialog — create-success UX (no redundant toast)", () => {
 describe("Notes rail tab descriptors own title + count + +Add (panel never owns chrome)", () => {
   it.each(PAGES)(
     "$label feeds notesAddSignal into EntityNotesPanel.openAddNoteSignal",
-    ({ path }) => {
+    ({ path, panelPath }) => {
       const src = readFileSync(path, "utf-8");
       expect(src).toMatch(/setNotesAddSignal\(\(n\)\s*=>\s*n\s*\+\s*1\)/);
-      expect(src).toMatch(
-        /<EntityNotesPanel[\s\S]{0,800}?openAddNoteSignal=\{notesAddSignal\}/,
-      );
+      if (panelPath) {
+        // Signal is threaded through a wrapper: verify the page passes
+        // it to the wrapper, and the wrapper wires it to EntityNotesPanel.
+        expect(src).toMatch(/notesAddSignal=\{notesAddSignal\}/);
+        const wrapperSrc = readFileSync(panelPath, "utf-8");
+        expect(wrapperSrc).toMatch(
+          /<EntityNotesPanel[\s\S]{0,800}?openAddNoteSignal=\{notesAddSignal\}/,
+        );
+      } else {
+        expect(src).toMatch(
+          /<EntityNotesPanel[\s\S]{0,800}?openAddNoteSignal=\{notesAddSignal\}/,
+        );
+      }
     },
   );
 
@@ -321,5 +355,108 @@ describe("Notes rail tab descriptors own title + count + +Add (panel never owns 
     expect(src).toMatch(/setNotesAddSignal\(\(n\)\s*=>\s*n\s*\+\s*1\)/);
     // The imperative ref handle is gone.
     expect(src).not.toMatch(/notesRef\.current\?\.startAdding\(\)/);
+  });
+});
+
+// ── 9. openAddNoteSignal consumed exactly once (reopen-regression) ───
+//
+// Root cause (2026-05-13): every detail page renders two DetailRightRail
+// instances for responsive layout (lg:hidden mobile + hidden lg:flex
+// desktop). Both mount EntityOwnedNotesPanel simultaneously. Without a
+// guard, both fire the signal effect and open dialogs via portals. The
+// hidden-rail portal escapes its display:none ancestor and stays visible
+// after the user closes the visible-rail dialog — appearing as an
+// immediate reopen.
+//
+// Fix: two guards in EntityOwnedNotesPanel's signal useEffect:
+//   1. lastConsumedSignalRef (initialized to current prop) — prevents a
+//      fresh mount (tab switch away + back) from re-triggering a stale
+//      non-zero signal.
+//   2. offsetParent === null check on containerRef — skips the hidden
+//      breakpoint-rail instance; offsetParent is null when any ancestor
+//      has display:none.
+
+describe("EntityOwnedNotesPanel — openAddNoteSignal consumed exactly once (reopen-regression)", () => {
+  const panelCode = stripComments(panelSrc);
+
+  it("tracks last-consumed signal in a ref so the same signal value never opens dialog twice", () => {
+    // The ref must be declared and compared against openAddNoteSignal
+    // before setDialogOpen(true) is called.
+    expect(panelSrc).toMatch(/lastConsumedSignalRef/);
+    expect(panelSrc).toMatch(/lastConsumedSignalRef\.current\s*=\s*openAddNoteSignal/);
+  });
+
+  it("initialises lastConsumedSignalRef to the current prop value so remounts do not re-trigger stale signals", () => {
+    // useRef(openAddNoteSignal ?? 0) seeds the ref with whatever the prop
+    // value is at mount time, preventing a tab-switch remount from firing.
+    expect(panelSrc).toMatch(/useRef\(\s*openAddNoteSignal\s*\?\?\s*0\s*\)/);
+  });
+
+  it("guards against the hidden-rail instance opening a dialog via offsetParent check", () => {
+    // offsetParent === null when an ancestor has display:none — used to
+    // block the lg:hidden / hidden:lg:flex counterpart rail instance.
+    expect(panelSrc).toMatch(/offsetParent/);
+    expect(panelCode).toMatch(/containerRef\.current[\s\S]{0,80}?offsetParent/);
+  });
+
+  it("attaches containerRef to the root panel div so the visibility check is accurate", () => {
+    expect(panelSrc).toMatch(/ref=\{containerRef\}/);
+  });
+
+  it("old unconditional > 0 open pattern is replaced by the guarded effect", () => {
+    // The original effect body was `if (openAddNoteSignal > 0) { setDialogOpen(true) }`
+    // with no consumed-signal guard. That pattern must not survive.
+    expect(panelCode).not.toMatch(
+      /openAddNoteSignal\s*>\s*0\s*\)\s*\{[\s\S]{0,40}?setDialogOpen\(true\)/,
+    );
+  });
+});
+
+// ── 10. ClientScopedNotesPanel — openAddNoteSignal consumed exactly once ──
+//
+// Root cause (2026-05-13): ClientDetailPage renders two DetailRightRail
+// instances simultaneously (lg:hidden mobile + hidden lg:flex desktop).
+// Both mount ClientScopedNotesPanel. Without the guard, both instances
+// responded to openAddNoteSignal and opened their inline create form.
+// The hidden rail's form state persists across breakpoint transitions —
+// resizing to mobile would show the form already open.
+//
+// Fix mirrors EntityOwnedNotesPanel: containerRef + offsetParent check +
+// lastConsumedSignalRef so the signal is consumed exactly once by the
+// visible instance only.
+
+describe("ClientScopedNotesPanel — openAddNoteSignal consumed exactly once (hidden-rail regression)", () => {
+  it("guards against the hidden-rail instance via offsetParent check before setIsAdding", () => {
+    // offsetParent is null when an ancestor has display:none. The check must
+    // appear before setIsAdding(true) so the hidden counterpart rail never
+    // opens its inline create form.
+    expect(panelCode).toMatch(
+      /offsetParent[\s\S]{0,300}?setIsAdding\(true\)/,
+    );
+  });
+
+  it("attaches containerRef to ClientScopedNotesPanel root div (two ref= occurrences in total)", () => {
+    // EntityOwnedNotesPanel already has one ref={containerRef}. Adding one for
+    // ClientScopedNotesPanel brings the total to two — verify both exist.
+    const occurrences = (panelSrc.match(/ref=\{containerRef\}/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it("initialises lastConsumedSignalRef in ClientScopedNotesPanel so remounts do not re-trigger stale signals", () => {
+    // useRef(openAddNoteSignal ?? 0) must appear at least twice in the file —
+    // once per panel variant.
+    const occurrences = (
+      panelSrc.match(/useRef\(\s*openAddNoteSignal\s*\?\?\s*0\s*\)/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it("old unconditional openAddNoteSignal !== undefined && > 0 pattern is replaced by the guarded effect", () => {
+    // The original ClientScopedNotesPanel effect body:
+    //   if (openAddNoteSignal !== undefined && openAddNoteSignal > 0) { setIsAdding(true) }
+    // That pattern must not survive.
+    expect(panelCode).not.toMatch(
+      /openAddNoteSignal\s*!==\s*undefined\s*&&\s*openAddNoteSignal\s*>\s*0/,
+    );
   });
 });

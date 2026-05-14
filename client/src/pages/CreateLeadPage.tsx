@@ -1,7 +1,7 @@
 /**
  * CreateLeadPage — Full-page lead creation flow at /leads/new.
  *
- * Reuses LeadSummaryCard + LeadDetailsRail in draft mode so the page
+ * Uses CanonicalCreateHeader + LeadDetailsRail in draft mode so the page
  * renders the same chrome the saved lead-detail page renders; the only
  * differences are editable affordances and saved-only metadata
  * placeholders. Visits / notes / actions / quote-conversion sections
@@ -16,7 +16,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 // 2026-05-08 (create-page rail canonicalization): icons for the rail tab.
-import { Loader2, Info } from "lucide-react";
+import { Info } from "lucide-react";
 // 2026-05-08 (create-page rail canonicalization): mount the same canonical
 // `<DetailRightRail>` the saved Lead detail page uses. Create mode hosts
 // only the Details tab — Notes / Actions / linked-quote affordances need
@@ -31,8 +31,6 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -54,6 +52,7 @@ import {
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
 import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
+import { CreateClientModal } from "@/components/CreateClientModal";
 
 const DEFAULT_PRIORITY = "medium";
 const SOURCE_TYPE = "office"; // hardcoded — every lead created here is office-sourced
@@ -68,15 +67,9 @@ export default function CreateLeadPage() {
   const [selectedLocation, setSelectedLocation] = useState<LocationResult | null>(null);
   const { data: searchResults = [], isLoading: searchLoading } = useLocationSearch(locationSearch);
 
-  // ── Inline create-client state — preserves the search → "client not
-  // found" → create-new self-service flow that ships across the app
-  // anywhere a client/location selector exists. ──
-  const [showCreateClient, setShowCreateClient] = useState(false);
-  const [newCompanyName, setNewCompanyName] = useState("");
-  const [newPhone, setNewPhone] = useState("");
-  const [newEmail, setNewEmail] = useState("");
-  const [newAddress, setNewAddress] = useState("");
-  const [newCity, setNewCity] = useState("");
+  // ── CreateClientModal state ──
+  const [createClientOpen, setCreateClientOpen] = useState(false);
+  const [createClientInitialName, setCreateClientInitialName] = useState("");
 
   // ── Lead form state ──
   const [title, setTitle] = useState("");
@@ -97,44 +90,19 @@ export default function CreateLeadPage() {
   type CreateLeadRailTab = "details";
   const [leadRailTab, setLeadRailTab] = useState<CreateLeadRailTab | null>("details");
 
-  // ── Create-client mutation — canonical full-create. ──
-  const createClientMutation = useMutation({
-    mutationFn: () =>
-      apiRequest<any>("/api/clients/full-create", {
-        method: "POST",
-        body: JSON.stringify({
-          company: {
-            name: newCompanyName.trim(),
-            phone: newPhone.trim() || null,
-            email: newEmail.trim() || null,
-          },
-          primaryLocation: {
-            serviceAddress: {
-              street: newAddress.trim() || null,
-              city: newCity.trim() || null,
-            },
-          },
-        }),
-      }),
-    onSuccess: (data) => {
-      const loc = data.client || data.locations?.[0];
-      if (loc?.id) {
-        setSelectedLocation({
-          id: loc.id,
-          companyName: loc.companyName ?? newCompanyName.trim(),
-          address: loc.address ?? newAddress.trim(),
-          city: loc.city ?? newCity.trim(),
-        });
-      }
-      setShowCreateClient(false);
-      setNewCompanyName(""); setNewPhone(""); setNewEmail(""); setNewAddress(""); setNewCity("");
-      toast({ title: "Client created" });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-    },
-    onError: (err: any) => {
-      toast({ title: "Error", description: err.message || "Failed to create client", variant: "destructive" });
-    },
-  });
+  // After CreateClientModal commits, auto-select the new location.
+  const handleClientCreated = (
+    _customerCompanyId: string,
+    primaryLocationId: string,
+  ) => {
+    setSelectedLocation({
+      id: primaryLocationId,
+      companyName: "New client (just created)",
+    });
+    queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    toast({ title: "Client created", description: "Selected for this lead." });
+  };
 
   // ── Create-lead mutation. ──
   const createLeadMutation = useMutation({
@@ -179,13 +147,10 @@ export default function CreateLeadPage() {
     estimatedValue.trim().length > 0 ||
     !!selectedLocation ||
     priority !== DEFAULT_PRIORITY ||
-    capturedByUserId !== (user?.id ?? "") ||
-    showCreateClient;
+    capturedByUserId !== (user?.id ?? "");
 
   const canSubmit =
     !!selectedLocation?.id && title.trim().length > 0 && !createLeadMutation.isPending;
-  const canCreateClient =
-    newCompanyName.trim().length > 0 && !createClientMutation.isPending;
 
   // 2026-05-07: explain WHY Create Lead is disabled. The button used to
   // sit silently greyed-out which left first-time users unable to tell
@@ -279,44 +244,11 @@ export default function CreateLeadPage() {
             selectedLocation={selectedLocation}
             onLocationChange={setSelectedLocation}
             onCreateNewClient={(text) => {
-              setShowCreateClient(true);
-              setNewCompanyName(text);
-              setLocationSearch("");
+              setCreateClientInitialName(text);
+              setCreateClientOpen(true);
             }}
             clientCreateLabel="Create new client"
             clientPlaceholder="Search clients..."
-            clientReplaceSlot={showCreateClient ? (
-              <div className="space-y-1.5">
-                <Label>New Client</Label>
-                <div className="border border-slate-200 rounded-md p-3 space-y-2 bg-slate-50/50">
-                  <Input
-                    placeholder="Company name *"
-                    value={newCompanyName}
-                    onChange={(e) => setNewCompanyName(e.target.value)}
-                    data-testid="input-new-client-company"
-                  />
-                  <Input placeholder="Phone" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} />
-                  <Input placeholder="Email" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
-                  <Input placeholder="Address" value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
-                  <Input placeholder="City" value={newCity} onChange={(e) => setNewCity(e.target.value)} />
-                  <div className="flex gap-2 pt-1">
-                    <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowCreateClient(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="text-xs"
-                      onClick={() => createClientMutation.mutate()}
-                      disabled={!canCreateClient}
-                      data-testid="button-create-client"
-                    >
-                      {createClientMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                      Create Client
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ) : undefined}
             titleValue={title}
             onTitleChange={setTitle}
             titlePlaceholder="What's this lead about? e.g., AC tune-up at Basil Box"
@@ -354,6 +286,7 @@ export default function CreateLeadPage() {
               disabled: !canSubmit,
               isPending: createLeadMutation.isPending,
               testId: "button-create-lead",
+              ariaDescribedBy: disabledReason ? "create-lead-disabled-reason" : undefined,
             }}
             onCancel={navigateBack}
             cancelDisabled={createLeadMutation.isPending}
@@ -411,6 +344,16 @@ export default function CreateLeadPage() {
           />
         </div>
       </aside>
+
+      {/* Canonical create-client modal — opened when the client/location
+          search yields no match and the user clicks "Create new client".
+          Mirrors the wiring used by CreateQuotePage and NewInvoicePage. */}
+      <CreateClientModal
+        open={createClientOpen}
+        onOpenChange={setCreateClientOpen}
+        onCreated={handleClientCreated}
+        initialValues={{ companyName: createClientInitialName }}
+      />
 
       {/* Discard-confirm dialog — fires when Cancel/back is pressed
           on a dirty form. Uses AlertDialog per modal taxonomy rule #1

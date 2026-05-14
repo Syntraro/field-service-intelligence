@@ -490,8 +490,14 @@ function LineItemsTable({
   const handleCreateSave = async (data: {
     name: string;
     description?: string;
+    sku?: string;
     cost: string;
+    markupPercent?: string;
     unitPrice: string;
+    estimatedDurationMinutes?: number | null;
+    category?: string;
+    isTaxable?: boolean;
+    isActive?: boolean;
     type: string;
   }) => {
     setCreateSaving(true);
@@ -502,8 +508,14 @@ function LineItemsTable({
           name: data.name,
           type: data.type,
           ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
           ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
           ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
         }),
       });
       const matched = response?._matched === true;
@@ -740,8 +752,6 @@ export default function JobDetailPage() {
   // canonically inside `createInvoiceFromJob` (server). The dialog is
   // still mounted on InvoiceDetailPage for the rare manual "refresh
   // from job" flow — unchanged.
-  // 2026-03-05: Rule C — confirmation dialog when completing a job
-  const [showCompleteJobConfirm, setShowCompleteJobConfirm] = useState(false);
   // 2026-05-01: `showEditDialog` removed alongside the QuickAddJobDialog
   // edit-mode mount. Summary + Description edit now happens via the
   // whole-card edit shell on the header (see `editingHeader` below);
@@ -2038,7 +2048,7 @@ export default function JobDetailPage() {
                       id: "complete-job",
                       label: "Complete Job",
                       icon: CheckCircle2,
-                      onClick: () => setShowCompleteJobConfirm(true),
+                      onClick: () => headerCardRef.current?.openCloseJobDialog(),
                       tone: "success",
                       testId: "menu-complete-job",
                     } satisfies HeaderOverflowItem] : []),
@@ -2479,31 +2489,9 @@ export default function JobDetailPage() {
       {/* 2026-04-18 Phase 2: reschedule-conflict AlertDialog removed. Under
           multi-visit there is no "the other open visit" to displace. */}
 
-      {/* 2026-03-24: Complete Job confirmation now delegates to canonical Close Job dialog
-          in JobHeaderCard, which handles invoice_now/later/archive options and visit guardrails. */}
-      <AlertDialog open={showCompleteJobConfirm} onOpenChange={setShowCompleteJobConfirm}>
-        <AlertDialogContent data-testid="dialog-complete-job-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Complete Job</AlertDialogTitle>
-            <AlertDialogDescription>
-              Choose how to close this job: create an invoice now, invoice later, or archive without billing.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-complete-job">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setShowCompleteJobConfirm(false);
-                // Delegate to canonical Close Job dialog in JobHeaderCard
-                headerCardRef.current?.openCloseJobDialog();
-              }}
-              data-testid="button-confirm-complete-job"
-            >
-              Continue
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* 2026-05-13: Complete Job pre-confirmation AlertDialog removed.
+          "Complete Job" overflow item now opens JobHeaderCard's Close Job
+          dialog directly via headerCardRef.current?.openCloseJobDialog(). */}
 
       {/* 2026-05-01: <InvoiceCompositionDialog mode="create"> mount
           removed. Direct create-from-job is now handled by

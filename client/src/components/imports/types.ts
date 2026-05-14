@@ -36,8 +36,13 @@ export interface ImportWizardConfig {
   icon: LucideIcon;
   /** Field definitions shown in the column mapper. */
   fieldDefs: ImportFieldDef[];
-  /** Optional per-field group ordering for the mapper — defaults to insertion order. */
-  fieldGroups?: string[];
+  /**
+   * Optional display-name mapping for field groups. Maps the `group` key used
+   * on `ImportFieldDef` entries to a user-facing section label shown in the
+   * column mapper. If omitted or a key is absent, the raw group key is used.
+   * Example: { key: "Company", label: "Identity" }.
+   */
+  fieldGroups?: Array<{ key: string; label: string }>;
   /** Template CSV text. Rendered as a "Download template" link above upload. */
   template: {
     filename: string;

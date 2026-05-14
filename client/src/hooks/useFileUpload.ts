@@ -59,7 +59,9 @@ export type FileEntityType =
   // 2026-04-13 (Commit C): transient image attachments for invoice send.
   | "invoice_email_attachment"
   // 2026-04-14 Phase 1 cleanup: receipts attached to a job expense row.
-  | "job_expense_receipt";
+  | "job_expense_receipt"
+  // 2026-05-13 Phase 1B OCR: nameplate photos uploaded before OCR extraction.
+  | "equipment_nameplate";
 
 export interface UploadTarget {
   entityType: FileEntityType;

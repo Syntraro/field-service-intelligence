@@ -317,6 +317,7 @@ router.get(
         serialNumber: locationEquipment.serialNumber,
         installDate: locationEquipment.installDate,
         notes: locationEquipment.notes,
+        nameplatePhotoId: locationEquipment.nameplatePhotoId,
       })
       .from(locationEquipment)
       .where(
@@ -338,6 +339,7 @@ router.get(
         serialNumber: r.serialNumber ?? null,
         installedAt: r.installDate ?? null,
         notes: r.notes ?? null,
+        nameplatePhotoId: r.nameplatePhotoId ?? null,
       })),
     );
   }),

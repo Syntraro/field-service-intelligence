@@ -284,6 +284,22 @@ function EntityOwnedNotesPanel({
     null,
   );
 
+  // Ref attached to the root div so we can detect whether this instance is
+  // inside a display:none container. All detail pages render two
+  // DetailRightRail instances (one for mobile via lg:hidden, one for desktop
+  // via hidden lg:flex). Both mount EntityOwnedNotesPanel simultaneously;
+  // without this guard, both fire the signal effect and both open dialogs via
+  // portals — the hidden-rail dialog escapes display:none and stays visible
+  // after the visible-rail dialog closes, creating the "modal immediately
+  // reopens" bug.
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Tracks the last signal value this instance has consumed. Initialized to
+  // the current prop value so a remounted instance (e.g. after tab-switching
+  // away and back while notesAddSignal is already > 0) does not re-open the
+  // dialog for the same signal.
+  const lastConsumedSignalRef = useRef(openAddNoteSignal ?? 0);
+
   const { url: fetchUrl, queryKey } = resolveEntityOwnedReadEndpoint(
     ownedType,
     entityId,
@@ -302,14 +318,15 @@ function EntityOwnedNotesPanel({
     onCountChange?.(notes.length);
   }, [notes.length, onCountChange]);
 
-  // Page-driven create-dialog opener (parity with the prior
-  // EntityNotesSection contract).
+  // Page-driven create-dialog opener — edge-triggered, consumed exactly once.
   useEffect(() => {
-    if (openAddNoteSignal !== undefined && openAddNoteSignal > 0) {
-      setEditingNote(null);
-      setDialogOpen(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!openAddNoteSignal || openAddNoteSignal <= lastConsumedSignalRef.current) return;
+    // Skip the hidden-breakpoint rail instance: offsetParent is null whenever
+    // an ancestor has display:none. Only the visible rail should open the dialog.
+    if (containerRef.current && containerRef.current.offsetParent === null) return;
+    lastConsumedSignalRef.current = openAddNoteSignal;
+    setEditingNote(null);
+    setDialogOpen(true);
   }, [openAddNoteSignal]);
 
   const openCreate = () => {
@@ -335,7 +352,7 @@ function EntityOwnedNotesPanel({
 
   return (
     <>
-      <div data-testid={`card-${ownedType}-notes`}>
+      <div ref={containerRef} data-testid={`card-${ownedType}-notes`}>
         {!hideAddButton && (
           <div className="flex justify-end mb-2">
             <button
@@ -508,6 +525,15 @@ function ClientScopedNotesPanel({
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
+  // Ref attached to the root div so we can detect whether this instance is
+  // inside a display:none container — same guard as EntityOwnedNotesPanel.
+  // ClientDetailPage mounts two DetailRightRail instances simultaneously
+  // (lg:hidden + hidden lg:flex); without this guard both respond to the
+  // openAddNoteSignal and both open their inline create form.
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Tracks the last signal value consumed. Initialized to the current prop
+  // value so a remount after tab-switch does not re-fire a stale signal.
+  const lastConsumedSignalRef = useRef(openAddNoteSignal ?? 0);
 
   // Create form state
   const [isAdding, setIsAdding] = useState(false);
@@ -548,12 +574,14 @@ function ClientScopedNotesPanel({
     onCountChange?.(notes.length);
   }, [notes.length, onCountChange]);
 
-  // Page-driven create-form opener — parity with EntityOwnedNotesPanel.
+  // Page-driven create-form opener — edge-triggered, consumed exactly once.
+  // Mirrors the EntityOwnedNotesPanel guard: skip when this instance sits
+  // inside a display:none ancestor (the hidden breakpoint-rail counterpart).
   useEffect(() => {
-    if (openAddNoteSignal !== undefined && openAddNoteSignal > 0) {
-      setIsAdding(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!openAddNoteSignal || openAddNoteSignal <= lastConsumedSignalRef.current) return;
+    if (!containerRef.current || containerRef.current.offsetParent === null) return;
+    lastConsumedSignalRef.current = openAddNoteSignal;
+    setIsAdding(true);
   }, [openAddNoteSignal]);
 
   // ── Mutations / upload lifecycle ───────────────────────────────────
@@ -661,7 +689,6 @@ function ClientScopedNotesPanel({
       queryClient.invalidateQueries({ queryKey: qk });
       queryClient.invalidateQueries({ queryKey: ACTIVITY_FEED_QUERY_KEY });
       resetCreateForm();
-      toast({ title: "Note added" });
     } catch {
       toast({
         title: "Error",
@@ -815,7 +842,7 @@ function ClientScopedNotesPanel({
 
   return (
     <>
-      <div className="space-y-2">
+      <div ref={containerRef} className="space-y-2">
         {/* In-component +Add affordance — only shown when caller opts
             in via `hideAddButton={false}`. Canonical rail mounts have
             this hidden because the rail tab header owns the button. */}

@@ -10,10 +10,14 @@
  * don't forget on the other page" failure mode.
  *
  * 2026-05-01: also mounts the canonical `<PostVisitCompletionDialog>` so
- * the post-completion 3-option prompt fires across every consumer
+ * the post-completion 5-option prompt fires across every consumer
  * (Dashboard, DispatchPreview, FinancialDashboard, JobDetailPage)
  * without per-page wiring. Triggered by `onAfterComplete` from
  * EditVisitModal, which fires only on successful visit completion.
+ *
+ * 2026-05-13: "Schedule follow-up" option mounts `AddVisitDialog` for the
+ * completed job. Launcher owns the follow-up state so the completion dialog
+ * and visit-scheduling dialog never compete for focus.
  *
  * Never fork `EditVisitModal`. This launcher only manages WHEN to render
  * it, not how it renders and not where its mutations route.
@@ -22,6 +26,7 @@
 import { useState } from "react";
 import { EditVisitModal, type EditVisitModalProps } from "@/components/visits/EditVisitModal";
 import { PostVisitCompletionDialog } from "@/components/PostVisitCompletionDialog";
+import { AddVisitDialog } from "@/components/AddVisitDialog";
 
 export interface VisitEditorState {
   jobId: string;
@@ -59,6 +64,12 @@ export function VisitEditorLauncher({
   // fires `onAfterComplete`; cleared when the dialog closes.
   const [postCompletion, setPostCompletion] = useState<PostCompletionState | null>(null);
 
+  // 2026-05-13: "Schedule follow-up" state. Set when the user picks
+  // that option in PostVisitCompletionDialog. Cleared when AddVisitDialog
+  // closes. Stored separately from postCompletion so the jobId survives
+  // the completion-dialog teardown.
+  const [followUpJobId, setFollowUpJobId] = useState<string | null>(null);
+
   return (
     <>
       {state && (
@@ -87,6 +98,20 @@ export function VisitEditorLauncher({
           onOpenChange={(next) => { if (!next) setPostCompletion(null); }}
           jobId={postCompletion.jobId}
           completedVisitId={postCompletion.visitId}
+          onScheduleFollowUp={() => {
+            // Capture jobId before clearing postCompletion, then open
+            // AddVisitDialog for this job via followUpJobId state.
+            setFollowUpJobId(postCompletion.jobId);
+            setPostCompletion(null);
+          }}
+        />
+      )}
+
+      {followUpJobId && (
+        <AddVisitDialog
+          open
+          onOpenChange={(next) => { if (!next) setFollowUpJobId(null); }}
+          jobId={followUpJobId}
         />
       )}
     </>

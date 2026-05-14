@@ -5,8 +5,8 @@
  *
  *  1. Top header (three zones)
  *     • Left  (x=50,  w=168): Tenant company name + address / phone / email.
- *     • Center (x=226, w=178): "STATEMENT" + Statement Date + Statement For + address.
- *     • Right  (x=412, w=150): AMOUNT DUE bordered box.
+ *     • Center (x=226, w=188): "STATEMENT" + Statement Date + Statement For + address.
+ *     • Right  (x=422, w=140): AMOUNT DUE bordered box.
  *     • Hairline divider.
  *
  *  2. Bill To section (compact, below header)
@@ -54,7 +54,7 @@ const FOOTER_RESERVE = 75;
 
 // Header zones — three non-overlapping columns that sum to 512pt
 const LEFT_W = 168;                                       // company block
-const AMOUNT_BOX_W = 150;                                 // right amount box
+const AMOUNT_BOX_W = 140;                                 // right amount box
 const CENTER_START_X = PAGE_MARGIN + LEFT_W + 8;          // 226
 const AMOUNT_BOX_X_OFFSET = AMOUNT_BOX_W + PAGE_MARGIN;  // measured from right edge
 
@@ -470,7 +470,10 @@ export function generateStatementPdf(data: StatementPdfData): Promise<Buffer> {
       for (let i = 0; i < totalPages; i++) {
         doc.switchToPage(range.start + i);
         doc.fontSize(8).fillColor(TEXT_MUTED).font("Helvetica");
-        doc.text(`Page ${i + 1} of ${totalPages}`, leftCol, pageH - 38, {
+        // Y must stay ≤ maxY (pageH − PAGE_MARGIN = 742) to avoid PDFKit
+        // auto-adding a blank page. pageH − 38 = 754 exceeds maxY and
+        // caused a phantom second page on single-invoice statements.
+        doc.text(`Page ${i + 1} of ${totalPages}`, leftCol, pageH - PAGE_MARGIN - 8, {
           width: contentW, align: "right", lineBreak: false,
         });
       }

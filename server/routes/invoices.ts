@@ -2036,7 +2036,7 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
       invoiceNumber: invoice.invoiceNumber,
       error: err?.message ?? String(err),
     });
-    emailDeliveryFailed = `Invoice marked sent, but email delivery failed: ${err?.message ?? "unknown error"}. Please retry from the invoice page.`;
+    emailDeliveryFailed = "Invoice marked sent, but email delivery failed. Please retry from the invoice page.";
     dispatch = {
       emailId: null,
       recipients,

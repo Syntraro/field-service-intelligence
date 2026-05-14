@@ -336,8 +336,14 @@ export default function CreateQuotePage() {
   const handleCreateProductSave = async (data: {
     name: string;
     description?: string;
+    sku?: string;
     cost: string;
+    markupPercent?: string;
     unitPrice: string;
+    estimatedDurationMinutes?: number | null;
+    category?: string;
+    isTaxable?: boolean;
+    isActive?: boolean;
     type: string;
   }) => {
     setSavingCreatedProduct(true);
@@ -348,8 +354,14 @@ export default function CreateQuotePage() {
           name: data.name,
           type: data.type,
           ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
           ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
           ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
         }),
       });
       const matched = response?._matched === true;

@@ -35,8 +35,10 @@ import {
   leadVisits,
   leads,
   clientLocations,
+  customerCompanies,
   leadNotes,
 } from "@shared/schema";
+import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import {
@@ -44,6 +46,7 @@ import {
   markLeadVisitCompleted,
 } from "../storage/leadVisits";
 import { assertCanAccessLeadVisit } from "../auth/leadVisitAccess";
+import { storage } from "../storage/index";
 import { scheduleEligibleLeadVisitFilter } from "../storage/leadVisitPredicates";
 import {
   getStartOfDayInTimezone,
@@ -96,6 +99,16 @@ interface TechLeadVisitDto {
   visitNotes: string | null;
   durationMinutes: number | null;
   type: "lead_visit";
+  // Salesperson-enriched fields — only present when user.role ∈ MANAGER_ROLES.
+  // Technician users never receive these fields.
+  canConvert?: boolean;
+  leadDescription?: string | null;
+  estimatedValue?: string | null;
+  priority?: string | null;
+  leadStatus?: string;
+  customerCompanyName?: string | null;
+  convertedQuoteId?: string | null;
+  locationId?: string | null;
 }
 
 interface JoinedRow {
@@ -114,10 +127,18 @@ interface JoinedRow {
   locPostalCode: string | null;
   locContactName: string | null;
   locPhone: string | null;
+  // Enriched fields — only populated in fetchLeadVisitDtoById (not /today).
+  leadDescription?: string | null;
+  leadEstimatedValue?: string | null;
+  leadPriority?: string | null;
+  leadStatus?: string | null;
+  leadConvertedQuoteId?: string | null;
+  leadLocationId?: string | null;
+  customerCompanyName?: string | null;
 }
 
-function toDto(row: JoinedRow): TechLeadVisitDto {
-  return {
+function toDto(row: JoinedRow, userRole?: string): TechLeadVisitDto {
+  const base: TechLeadVisitDto = {
     id: row.visitId,
     leadId: row.visitLeadId,
     leadTitle: row.leadTitle,
@@ -143,6 +164,29 @@ function toDto(row: JoinedRow): TechLeadVisitDto {
     durationMinutes: row.durationMinutes,
     type: "lead_visit",
   };
+
+  // Salesperson enrichment: only for MANAGER_ROLES (dispatcher/manager/admin/owner).
+  // Technicians receive the minimal allowlist DTO only.
+  if (userRole && (MANAGER_ROLES as readonly string[]).includes(userRole)) {
+    const canConvert =
+      row.visitStatus !== "completed" &&
+      row.visitStatus !== "cancelled" &&
+      !row.leadConvertedQuoteId;
+
+    return {
+      ...base,
+      canConvert,
+      leadDescription: row.leadDescription ?? null,
+      estimatedValue: row.leadEstimatedValue ?? null,
+      priority: row.leadPriority ?? null,
+      leadStatus: row.leadStatus ?? undefined,
+      customerCompanyName: row.customerCompanyName ?? null,
+      convertedQuoteId: row.leadConvertedQuoteId ?? null,
+      locationId: row.leadLocationId ?? null,
+    };
+  }
+
+  return base;
 }
 
 // ── Joined query helpers ────────────────────────────────────────────
@@ -150,6 +194,7 @@ function toDto(row: JoinedRow): TechLeadVisitDto {
 async function fetchLeadVisitDtoById(
   companyId: string,
   visitId: string,
+  userRole?: string,
 ): Promise<TechLeadVisitDto | null> {
   const rows = await db
     .select({
@@ -168,10 +213,22 @@ async function fetchLeadVisitDtoById(
       locPostalCode: clientLocations.postalCode,
       locContactName: clientLocations.contactName,
       locPhone: clientLocations.phone,
+      // Enriched fields — always selected; conditionally included in DTO by role.
+      leadDescription: leads.description,
+      leadEstimatedValue: leads.estimatedValue,
+      leadPriority: leads.priority,
+      leadStatus: leads.status,
+      leadConvertedQuoteId: leads.convertedQuoteId,
+      leadLocationId: leads.locationId,
+      customerCompanyName: customerCompanies.name,
     })
     .from(leadVisits)
     .innerJoin(leads, eq(leads.id, leadVisits.leadId))
     .leftJoin(clientLocations, eq(clientLocations.id, leads.locationId))
+    .leftJoin(
+      customerCompanies,
+      eq(customerCompanies.id, leads.customerCompanyId),
+    )
     .where(
       and(
         eq(leadVisits.id, visitId),
@@ -181,7 +238,7 @@ async function fetchLeadVisitDtoById(
     .limit(1);
 
   if (rows.length === 0) return null;
-  return toDto(rows[0] as JoinedRow);
+  return toDto(rows[0] as JoinedRow, userRole);
 }
 
 // ── Endpoints ───────────────────────────────────────────────────────
@@ -269,7 +326,7 @@ router.get(
       visitId,
     );
 
-    const dto = await fetchLeadVisitDtoById(companyId, visitId);
+    const dto = await fetchLeadVisitDtoById(companyId, visitId, user.role ?? "technician");
     if (!dto) throw createError(404, "Lead visit not found");
     res.json(dto);
   }),
@@ -319,7 +376,7 @@ router.post(
       throw createError(404, "Lead visit not found or not in an open state");
     }
 
-    const dto = await fetchLeadVisitDtoById(companyId, visitId);
+    const dto = await fetchLeadVisitDtoById(companyId, visitId, user.role ?? "technician");
     res.json({
       visit: dto,
       leadTransitioned: result.leadTransitioned,
@@ -365,6 +422,70 @@ router.post(
       })
       .returning();
     res.status(201).json(inserted[0]);
+  }),
+);
+
+/**
+ * POST /api/tech/lead-visits/:visitId/location-equipment
+ *
+ * Add equipment discovered during a lead visit. Persists to
+ * `location_equipment` (equipment belongs to the location, not the
+ * visit). No job_equipment link row; no dispatch event.
+ *
+ * Authorization is visit-scoped: the caller must be assigned to this
+ * lead visit (or be an office role). locationId is derived server-side
+ * from leadId → leads.locationId — never trusted from the request body.
+ */
+const addEquipmentBodySchema = z.object({
+  name: z.string().min(1).max(255),
+  equipmentType: z.string().max(100).optional(),
+  manufacturer: z.string().max(255).optional(),
+  modelNumber: z.string().max(255).optional(),
+  serialNumber: z.string().max(255).optional(),
+  notes: z.string().max(5000).optional(),
+});
+
+router.post(
+  "/:visitId/location-equipment",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const user = req.user as any;
+    const { visitId } = req.params;
+
+    const visit = await assertCanAccessLeadVisit(
+      companyId,
+      user.id,
+      user.role ?? "technician",
+      visitId,
+    );
+
+    // Derive locationId server-side through the lead relationship.
+    // companyId filter prevents cross-tenant lead traversal.
+    const leadRows = await db
+      .select({ locationId: leads.locationId })
+      .from(leads)
+      .where(and(eq(leads.id, visit.leadId), eq(leads.companyId, companyId)))
+      .limit(1);
+
+    if (leadRows.length === 0 || !leadRows[0].locationId) {
+      throw createError(404, "Lead or location not found");
+    }
+    const locationId = leadRows[0].locationId;
+
+    const body = addEquipmentBodySchema.parse(req.body ?? {});
+    const created = await storage.createLocationEquipment(companyId, locationId, body);
+
+    // Return in the same DTO shape as GET /api/tech/locations/:id/equipment.
+    res.status(201).json({
+      id: created.id,
+      name: created.name ?? null,
+      type: created.equipmentType ?? null,
+      manufacturer: created.manufacturer ?? null,
+      model: created.modelNumber ?? null,
+      serialNumber: created.serialNumber ?? null,
+      installedAt: created.installDate ?? null,
+      notes: created.notes ?? null,
+    });
   }),
 );
 

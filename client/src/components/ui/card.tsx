@@ -517,6 +517,10 @@ export interface CardMetricBlockProps extends React.HTMLAttributes<HTMLDivElemen
    * meaning attached.
    */
   emphasis?: boolean;
+  /** Horizontal alignment of label and value. Defaults to `"end"` (right-aligned)
+   *  to match the legacy line-items profitability usage. Pass `"start"` for
+   *  left-aligned KPI cells (e.g. ScheduledRevenue strip, Collections summary). */
+  align?: "start" | "end";
 }
 
 /**
@@ -539,22 +543,22 @@ export interface CardMetricBlockProps extends React.HTMLAttributes<HTMLDivElemen
  */
 const CardMetricBlock = React.forwardRef<HTMLDivElement, CardMetricBlockProps>(
   (
-    { label, value, valueClassName, emphasis = false, className, ...props },
+    { label, value, valueClassName, emphasis = false, align, className, ...props },
     ref,
   ) => (
     <div
       ref={ref}
-      className={cn("flex flex-col items-end leading-tight", className)}
+      className={cn("flex flex-col leading-tight", align === "start" ? "items-start" : "items-end", className)}
       {...props}
     >
-      <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
+      <span className="text-label text-muted-foreground">
         {label}
       </span>
       <span
         className={cn(
           "tabular-nums font-semibold",
           emphasis ? "text-base" : "text-sm",
-          valueClassName ?? "text-text-primary",
+          valueClassName ?? "text-foreground",
         )}
       >
         {value}

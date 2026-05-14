@@ -25,7 +25,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { clientLocations, jobVisits, jobs } from "@shared/schema";
+import { clientLocations, jobVisits, jobs, leadVisits, leads } from "@shared/schema";
 import { createError } from "../middleware/errorHandler";
 
 /** Roles that bypass per-visit assignment scoping when using the tech app. */
@@ -62,25 +62,44 @@ export async function assertCanAccessTechLocation(
     return;
   }
 
-  // 3) Assignment scope — require ≥1 active assigned visit at this
-  // location for this user. job_visits has no locationId of its own,
-  // so we join through jobs.location_id.
-  const assignedRows = await db
-    .select({ id: jobVisits.id })
-    .from(jobVisits)
-    .innerJoin(jobs, eq(jobs.id, jobVisits.jobId))
-    .where(
-      and(
-        eq(jobVisits.companyId, companyId),
-        eq(jobs.locationId, locationId),
-        eq(jobs.companyId, companyId),
-        sql`${jobVisits.isActive} = true`,
-        sql`${userId} = ANY(${jobVisits.assignedTechnicianIds})`,
-      ),
-    )
-    .limit(1);
+  // 3) Assignment scope — ≥1 active job-visit OR lead-visit assignment at
+  // this location grants access. Both queries are independently tenant-scoped
+  // and run in parallel; either result is sufficient.
+  const [jobAssigned, leadAssigned] = await Promise.all([
+    // job_visits has no locationId of its own — resolve through jobs.location_id.
+    db
+      .select({ id: jobVisits.id })
+      .from(jobVisits)
+      .innerJoin(jobs, eq(jobs.id, jobVisits.jobId))
+      .where(
+        and(
+          eq(jobVisits.companyId, companyId),
+          eq(jobs.locationId, locationId),
+          eq(jobs.companyId, companyId),
+          sql`${jobVisits.isActive} = true`,
+          sql`${userId} = ANY(${jobVisits.assignedTechnicianIds})`,
+        ),
+      )
+      .limit(1),
 
-  if (assignedRows.length === 0) {
+    // lead_visits also have no locationId — resolve through leads.location_id.
+    db
+      .select({ id: leadVisits.id })
+      .from(leadVisits)
+      .innerJoin(leads, eq(leads.id, leadVisits.leadId))
+      .where(
+        and(
+          eq(leadVisits.companyId, companyId),
+          eq(leads.locationId, locationId),
+          eq(leads.companyId, companyId),
+          sql`${leadVisits.isActive} = true`,
+          sql`${userId} = ANY(${leadVisits.assignedTechnicianIds})`,
+        ),
+      )
+      .limit(1),
+  ]);
+
+  if (jobAssigned.length === 0 && leadAssigned.length === 0) {
     throw createError(403, "Access denied for this location");
   }
 }

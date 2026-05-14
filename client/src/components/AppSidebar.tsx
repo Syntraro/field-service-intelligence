@@ -51,6 +51,9 @@ import {
   CreditCard,
   Plus,
   BookMarked,
+  // 2026-05-13: Receivables workspace — Inbox icon communicates an
+  // operational triage surface rather than a passive list.
+  Inbox,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -183,13 +186,22 @@ export function AppSidebar({
       hoverText: "Service Plans"
     });
 
-    // --- Group 3 leader: Invoices → Payments → Price Book (billing) ---
+    // --- Group 3 leader: Receivables → Payments → Price Book (billing) ---
+    // 2026-05-13: "Invoices" renamed to "Receivables" — the /invoices/* routes
+    // remain unchanged for backward compat; the sidebar now points to /receivables
+    // which is the unified financial operations workspace (Queue + Invoices tab +
+    // Payments tab + Activity + Insights). The active state covers both paths so
+    // existing /invoices/:id deep links don't deactivate the nav item.
     menuItems.push({
-      title: "Invoices",
-      icon: Receipt,
-      href: "/invoices",
-      isActive: location === "/invoices" || location.startsWith("/invoices/"),
-      testId: "nav-invoices",
+      title: "Receivables",
+      icon: Inbox,
+      href: "/receivables",
+      isActive:
+        location === "/receivables" ||
+        location.startsWith("/receivables/") ||
+        location === "/invoices" ||
+        location.startsWith("/invoices/"),
+      testId: "nav-receivables",
       isDivider: true
     });
     // 2026-05-04 PR7 — Payments dashboard (online payments / payouts /

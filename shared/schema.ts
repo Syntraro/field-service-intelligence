@@ -1868,6 +1868,8 @@ export const fileCategoryEnum = [
   // 2026-04-14 Phase 1 cleanup: receipts attached to job_expenses migrated
   // off the legacy /api/uploads disk pipeline onto the canonical R2 flow.
   "job_expense_receipt",
+  // 2026-05-13 Phase 0: nameplate photos uploaded for OCR processing.
+  "equipment_nameplate",
   "other",
 ] as const;
 export type FileCategory = (typeof fileCategoryEnum)[number] | string;
@@ -2047,6 +2049,13 @@ export const invoices = pgTable("invoices", {
   discountPercent: numeric("discount_percent", { precision: 5, scale: 2 }), // e.g., 10.00 for 10%
   discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }), // Currency amount
   discountNotes: text("discount_notes"), // Optional reason/description for discount
+  // 2026-05-13 Receivables Phase 2A: denormalized workflow-state fields for
+  // fast view filtering. Written atomically by the receivablesNotes storage
+  // layer; never via direct PATCH. Cleared when invoice transitions to "paid"
+  // (see payment repository recalculateInvoiceBalance + applyMultiInvoicePayment).
+  followUpAt: timestamp("follow_up_at"),           // user-scheduled next-action; NOT cleared on paid
+  promisedPaymentAt: timestamp("promised_payment_at"), // set when promise_to_pay note created; cleared on paid
+  isDisputed: boolean("is_disputed").notNull().default(false), // set when dispute note created; cleared on paid
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync (legacy)
   // 2026-04-09: isActive + deletedAt REMOVED — invoices use permanent-delete model.
@@ -3853,6 +3862,41 @@ export const updateLocationEquipmentSchema = z.object({
 export type InsertLocationEquipment = z.infer<typeof insertLocationEquipmentSchema>;
 export type UpdateLocationEquipment = z.infer<typeof updateLocationEquipmentSchema>;
 export type LocationEquipment = typeof locationEquipment.$inferSelect;
+
+// ============================================================================
+// EQUIPMENT OCR SCANS — Nameplate scan history (2026-05-13 Phase 0)
+// ============================================================================
+// Separate scan-history table (Option B) so:
+//   - location_equipment remains the source of truth for live field values
+//   - Multiple scan attempts per equipment are preserved for audit
+//   - nameplatePhotoId is set on the equipment row only after user review + save
+//   - OCR results are never auto-applied (reviewed_at / applied_at track review)
+export const equipmentOcrScans = pgTable("equipment_ocr_scans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  equipmentId: varchar("equipment_id").notNull().references(() => locationEquipment.id, { onDelete: "cascade" }),
+  // RESTRICT: the source image must not be deleted while a scan record references it.
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "restrict" }),
+  rawText: text("raw_text"),
+  // Canonical field map JSON. Shape: { [field]: { value, confidence } }
+  // Keys: manufacturer, modelNumber, serialNumber, equipmentType, tagNumber, installDate
+  parsedFields: jsonb("parsed_fields"),
+  // Overall OCR confidence from the provider (0.0000–1.0000).
+  confidence: numeric("confidence", { precision: 5, scale: 4 }),
+  // Provider that produced this scan: "tesseract" | "google_vision" | "azure_cv"
+  provider: varchar("provider").notNull(),
+  // Set when the tech taps "Save" after reviewing fields (Phase 1 UI).
+  reviewedAt: timestamp("reviewed_at"),
+  reviewedById: varchar("reviewed_by_id").references(() => users.id),
+  // Set when the reviewed fields are written back to location_equipment.
+  appliedAt: timestamp("applied_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  equipIdx: index("equipment_ocr_scans_equipment_idx").on(table.companyId, table.equipmentId),
+  fileIdx: index("equipment_ocr_scans_file_idx").on(table.companyId, table.fileId),
+}));
+
+export type EquipmentOcrScan = typeof equipmentOcrScans.$inferSelect;
 
 // ============================================================================
 // EQUIPMENT CATALOG ITEMS — Reference associations to catalog items (2026-03-06)
@@ -7795,4 +7839,81 @@ export type TechnicianTimeOffInsertInput = z.infer<
 export type TechnicianTimeOffUpdateInput = z.infer<
   typeof updateTechnicianTimeOffSchema
 >;
+
+// ============================================================================
+// RECEIVABLES NOTES (2026-05-13 Phase 2A)
+// ============================================================================
+//
+// Account/customer-scoped collections activity log. invoice_id and payment_id
+// are optional — a single note can represent a conversation about a customer
+// account that spans multiple invoices. When invoice_id is provided, certain
+// note_types (promise_to_pay, dispute) also update denormalized fields on the
+// invoices row atomically in the storage layer.
+//
+// DO NOT mix with invoice_notes. invoice_notes are first-class work-notes
+// attached to a specific invoice (and can carry file attachments). Receivables
+// notes are collections-workflow records: reminders, disputes, promises, etc.
+//
+// See migrations/2026_05_13_receivables_notes.sql.
+
+export const receivablesNoteTypeEnum = [
+  "general",
+  "reminder",
+  "promise_to_pay",
+  "dispute",
+  "escalation",
+  "payment_received",
+] as const;
+export type ReceivablesNoteType = (typeof receivablesNoteTypeEnum)[number];
+
+export const receivablesNotes = pgTable("receivables_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+  paymentId: varchar("payment_id").references(() => payments.id, { onDelete: "set null" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  noteType: text("note_type").notNull(),
+  noteText: text("note_text").notNull(),
+  promisedAt: timestamp("promised_at"),
+  contactMethod: text("contact_method"),
+  createdBySystem: boolean("created_by_system").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyCustomerIdx: index("receivables_notes_company_customer_idx")
+    .on(table.companyId, table.customerCompanyId),
+  companyInvoiceIdx: index("receivables_notes_company_invoice_idx")
+    .on(table.companyId, table.invoiceId),
+  companyCreatedAtIdx: index("receivables_notes_company_created_at_idx")
+    .on(table.companyId, table.createdAt),
+  companyNoteTypeIdx: index("receivables_notes_company_note_type_idx")
+    .on(table.companyId, table.noteType),
+}));
+
+export type ReceivablesNote = typeof receivablesNotes.$inferSelect;
+export type InsertReceivablesNote = typeof receivablesNotes.$inferInsert;
+
+export const insertReceivablesNoteSchema = createInsertSchema(receivablesNotes).omit({
+  id: true,
+  companyId: true,
+  userId: true,
+  createdBySystem: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  noteType: z.enum(receivablesNoteTypeEnum),
+  promisedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  contactMethod: z.string().max(100).nullable().optional(),
+});
+
+export const updateReceivablesNoteSchema = z.object({
+  noteText: z.string().min(1).max(5000).optional(),
+  noteType: z.enum(receivablesNoteTypeEnum).optional(),
+  promisedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  contactMethod: z.string().max(100).nullable().optional(),
+});
+
+export type InsertReceivablesNoteInput = z.infer<typeof insertReceivablesNoteSchema>;
+export type UpdateReceivablesNoteInput = z.infer<typeof updateReceivablesNoteSchema>;
 

@@ -27,10 +27,12 @@ import {
   Camera,
   CheckCircle2,
   Clock,
+  FileText,
   Image as ImageIcon,
   Loader2,
   MapPin,
   Phone,
+  PlusCircle,
   User,
   X,
 } from "lucide-react";
@@ -39,13 +41,17 @@ import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
+import { Chip, StatusChip } from "@/components/ui/chip";
+import { SectionLabel } from "@/components/ui/typography";
+import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 // 2026-05-05 Phase 3: canonical R2 upload pipeline. lead_note maps to
 // the lead_note adapter in fileUploadService — same R2 lifecycle as
 // every other entity's notes. Do NOT bypass.
@@ -55,6 +61,21 @@ import {
   resolveFileAccessUrl,
 } from "@/hooks/useFileUpload";
 import { useEffect } from "react";
+import { ScanNameplateSheet } from "../components/ScanNameplateSheet";
+import type { EquipmentSnapshot } from "../components/ScanNameplateSheet";
+
+interface LocationEquipmentItem {
+  id: string;
+  name: string | null;
+  type: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  serialNumber: string | null;
+  tagNumber: string | null;
+  installedAt: string | null;
+  notes: string | null;
+  nameplatePhotoId: string | null;
+}
 
 interface StagedPhoto {
   id: string;
@@ -81,6 +102,15 @@ interface TechLeadVisitDetail {
   visitNotes: string | null;
   durationMinutes: number | null;
   type: "lead_visit";
+  // Salesperson-enriched fields — only present for MANAGER_ROLES users.
+  canConvert?: boolean;
+  leadDescription?: string | null;
+  estimatedValue?: string | null;
+  priority?: string | null;
+  leadStatus?: string;
+  customerCompanyName?: string | null;
+  convertedQuoteId?: string | null;
+  locationId?: string | null;
 }
 
 interface LeadNoteRow {
@@ -117,6 +147,8 @@ export function LeadVisitDetailPage() {
   const [noteDraft, setNoteDraft] = useState("");
   const [confirmCompleteOpen, setConfirmCompleteOpen] = useState(false);
   const [outcomeDraft, setOutcomeDraft] = useState("");
+  const [addEquipmentOpen, setAddEquipmentOpen] = useState(false);
+  const [scanEquipment, setScanEquipment] = useState<EquipmentSnapshot | null>(null);
   // 2026-05-05 Phase 3: photo attachment state. Files are staged
   // locally, then uploaded after the note is created (mirrors the
   // canonical EntityNoteDialog pattern — note exists first, photos
@@ -153,6 +185,26 @@ export function LeadVisitDetailPage() {
         credentials: "include",
       });
       if (!res.ok) return [];
+      return res.json();
+    },
+  });
+
+  // Equipment at the service location — only fetched in enriched (MANAGER_ROLES) mode
+  // when locationId is present in the DTO. Authorization delegated to the existing
+  // assertCanAccessTechLocation gate on the endpoint.
+  const {
+    data: equipment = [],
+    isLoading: equipmentLoading,
+    isError: equipmentError,
+  } = useQuery<LocationEquipmentItem[]>({
+    queryKey: ["/api/tech/locations", visit?.locationId, "equipment"],
+    enabled: !!visit?.locationId,
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/tech/locations/${visit!.locationId}/equipment`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load equipment");
       return res.json();
     },
   });
@@ -323,9 +375,7 @@ export function LeadVisitDetailPage() {
             <ArrowLeft className="h-5 w-5 text-white" />
           </button>
           <div className="flex-1 min-w-0">
-            <span className="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700">
-              Lead visit
-            </span>
+            <Chip tone="warning" size="compact">Lead visit</Chip>
             <h1 className="text-sm font-bold text-white truncate mt-0.5">
               {visit.leadTitle}
             </h1>
@@ -343,9 +393,7 @@ export function LeadVisitDetailPage() {
       <div className="px-3 py-2 space-y-3 pb-28">
         {/* Location card */}
         <div className="rounded-md border border-slate-200 bg-white p-3">
-          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-            Location
-          </p>
+          <SectionLabel className="mb-1">Location</SectionLabel>
           {visit.location.companyName && (
             <p className="text-sm font-semibold text-slate-800">
               {visit.location.companyName}
@@ -390,20 +438,170 @@ export function LeadVisitDetailPage() {
         {/* Visit notes (from office) */}
         {visit.visitNotes && (
           <div className="rounded-md border border-slate-200 bg-white p-3">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-              Office notes
-            </p>
+            <SectionLabel className="mb-1">Office notes</SectionLabel>
             <p className="text-xs text-slate-700 whitespace-pre-wrap">
               {visit.visitNotes}
             </p>
           </div>
         )}
 
+        {/* Salesperson-enriched info — only rendered for MANAGER_ROLES users */}
+        {(visit.customerCompanyName != null ||
+          visit.leadDescription != null ||
+          visit.estimatedValue != null ||
+          visit.leadStatus != null) && (
+          <div
+            className="rounded-md border border-slate-200 bg-white p-3 space-y-2"
+            data-testid="lead-visit-sales-info"
+          >
+            <SectionLabel>Lead details</SectionLabel>
+            {visit.customerCompanyName && (
+              <div>
+                <p className="text-xs text-slate-500">Company</p>
+                <p className="text-sm font-semibold text-slate-800">
+                  {visit.customerCompanyName}
+                </p>
+              </div>
+            )}
+            {visit.leadStatus && (
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">Lead status</p>
+                <StatusChip status={visit.leadStatus} />
+              </div>
+            )}
+            {visit.priority && (
+              <div>
+                <p className="text-xs text-slate-500">Priority</p>
+                <p className="text-sm text-slate-700 capitalize">{visit.priority}</p>
+              </div>
+            )}
+            {visit.estimatedValue && (
+              <div>
+                <p className="text-xs text-slate-500">Estimated value</p>
+                <p className="text-sm font-semibold text-slate-800">
+                  ${visit.estimatedValue}
+                </p>
+              </div>
+            )}
+            {visit.leadDescription && (
+              <div>
+                <p className="text-xs text-slate-500">Scope notes</p>
+                <p className="text-xs text-slate-700 whitespace-pre-wrap mt-0.5">
+                  {visit.leadDescription}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Equipment at this location — enriched mode only (locationId present) */}
+        {visit.locationId && (
+          <div
+            className="rounded-md border border-slate-200 bg-white p-3"
+            data-testid="lead-visit-equipment-section"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <SectionLabel>Equipment at this location</SectionLabel>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setAddEquipmentOpen(true)}
+                data-testid="button-lead-visit-add-equipment"
+              >
+                <PlusCircle className="h-3 w-3 mr-1" />
+                Add
+              </Button>
+            </div>
+            {equipmentLoading && (
+              <div
+                className="flex items-center gap-1.5 py-2"
+                data-testid="lead-visit-equipment-loading"
+              >
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                <span className="text-xs text-slate-400">Loading…</span>
+              </div>
+            )}
+            {!equipmentLoading && equipmentError && (
+              <p
+                className="text-xs text-slate-400 italic py-2"
+                data-testid="lead-visit-equipment-error"
+              >
+                Could not load equipment.
+              </p>
+            )}
+            {!equipmentLoading && !equipmentError && equipment.length === 0 && (
+              <p
+                className="text-xs text-slate-400 italic py-2"
+                data-testid="lead-visit-equipment-empty"
+              >
+                No equipment recorded for this location.
+              </p>
+            )}
+            {!equipmentLoading && !equipmentError && equipment.length > 0 && (
+              <ul
+                className="divide-y divide-slate-100"
+                data-testid="lead-visit-equipment-list"
+              >
+                {equipment.map((eq) => (
+                  <li key={eq.id} className="py-2 first:pt-0 last:pb-0 flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-slate-800">
+                        {eq.name ?? "—"}
+                        {eq.type && (
+                          <span className="font-normal text-slate-500 ml-1">
+                            ({eq.type})
+                          </span>
+                        )}
+                      </p>
+                      {eq.manufacturer && (
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {eq.manufacturer}
+                        </p>
+                      )}
+                      {eq.model && (
+                        <p className="text-[11px] text-slate-500">
+                          Model: {eq.model}
+                        </p>
+                      )}
+                      {eq.serialNumber && (
+                        <p className="text-[11px] text-slate-500">
+                          S/N: {eq.serialNumber}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Scan nameplate"
+                      data-testid="button-scan-nameplate"
+                      onClick={() =>
+                        setScanEquipment({
+                          id: eq.id,
+                          name: eq.name,
+                          equipmentType: eq.type,
+                          manufacturer: eq.manufacturer,
+                          modelNumber: eq.model,
+                          serialNumber: eq.serialNumber,
+                          tagNumber: eq.tagNumber,
+                          notes: eq.notes,
+                          nameplatePhotoId: eq.nameplatePhotoId,
+                        })
+                      }
+                      className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors shrink-0"
+                    >
+                      <Camera className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* Notes thread */}
         <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-            Notes
-          </p>
+          <SectionLabel>Notes</SectionLabel>
           {!isTerminal && (
             <div className="space-y-2">
               <Textarea
@@ -528,6 +726,20 @@ export function LeadVisitDetailPage() {
           )}
         </div>
 
+        {/* Create Quote CTA — salesperson mode only */}
+        {visit.canConvert && (
+          <Button
+            variant="outline"
+            size="lg"
+            className="w-full h-12 text-base font-semibold"
+            onClick={() => setLocation(`/quotes/new?leadId=${visit.leadId}`)}
+            data-testid="button-tech-create-quote"
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Create Quote
+          </Button>
+        )}
+
         {/* Complete action */}
         {!isTerminal && (
           <Button
@@ -547,15 +759,45 @@ export function LeadVisitDetailPage() {
         )}
       </div>
 
-      <Dialog open={confirmCompleteOpen} onOpenChange={setConfirmCompleteOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Complete this lead visit?</DialogTitle>
-            <DialogDescription>
+      {visit.locationId && (
+        <AddEquipmentDialog
+          locationId={visit.locationId}
+          open={addEquipmentOpen}
+          onOpenChange={setAddEquipmentOpen}
+          createUrl={`/api/tech/lead-visits/${visitId}/location-equipment`}
+          onCreated={() => {
+            queryClient.invalidateQueries({
+              queryKey: ["/api/tech/locations", visit.locationId, "equipment"],
+            });
+          }}
+          data-testid="lead-visit-add-equipment-dialog"
+        />
+      )}
+
+      {scanEquipment && visit.locationId && (
+        <ScanNameplateSheet
+          open={!!scanEquipment}
+          onOpenChange={(open) => { if (!open) setScanEquipment(null); }}
+          equipment={scanEquipment}
+          locationId={visit.locationId}
+          onSaved={() => {
+            setScanEquipment(null);
+            queryClient.invalidateQueries({
+              queryKey: ["/api/tech/locations", visit.locationId, "equipment"],
+            });
+          }}
+        />
+      )}
+
+      <AlertDialog open={confirmCompleteOpen} onOpenChange={setConfirmCompleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Complete this lead visit?</AlertDialogTitle>
+            <AlertDialogDescription>
               The office will see this lead as ready for review and decide
               whether to send a quote.
-            </DialogDescription>
-          </DialogHeader>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
           <div className="space-y-2">
             <Textarea
               value={outcomeDraft}
@@ -563,10 +805,6 @@ export function LeadVisitDetailPage() {
               placeholder="Quick summary for the office (optional)"
               rows={3}
             />
-            {/* 2026-05-05 Phase 3: lightweight non-blocking hint when
-                the visit is being completed with no notes (existing
-                or staged outcome). The dialog itself acts as the
-                explicit confirmation override per the spec. */}
             {notes.length === 0 && !outcomeDraft.trim() ? (
               <p
                 className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 flex items-start gap-1.5"
@@ -585,13 +823,12 @@ export function LeadVisitDetailPage() {
               </p>
             )}
           </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmCompleteOpen(false)}
-            >
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={completeVisit.isPending}>
               Cancel
-            </Button>
+            </AlertDialogCancel>
+            {/* Regular Button (not AlertDialogAction) so the dialog stays
+                open during the async mutation — onSuccess closes it. */}
             <Button
               onClick={() => completeVisit.mutate()}
               disabled={completeVisit.isPending}
@@ -603,9 +840,9 @@ export function LeadVisitDetailPage() {
                 "Mark complete"
               )}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </MobileShell>
   );
 }

@@ -153,6 +153,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
       <DialogContent
         className="sm:max-w-[640px] max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden"
         data-testid={`modal-send-${entityType}`}
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <DialogHeader className="px-5 pt-4 pb-3 border-b">
           <DialogTitle>{title ?? defaultTitle(entityType)}</DialogTitle>

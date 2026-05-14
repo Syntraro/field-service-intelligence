@@ -29,6 +29,8 @@ const previewData = read(
 const techLeadVisitDetail = read(
   "client/src/tech-app/pages/LeadVisitDetailPage.tsx",
 );
+const leadVisitsTechSrc = read("server/routes/leadVisitsTech.ts");
+const addEquipmentDialogSrc = read("client/src/components/AddEquipmentDialog.tsx");
 const leadDetailPage = read("client/src/pages/LeadDetailPage.tsx");
 // 2026-05-06 PR1: the right-rail "Details" card was extracted to a
 // shared component used by both LeadDetailPage and the new /leads/new
@@ -270,7 +272,369 @@ describe("Tech completion — empty-notes warning + redirect to Today", () => {
   });
 });
 
+// ── Step 4 (Phase 4, 2026-05-13): Salesperson-enriched lead visit ────
+//
+// Pins the structural invariants introduced in the salesperson-mode
+// enhancement: role-gated DTO enrichment, canConvert logic, UI mode
+// branch, canonical drift fixes, and the ProtectedRoute correction
+// that allows dispatcher/manager to reach CreateQuotePage.
+
+const techLeadVisitServer = read("server/routes/leadVisitsTech.ts");
+const appShell = read("client/src/App.tsx");
+
+describe("Phase 4 — server DTO gating", () => {
+  it("TechLeadVisitDto declares optional enriched fields", () => {
+    expect(techLeadVisitServer).toMatch(/canConvert\?:\s*boolean/);
+    expect(techLeadVisitServer).toMatch(/leadDescription\?:/);
+    expect(techLeadVisitServer).toMatch(/estimatedValue\?:/);
+    expect(techLeadVisitServer).toMatch(/priority\?:/);
+    expect(techLeadVisitServer).toMatch(/leadStatus\?:/);
+    expect(techLeadVisitServer).toMatch(/customerCompanyName\?:/);
+    expect(techLeadVisitServer).toMatch(/convertedQuoteId\?:/);
+    expect(techLeadVisitServer).toMatch(/locationId\?:/);
+  });
+
+  it("toDto branches on MANAGER_ROLES — enriched fields only when role matches", () => {
+    expect(techLeadVisitServer).toMatch(/MANAGER_ROLES.*includes\(userRole\)/);
+    // The enriched block must be inside the role-guard branch.
+    expect(techLeadVisitServer).toMatch(/if\s*\(userRole.*MANAGER_ROLES/);
+  });
+
+  it("canConvert is false when visit is completed", () => {
+    // The canConvert computation must guard on visitStatus !== 'completed'.
+    expect(techLeadVisitServer).toMatch(/visitStatus\s*!==\s*"completed"/);
+  });
+
+  it("canConvert is false when visit is cancelled", () => {
+    expect(techLeadVisitServer).toMatch(/visitStatus\s*!==\s*"cancelled"/);
+  });
+
+  it("canConvert is false when lead is already converted", () => {
+    expect(techLeadVisitServer).toMatch(/!row\.leadConvertedQuoteId/);
+  });
+
+  it("fetchLeadVisitDtoById accepts userRole parameter", () => {
+    expect(techLeadVisitServer).toMatch(
+      /fetchLeadVisitDtoById\(\s*\n?\s*companyId[^)]*userRole\?/,
+    );
+  });
+
+  it("fetchLeadVisitDtoById joins customerCompanies via left join", () => {
+    expect(techLeadVisitServer).toMatch(/leftJoin\s*\(\s*\n?\s*customerCompanies/);
+    expect(techLeadVisitServer).toMatch(/customerCompanies\.id.*leads\.customerCompanyId/);
+  });
+
+  it("GET /:visitId passes user.role to fetchLeadVisitDtoById", () => {
+    expect(techLeadVisitServer).toMatch(
+      /fetchLeadVisitDtoById\(companyId,\s*visitId,\s*user\.role/,
+    );
+  });
+
+  it("POST /:visitId/complete also passes user.role to fetchLeadVisitDtoById", () => {
+    // The complete endpoint re-fetches the DTO; must also be role-aware.
+    const completeFetch = techLeadVisitServer.match(
+      /fetchLeadVisitDtoById\(companyId,\s*visitId,\s*user\.role[^)]*\)/g,
+    );
+    expect(completeFetch).not.toBeNull();
+    expect(completeFetch!.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("Phase 4 — client UI salesperson mode", () => {
+  it("TechLeadVisitDetail interface declares optional enriched fields", () => {
+    expect(techLeadVisitDetail).toMatch(/canConvert\?:\s*boolean/);
+    expect(techLeadVisitDetail).toMatch(/leadDescription\?:/);
+    expect(techLeadVisitDetail).toMatch(/estimatedValue\?:/);
+    expect(techLeadVisitDetail).toMatch(/leadStatus\?:/);
+    expect(techLeadVisitDetail).toMatch(/customerCompanyName\?:/);
+  });
+
+  it("Create Quote button is gated on visit.canConvert (not always shown)", () => {
+    expect(techLeadVisitDetail).toMatch(/visit\.canConvert/);
+    expect(techLeadVisitDetail).toMatch(/data-testid="button-tech-create-quote"/);
+  });
+
+  it("Create Quote button navigates to /quotes/new?leadId=", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /\/quotes\/new\?leadId=\$\{visit\.leadId\}/,
+    );
+  });
+
+  it("Create Quote button is NOT shown when canConvert is absent (technician view)", () => {
+    // The gate must be `visit.canConvert` (undefined is falsy) so
+    // technicians, who receive no canConvert field, never see the button.
+    expect(techLeadVisitDetail).toMatch(/\{visit\.canConvert\s*&&/);
+  });
+
+  it("enriched sales info section is gated on presence of enriched fields", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-sales-info"/);
+    // Guard expression must check for non-null enriched fields.
+    expect(techLeadVisitDetail).toMatch(/visit\.customerCompanyName\s*!=\s*null/);
+  });
+});
+
+describe("Phase 4 — canonical drift fixes", () => {
+  it("uses AlertDialog for completion confirm (not raw Dialog)", () => {
+    expect(techLeadVisitDetail).toMatch(/AlertDialog/);
+    expect(techLeadVisitDetail).toMatch(/AlertDialogContent/);
+    expect(techLeadVisitDetail).toMatch(/AlertDialogTitle/);
+    expect(techLeadVisitDetail).toMatch(/AlertDialogCancel/);
+    // Confirm raw Dialog primitives are no longer present.
+    expect(techLeadVisitDetail).not.toMatch(
+      /from\s+["']@\/components\/ui\/dialog["']/,
+    );
+  });
+
+  it("uses canonical Chip for Lead visit badge (not ad-hoc amber span)", () => {
+    expect(techLeadVisitDetail).toMatch(/<Chip\s+tone="warning"/);
+    // Ad-hoc pattern must be gone.
+    expect(techLeadVisitDetail).not.toMatch(/bg-amber-100.*text-amber-700/);
+  });
+
+  it("uses SectionLabel for card headers (not ad-hoc text-[10px] spans)", () => {
+    expect(techLeadVisitDetail).toMatch(/<SectionLabel/);
+    // The old ad-hoc pattern must not remain for section labels.
+    expect(techLeadVisitDetail).not.toMatch(
+      /text-\[10px\].*uppercase tracking-wider/,
+    );
+  });
+
+  it("imports Chip and SectionLabel from canonical paths", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /from\s+["']@\/components\/ui\/chip["']/,
+    );
+    expect(techLeadVisitDetail).toMatch(
+      /from\s+["']@\/components\/ui\/typography["']/,
+    );
+  });
+});
+
+describe("Phase 4 — ProtectedRoute gate for /quotes/new", () => {
+  it("/quotes/new uses requireManager (allows dispatcher + manager)", () => {
+    // The route must be gated by requireManager, not requireAdmin.
+    // This allows dispatcher/manager to access CreateQuotePage from
+    // the tech lead visit detail "Create Quote" button.
+    expect(appShell).toMatch(
+      /path="\/quotes\/new"[\s\S]{0,200}requireManager/,
+    );
+  });
+
+  it("/quotes/new does NOT use requireAdmin", () => {
+    // Verify the old over-restrictive gate is removed. Extract only
+    // the /quotes/new Route block (up to its closing </Route> tag) so
+    // we don't accidentally match the adjacent /quotes/:id Route which
+    // legitimately retains requireAdmin.
+    const quotesNewBlock = appShell.match(
+      /path="\/quotes\/new"[\s\S]*?<\/Route>/,
+    );
+    expect(quotesNewBlock).not.toBeNull();
+    expect(quotesNewBlock![0]).not.toMatch(/requireAdmin/);
+  });
+});
+
+// ── Phase 2 (2026-05-13): equipment context on enriched lead visit ───
+//
+// Pins the read-only "Equipment at this location" section added for
+// salesperson/dispatcher/manager/admin/owner users. The section is
+// gated on locationId (enriched mode only) and relies entirely on
+// the existing /api/tech/locations/:locationId/equipment endpoint for
+// both data and authorization.
+
+const techLocationsRoutesSrc = read("server/routes/techLocations.ts");
+const techLocationAccessSrc = read("server/auth/techLocationAccess.ts");
+
+describe("Phase 2 — equipment context on enriched lead visit", () => {
+  it("equipment query is enabled only when locationId is present", () => {
+    expect(techLeadVisitDetail).toMatch(/enabled:\s*!!visit\?\.locationId/);
+  });
+
+  it("equipment section is gated on visit.locationId (enriched mode only)", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /visit\.locationId\s*&&[\s\S]{0,200}lead-visit-equipment-section/,
+    );
+  });
+
+  it("equipment query calls GET /api/tech/locations/:locationId/equipment", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /\/api\/tech\/locations\/\$\{.*locationId.*\}\/equipment/,
+    );
+  });
+
+  it("equipment rows are read-only (no edit or delete controls)", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-list"/);
+    expect(techLeadVisitDetail).not.toMatch(/data-testid="button-edit-equipment"/);
+    expect(techLeadVisitDetail).not.toMatch(/data-testid="button-delete-equipment"/);
+  });
+
+  it("empty state renders when endpoint returns []", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-empty"/);
+    expect(techLeadVisitDetail).toMatch(
+      /No equipment recorded for this location/,
+    );
+  });
+
+  it("loading state is inline (not full-page blocking)", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-loading"/);
+    // Loading state must not trigger the full-page MobileShell spinner.
+    // The existing full-page spinner is gated on `isLoading` (the visit query),
+    // not on equipmentLoading — this regex must not match.
+    expect(techLeadVisitDetail).not.toMatch(
+      /equipmentLoading[\s\S]{0,80}<MobileShell/,
+    );
+  });
+
+  it("error state renders inline without breaking the page", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-error"/);
+    // Inline error — must not propagate to a full-page error block.
+    expect(techLeadVisitDetail).not.toMatch(
+      /equipmentError[\s\S]{0,80}isError \|\| !visit/,
+    );
+  });
+
+  it("equipment section is absent when locationId is falsy (technician view)", () => {
+    // The gate `visit.locationId &&` is falsy for technicians (locationId absent).
+    // Confirm the gate expression is present and not inverted.
+    expect(techLeadVisitDetail).not.toMatch(
+      /!visit\.locationId[\s\S]{0,60}lead-visit-equipment-section/,
+    );
+  });
+
+  it("security: endpoint applies assertCanAccessTechLocation for all requests", () => {
+    // The equipment route reuses the same access-control gate as other
+    // tech location routes — no new bypass was introduced.
+    expect(techLocationsRoutesSrc).toMatch(
+      /router\.get\(\s*["']\/locations\/:locationId\/equipment["']/,
+    );
+    const matches = techLocationsRoutesSrc.match(
+      /assertCanAccessTechLocation\(/g,
+    );
+    expect(matches?.length ?? 0).toBeGreaterThanOrEqual(3);
+  });
+
+  it("security: dispatcher without assignment is denied by assertCanAccessTechLocation", () => {
+    // assertCanAccessTechLocation denies dispatchers who lack an active
+    // job-visit assignment at the location (same scope as technicians).
+    // This is covered by the live-DB test in tech-locations-routes.test.ts;
+    // we pin the source invariant here.
+    expect(techLocationAccessSrc).toMatch(/dispatcher/i);
+  });
+});
+
 // ── Step 4: Lead detail UX polish ───────────────────────────────────
+
+// ── Phase 3: add discovered equipment from lead visit ────────────────
+
+describe("add equipment from lead visit — backend source pins", () => {
+  it("POST /:visitId/location-equipment route is declared", () => {
+    expect(leadVisitsTechSrc).toMatch(
+      /router\.post\(\s*["']\/:visitId\/location-equipment["']/,
+    );
+  });
+
+  it("handler calls assertCanAccessLeadVisit", () => {
+    // Ensure the equipment handler is behind the same visit-scoped gate
+    // as /complete and /notes — not a raw ownership bypass.
+    const matches = leadVisitsTechSrc.match(/assertCanAccessLeadVisit\(/g);
+    expect(matches?.length ?? 0).toBeGreaterThanOrEqual(4);
+  });
+
+  it("handler derives locationId from leads table via leadId — not from req.body", () => {
+    expect(leadVisitsTechSrc).toMatch(/leads\.locationId/);
+    expect(leadVisitsTechSrc).toMatch(/eq\(leads\.id,\s*visit\.leadId\)/);
+    // companyId filter on the leads query prevents cross-tenant traversal.
+    expect(leadVisitsTechSrc).toMatch(/eq\(leads\.companyId,\s*companyId\)/);
+  });
+
+  it("handler does NOT read req.body.locationId", () => {
+    // locationId must never come from the client on this endpoint.
+    const bodyLines = leadVisitsTechSrc
+      .split("\n")
+      .filter((l) => l.includes("req.body") && l.includes("locationId"));
+    expect(bodyLines).toHaveLength(0);
+  });
+
+  it("handler calls storage.createLocationEquipment", () => {
+    expect(leadVisitsTechSrc).toMatch(/storage\.createLocationEquipment\(/);
+  });
+
+  it("handler does NOT create job_equipment or emit job dispatch event", () => {
+    // Equipment belongs to location_equipment only — no job link row.
+    expect(leadVisitsTechSrc).not.toMatch(/createJobEquipment/);
+    expect(leadVisitsTechSrc).not.toMatch(/dispatchEquipment|emitDispatch/);
+  });
+
+  it("response shape matches GET /api/tech/locations/:id/equipment DTO", () => {
+    // Confirm the handler maps the same field renames used by the GET endpoint.
+    expect(leadVisitsTechSrc).toMatch(/type:\s*created\.equipmentType/);
+    expect(leadVisitsTechSrc).toMatch(/model:\s*created\.modelNumber/);
+    expect(leadVisitsTechSrc).toMatch(/installedAt:\s*created\.installDate/);
+  });
+
+  it("missing name returns 400 via Zod parse (min 1)", () => {
+    // The schema enforces name min(1) — Zod throws ZodError which the
+    // asyncHandler converts to a 400 via the canonical error middleware.
+    expect(leadVisitsTechSrc).toMatch(/name:\s*z\.string\(\)\.min\(1\)/);
+  });
+});
+
+describe("add equipment from lead visit — frontend source pins", () => {
+  it("Add Equipment button is inside the equipment card", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /data-testid="button-lead-visit-add-equipment"/,
+    );
+  });
+
+  it("Add Equipment button is absent outside the visit.locationId gate", () => {
+    // The equipment section — and the button inside it — is gated on
+    // `visit.locationId &&`, so technicians who receive no locationId never
+    // see it.
+    expect(techLeadVisitDetail).toMatch(
+      /visit\.locationId\s*&&[\s\S]{0,600}button-lead-visit-add-equipment/,
+    );
+  });
+
+  it("AddEquipmentDialog is imported and rendered on the page", () => {
+    expect(techLeadVisitDetail).toMatch(/import.*AddEquipmentDialog/);
+    expect(techLeadVisitDetail).toMatch(/<AddEquipmentDialog/);
+  });
+
+  it("dialog uses createUrl pointed at the lead-visit equipment endpoint", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /createUrl=\{`\/api\/tech\/lead-visits\/\$\{visitId\}\/location-equipment`\}/,
+    );
+  });
+
+  it("onCreated invalidates the tech locations equipment query", () => {
+    expect(techLeadVisitDetail).toMatch(
+      /\/api\/tech\/locations.*equipment[\s\S]{0,100}invalidateQueries|invalidateQueries[\s\S]{0,200}\/api\/tech\/locations.*equipment/,
+    );
+  });
+
+  it("existing read-only equipment list still renders unchanged", () => {
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-list"/);
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-empty"/);
+    expect(techLeadVisitDetail).toMatch(/data-testid="lead-visit-equipment-loading"/);
+  });
+});
+
+describe("AddEquipmentDialog — createUrl override", () => {
+  it("accepts a createUrl prop", () => {
+    expect(addEquipmentDialogSrc).toMatch(/createUrl\?\s*:\s*string/);
+  });
+
+  it("uses createUrl in the POST mutation when provided", () => {
+    expect(addEquipmentDialogSrc).toMatch(
+      /createUrl\s*\?\?\s*`\/api\/clients\/\$\{locationId\}\/equipment`/,
+    );
+  });
+
+  it("edit mode PATCH URL is unchanged by createUrl", () => {
+    // createUrl only affects create-mode POSTs.
+    expect(addEquipmentDialogSrc).toMatch(
+      /\/api\/clients\/\$\{locationId\}\/equipment\/\$\{existingEquipment\.id\}/,
+    );
+  });
+});
 
 describe("LeadDetailPage — next-visit summary instead of static Assigned To", () => {
   it("fetches the lead-visits feed for next-visit metadata", () => {

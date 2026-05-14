@@ -83,6 +83,11 @@ interface AddEquipmentDialogProps {
    *  invalidated alongside the location equipment query so the job-level
    *  list refreshes immediately. */
   jobId?: string;
+  /** Override the POST URL used in create mode. When set, the mutation
+   *  POSTs to this URL instead of `/api/clients/:locationId/equipment`.
+   *  Callers are responsible for any additional cache invalidation via
+   *  the `onCreated` / `onSaved` callbacks. */
+  createUrl?: string;
   /** 2026-04-30: fired with the canonical updated record after a
    *  successful save (create OR edit). Edit-mode callers (e.g.
    *  EquipmentDetailModal) use this to refresh their displayed copy
@@ -100,6 +105,7 @@ export function AddEquipmentDialog({
   existingEquipment,
   jobId,
   onSaved,
+  createUrl,
 }: AddEquipmentDialogProps) {
   const { toast } = useToast();
   const [form, setForm] = useState<EquipmentForm>(emptyForm);
@@ -134,7 +140,8 @@ export function AddEquipmentDialog({
 
   const createMutation = useMutation({
     mutationFn: async (data: EquipmentForm) => {
-      return await apiRequest<LocationEquipment>(`/api/clients/${locationId}/equipment`, {
+      const url = createUrl ?? `/api/clients/${locationId}/equipment`;
+      return await apiRequest<LocationEquipment>(url, {
         method: "POST",
         body: JSON.stringify(data),
       });

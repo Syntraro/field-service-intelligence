@@ -164,9 +164,9 @@ describe("Today's Schedule body — unchanged regions", () => {
 
 // ── Pipeline Snapshot — renders, no fake values ──
 
-// ── Collections — simplified 2-column summary strip ──
+// ── Collections — single-column summary strip (Phase 1 responsive) ──
 
-describe("Collections — summary strip is 2 columns (Outstanding + Overdue)", () => {
+describe("Collections — summary strip (Outstanding + Overdue)", () => {
   it("renders Outstanding and Overdue cells", () => {
     expect(dashSrc).toMatch(/data-testid="collections-summary-outstanding"/);
     expect(dashSrc).toMatch(/data-testid="collections-summary-overdue"/);
@@ -188,14 +188,17 @@ describe("Collections — summary strip is 2 columns (Outstanding + Overdue)", (
     expect(cardBlock![0]).not.toMatch(/>\s*Open invoices\s*</);
   });
 
-  it("uses a 2-column grid for the summary strip", () => {
+  it("summary strip uses single-column layout with canonical border token", () => {
+    // Phase 1 responsive: 2-column removed to prevent crowding at iPad card widths.
     expect(dashSrc).toMatch(
-      /className="grid grid-cols-2 gap-2 px-3 py-2 border-b border-\[#e2e8f0\]"\s*\n\s*data-testid="collections-summary-strip"/,
+      /className="grid grid-cols-1 gap-1\.5 px-3 py-2 border-b border-card-border"\s*\n\s*data-testid="collections-summary-strip"/,
     );
-    // Defensive: the prior 3-column class string must not survive on the
-    // collections strip wrapper.
+    // Guard: neither the prior 2-column nor the even older 3-column variant must return.
     expect(dashSrc).not.toMatch(
-      /grid grid-cols-3 gap-2 px-3 py-2 border-b border-\[#e2e8f0\]"\s*\n\s*data-testid="collections-summary-strip"/,
+      /grid grid-cols-2[\s\S]{0,80}data-testid="collections-summary-strip"/,
+    );
+    expect(dashSrc).not.toMatch(
+      /grid grid-cols-3[\s\S]{0,80}data-testid="collections-summary-strip"/,
     );
   });
 });
@@ -217,7 +220,8 @@ describe("Collections — Overdue invoices section is strictly overdue-only", ()
     // The user-facing empty state must read "No overdue invoices." —
     // never "No outstanding invoices." (which would imply zero
     // outstanding total) or "None." (which is too generic).
-    expect(dashSrc).toMatch(/EmptyState message="No overdue invoices\."/);
+    // Phase 2C: EmptyState wrapper replaced with inline text-helper markup.
+    expect(dashSrc).toContain("No overdue invoices.");
     // Negative pin: must not silently fall back to a generic message
     // inside the same `collections-invoices-list` block.
     const block = dashSrc.match(/data-testid="collections-invoices-list"[\s\S]+?<\/div>\s*\)?\}/m);
@@ -275,10 +279,9 @@ describe("Scheduled Revenue — excludes jobs without reliable value", () => {
   it("renders today / 7d / 30d rows + upcoming list", () => {
     expect(dashSrc).toMatch(/data-testid="scheduled-revenue"/);
     expect(dashSrc).toMatch(/data-testid="scheduled-upcoming-list"/);
-    // Per-row testids are passed via the `testId` prop on <ScheduledRevRow>.
-    expect(dashSrc).toMatch(/testId="scheduled-today"/);
-    expect(dashSrc).toMatch(/testId="scheduled-7d"/);
-    expect(dashSrc).toMatch(/testId="scheduled-30d"/);
+    expect(dashSrc).toMatch(/data-testid="scheduled-today"/);
+    expect(dashSrc).toMatch(/data-testid="scheduled-7d"/);
+    expect(dashSrc).toMatch(/data-testid="scheduled-30d"/);
   });
 
   it("renders the \"Based on scheduled jobs\" helper text", () => {

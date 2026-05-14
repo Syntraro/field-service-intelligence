@@ -785,8 +785,8 @@ describe("Section 20 — Creation pages: CanonicalCreateHeader on CreateLeadPage
     expect(cchSrc).toMatch(/rounded-md border bg-card/);
   });
 
-  it("CCH supports clientReplaceSlot to override CreateOrSelectField", () => {
-    expect(cchSrc).toMatch(/clientReplaceSlot/);
+  it("CCH does NOT expose clientReplaceSlot (dead prop removed)", () => {
+    expect(cchSrc).not.toMatch(/clientReplaceSlot/);
   });
 
   it("CCH supports afterClientSlot for entity-specific controls", () => {
@@ -829,8 +829,8 @@ describe("Section 20 — Creation pages: CanonicalCreateHeader on CreateLeadPage
     expect(createLeadSrc).toMatch(/onLocationChange=/);
   });
 
-  it("CreateLeadPage passes clientReplaceSlot for inline create-client form", () => {
-    expect(createLeadSrc).toMatch(/clientReplaceSlot=/);
+  it("CreateLeadPage does NOT pass clientReplaceSlot (inline form removed)", () => {
+    expect(createLeadSrc).not.toMatch(/clientReplaceSlot=/);
   });
 
   it("CreateLeadPage CCH has cancel and create-lead test ids", () => {

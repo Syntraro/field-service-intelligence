@@ -31,6 +31,11 @@ const NOTES_SRC = readFileSync(
   "utf8",
 );
 
+const DASHBOARD_SRC = readFileSync(
+  resolve(__dirname, "../client/src/pages/FinancialDashboard.tsx"),
+  "utf8",
+);
+
 // ---------------------------------------------------------------------------
 // Modal primitive
 // ---------------------------------------------------------------------------
@@ -582,5 +587,111 @@ describe("FollowUpNotesSection — standalone component", () => {
   it("shows View all notes link element in source", () => {
     expect(NOTES_SRC).toContain('data-testid="collections-notes-view-all"');
     expect(NOTES_SRC).toContain("View all notes");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// variant prop — workspace vs modal
+// ---------------------------------------------------------------------------
+
+describe("ClientCollectionsModal — variant prop", () => {
+  it("variant prop is declared in ClientCollectionsModalProps", () => {
+    expect(SRC).toContain('variant?: "workspace" | "modal"');
+  });
+
+  it("defaults variant to 'workspace'", () => {
+    expect(SRC).toMatch(/variant\s*=\s*"workspace"/);
+  });
+
+  it("modal variant uses 2-column layout (no queue rail column)", () => {
+    expect(SRC).toContain('grid-cols-[minmax(0,1fr)_260px]');
+  });
+
+  it("workspace variant still uses 3-column expanded layout", () => {
+    expect(SRC).toContain("grid-cols-[190px_minmax(0,1fr)_260px]");
+  });
+
+  it("workspace variant still uses 3-column collapsed layout", () => {
+    expect(SRC).toContain("grid-cols-[44px_minmax(0,1fr)_260px]");
+  });
+
+  it("AR-queue fetch is disabled in modal variant", () => {
+    expect(SRC).toContain('variant === "workspace"');
+    // enabled guard must reference variant
+    const queueBlock = SRC.slice(SRC.indexOf('"ar-queue"'), SRC.indexOf('"ar-queue"') + 400);
+    expect(queueBlock).toContain('variant === "workspace"');
+  });
+
+  it("CollectionsQueueRail is only rendered in workspace variant", () => {
+    expect(SRC).toContain('variant === "workspace"');
+    const railRenderIdx = SRC.indexOf("<CollectionsQueueRail");
+    const guardIdx = SRC.lastIndexOf('variant === "workspace"', railRenderIdx);
+    // The variant guard must appear within 60 chars before the rail render
+    expect(railRenderIdx - guardIdx).toBeLessThan(60);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modal variant — customer isolation (Pass 2)
+// ---------------------------------------------------------------------------
+
+describe("ClientCollectionsModal — modal variant: customer isolation", () => {
+  it("handleQueueSelect is guarded — variant !== workspace causes early return", () => {
+    const fnStart = SRC.indexOf("handleQueueSelect = useCallback");
+    const fnSlice = SRC.slice(fnStart, fnStart + 300);
+    expect(fnSlice).toContain('variant !== "workspace"');
+  });
+
+  it("setActiveCustomerCompanyId is called in exactly 2 places (queue select + close reset)", () => {
+    const calls = [...SRC.matchAll(/setActiveCustomerCompanyId\(/g)];
+    expect(calls.length).toBe(2);
+  });
+
+  it("queueItems derivation is gated on workspace variant — empty array in modal mode", () => {
+    const queueItemsIdx = SRC.indexOf("const queueItems");
+    const queueItemsLine = SRC.slice(queueItemsIdx, queueItemsIdx + 80);
+    expect(queueItemsLine).toMatch(/variant.*"workspace"/);
+  });
+
+  it("queueExpanded initializer is short-circuited in modal variant — skips window.innerWidth read", () => {
+    const initIdx = SRC.indexOf("queueExpanded, setQueueExpanded");
+    const initSlice = SRC.slice(initIdx, initIdx + 200);
+    // variant guard must appear before the window.innerWidth read in the initializer
+    expect(initSlice).toContain('variant === "workspace"');
+    expect(initSlice).toContain("window.innerWidth >= 1024");
+    const variantPos = initSlice.indexOf('variant === "workspace"');
+    const widthPos = initSlice.indexOf("window.innerWidth >= 1024");
+    expect(variantPos).toBeLessThan(widthPos);
+  });
+
+  it("workspace variant queue rail is gated and rendered with correct queue props", () => {
+    // CollectionsQueueRail receives queueItems and handleQueueSelect only in workspace
+    expect(SRC).toContain("items={queueItems}");
+    expect(SRC).toContain("onSelect={handleQueueSelect}");
+    // Both props are inside the workspace-only CollectionsQueueRail mount
+    const railStart = SRC.indexOf("<CollectionsQueueRail");
+    const railEnd = SRC.indexOf("/>", railStart);
+    const railBlock = SRC.slice(railStart, railEnd);
+    expect(railBlock).toContain("items={queueItems}");
+    expect(railBlock).toContain("onSelect={handleQueueSelect}");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dashboard — single-customer modal (variant="modal")
+// ---------------------------------------------------------------------------
+
+describe("Dashboard — ClientCollectionsModal opened in modal variant", () => {
+  it("passes variant='modal' to ClientCollectionsModal", () => {
+    expect(DASHBOARD_SRC).toContain('variant="modal"');
+  });
+
+  it("does NOT pass variant='workspace' (dashboard is always single-customer)", () => {
+    expect(DASHBOARD_SRC).not.toContain('variant="workspace"');
+  });
+
+  it("ClientCollectionsModal mount is gated on collectionsModalCustomerCompanyId", () => {
+    expect(DASHBOARD_SRC).toContain("collectionsModalCustomerCompanyId");
+    expect(DASHBOARD_SRC).toMatch(/collectionsModalCustomerCompanyId\s*&&/);
   });
 });

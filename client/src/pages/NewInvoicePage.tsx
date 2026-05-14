@@ -72,6 +72,7 @@ import {
 } from "@/components/detail-rail/DetailRightRail";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { receivablesKeys } from "@/lib/receivablesQueryKeys";
 import { useToast } from "@/hooks/use-toast";
 
 import { Button } from "@/components/ui/button";
@@ -405,8 +406,14 @@ export default function NewInvoicePage() {
   const handleCreateProductSave = async (data: {
     name: string;
     description?: string;
+    sku?: string;
     cost: string;
+    markupPercent?: string;
     unitPrice: string;
+    estimatedDurationMinutes?: number | null;
+    category?: string;
+    isTaxable?: boolean;
+    isActive?: boolean;
     type: string;
   }) => {
     setSavingCreatedProduct(true);
@@ -417,8 +424,14 @@ export default function NewInvoicePage() {
           name: data.name,
           type: data.type,
           ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
           ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
           ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
         }),
       });
       const matched = response?._matched === true;
@@ -733,6 +746,8 @@ export default function NewInvoicePage() {
     },
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({
         title: "Invoice created",
         description: `#${response.invoiceNumber} is ready to review.`,
@@ -838,7 +853,7 @@ export default function NewInvoicePage() {
               testId="new-invoice-header"
               entityLabel="New Invoice"
               status={{ label: "Draft", tone: "neutral" }}
-              onBack={() => setLocationRoute("/invoices")}
+              onBack={() => setLocationRoute("/receivables?tab=invoices")}
               clientSearchText={locationSearch}
               onClientSearchTextChange={setLocationSearch}
               clientSearchResults={searchResults}
@@ -936,7 +951,7 @@ export default function NewInvoicePage() {
                 isPending: saveMutation.isPending,
                 testId: "button-new-invoice-save",
               }}
-              onCancel={() => setLocationRoute("/invoices")}
+              onCancel={() => setLocationRoute("/receivables?tab=invoices")}
               cancelDisabled={saveMutation.isPending}
               cancelTestId="button-new-invoice-cancel"
             />

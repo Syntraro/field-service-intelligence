@@ -193,6 +193,19 @@ export interface EntityListTableProps<Row> {
   /** Outer wrapper extra classes. Applied AFTER `listSurfaceClass`. */
   className?: string;
   /**
+   * When true, the table outer div becomes a flex column so it can participate
+   * in a fill-height layout. State blocks (loading/empty/error) are wrapped in
+   * a flex-1 centering div so they appear vertically centered rather than
+   * cramped at the top. Pass this when the table sits inside a flex-1 container.
+   */
+  fillHeight?: boolean;
+  /**
+   * Tailwind class(es) applied to the selected row's outer div.
+   * Defaults to "bg-slate-50". Override to "bg-blue-50" in workspaces where the
+   * selected row represents an active focus (e.g. Receivables center panel).
+   */
+  selectedHighlightClass?: string;
+  /**
    * Optional grouping. Rows with the same key are rendered under a group
    * header. `null` keys render without a header (ungrouped bucket).
    * Group headers span all columns and are NOT clickable.
@@ -420,6 +433,8 @@ export function EntityListTable<Row>({
   legacyEmptyStateNode,
   legacyLoadingStateNode,
   className,
+  fillHeight,
+  selectedHighlightClass,
   groupBy,
   renderGroupHeader,
   sortField,
@@ -439,8 +454,20 @@ export function EntityListTable<Row>({
   const showEmpty  = !isLoadingAny && !showError && rows.length === 0 &&
                      (!!emptyState || !!legacyEmptyStateNode);
 
+  // When fillHeight=true and showing a state, the outer div becomes a flex
+  // column so the state block can fill and vertically center within its parent.
+  const showingState = showTypedLoading || showLegacyLoading || showError || showEmpty;
+
   return (
-    <div className={cn(listSurfaceClass, "overflow-hidden", className)} data-testid="entity-list-table">
+    <div
+      className={cn(
+        listSurfaceClass,
+        "overflow-hidden",
+        fillHeight && showingState && "flex flex-col",
+        className,
+      )}
+      data-testid="entity-list-table"
+    >
       {/* Header */}
       <div className={cn(listHeaderRowClass)} style={{ gridTemplateColumns: gridTemplate }}>
         {columns.map((col) => {
@@ -472,15 +499,25 @@ export function EntityListTable<Row>({
 
       {/* Body — state priority: loading > error > empty > rows */}
       {showTypedLoading ? (
-        loadingState === true
+        fillHeight ? (
+          <div className="flex-1 flex items-center justify-center">
+            {loadingState === true
+              ? <StateBlock kind="loading" title="Loading…" />
+              : <StateBlock {...(loadingState as StateBlockProps)} />}
+          </div>
+        ) : loadingState === true
           ? <StateBlock kind="loading" title="Loading…" />
           : <StateBlock {...(loadingState as StateBlockProps)} />
       ) : showLegacyLoading ? (
         legacyLoadingStateNode
       ) : showError ? (
-        <StateBlock {...errorState!} />
+        fillHeight
+          ? <div className="flex-1 flex items-center justify-center"><StateBlock {...errorState!} /></div>
+          : <StateBlock {...errorState!} />
       ) : showEmpty ? (
-        legacyEmptyStateNode ?? <StateBlock {...emptyState!} />
+        fillHeight
+          ? <div className="flex-1 flex items-center justify-center">{legacyEmptyStateNode ?? <StateBlock {...emptyState!} />}</div>
+          : (legacyEmptyStateNode ?? <StateBlock {...emptyState!} />)
       ) : groupBy ? (
         renderGroupedBody({
           rows,
@@ -488,6 +525,7 @@ export function EntityListTable<Row>({
           rowKey,
           onRowClick,
           selectedRowKey,
+          selectedHighlightClass,
           gridTemplate,
           groupBy,
           renderGroupHeader,
@@ -496,7 +534,7 @@ export function EntityListTable<Row>({
         })
       ) : (
         rows.map((row) =>
-          renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, gridTemplate }),
+          renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, selectedHighlightClass, gridTemplate }),
         )
       )}
     </div>
@@ -511,6 +549,7 @@ interface RenderRowArgs<Row> {
   rowKey: (row: Row) => string;
   onRowClick?: (row: Row) => void;
   selectedRowKey?: string;
+  selectedHighlightClass?: string;
   gridTemplate: string;
 }
 
@@ -520,6 +559,7 @@ function renderRow<Row>({
   rowKey,
   onRowClick,
   selectedRowKey,
+  selectedHighlightClass,
   gridTemplate,
 }: RenderRowArgs<Row>): React.ReactNode {
   const key = rowKey(row);
@@ -531,7 +571,7 @@ function renderRow<Row>({
       className={cn(
         "grid items-center",
         tableRowClass,
-        isSelected && "bg-slate-50",
+        isSelected && (selectedHighlightClass ?? "bg-slate-50"),
       )}
       style={{ gridTemplateColumns: gridTemplate }}
       onClick={interactive ? () => onRowClick!(row) : undefined}
@@ -583,6 +623,7 @@ interface RenderGroupedBodyArgs<Row> {
   rowKey: (row: Row) => string;
   onRowClick?: (row: Row) => void;
   selectedRowKey?: string;
+  selectedHighlightClass?: string;
   gridTemplate: string;
   groupBy: (row: Row) => string | null;
   renderGroupHeader?: (groupKey: string, rows: Row[]) => React.ReactNode;
@@ -591,7 +632,7 @@ interface RenderGroupedBodyArgs<Row> {
 }
 
 function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNode {
-  const { rows, rowKey, gridTemplate, groupBy, renderGroupHeader } = args;
+  const { rows, rowKey, gridTemplate, groupBy, renderGroupHeader, selectedHighlightClass } = args;
 
   const bucketOrder: (string | null)[] = [];
   const buckets = new Map<string | null, Row[]>();
@@ -629,6 +670,7 @@ function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNo
             rowKey,
             onRowClick: args.onRowClick,
             selectedRowKey: args.selectedRowKey,
+            selectedHighlightClass,
             gridTemplate,
           }),
         )}

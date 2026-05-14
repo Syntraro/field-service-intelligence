@@ -98,6 +98,8 @@ import techFieldRouter from "./techField";
 // 2026-05-04 Phase 2 PR 1: tech-safe location/equipment/jobs read endpoints.
 // Sibling to techField so we don't keep growing that 2k-line file.
 import techLocationsRouter from "./techLocations";
+// 2026-05-13 Phase 0: OCR nameplate extraction — POST /api/tech/equipment/:id/ocr-nameplate.
+import equipmentOcrRouter from "./equipmentOcr";
 // 2026-05-05 Lead Visits — pre-sales scheduling. Office router mounts
 // at /api/leads (nested paths: /:leadId/visits/...). Tech router
 // mounts at /api/tech/lead-visits with its own requireSchedulable +
@@ -138,6 +140,8 @@ import {
 } from "../auth/platformSession";
 // Phase 6 (Customer Approval): tenant-side approval endpoints.
 import supportAccessRouter from "./supportAccess";
+// 2026-05-13 Receivables Phase 2A: backend foundation (notes, workflow actions, view counts).
+import receivablesRouter from "./receivables";
 
 /**
  * Register all API routes in a single place.
@@ -313,6 +317,8 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobTimeRouter); // Time tracking: status updates + time summaries
   app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
   app.use("/api/invoices", requirePermission("invoices.view"), invoicesRouter);
+  // 2026-05-13 Receivables Phase 2A: notes + workflow actions + view counts.
+  app.use("/api/receivables", requirePermission("invoices.view"), receivablesRouter);
   // 2026-05-04 PR8.5 — mount order fix. paymentAccountRouter MUST be
   // mounted BEFORE paymentsRouter because paymentsRouter declares a
   // greedy single-segment matcher `GET /api/payments/:id` (used for
@@ -467,6 +473,10 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/tech", techFieldRouter);
   // Phase 2 PR 1 (2026-05-04): tech-safe location reads.
   app.use("/api/tech", techLocationsRouter);
+  // 2026-05-13 Phase 0: OCR nameplate extraction.
+  // Mounted at /api/tech/equipment (specific prefix before the greedy
+  // /api/tech mount) so /:equipmentId/ocr-nameplate resolves cleanly.
+  app.use("/api/tech/equipment", equipmentOcrRouter);
   // 2026-05-05 Lead Visits — tech sub-router with its own
   // requireSchedulable + assertCanAccessLeadVisit gating.
   app.use("/api/tech/lead-visits", leadVisitsTechRouter);

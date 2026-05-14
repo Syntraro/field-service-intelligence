@@ -122,14 +122,11 @@ import {
   type TechAvailability,
 } from "@/lib/findNextAvailableSlot";
 import { getSmartScheduleDefault, getWallClockInTimezone } from "@/lib/schedulingConstants";
-// 2026-04-26 polish: searchable service combobox + inline "Create service".
-// The canonical Add-Item modal lives at @/components/products-services/
-// ProductServiceFormDialog; we mount it inside QuickAddJobDialog so the user
-// never leaves the Create New Job flow. Duration formatting (`formatDuration`)
-// reuses the canonical helper so the same format renders everywhere.
-// 2026-04-26 polish v6: ProductServiceFormDialog + ProductFormData imports
-// removed — services now use the inline one-shot create pattern. Only the
-// duration formatter helper is still imported.
+// 2026-05-13: service "Create new …" opens AddProductModal (modal-first).
+// The one-shot quick-create mutation was removed; item creation requires
+// explicit confirmation inside the modal.
+import { AddProductModal } from "@/components/PartsBillingCard";
+import { normalizeProductRow } from "@/lib/entities/productEntity";
 import { formatDuration as formatServiceDuration } from "@/components/products-services/types";
 // Canonical line-item mapper — same pipeline EditVisitModal uses to persist
 // services as job_parts. We rebuild the ProductOption shape from local
@@ -1467,49 +1464,70 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     return services.some((s) => (s.name ?? "").trim().toLowerCase() === q);
   }, [services, serviceSearchText]);
 
-  /** Quick-create a service with sensible defaults. Mirrors the EditVisit
-   *  pattern — one-shot POST /api/items with name + type, then auto-add
-   *  the new service to selectedServices. The user can edit the service's
-   *  details (cost, taxCode, etc.) later from Items management. The prior
-   *  full ProductServiceFormDialog flow was overkill for quick-add and
-   *  required closing the modal, filling fields, and re-opening — this
-   *  inline path keeps the user in the dialog. */
-  const createServiceQuickMutation = useMutation({
-    mutationFn: async (name: string) => {
-      return apiRequest<{
-        id: string;
-        name: string | null;
-        estimatedDurationMinutes: number | null;
-        unitPrice: string | null;
-        cost: string | null;
-      }>("/api/items", {
+  // ── Service "Create new …" modal state (2026-05-13) ─────────────────
+  // Replaces the old one-shot createServiceQuickMutation. Clicking
+  // "Create service: '<name>'" now opens AddProductModal pre-filled with
+  // the typed name and type="service". POST /api/items only fires when the
+  // user clicks Create inside that modal.
+  const [createServiceOpen, setCreateServiceOpen] = useState(false);
+  const [createServiceInitialName, setCreateServiceInitialName] = useState("");
+  const [createServiceSaving, setCreateServiceSaving] = useState(false);
+
+  function handleOpenCreateService(name: string) {
+    setCreateServiceInitialName(name);
+    setServiceComboOpen(false);
+    setServiceSearchText("");
+    setCreateServiceOpen(true);
+  }
+
+  async function handleCreateServiceSave(data: {
+    name: string; description?: string; sku?: string; cost: string;
+    markupPercent?: string; unitPrice: string; estimatedDurationMinutes?: number | null;
+    category?: string; isTaxable?: boolean; isActive?: boolean; type: string;
+  }) {
+    setCreateServiceSaving(true);
+    try {
+      const response = await apiRequest<any>("/api/items", {
         method: "POST",
         body: JSON.stringify({
-          name: name.trim(),
-          type: "service",
-          isActive: true,
-          isTaxable: true,
+          name: data.name,
+          type: data.type,
+          ...(data.description ? { description: data.description } : {}),
+          ...(data.sku ? { sku: data.sku } : {}),
+          ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.markupPercent ? { markupPercent: data.markupPercent } : {}),
+          ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+          ...(data.estimatedDurationMinutes != null ? { estimatedDurationMinutes: data.estimatedDurationMinutes } : {}),
+          ...(data.category ? { category: data.category } : {}),
+          isTaxable: data.isTaxable ?? true,
+          isActive: data.isActive ?? true,
         }),
       });
-    },
-    onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items", { type: "service" }] });
+      const matched = (response as any)?._matched === true;
       queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
-      setServiceComboOpen(false);
-      setServiceSearchText("");
+      const normalized = normalizeProductRow(response);
       addService({
-        id: created.id,
-        name: created.name ?? "Service",
-        estimatedDurationMinutes: created.estimatedDurationMinutes,
-        unitPrice: created.unitPrice,
-        unitCost: created.cost,
+        id: normalized.id,
+        name: normalized.name ?? data.name,
+        estimatedDurationMinutes: normalized.estimatedDurationMinutes ?? null,
+        unitPrice: normalized.unitPrice ?? null,
+        unitCost: normalized.cost ?? null,
+        type: (normalized.type === "product" ? "product" : "service"),
+        isTaxable: normalized.isTaxable ?? (data.isTaxable ?? true),
       });
-      toast({ title: "Service created", description: created.name ?? "New service" });
-    },
-    onError: (err: Error) => {
+      toast({
+        title: matched ? "Reusing existing item" : "Service created",
+        description: matched
+          ? `"${data.name}" already exists; selecting the existing entry.`
+          : normalized.name ?? data.name,
+      });
+      setCreateServiceOpen(false);
+    } catch (err: any) {
       toast({ title: "Couldn't create service", description: err.message, variant: "destructive" });
-    },
-  });
+    } finally {
+      setCreateServiceSaving(false);
+    }
+  }
 
   // ── Find Availability (dispatcher-controlled gap picker) ──────────────
   //
@@ -2129,8 +2147,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   onAdd={addService}
                   onAddGroup={addGroup}
                   onRemove={removeService}
-                  onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
-                  createPending={createServiceQuickMutation.isPending}
+                  onCreateNew={handleOpenCreateService}
+                  createPending={false}
                   disabled={isPending}
                 />
               </CompactFormField>
@@ -2991,8 +3009,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         onAdd={addService}
                         onAddGroup={addGroup}
                         onRemove={removeService}
-                        onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
-                        createPending={createServiceQuickMutation.isPending}
+                        onCreateNew={handleOpenCreateService}
+                        createPending={false}
                         disabled={isPending}
                       />
                     </div>
@@ -3319,12 +3337,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       </AlertDialogContent>
     </AlertDialog>
 
-    {/* 2026-04-26 polish v6: full ProductServiceFormDialog mount removed.
-         The multi-select Service combobox now uses the simpler one-shot
-         POST /api/items pattern (createServiceQuickMutation) — same
-         pattern as EditVisitModal. Users wanting full service-edit fields
-         can still open Items management; the modal stays focused on
-         quick-create. */}
+    <AddProductModal
+      open={createServiceOpen}
+      initialName={createServiceInitialName}
+      initialType="service"
+      onClose={() => setCreateServiceOpen(false)}
+      onSave={handleCreateServiceSave}
+      isSaving={createServiceSaving}
+    />
     </>
   );
 }

@@ -95,7 +95,7 @@ import { DashboardCustomizeDrawer } from "@/dashboard/DashboardCustomizeDrawer";
 import { TechnicianTimeOffModal } from "@/components/team/TechnicianTimeOffModal";
 import { Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { CardShell } from "@/components/ui/card";
+import { CardShell, CardShellHeader, CardShellTitle, CardMetricBlock } from "@/components/ui/card";
 
 // ---------------------------------------------------------------------------
 // Types — mirror server/storage/dashboard.ts FinancialSummary
@@ -287,23 +287,6 @@ function formatTimeRange(startISO: string, endISO: string): string {
   return `${formatClock12Short(startISO)}–${formatClock12Short(endISO)}`;
 }
 
-
-function CardHeader({ icon: Icon, color, title, action }: {
-  icon: React.ElementType;
-  color: string;
-  title: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <Icon className={`h-3.5 w-3.5 ${color}`} />
-        <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100">{title}</h3>
-      </div>
-      {action}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Main page — Financial Dashboard layout (2026-04-26 redesign)
@@ -559,15 +542,12 @@ export default function FinancialDashboard() {
     <div className="bg-app-bg" data-testid="financial-dashboard-page">
       <div className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* Header */}
-        <div
-          className="mb-4 flex items-start justify-between gap-3"
-          style={{ borderBottom: "1px solid #e5e7eb", paddingBottom: "8px" }}
-        >
+        <div className="mb-4 flex items-start justify-between gap-3 border-b border-card-border pb-2">
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
+            <h1 className="text-lg font-semibold text-foreground tracking-tight">
               Business Dashboard
             </h1>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5">
               Pipeline, collections, scheduled revenue, and today's schedule — at a glance.
             </p>
           </div>
@@ -700,6 +680,7 @@ export default function FinancialDashboard() {
             if (!open) setCollectionsModalCustomerCompanyId(null);
           }}
           customerCompanyId={collectionsModalCustomerCompanyId}
+          variant="modal"
         />
       )}
     </div>
@@ -802,7 +783,9 @@ function PipelineSnapshotCard({
 
   return (
     <CardShell className="flex flex-col h-full">
-      <CardHeader icon={TrendingUp} color="text-indigo-600" title="Pipeline" />
+      <CardShellHeader>
+        <CardShellTitle icon={TrendingUp} iconColor="text-indigo-600">Pipeline</CardShellTitle>
+      </CardShellHeader>
       <div data-testid="pipeline-snapshot">
         {isLoading ? (
           <div className="p-3 space-y-1.5">
@@ -810,7 +793,7 @@ function PipelineSnapshotCard({
           </div>
         ) : showEmpty ? (
           <div
-            className="px-4 py-3 text-sm text-slate-600"
+            className="px-4 py-3 text-sm text-muted-foreground"
             data-testid="pipeline-empty"
           >
             No pipeline actions need attention.
@@ -863,9 +846,9 @@ function PipelineActionRow({
       data-testid={testId}
       className={cn(
         "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
-        !isLast && "border-b border-[#e2e8f0]",
+        !isLast && "border-b border-card-border",
         hasItems
-          ? "hover:bg-[#F0F5F0] focus-visible:bg-[#F0F5F0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-300"
+          ? "hover:bg-primary/5 focus-visible:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-300"
           : "cursor-default",
       )}
     >
@@ -880,7 +863,7 @@ function PipelineActionRow({
       <span
         className={cn(
           "text-sm font-semibold tabular-nums shrink-0",
-          hasItems ? "text-[#111827]" : "text-slate-400",
+          hasItems ? "text-foreground" : "text-slate-400",
         )}
       >
         {count}
@@ -920,35 +903,28 @@ function CollectionsOverviewCard({
 
   return (
     <CardShell className="flex flex-col h-full">
-      <CardHeader
-        icon={Receipt}
-        color="text-amber-600"
-        title="Collections"
-      />
-      {/* Compact summary strip — sits at the top of the 1/3-width card.
-          2026-05-06: simplified from 3 cols → 2 cols. The third metric
-          ("Open invoices" count) was redundant alongside Outstanding
-          (a dollar reading of the same set) and Overdue (the actionable
-          subset). Two equal-width balance metrics tell the story. */}
+      <CardShellHeader>
+        <CardShellTitle icon={Receipt} iconColor="text-amber-600">Collections</CardShellTitle>
+      </CardShellHeader>
+      {/* Compact summary strip — Outstanding + Overdue stacked single-column.
+          Phase 1 responsive: 2-column removed to prevent crowding at iPad card widths. */}
       <div
-        className="grid grid-cols-2 gap-2 px-3 py-2 border-b border-[#e2e8f0]"
+        className="grid grid-cols-1 gap-1.5 px-3 py-2 border-b border-card-border"
         data-testid="collections-summary-strip"
       >
-        <div data-testid="collections-summary-outstanding">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500">Outstanding</div>
-          <div className="mt-0.5 text-sm font-semibold tabular-nums text-[#111827] truncate">
-            {isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(outstandingTotal)}
-          </div>
-        </div>
-        <div data-testid="collections-summary-overdue">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500">Overdue</div>
-          <div className={cn(
-            "mt-0.5 text-sm font-semibold tabular-nums truncate",
-            pastDueTotal > 0 ? "text-red-700" : "text-[#111827]",
-          )}>
-            {isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(pastDueTotal)}
-          </div>
-        </div>
+        <CardMetricBlock
+          align="start"
+          label="Outstanding"
+          value={isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(outstandingTotal)}
+          data-testid="collections-summary-outstanding"
+        />
+        <CardMetricBlock
+          align="start"
+          label="Overdue"
+          value={isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(pastDueTotal)}
+          valueClassName={pastDueTotal > 0 ? "text-destructive" : undefined}
+          data-testid="collections-summary-overdue"
+        />
       </div>
 
       {/* Lower section — single column for readability at all card widths.
@@ -956,7 +932,7 @@ function CollectionsOverviewCard({
           customer name + balance rows at iPad card widths (≤512px). */}
       <div className="grid grid-cols-1 divide-y divide-card-border">
         <div>
-          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="px-3 pt-2 pb-1 text-label text-muted-foreground">
             Top customers
           </div>
           <div data-testid="collections-customers-list">
@@ -965,7 +941,7 @@ function CollectionsOverviewCard({
                 {[1, 2, 3].map((i) => <Skeleton key={i} className="h-5" />)}
               </div>
             ) : customerBalances.length === 0 ? (
-              <div className="px-3 pb-2"><EmptyState message="None." /></div>
+              <div className="px-3 pb-2 text-helper text-muted-foreground">None.</div>
             ) : (
               <div>
                 {customerBalances.map((c) => {
@@ -975,15 +951,15 @@ function CollectionsOverviewCard({
                       key={c.customerCompanyId}
                       type="button"
                       onClick={() => onOpenCustomer(c.customerCompanyId)}
-                      className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                      className="w-full text-left px-3 py-1.5 hover:bg-primary/5 transition-colors flex items-center gap-2"
                       data-testid={`collections-customer-${c.customerCompanyId}`}
                     >
-                      <span className="flex-1 text-xs text-[#111827] truncate">
+                      <span className="flex-1 text-row text-foreground truncate">
                         {c.name ?? "Unnamed"}
                       </span>
                       <span className={cn(
-                        "text-xs font-semibold tabular-nums shrink-0",
-                        hasOverdue ? "text-red-700" : "text-[#111827]",
+                        "text-row font-semibold tabular-nums shrink-0",
+                        hasOverdue ? "text-destructive" : "text-foreground",
                       )}>
                         {formatCurrency(c.outstanding)}
                       </span>
@@ -996,7 +972,7 @@ function CollectionsOverviewCard({
         </div>
 
         <div>
-          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="px-3 pt-2 pb-1 text-label text-muted-foreground">
             Overdue invoices
           </div>
           <div data-testid="collections-invoices-list">
@@ -1005,7 +981,7 @@ function CollectionsOverviewCard({
                 {[1, 2, 3].map((i) => <Skeleton key={i} className="h-5" />)}
               </div>
             ) : overdueInvoices.length === 0 ? (
-              <div className="px-3 pb-2"><EmptyState message="No overdue invoices." /></div>
+              <div className="px-3 pb-2 text-helper text-muted-foreground">No overdue invoices.</div>
             ) : (
               <div>
                 {overdueInvoices.map((inv) => {
@@ -1015,18 +991,18 @@ function CollectionsOverviewCard({
                       key={inv.id}
                       type="button"
                       onClick={() => onOpenInvoice(inv.id, inv.customerCompanyId ?? null)}
-                      className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                      className="w-full text-left px-3 py-1.5 hover:bg-primary/5 transition-colors flex items-center gap-2"
                       data-testid={`collections-invoice-${inv.id}`}
                     >
-                      <span className="flex-1 text-xs text-[#111827] truncate">
+                      <span className="flex-1 text-row text-foreground truncate">
                         {inv.customerName ?? inv.locationName ?? "Unknown"}
                         {inv.invoiceNumber && (
-                          <span className="text-slate-500"> · #{inv.invoiceNumber}</span>
+                          <span className="text-helper text-muted-foreground"> · #{inv.invoiceNumber}</span>
                         )}
                       </span>
                       <span className={cn(
-                        "text-xs font-semibold tabular-nums shrink-0",
-                        isOverdue ? "text-red-700" : "text-[#111827]",
+                        "text-row font-semibold tabular-nums shrink-0",
+                        isOverdue ? "text-destructive" : "text-foreground",
                       )}>
                         {formatCurrencyPrecise(inv.balance)}
                       </span>
@@ -1058,11 +1034,9 @@ function ScheduledRevenueCard({
   const sr = data?.scheduledRevenue;
   return (
     <CardShell className="flex flex-col h-full">
-      <CardHeader
-        icon={CalendarIcon}
-        color="text-emerald-600"
-        title="Scheduled Revenue"
-      />
+      <CardShellHeader>
+        <CardShellTitle icon={CalendarIcon} iconColor="text-emerald-600">Scheduled Revenue</CardShellTitle>
+      </CardShellHeader>
       <div data-testid="scheduled-revenue">
         {isLoading ? (
           <div className="p-3 space-y-1.5">
@@ -1077,16 +1051,16 @@ function ScheduledRevenueCard({
               className="grid grid-cols-1 xl:grid-cols-3 divide-y xl:divide-y-0 xl:divide-x divide-card-border border-b border-card-border"
               data-testid="scheduled-kpi-grid"
             >
-              <ScheduledRevCell label="Today" value={sr?.todayValue ?? 0} testId="scheduled-today" />
-              <ScheduledRevCell label="Next 7 days" value={sr?.next7DaysValue ?? 0} testId="scheduled-7d" />
-              <ScheduledRevCell label="Next 30 days" value={sr?.next30DaysValue ?? 0} testId="scheduled-30d" />
+              <CardMetricBlock align="start" emphasis className="px-2.5 py-2" label="Today" value={formatCurrency(sr?.todayValue ?? 0)} data-testid="scheduled-today" />
+              <CardMetricBlock align="start" emphasis className="px-2.5 py-2" label="Next 7 days" value={formatCurrency(sr?.next7DaysValue ?? 0)} data-testid="scheduled-7d" />
+              <CardMetricBlock align="start" emphasis className="px-2.5 py-2" label="Next 30 days" value={formatCurrency(sr?.next30DaysValue ?? 0)} data-testid="scheduled-30d" />
             </div>
-            <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            <div className="px-3 pt-2 pb-1 text-label text-muted-foreground">
               Upcoming high-value
             </div>
             <div data-testid="scheduled-upcoming-list">
               {!sr || sr.upcomingHighValueJobs.length === 0 ? (
-                <div className="px-3 pb-2 text-xs text-slate-700">No upcoming jobs with reliable value.</div>
+                <div className="px-3 pb-2 text-helper text-muted-foreground">No upcoming jobs with reliable value.</div>
               ) : (
                 <div>
                   {sr.upcomingHighValueJobs.map((j) => {
@@ -1095,16 +1069,16 @@ function ScheduledRevenueCard({
                         key={j.id}
                         type="button"
                         onClick={() => onOpenJob(j.id)}
-                        className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                        className="w-full text-left px-3 py-1.5 hover:bg-primary/5 transition-colors flex items-center gap-2"
                         data-testid={`scheduled-job-${j.id}`}
                       >
-                        <span className="flex-1 text-xs text-[#111827] truncate">
+                        <span className="flex-1 text-xs text-foreground truncate">
                           #{j.jobNumber}
                           {j.customerName && (
-                            <span className="text-slate-500"> · {j.customerName}</span>
+                            <span className="text-muted-foreground"> · {j.customerName}</span>
                           )}
                         </span>
-                        <span className="text-xs font-semibold tabular-nums shrink-0 text-[#111827]">
+                        <span className="text-xs font-semibold tabular-nums shrink-0 text-foreground">
                           {formatCurrency(j.value)}
                         </span>
                       </button>
@@ -1113,7 +1087,7 @@ function ScheduledRevenueCard({
                 </div>
               )}
             </div>
-            <div className="px-3 py-1.5 text-[10px] text-slate-500 border-t border-[#e2e8f0]">
+            <div className="px-3 py-1.5 text-helper text-muted-foreground border-t border-card-border">
               Based on scheduled jobs.
             </div>
           </>
@@ -1123,26 +1097,6 @@ function ScheduledRevenueCard({
   );
 }
 
-function ScheduledRevCell({
-  label,
-  value,
-  testId,
-}: {
-  label: string;
-  value: number;
-  testId: string;
-}) {
-  return (
-    <div className="flex flex-col items-start px-2.5 py-2" data-testid={testId}>
-      <span className="text-[10px] uppercase tracking-wider font-medium text-slate-500 truncate w-full">
-        {label}
-      </span>
-      <span className="mt-0.5 text-base font-semibold tabular-nums text-[#111827] truncate w-full">
-        {formatCurrency(value)}
-      </span>
-    </div>
-  );
-}
 
 // 2026-05-07 — NeedsAttentionCard removed. Its sole row ("Invoices not
 // sent") was absorbed into the bottom of OperationalAlertsCard via the

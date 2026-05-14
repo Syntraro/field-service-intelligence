@@ -37,6 +37,9 @@ import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
 import NewInvoicePage from "@/pages/NewInvoicePage";
+// 2026-05-13: Receivables workspace — unified financial operations center.
+// Replaces the top-level "Invoices" sidebar entry; /invoices/* routes preserved.
+import ReceivablesPage from "@/pages/ReceivablesPage";
 import Quotes from "@/pages/Quotes";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
@@ -338,10 +341,20 @@ function Router() {
           <JobDetailPage />
         </ProtectedRoute>
       </Route>
-      <Route path="/invoices">
+      {/* 2026-05-13: Receivables workspace — unified hub (Queue + Invoices +
+          Payments + Activity + Insights). MUST be registered before /invoices/*
+          so wouter's registration-order matching doesn't confuse it with the
+          invoice routes below. */}
+      <Route path="/receivables">
         <ProtectedRoute requireAdmin>
-          <InvoicesListPage />
+          <ReceivablesPage />
         </ProtectedRoute>
+      </Route>
+      {/* /invoices → redirect to /receivables so existing bookmarks land on
+          the new workspace. The sub-routes /invoices/new and /invoices/:id
+          are preserved in full — they are unaffected by the sidebar rename. */}
+      <Route path="/invoices">
+        <Redirect to="/receivables" />
       </Route>
       <Route path="/invoices/new">
         <ProtectedRoute requireAdmin>
@@ -363,7 +376,7 @@ function Router() {
           string "new" would be captured as an id and resolve to
           QuoteDetailPage instead of CreateQuotePage. */}
       <Route path="/quotes/new">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireManager>
           <CreateQuotePage />
         </ProtectedRoute>
       </Route>

@@ -5,12 +5,14 @@
  */
 import { useState } from "react";
 import { useLocation, useParams } from "wouter";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, MapPin, Phone, Mail, Wrench, Briefcase, FileText, ChevronRight, Loader2, User, Calendar, Navigation } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Camera, MapPin, Phone, Mail, Wrench, Briefcase, FileText, ChevronRight, Loader2, User, Calendar, Navigation } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
+import { ScanNameplateSheet } from "../components/ScanNameplateSheet";
+import type { EquipmentSnapshot } from "../components/ScanNameplateSheet";
 
 // 2026-05-04 Phase 2 PR 2: shapes track the tech-safe DTOs returned by
 // the location read endpoints under the tech API surface. Sensitive
@@ -31,10 +33,14 @@ interface LocationData {
 
 interface EquipmentItem {
   id: string;
+  name?: string | null;
   type?: string | null;
   manufacturer?: string | null;
   model?: string | null;
   serialNumber?: string | null;
+  tagNumber?: string | null;
+  notes?: string | null;
+  nameplatePhotoId?: string | null;
 }
 
 interface RecentJob {
@@ -64,7 +70,9 @@ export function LocationDetailPage() {
   const params = useParams<{ id: string }>();
   const locationId = params.id;
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
+  const [scanEquipment, setScanEquipment] = useState<EquipmentSnapshot | null>(null);
 
   // Back navigation: prefer referrer history so the tech returns to the page
   // they came from (Search, Today, Create Job picker, etc.). Falls back to
@@ -254,10 +262,33 @@ export function LocationDetailPage() {
                   .filter(Boolean)
                   .join(" · ");
                 return (
-                  <div key={eq.id} className="rounded-md border border-slate-200 bg-white p-3">
-                    <p className="text-sm font-semibold text-slate-800">{primary}</p>
-                    {secondary && <p className="text-xs text-slate-400">{secondary}</p>}
-                    {eq.serialNumber && <p className="text-[10px] text-slate-400 mt-0.5">S/N: {eq.serialNumber}</p>}
+                  <div key={eq.id} className="rounded-md border border-slate-200 bg-white p-3 flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-slate-800">{primary}</p>
+                      {secondary && <p className="text-xs text-slate-400">{secondary}</p>}
+                      {eq.serialNumber && <p className="text-[10px] text-slate-400 mt-0.5">S/N: {eq.serialNumber}</p>}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Scan nameplate"
+                      data-testid="button-scan-nameplate"
+                      onClick={() =>
+                        setScanEquipment({
+                          id: eq.id,
+                          name: eq.name ?? null,
+                          equipmentType: eq.type ?? null,
+                          manufacturer: eq.manufacturer ?? null,
+                          modelNumber: eq.model ?? null,
+                          serialNumber: eq.serialNumber ?? null,
+                          tagNumber: eq.tagNumber ?? null,
+                          notes: eq.notes ?? null,
+                          nameplatePhotoId: eq.nameplatePhotoId ?? null,
+                        })
+                      }
+                      className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-md text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors shrink-0"
+                    >
+                      <Camera className="h-4 w-4" />
+                    </button>
                   </div>
                 );
               })
@@ -295,6 +326,20 @@ export function LocationDetailPage() {
           </div>
         )}
       </div>
+      {scanEquipment && locationId && (
+        <ScanNameplateSheet
+          open={!!scanEquipment}
+          onOpenChange={(open) => { if (!open) setScanEquipment(null); }}
+          equipment={scanEquipment}
+          locationId={locationId}
+          onSaved={() => {
+            setScanEquipment(null);
+            queryClient.invalidateQueries({
+              queryKey: ["/api/tech/locations", locationId, "equipment"],
+            });
+          }}
+        />
+      )}
     </MobileShell>
   );
 }

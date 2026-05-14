@@ -183,7 +183,7 @@ function readTabFromUrl(): TabId {
     : "overview";
 }
 
-export default function PaymentsDashboardPage() {
+export default function PaymentsDashboardPage({ embedded = false }: { embedded?: boolean }) {
   const [, setLocation] = useLocation();
 
   // 2026-05-04 PR8 — tab state synced with `?tab=` URL param. Default
@@ -204,7 +204,9 @@ export default function PaymentsDashboardPage() {
 
   const setTab = (next: TabId) => {
     setTabState(next);
-    if (typeof window !== "undefined") {
+    // When embedded inside ReceivablesPage, skip URL sync — the outer page
+    // owns the URL. Standalone /payments route keeps full URL-sync behaviour.
+    if (!embedded && typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       if (next === "overview") {
         // Keep the URL minimal for the default tab.
@@ -225,30 +227,32 @@ export default function PaymentsDashboardPage() {
 
   return (
     <div className="p-4 space-y-4">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1
-            className="text-title"
-            data-testid="text-payments-dashboard-title"
-          >
-            Payments
-          </h1>
-          <p className="text-caption text-muted-foreground">
-            Track online payments, payouts, and disputes.
-          </p>
+      {/* Header — suppressed in embedded mode (ReceivablesPage provides its own header) */}
+      {!embedded && (
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1
+              className="text-title"
+              data-testid="text-payments-dashboard-title"
+            >
+              Payments
+            </h1>
+            <p className="text-caption text-muted-foreground">
+              Track online payments, payouts, and disputes.
+            </p>
+          </div>
+          <Link href="/settings/payments">
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="button-payment-settings-link"
+            >
+              <SettingsIcon className="h-4 w-4 mr-2" />
+              Payment settings
+            </Button>
+          </Link>
         </div>
-        <Link href="/settings/payments">
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="button-payment-settings-link"
-          >
-            <SettingsIcon className="h-4 w-4 mr-2" />
-            Payment settings
-          </Button>
-        </Link>
-      </div>
+      )}
 
       {/* Account-not-onboarded short-circuit. The dashboard exists but
           there's nothing to show; bounce the operator to settings. */}

@@ -476,10 +476,15 @@ export function EntityNoteDialog({
       }
 
       invalidateNotes();
-      if (mode === "edit") {
+      if (mode === "create") {
+        setNoteText("");
+        setStagedFiles([]);
+        setUploadIndex(0);
+        onOpenChange(false);
+      } else {
         toast({ title: "Note updated" });
+        onOpenChange(false);
       }
-      onOpenChange(false);
     } catch (err: any) {
       toast({
         title: "Save failed",

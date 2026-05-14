@@ -122,7 +122,7 @@ export function TopKpiRow({
         iconBg="bg-red-100 dark:bg-red-950/30"
         tone={overdueWarn ? "danger" : "default"}
         loading={isLoading}
-        href="/invoices?filter=overdue"
+        href="/receivables?tab=invoices&filter=overdue"
         testId="kpi-overdue-invoices"
       />
       <KpiTile
