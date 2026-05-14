@@ -159,7 +159,16 @@ CardFooter.displayName = "CardFooter"
 
 // ── CardShell (outer chrome) ───────────────────────────────────────
 
-export interface CardShellProps extends React.HTMLAttributes<HTMLDivElement> {}
+export interface CardShellProps extends React.HTMLAttributes<HTMLDivElement> {
+  /**
+   * Visual surface variant.
+   * "contained" (default) — canonical card chrome (rounded border, bg-card, shadow-card).
+   * "open" — borderless/open style: renders a plain <div> without card chrome.
+   *   Internal CardShellHeader/Body/Footer dividers are preserved.
+   *   Used by Job Detail only (2026-05-13 open-surface pass).
+   */
+  surface?: "contained" | "open";
+}
 
 /**
  * `CardShell` is the outer wrapper for dashboard / list / right-rail
@@ -174,13 +183,24 @@ export interface CardShellProps extends React.HTMLAttributes<HTMLDivElement> {}
  * through via className — CardShell stays width- and layout-neutral.
  */
 const CardShell = React.forwardRef<HTMLDivElement, CardShellProps>(
-  ({ className, ...props }, ref) => (
-    <Card
-      ref={ref}
-      className={cn("overflow-hidden", className)}
-      {...props}
-    />
-  ),
+  ({ className, surface, ...props }, ref) => {
+    if (surface === "open") {
+      return (
+        <div
+          ref={ref}
+          className={cn("overflow-hidden rounded-md bg-white border border-slate-100", className)}
+          {...props}
+        />
+      );
+    }
+    return (
+      <Card
+        ref={ref}
+        className={cn("overflow-hidden", className)}
+        {...props}
+      />
+    );
+  },
 );
 CardShell.displayName = "CardShell";
 

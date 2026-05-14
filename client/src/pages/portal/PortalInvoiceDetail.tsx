@@ -72,7 +72,6 @@ interface InvoiceDetail {
   total: string;
   amountPaid: string;
   balance: string;
-  notesCustomer: string | null;
   clientMessage: string | null;
   workDescription: string | null;
   // Per-invoice raw flags retained for backward compat with the prior
@@ -777,18 +776,13 @@ export default function PortalInvoiceDetail() {
       {/* ── Notes / Terms ─────────────────────────────────────────
           2026-05-05 redesign: `Scope of work` (workDescription) moved
           UP to the top card so a customer scanning the page sees what
-          they're paying for first. This block now carries the
-          remaining customer-facing copy: tenant Client-Message and
-          QBO CustomerMemo notes. */}
-      {(policy.clientMessage || invoice.notesCustomer) && (
+          they're paying for first. This block carries the customer-
+          facing message only (clientMessage; backfilled from notesCustomer
+          via 2026_05_13 migration). */}
+      {policy.clientMessage && (
         <Card>
-          <CardContent className="pt-6 space-y-3">
-            {policy.clientMessage && (
-              <NotesBlock label="Message" text={policy.clientMessage} />
-            )}
-            {invoice.notesCustomer && (
-              <NotesBlock label="Notes" text={invoice.notesCustomer} />
-            )}
+          <CardContent className="pt-6">
+            <NotesBlock label="Message" text={policy.clientMessage} />
           </CardContent>
         </Card>
       )}

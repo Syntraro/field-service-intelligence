@@ -158,6 +158,14 @@ export interface LineItemsCardProps<TServerLine extends DisplayLine> {
    *  mode via the parent's external trigger. The empty-state caption
    *  still renders. */
   hideEmptyStateCta?: boolean;
+  /**
+   * Visual surface variant forwarded to the outer CardShell.
+   * "contained" (default) — canonical card chrome.
+   * "open" — borderless; removes outer card border/shadow/background.
+   *   Internal column header, row dividers, and footer dividers are preserved.
+   *   Used by Job Detail only (2026-05-13 open-surface pass).
+   */
+  surface?: "contained" | "open";
 }
 
 export function LineItemsCard<TServerLine extends DisplayLine>({
@@ -169,6 +177,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
   title = "Line items",
   hidePencilButton = false,
   hideEmptyStateCta = false,
+  surface,
 }: LineItemsCardProps<TServerLine>) {
   // 2026-05-07: Pricebook bulk picker. One modal mount lives inside the
   // canonical shared card so all three line-item surfaces (invoice,
@@ -369,7 +378,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
     // in LineItemRow / AddLineItemForm are calibrated against the
     // px-5 inset on BOTH the header and the body. Changing either
     // side without the other reintroduces header↔body column drift.
-    <CardShell data-testid="card-invoice-line-items">
+    <CardShell surface={surface} data-testid="card-invoice-line-items">
       {/* Header */}
       <CardShellHeader className="px-5 py-3">
         <h3 className={META_LABEL_CLASS}>

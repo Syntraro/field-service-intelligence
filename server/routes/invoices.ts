@@ -127,8 +127,6 @@ const updateInvoiceSchema = z.object({
   paymentTermsDays: z.number().int().min(0).max(365).optional().nullable(),
   // Invoice number editing (uniqueness enforced per tenant)
   invoiceNumber: z.string().min(1).max(100).optional(),
-  notesInternal: z.string().max(2000).optional(),
-  notesCustomer: z.string().max(2000).optional(),
   workDescription: z.string().max(2000).optional(),
   clientMessage: z.string().max(2000).optional(),
   // 2026-05-06: nullable so the "Reset to defaults" affordance on the
@@ -348,8 +346,6 @@ const createAtomicSchema = z.object({
   dueDate: z.string().nullable().optional(),
   paymentTermsDays: z.number().int().min(0).max(365).nullable().optional(),
   invoiceNumber: z.string().min(1).max(100).optional(),
-  notesInternal: z.string().max(2000).optional(),
-  notesCustomer: z.string().max(2000).optional(),
   clientMessage: z.string().max(2000).optional(),
 
   // Visibility toggles (mirror updateInvoiceSchema)
@@ -407,8 +403,6 @@ router.post("/atomic", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
         dueDate: validated.dueDate,
         paymentTermsDays: validated.paymentTermsDays,
         invoiceNumber: validated.invoiceNumber,
-        notesInternal: validated.notesInternal,
-        notesCustomer: validated.notesCustomer,
         clientMessage: validated.clientMessage,
         showQuantity: validated.showQuantity,
         showUnitPrice: validated.showUnitPrice,

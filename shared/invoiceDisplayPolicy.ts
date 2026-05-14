@@ -130,8 +130,8 @@ export interface InvoiceDisplayPolicy {
   /**
    * Final resolved client-message text to render. `null` means render
    * nothing (either toggled off, or no content). Renderers MUST NOT
-   * fall back to invoice.clientMessage / invoice.notesCustomer when
-   * this is null — that's the policy talking.
+   * fall back to invoice.clientMessage when this is null — that's
+   * the policy talking.
    */
   clientMessage: string | null;
   // Section 5 — Line items

@@ -785,7 +785,6 @@ router.get(
         total: invoice.total,
         amountPaid: invoice.amountPaid,
         balance: invoice.balance,
-        notesCustomer: invoice.notesCustomer,
         clientMessage: invoice.clientMessage,
         workDescription: invoice.workDescription,
         // Per-invoice raw flags retained for backward compatibility — the

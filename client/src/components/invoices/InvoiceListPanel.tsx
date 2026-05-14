@@ -383,9 +383,10 @@ export function InvoiceListPanel({
       id: "status",
       header: "Status",
       kind: "status",
+      minWidthPx: 130,
       cell: {
         type: "customRender",
-        reason: "multi-badge: StatusBadge + QboSyncBadge",
+        reason: "multi-badge: StatusBadge + QboSyncBadge; minWidthPx prevents 'Awaiting Payment' overflow",
         render: (invoice) => (
           <>
             <StatusBadge meta={invoice.statusMeta} />
@@ -615,6 +616,7 @@ export function InvoiceListPanel({
               hasMore={visibleCount < filteredInvoices.length}
               onLoadMore={() => setVisibleCount((c) => c + INVOICES_PAGE_SIZE)}
               label="invoice"
+              hideCountText
             />
           </div>
 

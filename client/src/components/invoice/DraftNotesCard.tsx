@@ -26,8 +26,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useInlineEdit, InlineEditFooter } from "@/components/forms/InlineEditableText";
 
 export interface DraftNotesCardProps {
-  /** Current `notesInternal` value (from invoice column, or local
-   *  draft state on /invoices/new). */
+  /** Current internal notes value (legacy `notesInternal` column — read-only display;
+   *  new notes are written via POST /api/invoices/:id/notes to the invoice_notes table). */
   value: string;
   /** Commit a new value. Sync handlers cause the card to exit edit
    *  mode immediately. Async handlers cause the card to show "Saving…"

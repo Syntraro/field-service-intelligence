@@ -310,8 +310,6 @@ export interface CreateAtomicPayload {
    *  the field entirely to inherit the company default. */
   taxGroupId?: string | null;
   invoiceNumber?: string;
-  notesInternal?: string;
-  notesCustomer?: string;
   clientMessage?: string;
   showQuantity?: boolean;
   showUnitPrice?: boolean;
@@ -540,8 +538,6 @@ export async function createInvoiceAtomicService(
       dueDate: payload.dueDate,
       paymentTermsDays: payload.paymentTermsDays ?? undefined,
       invoiceNumber: payload.invoiceNumber,
-      notesInternal: payload.notesInternal,
-      notesCustomer: payload.notesCustomer,
       clientMessage: payload.clientMessage,
       showQuantity: payload.showQuantity,
       showUnitPrice: payload.showUnitPrice,

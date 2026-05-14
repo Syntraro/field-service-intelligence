@@ -214,6 +214,15 @@ export interface CanonicalDetailHeaderProps {
   testId?: string;
   /** Page-level edit flag. Swaps items' editNode for value. */
   isEditing?: boolean;
+  /**
+   * Visual surface variant.
+   * "contained" (default) — renders the canonical card chrome
+   *   (rounded border, bg-card, shadow-card). Used by Invoice, Quote, Lead.
+   * "open" — removes the outer card border/shadow/background so the header
+   *   blends with the page background. Internal dividers and padding are
+   *   preserved. Used by Job Detail only (2026-05-13 open-surface pass).
+   */
+  surface?: "contained" | "open";
 
   // ── Title ────────────────────────────────────────────────────────
   /** Primary title string (shown in <h1> or as titleEdit textarea fallback). */
@@ -480,6 +489,7 @@ function renderWorkflow(workflow: WorkflowDescriptor, testId: string) {
 export function CanonicalDetailHeader({
   testId = "detail-header",
   isEditing = false,
+  surface = "contained",
   title,
   entityLabel,
   onBack,
@@ -554,7 +564,12 @@ export function CanonicalDetailHeader({
 
   return (
     <div
-      className="rounded-md border bg-card border-card-border shadow-card overflow-hidden"
+      className={cn(
+        "overflow-hidden rounded-md",
+        surface === "open"
+          ? "bg-white border border-slate-100"
+          : "border bg-card border-card-border shadow-card",
+      )}
       data-testid={testId}
     >
       {/* ── Alert (expiry warnings, info banners) ────────────────── */}

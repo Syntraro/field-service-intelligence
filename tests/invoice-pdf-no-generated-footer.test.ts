@@ -189,10 +189,10 @@ describe("invoicePdfService — compact modern layout zones", () => {
     expect(codeOnly).not.toMatch(/"Notes:"/);
   });
 
-  it("CLIENT COMMUNICATION renders ONLY when policy.clientMessage / invoice.notesCustomer is non-empty", () => {
-    expect(pdfSrc).toMatch(
-      /policy\.clientMessage\s*\?\?\s*invoice\.notesCustomer/,
-    );
+  it("CLIENT COMMUNICATION renders ONLY when invoice.clientMessage is non-empty (notesCustomer fallback removed)", () => {
+    expect(pdfSrc).toMatch(/invoice\.clientMessage/);
+    // notesCustomer fallback was removed in 2026_05_13 migration cycle
+    expect(pdfSrc).not.toMatch(/policy\.clientMessage\s*\?\?\s*invoice\.notesCustomer/);
     // The block is gated on a trimmed non-empty messageText.
     expect(pdfSrc).toMatch(/if\s*\(messageText\.length\s*>\s*0\)/);
   });

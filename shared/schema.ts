@@ -1988,9 +1988,11 @@ export const invoices = pgTable("invoices", {
   sentAt: timestamp("sent_at"), // When invoice was sent to client
   sentByUserId: varchar("sent_by_user_id").references(() => users.id, { onDelete: "set null" }), // Who sent the invoice
   viewedAt: timestamp("viewed_at"), // When client viewed the invoice
-  // Notes
-  notesInternal: text("notes_internal"), // Not sent to QBO
-  notesCustomer: text("notes_customer"), // Maps to QBO CustomerMemo
+  // Notes (legacy columns — Phase 2 will drop after import pipeline cutover)
+  // TODO(Phase 2): notesInternal — legacy QBO PrivateNote / import snapshot; stop writing, then DROP
+  notesInternal: text("notes_internal"),
+  // TODO(Phase 2): notesCustomer — backfilled → clientMessage (migration 2026_05_13); stop writing, then DROP
+  notesCustomer: text("notes_customer"),
   // 2026-05-03: canonical invoice title/summary. Short, editable, used
   // as the page-level header label. Distinct from workDescription
   // (long body) and from the linked job's summary (separate entity).
@@ -2115,8 +2117,6 @@ export const updateInvoiceSchema = z.object({
   jobId: z.string().nullable().optional(),
   sentAt: z.date().nullable().optional(),
   viewedAt: z.date().nullable().optional(),
-  notesInternal: z.string().nullable().optional(),
-  notesCustomer: z.string().nullable().optional(),
   workDescription: z.string().nullable().optional(),
   // 2026-05-03: short editable invoice title. Distinct from
   // workDescription. Surfaces in the canonical detail header.

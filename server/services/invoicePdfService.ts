@@ -38,7 +38,8 @@
  *      `invoice.amountPaid > 0` AND `invoice.showBalance !== false`.
  *
  *   6. CLIENT COMMUNICATION (full-width, light bordered container) —
- *      conditional on `policy.clientMessage ?? invoice.notesCustomer`.
+ *      conditional on `invoice.clientMessage` (backfilled from notesCustomer
+ *      via 2026_05_13 migration; notesCustomer fallback removed).
  *      v2: positioned NEAR the bottom of the last page (just above the
  *      footer band) when the body left room. When the body almost
  *      fills the page, it falls back to immediately after totals.
@@ -566,7 +567,7 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // Subtract a 12pt gap above the footer divider, then the
       // computed comm height, to find the desired top.
       // ════════════════════════════════════════════════════════════
-      const messageToRender = policy.clientMessage ?? invoice.notesCustomer ?? null;
+      const messageToRender = invoice.clientMessage ?? null;
       const messageText = messageToRender ? String(messageToRender).trim() : "";
       if (messageText.length > 0) {
         const COMM_LABEL_H = 14;

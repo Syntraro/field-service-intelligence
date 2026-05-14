@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { X, ExternalLink } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/StatusBadge";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
@@ -24,8 +25,6 @@ interface ParticularsInvoice {
   amountPaid: string;
   summary: string | null;
   workDescription: string | null;
-  notesInternal: string | null;
-  notesCustomer: string | null;
   paymentTermsDays: number | null;
   isPastDue?: boolean;
   jobId: string | null;
@@ -42,6 +41,12 @@ interface ParticularsDetails {
   location?: { companyName?: string | null; location?: string | null } | null;
   customerCompany?: { name?: string | null } | null;
   job?: ParticularsJob | null;
+}
+
+interface InvoiceNote {
+  id: string;
+  noteText: string;
+  createdAt: string;
 }
 
 interface InvoiceParticularsPanelProps {
@@ -61,6 +66,21 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
       if (!res.ok) throw new Error(`Failed to load invoice (HTTP ${res.status})`);
       return res.json();
     },
+    staleTime: 30_000,
+  });
+
+  const {
+    data: notesData,
+    isLoading: notesLoading,
+    isError: notesError,
+  } = useQuery<InvoiceNote[]>({
+    queryKey: ["/api/invoices", invoiceId, "notes"],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${invoiceId}/notes`, { credentials: "include" });
+      if (!res.ok) throw new Error(`Failed to load notes (HTTP ${res.status})`);
+      return res.json();
+    },
+    enabled: !!invoiceId,
     staleTime: 30_000,
   });
 
@@ -87,7 +107,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
   const hasTax      = !!invoice?.taxTotal && parseFloat(invoice.taxTotal) > 0;
   const hasDiscount = !!invoice?.discountAmount && parseFloat(invoice.discountAmount) > 0;
   const hasPaid     = !!invoice?.amountPaid && parseFloat(invoice.amountPaid) > 0;
-  const hasNotes    = !!(invoice?.notesCustomer || invoice?.notesInternal);
+  const recentNotes = (notesData ?? []).slice(0, 3);
 
   return (
     <div
@@ -318,21 +338,27 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
             </div>
           </div>
 
-          {/* Notes */}
+          {/* Notes — from canonical invoice_notes table */}
           <div className="border-t border-border pt-3">
             <div className="text-xs font-medium text-muted-foreground mb-1.5">Notes</div>
-            {hasNotes ? (
-              <div className="space-y-1.5">
-                {invoice.notesCustomer && (
-                  <p className="text-sm text-slate-700" data-testid="particulars-notes-customer">
-                    {invoice.notesCustomer}
-                  </p>
-                )}
-                {invoice.notesInternal && (
-                  <p className="text-sm text-slate-600 italic" data-testid="particulars-notes-internal">
-                    {invoice.notesInternal}
-                  </p>
-                )}
+            {notesLoading ? (
+              <p className="text-sm text-muted-foreground" data-testid="particulars-notes-loading">
+                Loading…
+              </p>
+            ) : notesError ? (
+              <p className="text-sm text-destructive" data-testid="particulars-notes-error">
+                Failed to load notes.
+              </p>
+            ) : recentNotes.length > 0 ? (
+              <div className="space-y-2" data-testid="particulars-notes-list">
+                {recentNotes.map((note) => (
+                  <div key={note.id} className="space-y-0.5" data-testid={`particulars-note-${note.id}`}>
+                    <p className="text-sm text-slate-700">{note.noteText}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatDistanceToNow(new Date(note.createdAt), { addSuffix: true })}
+                    </p>
+                  </div>
+                ))}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground" data-testid="particulars-no-notes">

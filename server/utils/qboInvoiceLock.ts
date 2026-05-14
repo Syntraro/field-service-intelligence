@@ -85,8 +85,6 @@ export const BILLING_IMPACTING_FIELDS = [
  * Fields that are NOT billing-impacting (allowed without override)
  */
 export const NON_BILLING_FIELDS = [
-  'notesInternal',
-  'notesCustomer',
   'clientMessage',
   'workDescription',
   'showQuantity',

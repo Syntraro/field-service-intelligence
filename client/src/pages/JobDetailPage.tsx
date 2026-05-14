@@ -717,6 +717,7 @@ function LineItemsTable({
         drafts={drafts}
         serverItems={displayItems}
         title="Line Items"
+        surface="open"
       />
       <AddProductModal
         open={createOpen}
@@ -1959,6 +1960,7 @@ export default function JobDetailPage() {
                   typography, icon placement, and layout. */}
               <CanonicalDetailHeader
                   testId="job-detail-header"
+                  surface="open"
                   isEditing={editingHeader}
                   title={job.summary || clientName || "Job"}
                   titleEdit={
@@ -2252,7 +2254,7 @@ export default function JobDetailPage() {
                   so it preserves the existing JobDetailPage finance panel
                   styling while the line-items surface above adopts the
                   canonical stone/slate card chrome. */}
-              <CardShell data-testid="card-billing-summary">
+              <CardShell surface="open" data-testid="card-billing-summary">
                 <CardShellHeader compact>
                   <CardShellTitle density="compact">Billing Summary</CardShellTitle>
                 </CardShellHeader>

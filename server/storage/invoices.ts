@@ -1761,8 +1761,6 @@ export class InvoiceRepository extends BaseRepository {
       dueDate?: string | null;
       paymentTermsDays?: number;
       invoiceNumber?: string;
-      notesInternal?: string;
-      notesCustomer?: string;
       clientMessage?: string;
       showQuantity?: boolean;
       showUnitPrice?: boolean;
@@ -1878,8 +1876,6 @@ export class InvoiceRepository extends BaseRepository {
       if (params.issueDate !== undefined) headerPatch.issueDate = params.issueDate;
       if (params.dueDate !== undefined) headerPatch.dueDate = params.dueDate;
       if (params.invoiceNumber !== undefined) headerPatch.invoiceNumber = params.invoiceNumber;
-      if (params.notesInternal !== undefined) headerPatch.notesInternal = params.notesInternal;
-      if (params.notesCustomer !== undefined) headerPatch.notesCustomer = params.notesCustomer;
       if (params.clientMessage !== undefined) headerPatch.clientMessage = params.clientMessage;
       if (params.showQuantity !== undefined) headerPatch.showQuantity = params.showQuantity;
       if (params.showUnitPrice !== undefined) headerPatch.showUnitPrice = params.showUnitPrice;

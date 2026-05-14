@@ -510,15 +510,14 @@ export function toQboInvoicePayload(
     : location.companyName;
   
   let customerMemo = `Service Location: ${locationIdentifier} (Location ID: ${location.id})`;
-  if (invoice.notesCustomer) {
-    customerMemo = `${invoice.notesCustomer}\n\n${customerMemo}`;
+  if (invoice.clientMessage) {
+    customerMemo = `${invoice.clientMessage}\n\n${customerMemo}`;
   }
   payload.CustomerMemo = { value: customerMemo };
 
-  // Add private note (internal notes)
-  if (invoice.notesInternal) {
-    payload.PrivateNote = invoice.notesInternal;
-  }
+  // notesInternal → QBO PrivateNote mapping removed (2026-05-13).
+  // The import adapter still writes notesInternal as a QBO snapshot; that is
+  // the final blocker before the DB column DROP (see imports/InvoiceImportAdapter.ts).
 
   // Map line items with resolved mappings
   payload.Line = lines.map((line, index) => {

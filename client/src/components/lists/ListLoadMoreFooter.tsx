@@ -40,6 +40,10 @@ export interface ListLoadMoreFooterProps {
   /** Singular noun for the count text (e.g., "lead" → "Showing 50 of 137 leads").
    *  Defaults to "item". */
   label?: string;
+  /** When true, suppresses the "Showing X of Y" count text. The Load More
+   *  button still renders when hasMore is true. Use in compact / embedded
+   *  contexts (e.g. Receivables inline panel) where the count adds noise. */
+  hideCountText?: boolean;
 }
 
 /** Pluralize a noun naively — fine for English entity nouns we use. */
@@ -57,10 +61,13 @@ export function ListLoadMoreFooter({
   isLoading = false,
   onLoadMore,
   label = "item",
+  hideCountText = false,
 }: ListLoadMoreFooterProps) {
   // Hide footer entirely when there's nothing to show. The page's empty
   // state inside EntityListTable already covers the "no results" case.
   if (totalCount === 0) return null;
+  // Hide footer when count is suppressed and there's nothing more to load.
+  if (hideCountText && !hasMore) return null;
 
   const noun = pluralize(label, totalCount);
   const text = hasMore
@@ -72,9 +79,11 @@ export function ListLoadMoreFooter({
       className="flex items-center justify-between gap-3 mt-2"
       data-testid="list-load-more-footer"
     >
-      <span className="text-caption text-slate-500" data-testid="list-count-text">
-        {text}
-      </span>
+      {!hideCountText && (
+        <span className="text-caption text-slate-500" data-testid="list-count-text">
+          {text}
+        </span>
+      )}
       {hasMore && (
         <Button
           variant="outline"

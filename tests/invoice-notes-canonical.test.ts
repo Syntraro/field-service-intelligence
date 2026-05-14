@@ -359,3 +359,165 @@ describe("Invoice notes — NewInvoicePage gates notes pre-save", () => {
     );
   });
 });
+
+// ── Phase 2: operational path cleanup (2026-05-13) ─────────────────────────
+
+describe("Invoice notes — legacy fields removed from route schemas (Phase 2)", () => {
+  const routeSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "routes", "invoices.ts"),
+    "utf-8",
+  );
+
+  it("updateInvoiceSchema no longer declares notesInternal", () => {
+    // Grab only the local updateInvoiceSchema block in routes/invoices.ts
+    const start = routeSrc.indexOf("const updateInvoiceSchema = z.object({");
+    const end   = routeSrc.indexOf("});", start);
+    const block = routeSrc.slice(start, end);
+    expect(block).not.toMatch(/notesInternal/);
+  });
+
+  it("updateInvoiceSchema no longer declares notesCustomer", () => {
+    const start = routeSrc.indexOf("const updateInvoiceSchema = z.object({");
+    const end   = routeSrc.indexOf("});", start);
+    const block = routeSrc.slice(start, end);
+    expect(block).not.toMatch(/notesCustomer/);
+  });
+
+  it("createAtomicSchema no longer declares notesInternal", () => {
+    const start = routeSrc.indexOf("const createAtomicSchema = z.object({");
+    const end   = routeSrc.indexOf("});", start);
+    const block = routeSrc.slice(start, end);
+    expect(block).not.toMatch(/notesInternal/);
+  });
+
+  it("createAtomicSchema no longer declares notesCustomer", () => {
+    const start = routeSrc.indexOf("const createAtomicSchema = z.object({");
+    const end   = routeSrc.indexOf("});", start);
+    const block = routeSrc.slice(start, end);
+    expect(block).not.toMatch(/notesCustomer/);
+  });
+
+  it("atomic handler does not forward notesInternal to the service", () => {
+    expect(routeSrc).not.toMatch(/notesInternal:\s*validated\.notesInternal/);
+  });
+
+  it("atomic handler does not forward notesCustomer to the service", () => {
+    expect(routeSrc).not.toMatch(/notesCustomer:\s*validated\.notesCustomer/);
+  });
+});
+
+describe("Invoice notes — legacy fields removed from invoiceCreationService (Phase 2)", () => {
+  const svcSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "services", "invoiceCreationService.ts"),
+    "utf-8",
+  );
+
+  it("InvoiceCreationParams no longer has notesInternal field", () => {
+    expect(svcSrc).not.toMatch(/notesInternal\?:\s*string/);
+  });
+
+  it("InvoiceCreationParams no longer has notesCustomer field", () => {
+    expect(svcSrc).not.toMatch(/notesCustomer\?:\s*string/);
+  });
+
+  it("service does not pass notesInternal to storage", () => {
+    expect(svcSrc).not.toMatch(/notesInternal:\s*payload\.notesInternal/);
+  });
+
+  it("service does not pass notesCustomer to storage", () => {
+    expect(svcSrc).not.toMatch(/notesCustomer:\s*payload\.notesCustomer/);
+  });
+});
+
+describe("Invoice notes — legacy fields removed from storage createInvoiceAtomic (Phase 2)", () => {
+  const storageSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "storage", "invoices.ts"),
+    "utf-8",
+  );
+
+  it("createInvoiceAtomic params interface no longer has notesInternal", () => {
+    // Find the createInvoiceAtomic function and check its params block.
+    // The import-only createImportedInvoice is allowed to keep it.
+    const start = storageSrc.indexOf("createInvoiceAtomic(");
+    const end   = storageSrc.indexOf("creationSource: InvoiceCreationSource,", start);
+    const block = storageSrc.slice(start, end);
+    expect(block).not.toMatch(/notesInternal\?:\s*string/);
+  });
+
+  it("createInvoiceAtomic params interface no longer has notesCustomer", () => {
+    const start = storageSrc.indexOf("createInvoiceAtomic(");
+    const end   = storageSrc.indexOf("creationSource: InvoiceCreationSource,", start);
+    const block = storageSrc.slice(start, end);
+    expect(block).not.toMatch(/notesCustomer\?:\s*string/);
+  });
+
+  it("createInvoiceAtomic header patch no longer writes notesInternal", () => {
+    const start = storageSrc.indexOf("createInvoiceAtomic(");
+    const nextFn = storageSrc.indexOf("\n  async ", start + 1);
+    const block  = storageSrc.slice(start, nextFn);
+    expect(block).not.toMatch(/headerPatch\.notesInternal/);
+  });
+
+  it("createInvoiceAtomic header patch no longer writes notesCustomer", () => {
+    const start = storageSrc.indexOf("createInvoiceAtomic(");
+    const nextFn = storageSrc.indexOf("\n  async ", start + 1);
+    const block  = storageSrc.slice(start, nextFn);
+    expect(block).not.toMatch(/headerPatch\.notesCustomer/);
+  });
+});
+
+describe("Invoice notes — QBO mapper no longer sends PrivateNote from notesInternal (Phase 2)", () => {
+  const mapperSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "qbo", "mappers.ts"),
+    "utf-8",
+  );
+
+  it("does not set payload.PrivateNote from invoice.notesInternal", () => {
+    expect(mapperSrc).not.toMatch(/payload\.PrivateNote\s*=\s*invoice\.notesInternal/);
+  });
+
+  it("still sends customerMemo from invoice.clientMessage (not notesCustomer)", () => {
+    expect(mapperSrc).toMatch(/invoice\.clientMessage/);
+    expect(mapperSrc).not.toMatch(/invoice\.notesCustomer/);
+  });
+});
+
+describe("Invoice notes — shared updateInvoiceSchema no longer includes legacy fields (Phase 2)", () => {
+  const schemaSrc = fs.readFileSync(
+    path.join(repoRoot, "shared", "schema.ts"),
+    "utf-8",
+  );
+
+  it("shared updateInvoiceSchema no longer has notesInternal", () => {
+    const start = schemaSrc.indexOf("export const updateInvoiceSchema = z.object({");
+    const end   = schemaSrc.indexOf("});", start);
+    const block = schemaSrc.slice(start, end);
+    expect(block).not.toMatch(/notesInternal/);
+  });
+
+  it("shared updateInvoiceSchema no longer has notesCustomer", () => {
+    const start = schemaSrc.indexOf("export const updateInvoiceSchema = z.object({");
+    const end   = schemaSrc.indexOf("});", start);
+    const block = schemaSrc.slice(start, end);
+    expect(block).not.toMatch(/notesCustomer/);
+  });
+});
+
+describe("Invoice notes — quote notesCustomer intentionally preserved (Phase 2)", () => {
+  const quoteRouteSrc = fs.readFileSync(
+    path.join(repoRoot, "server", "routes", "quotes.ts"),
+    "utf-8",
+  );
+  const quotePageSrc = fs.readFileSync(
+    path.join(repoRoot, "client", "src", "pages", "QuoteDetailPage.tsx"),
+    "utf-8",
+  );
+
+  it("quote routes still accept notesCustomer (description field for quotes)", () => {
+    expect(quoteRouteSrc).toMatch(/notesCustomer/);
+  });
+
+  it("QuoteDetailPage still uses notesCustomer as the description field", () => {
+    expect(quotePageSrc).toMatch(/notesCustomer/);
+  });
+});

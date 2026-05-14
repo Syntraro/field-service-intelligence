@@ -14,7 +14,7 @@
  *   - Description / summary fields
  *   - Line items table (per-line testids)
  *   - Totals summary (subtotal, tax, total, balance due row)
- *   - Notes section (notesCustomer, notesInternal, fallback "No invoice notes.")
+ *   - Notes section (canonical invoice_notes, fallback "No invoice notes.")
  *   - Payment summary (amountPaid from invoice, fallback "No payments recorded.")
  *   - Uses invoice.taxTotal not taxAmount
  *   - Error state testid
@@ -155,15 +155,35 @@ describe("InvoiceParticularsPanel line items", () => {
   });
 });
 
-// ── InvoiceParticularsPanel: notes section ────────────────────────────────────
+// ── InvoiceParticularsPanel: notes section (canonical invoice_notes) ─────────
 
 describe("InvoiceParticularsPanel notes section", () => {
-  it("renders particulars-notes-customer when notesCustomer is present", () => {
-    expect(particularsPanel).toMatch(/data-testid="particulars-notes-customer"/);
+  it("fetches notes from /api/invoices/:id/notes (canonical invoice_notes table)", () => {
+    expect(particularsPanel).toMatch(/\/api\/invoices\/\$\{invoiceId\}\/notes/);
   });
 
-  it("renders particulars-notes-internal when notesInternal is present", () => {
-    expect(particularsPanel).toMatch(/data-testid="particulars-notes-internal"/);
+  it("uses ['/api/invoices', invoiceId, 'notes'] as notes queryKey", () => {
+    expect(particularsPanel).toMatch(/queryKey.*"\/api\/invoices".*invoiceId.*"notes"/s);
+  });
+
+  it("notes query is enabled only when invoiceId is set", () => {
+    expect(particularsPanel).toMatch(/enabled.*!!invoiceId/);
+  });
+
+  it("renders particulars-notes-list when notes are present", () => {
+    expect(particularsPanel).toMatch(/data-testid="particulars-notes-list"/);
+  });
+
+  it("renders per-note testid particulars-note-{id}", () => {
+    expect(particularsPanel).toMatch(/data-testid=\{`particulars-note-\$\{note\.id\}`\}/);
+  });
+
+  it("renders particulars-notes-loading during load", () => {
+    expect(particularsPanel).toMatch(/data-testid="particulars-notes-loading"/);
+  });
+
+  it("renders particulars-notes-error on fetch failure", () => {
+    expect(particularsPanel).toMatch(/data-testid="particulars-notes-error"/);
   });
 
   it("renders particulars-no-notes fallback when no notes", () => {
@@ -172,6 +192,16 @@ describe("InvoiceParticularsPanel notes section", () => {
 
   it("fallback text is 'No invoice notes.'", () => {
     expect(particularsPanel).toMatch(/No invoice notes\./);
+  });
+
+  it("does NOT read notesCustomer or notesInternal from invoice (legacy columns removed)", () => {
+    expect(particularsPanel).not.toMatch(/invoice\.notesCustomer/);
+    expect(particularsPanel).not.toMatch(/invoice\.notesInternal/);
+  });
+
+  it("shows note.noteText and relative timestamp per note", () => {
+    expect(particularsPanel).toMatch(/note\.noteText/);
+    expect(particularsPanel).toMatch(/note\.createdAt/);
   });
 });
 
@@ -321,5 +351,47 @@ describe("InvoiceListPanel bulk action bar hidden in receivablesMode", () => {
     const standardStart = invoiceListPanel.indexOf("// ── Standard mode layout");
     const standardBlock = invoiceListPanel.slice(standardStart);
     expect(standardBlock).toMatch(/\{bulkBarNode\}/);
+  });
+});
+
+// ── InvoiceListPanel: count text hidden in receivablesMode ───────────────────
+
+describe("InvoiceListPanel 'Showing X invoice(s)' hidden in receivablesMode", () => {
+  const listLoadMoreSrc = src("client/src/components/lists/ListLoadMoreFooter.tsx");
+
+  it("ListLoadMoreFooter accepts hideCountText prop", () => {
+    expect(listLoadMoreSrc).toMatch(/hideCountText\?:\s*boolean/);
+  });
+
+  it("ListLoadMoreFooter does not render list-count-text span when hideCountText is true", () => {
+    expect(listLoadMoreSrc).toMatch(/!hideCountText.*list-count-text|list-count-text[\s\S]{0,100}hideCountText/s);
+  });
+
+  it("receivablesMode ListLoadMoreFooter call passes hideCountText", () => {
+    const modeStart = invoiceListPanel.indexOf("if (receivablesMode)");
+    const modeEnd   = invoiceListPanel.indexOf("// ── Standard mode layout");
+    const modeBlock = invoiceListPanel.slice(modeStart, modeEnd);
+    expect(modeBlock).toMatch(/hideCountText/);
+  });
+
+  it("standard mode ListLoadMoreFooter call does NOT pass hideCountText", () => {
+    const standardStart = invoiceListPanel.indexOf("// ── Standard mode layout");
+    const standardBlock = invoiceListPanel.slice(standardStart);
+    // The standard mode footer (outside receivablesMode block) should not suppress count
+    expect(standardBlock).not.toMatch(/hideCountText/);
+  });
+});
+
+// ── InvoiceListPanel: status column minWidthPx prevents "Awaiting Payment" overflow ──
+
+describe("InvoiceListPanel status column prevents badge overflow", () => {
+  it("status column definition includes minWidthPx of at least 130", () => {
+    // "Awaiting Payment" is the longest status label — needs at least 130px
+    const statusStart = invoiceListPanel.indexOf('id: "status"');
+    const statusEnd   = invoiceListPanel.indexOf("    },", statusStart);
+    const statusBlock = invoiceListPanel.slice(statusStart, statusEnd);
+    const minWidthMatch = statusBlock.match(/minWidthPx:\s*(\d+)/);
+    expect(minWidthMatch, "status column must have minWidthPx defined").not.toBeNull();
+    expect(parseInt(minWidthMatch![1], 10)).toBeGreaterThanOrEqual(130);
   });
 });
