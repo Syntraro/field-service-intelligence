@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Button } from "@/components/ui/button";
-import { FilterChip } from "@/components/ui/chip";
+import { FilterChip, StatusChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { formatCurrency } from "@/lib/formatters";
@@ -25,7 +25,6 @@ import {
   type InvoiceStatusFilter,
   type InvoiceDateRange,
 } from "@shared/invoiceStatus";
-import { StatusBadge } from "@/components/StatusBadge";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -425,10 +424,12 @@ export function InvoiceListPanel({
       minWidthPx: 130,
       cell: {
         type: "customRender",
-        reason: "multi-badge: StatusBadge + QboSyncBadge; minWidthPx prevents 'Awaiting Payment' overflow",
+        reason: "multi-badge: StatusChip + QboSyncBadge; minWidthPx prevents 'Awaiting Payment' overflow",
         render: (invoice) => (
           <>
-            <StatusBadge meta={invoice.statusMeta} />
+            <StatusChip tone={invoice.statusMeta.tone} size="compact">
+              {invoice.statusMeta.label}
+            </StatusChip>
             <QboSyncBadge invoice={invoice} />
           </>
         ),

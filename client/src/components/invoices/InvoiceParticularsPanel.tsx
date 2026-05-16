@@ -5,7 +5,7 @@ import {
   Briefcase, CalendarDays, CalendarClock, Clock, DollarSign, CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusChip } from "@/components/ui/chip";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { InvoiceLine } from "@shared/schema";
@@ -150,7 +150,9 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
                 Invoice #{invoice.invoiceNumber ?? "—"}
               </span>
               {statusMeta && (
-                <StatusBadge meta={statusMeta} data-testid="particulars-status-badge" />
+                <StatusChip tone={statusMeta.tone} size="compact" data-testid="particulars-status-badge">
+                  {statusMeta.label}
+                </StatusChip>
               )}
               {clientName && (
                 <span

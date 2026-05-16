@@ -1806,12 +1806,11 @@ export default function JobDetailPage() {
       content: (
         <div data-testid="card-notes-labour" className="space-y-3">
 
-          {/* ── Notes card ── */}
-          <div
-            className="rounded-md border border-slate-200 bg-white shadow-sm"
-            data-testid="card-notes"
-          >
-            <div className="flex items-center justify-between px-3 py-2.5">
+          {/* ── Notes section ── */}
+          {/* Heading row is outside the activity card (per design spec).
+              EntityNotesPanel in "activity" mode owns its own card chrome. */}
+          <div data-testid="card-notes">
+            <div className="flex items-center justify-between mb-2">
               <h4 className="text-emphasis text-text-primary">Notes</h4>
               <button
                 type="button"
@@ -1824,28 +1823,15 @@ export default function JobDetailPage() {
             </div>
             {/* EntityNotesPanel must stay visible (not display:none) so its
                 offsetParent check passes and openAddNoteSignal is honoured.
-                The panel renders its own "No notes yet." text; we append the
-                "Add note" Button below it when the list is empty. */}
-            <div className="px-3 pb-3">
-              <EntityNotesPanel
-                entityType="job"
-                entityId={job.id}
-                openAddNoteSignal={notesAddSignal}
-                onCountChange={setNotesCount}
-              />
-              {notesCount !== null && notesCount === 0 && (
-                <div className="flex justify-center pt-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setNotesAddSignal((n) => n + 1)}
-                    data-testid="button-add-note-empty"
-                  >
-                    Add note
-                  </Button>
-                </div>
-              )}
-            </div>
+                "activity" mode owns the outer card chrome and empty state. */}
+            <EntityNotesPanel
+              entityType="job"
+              entityId={job.id}
+              openAddNoteSignal={notesAddSignal}
+              onCountChange={setNotesCount}
+              listStyle="activity"
+              onAddNote={() => setNotesAddSignal((n) => n + 1)}
+            />
           </div>
 
           {/* ── Labour card ── */}

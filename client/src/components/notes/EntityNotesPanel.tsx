@@ -72,6 +72,7 @@ import {
   X,
 } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -152,6 +153,25 @@ export interface EntityNotesPanelProps {
   openAddNoteSignal?: number;
   /** Notification when the visible row count changes. */
   onCountChange?: (count: number) => void;
+  /**
+   * Controls how the note list is rendered.
+   * - `"cards"` (default) — each note in its own `RailContentCard` with
+   *   border, shadow, and rounded corners.
+   * - `"unified"` — all notes inside one shared content area separated
+   *   by `divide-y` lines; no per-note card chrome. Use this when the
+   *   parent already provides the card container.
+   * - `"activity"` — self-contained activity-feed card (`bg-inset-surface`,
+   *   `border-border`, no shadow) with a green dot + `text-row` body per
+   *   row, matching the `InvoiceActivityCard` visual system exactly. The
+   *   component owns its outer card chrome in this mode.
+   */
+  listStyle?: "cards" | "unified" | "activity";
+  /**
+   * Called when the user clicks the "Add note" CTA inside the activity-
+   * mode empty state. Only used when `listStyle="activity"`. Has no
+   * effect in other modes.
+   */
+  onAddNote?: () => void;
 }
 
 // ── Top-level dispatch ─────────────────────────────────────────────
@@ -274,6 +294,8 @@ function EntityOwnedNotesPanel({
   hideAddButton = true,
   openAddNoteSignal,
   onCountChange,
+  listStyle = "cards",
+  onAddNote,
 }: EntityNotesPanelProps) {
   // Narrow to entity-owned types — the dispatch above guarantees this.
   const ownedType = entityType as EntityOwnedType;
@@ -352,98 +374,280 @@ function EntityOwnedNotesPanel({
 
   return (
     <>
-      <div ref={containerRef} data-testid={`card-${ownedType}-notes`}>
-        {!hideAddButton && (
-          <div className="flex justify-end mb-2">
-            <button
-              type="button"
-              onClick={openCreate}
-              className="text-helper text-brand font-medium hover:underline"
-              data-testid="button-add-note"
-            >
-              + Add Note
-            </button>
-          </div>
-        )}
-
-        {isLoading ? (
-          <p className="text-helper text-text-muted px-2 py-3">
-            Loading notes...
-          </p>
-        ) : notes.length === 0 ? (
-          <DetailRightRailEmpty
-            message="No notes yet."
-            testIdPrefix={`${ownedType}-notes`}
-          />
-        ) : (
-          <div className="space-y-2">
-            {notes.map((note) => {
+      {listStyle === "activity" ? (
+        // ── Activity-feed card — owns its own outer chrome ──────────────
+        // Matches InvoiceActivityCard visual system exactly:
+        // bg-inset-surface, border-border, p-3, no shadow, green dot rows.
+        <div
+          ref={containerRef}
+          className="rounded-md border border-border bg-inset-surface p-3 overflow-hidden"
+          data-testid={`card-${ownedType}-notes`}
+        >
+          {isLoading ? (
+            <p className="text-helper text-muted-foreground">Loading…</p>
+          ) : notes.length === 0 ? (
+            <div className="text-center py-2 space-y-2">
+              <p
+                className="text-helper text-muted-foreground"
+                data-testid={`${ownedType}-notes-panel-empty`}
+              >
+                No notes yet.
+              </p>
+              {onAddNote && (
+                <div className="flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onAddNote}
+                    data-testid="button-add-note-empty"
+                  >
+                    Add note
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            notes.map((note, index) => {
+              const isFirst = index === 0;
+              const isLast = index === notes.length - 1;
               const canEdit = isOwnedRowEditable(note, ownedType);
               const chipLabel = originChipLabel(note.origin);
               const showAttachments =
                 note.attachments && note.attachments.length > 0;
 
-              const noteBody = (
+              const metaParts = [
+                format(new Date(note.createdAt), "MMM d 'at' h:mm a"),
+                note.userName,
+                ...(note.updatedAt && note.updatedAt !== note.createdAt
+                  ? ["edited"]
+                  : []),
+                ...(chipLabel ? [chipLabel] : []),
+              ];
+
+              const rowContent = (
                 <>
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-helper text-text-muted">
-                      <span className="font-semibold text-text-primary">
-                        {note.userName}
-                      </span>
-                      {" · "}
-                      {format(new Date(note.createdAt), "MMM d, h:mm a")}
-                      {note.updatedAt &&
-                        note.updatedAt !== note.createdAt && (
-                          <span className="ml-1 text-helper text-text-muted">
-                            (edited)
-                          </span>
-                        )}
-                    </span>
-                    {chipLabel && (
-                      <span
-                        className="text-label uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-text-secondary shrink-0"
-                        data-testid={`note-origin-${note.id}`}
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-brand mt-1.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <div className="flex-1 min-w-0 space-y-0.5">
+                    <p className="text-helper text-muted-foreground">
+                      {metaParts.join(" · ")}
+                    </p>
+                    <p
+                      className="text-row text-foreground leading-relaxed whitespace-pre-wrap break-words"
+                      style={{ overflowWrap: "anywhere" }}
+                    >
+                      {note.noteText}
+                    </p>
+                    {showAttachments && (
+                      <div
+                        className="mt-1.5"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        {chipLabel}
-                      </span>
+                        <NoteAttachmentStrip attachments={note.attachments!} />
+                      </div>
                     )}
                   </div>
-                  <RailContentCardBody>{note.noteText}</RailContentCardBody>
-                  {showAttachments && (
-                    <div
-                      className="mt-2"
-                      // Stop attachment-strip clicks (thumbnail → lightbox,
-                      // chip → file open) from bubbling to the row's
-                      // edit handler.
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <NoteAttachmentStrip attachments={note.attachments!} />
-                    </div>
-                  )}
                 </>
               );
 
-              return canEdit ? (
-                <RailContentCard
-                  key={note.id}
-                  onClick={() => openEdit(note)}
-                  testId={`note-${note.id}`}
-                  ariaLabel="Edit note"
-                >
-                  {noteBody}
-                </RailContentCard>
-              ) : (
-                <RailContentCard
-                  key={note.id}
-                  testId={`note-${note.id}`}
-                >
-                  {noteBody}
-                </RailContentCard>
+              const rowClass = cn(
+                "flex gap-2.5 py-3",
+                isFirst && "pt-0",
+                isLast && "pb-0",
+                !isFirst && "border-t border-border",
               );
-            })}
-          </div>
-        )}
-      </div>
+
+              return canEdit ? (
+                <button
+                  key={note.id}
+                  type="button"
+                  onClick={() => openEdit(note)}
+                  aria-label="Edit note"
+                  data-testid={`note-${note.id}`}
+                  className={cn(
+                    rowClass,
+                    // -mx-3 px-3 expands the button to the card edges so the
+                    // hover background covers full width despite the p-3 outer
+                    // container; overflow-hidden on the card clips to border-radius.
+                    "w-full text-left -mx-3 px-3 hover:bg-black/[0.02] transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
+                  )}
+                >
+                  {rowContent}
+                </button>
+              ) : (
+                <div
+                  key={note.id}
+                  data-testid={`note-${note.id}`}
+                  className={rowClass}
+                >
+                  {rowContent}
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        // ── cards / unified modes — parent provides outer card chrome ───
+        <div ref={containerRef} data-testid={`card-${ownedType}-notes`}>
+          {!hideAddButton && (
+            <div className="flex justify-end mb-2">
+              <button
+                type="button"
+                onClick={openCreate}
+                className="text-helper text-brand font-medium hover:underline"
+                data-testid="button-add-note"
+              >
+                + Add Note
+              </button>
+            </div>
+          )}
+
+          {isLoading ? (
+            <p className="text-helper text-text-muted px-2 py-3">
+              Loading notes...
+            </p>
+          ) : notes.length === 0 ? (
+            <DetailRightRailEmpty
+              message="No notes yet."
+              testIdPrefix={`${ownedType}-notes`}
+            />
+          ) : listStyle === "unified" ? (
+            <div className="divide-y divide-border">
+              {notes.map((note) => {
+                const canEdit = isOwnedRowEditable(note, ownedType);
+                const chipLabel = originChipLabel(note.origin);
+                const showAttachments =
+                  note.attachments && note.attachments.length > 0;
+
+                const noteBody = (
+                  <>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-helper text-text-muted">
+                        <span className="font-semibold text-text-primary">
+                          {note.userName}
+                        </span>
+                        {" · "}
+                        {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                        {note.updatedAt &&
+                          note.updatedAt !== note.createdAt && (
+                            <span className="ml-1 text-helper text-text-muted">
+                              (edited)
+                            </span>
+                          )}
+                      </span>
+                      {chipLabel && (
+                        <span
+                          className="text-label uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-text-secondary shrink-0"
+                          data-testid={`note-origin-${note.id}`}
+                        >
+                          {chipLabel}
+                        </span>
+                      )}
+                    </div>
+                    <RailContentCardBody>{note.noteText}</RailContentCardBody>
+                    {showAttachments && (
+                      <div
+                        className="mt-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <NoteAttachmentStrip attachments={note.attachments!} />
+                      </div>
+                    )}
+                  </>
+                );
+
+                return canEdit ? (
+                  <button
+                    key={note.id}
+                    type="button"
+                    onClick={() => openEdit(note)}
+                    aria-label="Edit note"
+                    data-testid={`note-${note.id}`}
+                    className="w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40"
+                  >
+                    {noteBody}
+                  </button>
+                ) : (
+                  <div
+                    key={note.id}
+                    data-testid={`note-${note.id}`}
+                    className="px-4 py-3"
+                  >
+                    {noteBody}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {notes.map((note) => {
+                const canEdit = isOwnedRowEditable(note, ownedType);
+                const chipLabel = originChipLabel(note.origin);
+                const showAttachments =
+                  note.attachments && note.attachments.length > 0;
+
+                const noteBody = (
+                  <>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-helper text-text-muted">
+                        <span className="font-semibold text-text-primary">
+                          {note.userName}
+                        </span>
+                        {" · "}
+                        {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                        {note.updatedAt &&
+                          note.updatedAt !== note.createdAt && (
+                            <span className="ml-1 text-helper text-text-muted">
+                              (edited)
+                            </span>
+                          )}
+                      </span>
+                      {chipLabel && (
+                        <span
+                          className="text-label uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-text-secondary shrink-0"
+                          data-testid={`note-origin-${note.id}`}
+                        >
+                          {chipLabel}
+                        </span>
+                      )}
+                    </div>
+                    <RailContentCardBody>{note.noteText}</RailContentCardBody>
+                    {showAttachments && (
+                      <div
+                        className="mt-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <NoteAttachmentStrip attachments={note.attachments!} />
+                      </div>
+                    )}
+                  </>
+                );
+
+                return canEdit ? (
+                  <RailContentCard
+                    key={note.id}
+                    onClick={() => openEdit(note)}
+                    testId={`note-${note.id}`}
+                    ariaLabel="Edit note"
+                  >
+                    {noteBody}
+                  </RailContentCard>
+                ) : (
+                  <RailContentCard
+                    key={note.id}
+                    testId={`note-${note.id}`}
+                  >
+                    {noteBody}
+                  </RailContentCard>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <EntityNoteDialog
         entityType={ownedType}

@@ -41,6 +41,7 @@ import NewInvoicePage from "@/pages/NewInvoicePage";
 // 2026-05-13: Receivables workspace — unified financial operations center.
 // Replaces the top-level "Invoices" sidebar entry; /invoices/* routes preserved.
 import ReceivablesPage from "@/pages/ReceivablesPage";
+import ReceivablesPage2 from "@/pages/ReceivablesPage2";
 import QuotesPage from "@/pages/QuotesPage";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
@@ -353,6 +354,12 @@ function Router() {
       <Route path="/receivables">
         <ProtectedRoute requireAdmin>
           <ReceivablesPage />
+        </ProtectedRoute>
+      </Route>
+      {/* Invoices 2 — experimental redesign workspace. Original /receivables is untouched. */}
+      <Route path="/invoices-v2">
+        <ProtectedRoute requireAdmin>
+          <ReceivablesPage2 />
         </ProtectedRoute>
       </Route>
       {/* /invoices → redirect to /receivables so existing bookmarks land on

@@ -36,9 +36,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  DollarSign, AlertCircle, ChevronDown, ChevronRight,
-  TrendingUp, Users, Receipt, Calendar as CalendarIcon, Plus,
-  FileEdit, LayoutGrid, Columns,
+  AlertCircle, ChevronDown,
+  TrendingUp, Users, Receipt, Calendar as CalendarIcon,
 } from "lucide-react";
 import {
   Popover,
@@ -1164,6 +1163,36 @@ interface CapacityResponseDto {
   offRosterAssignments?: OffRosterAssignmentDto[];
 }
 
+// SVG ring indicator — schedule utilization (booked / schedulable workday).
+function UtilizationRing({ pct }: { pct: number }) {
+  const radius = 12;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference - (pct / 100) * circumference;
+  return (
+    <div className="flex flex-col items-center shrink-0">
+      <div className="relative w-8 h-8">
+        <svg width="32" height="32" viewBox="0 0 32 32" className="absolute inset-0" aria-hidden>
+          <circle cx="16" cy="16" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="3" />
+          <circle
+            cx="16" cy="16" r={radius}
+            fill="none" stroke="#76B054" strokeWidth="3"
+            strokeDasharray={`${circumference} ${circumference}`}
+            strokeDashoffset={dashOffset}
+            strokeLinecap="round"
+            transform="rotate(-90 16 16)"
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[8px] font-semibold text-foreground tabular-nums leading-none">
+            {pct}%
+          </span>
+        </div>
+      </div>
+      <span className="text-[9px] text-muted-foreground mt-0.5 leading-none">utilized</span>
+    </div>
+  );
+}
+
 function TodaysScheduleCard({
   onOpenVisit,
   onOpenSlot,
@@ -1171,34 +1200,15 @@ function TodaysScheduleCard({
   scopeIds,
   onScopeIdsChange,
   compact = false,
-  displayMode,
-  onDisplayModeChange,
 }: {
   onOpenVisit: (state: VisitEditorState) => void;
   onOpenSlot: (slot: QuickCreateSlot) => void;
-  /** 2026-05-06 Phase 1 — feeds the compact "N Unscheduled" indicator next to
-   *  the title. Sourced from `/api/dashboard/workflow.jobs.unscheduledCount` —
-   *  the same value `OperationalAlertsCard` already consumes; passed in here
-   *  rather than re-fetched so the two surfaces stay in lockstep. */
   unscheduledJobsCount: number;
-  /** 2026-05-07 RALPH (3-col grid) — schedule scope is now CONTROLLED
-   *  by the page so the page can compute Today's Schedule's runtime
-   *  width unit (1 / 2 / 3) from the visible team count and pass it
-   *  to <DashboardWidgetGrid> as a width override. */
   scopeIds: string[];
   onScopeIdsChange: (next: string[] | ((prev: string[]) => string[])) => void;
-  /** 2026-05-07 RALPH: page-supplied flag set to `true` when the grid
-   *  cell is only 1 column wide (1 visible team member). The header
-   *  collapses to "Today" + the team filter only — booked %, scope
-   *  suffix, and the Create button are all suppressed so the title
-   *  row never wraps in a 1/3-width card. */
   compact?: boolean;
-  /** 2026-05-07 RALPH: display mode is CONTROLLED by the page so the
-   *  page can derive the schedule cell's width / row-span overrides.
-   *  `"column"` → side-by-side per-tech columns (default).
-   *  `"stacked"` → vertical tech sections; the page narrows the cell
-   *  to 1 column wide and conditionally row-spans 2 when content is
-   *  large enough to need it. */
+  // displayMode / onDisplayModeChange kept in the prop type for page
+  // backward-compat; the new horizontal-card layout has no separate modes.
   displayMode: "column" | "stacked";
   onDisplayModeChange: (next: "column" | "stacked") => void;
 }) {
@@ -1220,10 +1230,6 @@ function TodaysScheduleCard({
   const [timeOffDefaultTechId, setTimeOffDefaultTechId] = useState<
     string | undefined
   >(undefined);
-  // 2026-05-07 RALPH: display mode is CONTROLLED by the page (props).
-  // Local aliases below keep the rest of this component readable.
-  const scheduleDisplayMode = displayMode;
-
   const capacityQuery = useQuery<CapacityResponseDto>({
     queryKey: ["/api/dashboard/capacity", "today"],
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
@@ -1346,50 +1352,6 @@ function TodaysScheduleCard({
     });
   }, [activeTechs, openOnly, nowMs]);
 
-  // 2026-05-07 RALPH (idle grouping): classify techs by whether
-  // their RAW capacity (pre-`openOnly` filter, post-team-scope
-  // filter) contains any booked blocks. Open slots do NOT count.
-  // The classification reads from `activeTechs` (the upstream
-  // scope-filtered slice) so it stays stable even when the user
-  // toggles the open-only filter — flipping the display filter
-  // shouldn't reclassify an actively booked tech as "available."
-  const techActiveSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const t of activeTechs) {
-      if (t.scheduleBlocks.some((b) => b.kind === "booked" || b.kind === "task")) {
-        set.add(t.technicianId);
-      }
-    }
-    return set;
-  }, [activeTechs]);
-
-  // Partition the sorted-by-workload `visibleTechs` for column-mode
-  // rendering. Active techs keep their workload order (busiest
-  // leftmost); idle techs get re-sorted alphabetically because
-  // workload is uniformly zero among them.
-  const activeTechsForRender = useMemo(
-    () => visibleTechs.filter((t) => techActiveSet.has(t.technicianId)),
-    [visibleTechs, techActiveSet],
-  );
-  const idleTechsForRender = useMemo(
-    () =>
-      visibleTechs
-        .filter((t) => !techActiveSet.has(t.technicianId))
-        .slice()
-        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")),
-    [visibleTechs, techActiveSet],
-  );
-  const hasIdleGroup = idleTechsForRender.length > 0;
-  const hasUnassigned = (capacityQuery.data?.offRosterAssignments?.length ?? 0) > 0;
-  // Effective column count for the column-mode multi-tech grid:
-  // each active tech is one column, plus ONE column for the
-  // grouped "Available" pile if any idle tech exists, plus ONE
-  // for "Unassigned" when off-roster visits are present.
-  const effectiveColumnCount =
-    activeTechsForRender.length + (hasIdleGroup ? 1 : 0) + (hasUnassigned ? 1 : 0);
-
-  const isSingleTechView = visibleTechs.length === 1;
-
   const scopeLabel = useMemo(() => {
     if (isAllTeam) return "All team";
     if (scopeIds.length === 1) {
@@ -1455,31 +1417,6 @@ function TodaysScheduleCard({
 
   const offRosterRows = capacityQuery.data?.offRosterAssignments ?? [];
 
-  // 2026-05-07 RALPH: stacked-mode header layout flag. In stacked
-  // mode the title becomes "Schedule" (instead of "Today"), the
-  // booked-% / unscheduled chip is suppressed, the scope-suffix is
-  // suppressed, and the controls cluster moves to a second row so
-  // it never has to wrap inside the 1/3-width card. The
-  // display-mode toggle is also force-shown in stacked mode (even
-  // though `compact` is true, since stacked drops the cell to 1
-  // unit wide) so the user can switch back.
-  const isStackedMode = scheduleDisplayMode === "stacked";
-  // 2026-05-07 RALPH (regression fix): toggle visibility now gates
-  // on `isMultiTech` (the company has ≥ 2 schedulable techs), NOT
-  // on `!compact`. The previous rule hid the toggle whenever the
-  // page reduced widthUnits to 1, which (after idle-grouping +
-  // ACTIVE-driven width derivation) happens whenever zero techs are
-  // currently active — leaving the user stuck in stacked mode with
-  // no way to switch back. Stacked mode itself is also a "show the
-  // toggle" trigger so the user can always reach the column option
-  // even if they're solo-tech (defensive).
-  //
-  // The brief: "Display-mode toggle should be hidden only when truly
-  // invalid, not while loading or after a data issue."
-  const showDisplayModeToggle = isStackedMode || isMultiTech;
-
-  // Extracted control JSX — shared between the stacked 2-row header
-  // and the default single-row header so we don't duplicate it.
   const openOnlyToggleControl = (
     <button
       type="button"
@@ -1503,24 +1440,14 @@ function TodaysScheduleCard({
           className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
           data-testid="schedule-scope-filter"
         >
-          {/* In stacked mode, suppress the verbose `scopeLabel` (which
-              can be a comma-separated list of names) so the trigger
-              fits the narrower layout. The count badge to the right
-              still communicates how many techs are selected. */}
-          <span className="truncate max-w-[6rem]">
-            {isStackedMode ? "Team" : scopeLabel}
-          </span>
+          <span className="truncate max-w-[6rem]">{scopeLabel}</span>
           <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">
             {isAllTeam ? "All" : scopeIds.length}
           </span>
           <ChevronDown className="h-3 w-3" />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        sideOffset={4}
-        className="w-60 p-0"
-      >
+      <PopoverContent align="end" sideOffset={4} className="w-60 p-0">
         <div className="flex flex-col">
           <div className="py-1 max-h-72 overflow-y-auto">
             <button
@@ -1562,11 +1489,6 @@ function TodaysScheduleCard({
             >
               Manage team →
             </button>
-            {/* 2026-05-07 RALPH (technician time off): canonical
-                entry point for the Add Time Off modal. Sits next to
-                Manage Team because both are team-availability admin
-                actions. The modal preselects no specific tech here
-                — the user picks one inside the form. */}
             <button
               type="button"
               onClick={() => {
@@ -1583,131 +1505,218 @@ function TodaysScheduleCard({
       </PopoverContent>
     </Popover>
   ) : null;
-  const displayModeToggleControl = showDisplayModeToggle ? (
-    <button
-      type="button"
-      onClick={() =>
-        onDisplayModeChange(
-          scheduleDisplayMode === "column" ? "stacked" : "column",
-        )
-      }
-      data-testid="schedule-display-mode-toggle"
-      data-display-mode={scheduleDisplayMode}
-      aria-label="Column display"
-      title="Column display"
-      className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
-    >
-      {isStackedMode ? (
-        <LayoutGrid className="h-3.5 w-3.5" />
-      ) : (
-        <Columns className="h-3.5 w-3.5" />
-      )}
-    </button>
-  ) : null;
 
-  return (
-    <CardShell className="flex flex-col h-full">
-      {isStackedMode ? (
-        // 2026-05-07 RALPH — stacked-mode header layout. Two rows
-        // inside the same px-4 py-2 band so the header stays
-        // visually compact:
-        //   row 1: calendar icon + "Schedule" + icon-only mode
-        //          toggle (right-aligned)
-        //   row 2: Open + Team filter (only rendered if either
-        //          control is meaningful for the current state)
-        // The 1-tech case skips the toggle entirely (same rule as
-        // the default header). Booked% / Unscheduled chips and the
-        // scope suffix are dropped because they don't fit the narrow
-        // 1/3-width card.
-        <div
-          className="pl-4 pr-10 py-2 border-b border-card-border flex flex-col gap-2"
-          data-testid="todays-schedule-header"
-          data-header-variant="stacked"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
-              <h3 className="text-sm font-semibold text-foreground truncate">
-                Schedule
-              </h3>
+  // Per-tech card renderer. Utilization = booked / (booked + open) since those
+  // two block kinds tile the schedulable workday. Revenue and drive time are not
+  // in the capacity endpoint; both show "—" per spec.
+  //
+  // TODO: horizontal drag-to-reorder within this row was deferred because
+  // nesting a new DndContext inside DashboardWidgetGrid's DndContext requires
+  // careful sensor isolation to avoid interfering with widget-level drag, and
+  // would need its own separate order-state mechanism.
+  const renderTechCard = (tech: CapacityTechDto) => {
+    const bookedBlocks = tech.scheduleBlocks.filter((b) => b.kind === "booked");
+    const openBlocks = tech.scheduleBlocks.filter((b) => b.kind === "open");
+    const bookedMins = bookedBlocks.reduce((s, b) => s + (b.durationMinutes ?? 0), 0);
+    const openMins = openBlocks.reduce((s, b) => s + (b.durationMinutes ?? 0), 0);
+    const workdayMins = bookedMins + openMins;
+    const utilizationPct = workdayMins > 0 ? Math.round((bookedMins / workdayMins) * 100) : 0;
+    const bookedHoursLabel = `${(bookedMins / 60).toFixed(1)}h booked`;
+    const isOffShift = tech.state === "off_today";
+    const hasBooked = bookedBlocks.length > 0;
+    const statusLabel = isOffShift ? "Off shift" : hasBooked ? "Working" : "Available";
+    const displayBlocks = openOnly
+      ? tech.scheduleBlocks.filter((b) => b.kind === "open")
+      : tech.scheduleBlocks;
+    return (
+      <div
+        key={tech.technicianId}
+        className="flex-none w-[220px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
+        data-testid={`schedule-tech-card-${tech.technicianId}`}
+      >
+        {/* Header: name (left) | status + booked-hours row (left, below name) | utilization ring (right) */}
+        <div className="px-3 pt-3 pb-2.5 shrink-0">
+          <div className="flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-foreground truncate leading-tight">
+                {tech.name}
+              </div>
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                {!isOffShift && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden />
+                )}
+                <span
+                  className={cn(
+                    "text-[11px] leading-none",
+                    isOffShift ? "text-muted-foreground" : "text-emerald-700",
+                  )}
+                >
+                  {statusLabel}
+                </span>
+                <span className="text-[11px] text-muted-foreground leading-none">
+                  {bookedHoursLabel}
+                </span>
+              </div>
             </div>
-            {displayModeToggleControl}
+            <UtilizationRing pct={utilizationPct} />
           </div>
-          {(openOnlyToggleControl || teamFilterControl) && (
-            <div className="flex items-center gap-2 flex-wrap">
-              {openOnlyToggleControl}
-              {teamFilterControl}
+        </div>
+        {/* Schedule blocks */}
+        <div className="border-t border-border/50 flex-1 overflow-y-auto min-h-0">
+          {displayBlocks.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full py-5 px-3 text-center">
+              <CalendarIcon className="h-4 w-4 text-muted-foreground/30 mb-1.5" aria-hidden />
+              <span className="text-[11px] text-muted-foreground">No scheduled work</span>
+            </div>
+          ) : (
+            <div className="py-0.5">
+              {displayBlocks.map((block, bIdx, bArr) => {
+                const isOpen = block.kind === "open";
+                const isTimeOff = block.kind === "time_off";
+                const isTask = block.kind === "task";
+                const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
+                const isCompleted = !isOpen && block.visitStatus === "completed";
+                const isMuted = isPastOpen || isCompleted;
+                const isLastBlock = bIdx === bArr.length - 1;
+                const timeRange = formatTimeRange(block.startISO, block.endISO);
+                const nameLabel = isTimeOff
+                  ? `Time off${block.reason ? ` · ${block.reason}` : ""}`
+                  : isTask
+                    ? (block.title ?? "Task")
+                    : isOpen
+                      ? "Open Slot"
+                      : (block.title ?? "Visit");
+                return (
+                  <button
+                    key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? block.timeOffId ?? block.taskId ?? "open"}-${bIdx}`}
+                    type="button"
+                    onClick={() =>
+                      !isTimeOff && !isTask ? handleBlockClick(tech, block) : undefined
+                    }
+                    disabled={isTimeOff || isTask}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 transition-colors",
+                      isTimeOff
+                        ? "bg-amber-50/60 cursor-default"
+                        : isTask
+                          ? "bg-indigo-50/60 cursor-default"
+                          : "hover:bg-white/60",
+                      !isLastBlock && "border-b border-border/40",
+                      (isPastOpen || isCompleted) && "opacity-60",
+                    )}
+                    data-testid={
+                      isTask
+                        ? `schedule-block-task-${block.taskId ?? `${tech.technicianId}-${block.startISO}`}`
+                        : isTimeOff
+                          ? `schedule-block-time-off-${block.timeOffId ?? `${tech.technicianId}-${block.startISO}`}`
+                          : `schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`
+                    }
+                  >
+                    <div
+                      className={cn(
+                        "text-[11px] leading-tight tabular-nums font-medium",
+                        isMuted
+                          ? "text-muted-foreground"
+                          : isTimeOff
+                            ? "text-amber-700"
+                            : isTask
+                              ? "text-indigo-700"
+                              : isOpen
+                                ? "text-emerald-600"
+                                : "text-slate-500",
+                      )}
+                    >
+                      {timeRange}
+                    </div>
+                    <div
+                      className={cn(
+                        "text-[12px] truncate font-medium mt-0.5",
+                        isMuted
+                          ? "text-muted-foreground line-through"
+                          : isTimeOff
+                            ? "text-amber-800"
+                            : isTask
+                              ? "text-indigo-800"
+                              : isOpen
+                                ? "text-emerald-700"
+                                : "text-foreground",
+                      )}
+                    >
+                      {nameLabel}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
-      ) : (
-        // Default single-row header — preserved verbatim from the
-        // pre-stacked layout so column mode stays untouched.
-        <div
-          className="pl-4 pr-10 py-2.5 border-b border-card-border flex items-center justify-between gap-3"
-          data-testid="todays-schedule-header"
-          data-header-variant="default"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
-            {/* 2026-05-07 RALPH: "Today" instead of "Today's Schedule".
-                Shorter, fits cleanly in 1-column mode, and reads the
-                same in 2/3-column mode for visual consistency. The
-                `/ <scope>` suffix and the booked-% chip are suppressed
-                entirely in compact mode so the header never wraps in
-                a 1/3-width card. */}
-            <h3 className="text-sm font-semibold text-foreground truncate">
-              Today
-              {!compact && scopeHeaderSuffix && (
-                <>
-                  {" "}
-                  <span className="text-xs font-normal text-slate-500">
-                    / {scopeHeaderSuffix}
-                  </span>
-                </>
-              )}
-            </h3>
-            {/* Compact capacity indicator — unscheduled count only.
-                Suppressed in compact mode so the 1-column header fits
-                cleanly. */}
-            {!compact && unscheduledJobsCount > 0 && (
-              <div
-                className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 shrink-0"
-                data-testid="todays-schedule-capacity-indicators"
-              >
-                <span data-testid="capacity-indicator-unscheduled">
-                  <span className="font-semibold tabular-nums text-slate-700">
-                    {unscheduledJobsCount}
-                  </span>{" "}
-                  Unscheduled
-                </span>
-              </div>
-            )}
-          </div>
-          {/* Header controls cluster — preserved single-row layout for
-              column mode. `flex-wrap` lets the cluster wrap onto a
-              second row at narrow tablet widths instead of
-              horizontally overflowing the card. */}
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            {openOnlyToggleControl}
-            {teamFilterControl}
-            {displayModeToggleControl}
-          </div>
+        {/* Bottom metrics: Jobs | Revenue | Drive time. Revenue and drive time are
+            not available in the capacity endpoint; shown as "—" per spec. */}
+        <div className="border-t border-border/50 grid grid-cols-3 px-2 py-2 gap-1 shrink-0">
+          {(
+            [
+              { label: "Jobs", value: String(bookedBlocks.length) },
+              { label: "Revenue", value: "—" },
+              { label: "Drive", value: "—" },
+            ] as const
+          ).map(({ label, value }) => (
+            <div key={label} className="flex flex-col items-center">
+              <span className="text-[11px] font-semibold text-foreground tabular-nums">{value}</span>
+              <span className="text-[9px] text-muted-foreground uppercase tracking-wide leading-tight mt-0.5">
+                {label}
+              </span>
+            </div>
+          ))}
         </div>
-      )}
-      {/* 2026-04-26: body wrapper is `flex-1 flex flex-col` so the
-          multi-tech grid below can stretch to the card's full height.
-          Together with `DashCard`'s `h-full flex flex-col` this lets
-          per-tech column dividers paint top-to-bottom regardless of
-          how much content each column has.
-          2026-05-07 RALPH: card height is now FIXED at the canonical
-          `summary` preset (`h-[420px]`) regardless of technician
-          count, so the body must scroll internally when a busy day
-          has more rows than fit. `overflow-y-auto` + `min-h-0` lets
-          the body claim its share of the fixed card height and
-          scroll the surplus rows. */}
+      </div>
+    );
+  };
+
+  return (
+    <CardShell className="flex flex-col h-full">
+      {/* Single header — Open filter + Team filter. Display-mode toggle removed
+          since the new horizontal-card layout is the only mode. */}
       <div
-        className="flex-1 flex flex-col min-h-0 overflow-y-auto"
+        className="pl-4 pr-10 py-2.5 border-b border-card-border flex items-center justify-between gap-3"
+        data-testid="todays-schedule-header"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+          <h3 className="text-sm font-semibold text-foreground truncate">
+            Today
+            {!compact && scopeHeaderSuffix && (
+              <>
+                {" "}
+                <span className="text-xs font-normal text-slate-500">
+                  / {scopeHeaderSuffix}
+                </span>
+              </>
+            )}
+          </h3>
+          {!compact && unscheduledJobsCount > 0 && (
+            <div
+              className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 shrink-0"
+              data-testid="todays-schedule-capacity-indicators"
+            >
+              <span data-testid="capacity-indicator-unscheduled">
+                <span className="font-semibold tabular-nums text-slate-700">
+                  {unscheduledJobsCount}
+                </span>{" "}
+                Unscheduled
+              </span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {openOnlyToggleControl}
+          {teamFilterControl}
+        </div>
+      </div>
+      {/* Horizontal per-tech card layout. Each schedulable technician gets
+          one inset sub-card. overflow-x-auto handles teams > 5; each card's
+          schedule-blocks section scrolls internally. */}
+      <div
+        className="flex-1 flex flex-col min-h-0"
         data-testid="schedule-body-scroll"
       >
         {capacityQuery.isLoading ? (
@@ -1715,15 +1724,6 @@ function TodaysScheduleCard({
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
           </div>
         ) : capacityQuery.isError ? (
-          // 2026-05-07 RALPH (regression fix): explicit error state
-          // when the capacity endpoint fails (e.g., a downstream
-          // table is missing or the backend is restarting). Without
-          // this branch, React Query's retry-with-backoff burned
-          // ~30 s before the card settled on "No technicians in the
-          // selected scope" — indistinguishable from a legitimate
-          // empty-team scenario. The retry button calls refetch()
-          // directly so the user can recover immediately once the
-          // backend is healthy.
           <div className="p-4" data-testid="schedule-error-state">
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-row text-red-700 flex items-center justify-between gap-3">
               <span className="truncate">
@@ -1746,537 +1746,82 @@ function TodaysScheduleCard({
           <div className="p-4">
             <EmptyState message="No technicians in the selected scope." />
           </div>
-        ) : isSingleTechView ? (
-          <div data-testid="schedule-single-tech-view">
-            {visibleTechs[0].scheduleBlocks.length === 0 ? (
-              <div className="p-4">
-                <EmptyState
-                  message={
-                    openOnly
-                      ? "No open slots."
-                      : "No scheduled work for this tech today."
-                  }
-                />
-              </div>
-            ) : (
-              visibleTechs[0].scheduleBlocks.map((block, idx, arr) => {
-                const tech = visibleTechs[0];
-                const timeRange = formatTimeRange(block.startISO, block.endISO);
-                const isOpen = block.kind === "open";
-                const isTask = block.kind === "task";
-                const isTimeOff = block.kind === "time_off";
-                const isLast = idx === arr.length - 1;
-                const duration = formatDurationLabel(block.durationMinutes);
-                const nameLabel = isTimeOff
-                  ? `Time off${block.reason ? ` · ${block.reason}` : ""}`
-                  : isTask
-                    ? (block.title ?? "Task")
-                    : isOpen
-                      ? "Open Slot"
-                      : (block.title ?? "Visit");
-                // 2026-04-30: muted-state markers — see top-of-component
-                // comment on `nowMs`. `isPastOpen` strikes past
-                // availability; `isCompleted` strikes finished work
-                // (status-driven, time-independent per spec).
-                const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
-                const isCompleted = !isOpen && block.visitStatus === "completed";
-                const isMuted = isPastOpen || isCompleted;
-                return (
-                  <button
-                    key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? block.timeOffId ?? block.taskId ?? "open"}-${idx}`}
-                    type="button"
-                    onClick={() => handleBlockClick(tech, block)}
-                    disabled={isTask || isTimeOff}
-                    className={`w-full text-left px-4 py-1.5 transition-colors flex items-center gap-3 group ${isTimeOff ? "bg-amber-50/60 cursor-default" : isTask ? "bg-indigo-50/60 cursor-default" : "hover:bg-[#F0F5F0]"} ${!isLast ? "border-b border-[#e2e8f0]" : ""} ${isPastOpen ? "opacity-60" : isCompleted ? "opacity-70" : ""}`}
-                    data-testid={isTask ? `schedule-block-task-${block.taskId ?? `${tech.technicianId}-${block.startISO}`}` : isTimeOff ? `schedule-block-time-off-${block.timeOffId ?? `${tech.technicianId}-${block.startISO}`}` : `schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
-                  >
-                    {/* 2026-04-26 v2: rigid 3-column grid for row
-                        alignment. The prior flex+tabular-nums layout
-                        only normalized digit widths, so rows with
-                        different time-string character counts (e.g.
-                        `9:00–10:00` vs `10:00–11:00`) drifted the
-                        bullet/name/duration positions. Grid columns
-                        are: 110px time gutter | 1fr name (the only
-                        flex column — ellipsizes first) | auto duration
-                        (right-aligned). The bullet sits at the start
-                        of the name column so it lands at the same x
-                        position on every row regardless of name length.
-                        2026-04-30: when muted (past open / completed),
-                        the inline emerald color ternaries fall back to
-                        `text-text-muted` and `line-through` is applied
-                        on the grid container so it cascades to time /
-                        name / duration via inherited
-                        `text-decoration-line`. */}
-                    <div
-                      className={`flex-1 min-w-0 grid items-baseline gap-2 text-row ${isMuted ? "text-text-muted line-through" : isTimeOff ? "text-amber-800" : isTask ? "text-indigo-800" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
-                      style={{ gridTemplateColumns: "110px minmax(0, 1fr) auto" }}
-                    >
-                      <span className={`tabular-nums font-medium ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-700" : isTask ? "text-indigo-700" : isOpen ? "text-emerald-700" : "text-slate-600"}`}>
-                        {timeRange}
-                      </span>
-                      <span className="flex items-baseline gap-1.5 min-w-0">
-                        <span className={`shrink-0 ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-400" : isTask ? "text-indigo-400" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
-                        <span className={`font-semibold truncate${!isOpen && !isTask && !isTimeOff ? " text-list-primary" : ""}`}>{nameLabel}</span>
-                      </span>
-                      <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-600" : isTask ? "text-indigo-600" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
-                    </div>
-                    {!isTask && !isTimeOff && (
-                      <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-colors ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-600 group-hover:text-emerald-800" : "text-slate-400 group-hover:text-[#111827]"}`} />
-                    )}
-                  </button>
-                );
-              })
-            )}
-          </div>
         ) : (
-          // 2026-04-26: column width is now responsive to visible tech count.
-          //   ≤ 4 techs → CSS grid `repeat(N, minmax(0, 1fr))` so columns
-          //               always fill the card width (no dead space).
-          //   ≥ 5 techs → horizontal scroll inside the card with a 220px
-          //               readable min-width per column. Page itself never
-          //               horizontally scrolls — only the rail does.
-          // The column body is identical in both modes; only the container
-          // and per-column width class differ.
-          (() => {
-            // 2026-05-07 RALPH: stacked mode forces the vertical
-            // layout regardless of breakpoint or tech count. Column
-            // mode keeps the existing rule (grid for ≤4 techs;
-            // horizontal scroll for ≥5).
-            const isStacked = scheduleDisplayMode === "stacked";
-            // 2026-05-07 RALPH (idle grouping): column mode now uses
-            // `effectiveColumnCount` (active tech columns + the
-            // grouped "Available" column when idle techs exist) so
-            // the grid threshold reflects the actual rendered column
-            // count, not the raw `visibleTechs.length`. Stacked mode
-            // continues to iterate `visibleTechs` directly — no
-            // grouping in stacked, every tech gets their own section.
-            const useGrid = !isStacked && effectiveColumnCount <= 4;
-            const renderColumn = (
-              tech: CapacityTechDto,
-              isLastCol: boolean,
-              widthClass: string,
-              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
-            ) => {
-              // 2026-04-26 polish v6: off-shift technicians can still have
-              // assigned visits (e.g. accidental booking on a day-off). The
-              // server now returns those blocks for off_today techs; the
-              // column labels the name `(off shift)` and renders the
-              // blocks below. The "No work" copy fires only when the tech
-              // truly has nothing assigned today.
-              // 2026-04-30: when the open-only filter is on, the per-column
-              // empty copy switches to "No open slots" so a tech the user
-              // has explicitly selected doesn't read as "off shift" or
-              // "no work" when they actually do have booked visits — just
-              // none of them are open slots to claim.
-              const isOffShift = tech.state === "off_today";
-              const emptyLabel = openOnly
-                ? "No open slots"
-                : isOffShift
-                  ? "Off shift"
-                  : "No work";
-              return (
+          <div
+            className="flex gap-3 px-3 py-3 overflow-x-auto flex-1"
+            data-testid="schedule-tech-cards"
+          >
+            {visibleTechs.map((tech) => renderTechCard(tech))}
+            {offRosterRows.length > 0 && (
               <div
-                key={tech.technicianId}
-                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
+                key="unassigned-visits"
+                className="flex-none w-[220px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
+                data-testid="schedule-unassigned-card"
               >
-                <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
-                  {tech.name}
-                  {isOffShift && (
-                    <span className="ml-1.5 text-[10px] font-medium text-amber-700 align-middle">
-                      (off shift)
-                    </span>
-                  )}
+                <div className="px-3 pt-3 pb-2.5 shrink-0">
+                  <div className="text-[13px] font-medium text-muted-foreground truncate leading-tight italic">
+                    Unassigned
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    {offRosterRows.length} visit{offRosterRows.length !== 1 ? "s" : ""}
+                  </div>
                 </div>
-                <div className="py-0.5">
-                  {tech.scheduleBlocks.length === 0 ? (
-                    <div className="px-3 py-3 text-[11px] text-slate-500 italic">
-                      {emptyLabel}
-                    </div>
-                  ) : (
-                    tech.scheduleBlocks.map((block, bIdx, bArr) => {
-                      const timeRange = formatTimeRange(block.startISO, block.endISO);
-                      const isOpen = block.kind === "open";
-                      // 2026-05-07 RALPH: time_off blocks render with
-                      // a muted amber palette and a "Time off" label
-                      // (or the reason if present). Click is no-op
-                      // for now — editing is wired via the API but
-                      // the dashboard doesn't expose an inline edit
-                      // entry point yet (follow-up).
-                      const isTimeOff = block.kind === "time_off";
-                      // 2026-05-12 RALPH: scheduled task blocks render
-                      // with a blue palette and the task title. They are
-                      // display-only in the dashboard tile (no click-
-                      // through) — same pattern as time_off.
-                      const isTask = block.kind === "task";
+                <div className="border-t border-border/50 flex-1 overflow-y-auto min-h-0">
+                  <div className="py-0.5">
+                    {offRosterRows.map((row, bIdx, bArr) => {
+                      const isTaskRow = !!row.taskId && !row.visitId;
+                      const timeRange = formatTimeRange(row.scheduledStart, row.scheduledEnd);
+                      const nameLabel = isTaskRow ? (row.title ?? "Task") : (row.title ?? "Visit");
                       const isLastBlock = bIdx === bArr.length - 1;
-                      const duration = formatDurationLabel(block.durationMinutes);
-                      const nameLabel = isTimeOff
-                        ? `Time off${block.reason ? ` · ${block.reason}` : ""}`
-                        : isTask
-                          ? (block.title ?? "Task")
-                          : isOpen
-                            ? "Open Slot"
-                            : (block.title ?? "Visit");
-                      // 2026-04-30: same muted-state markers as the
-                      // single-tech view — kept identical so both layouts
-                      // strike past-open / completed rows the same way.
-                      const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
-                      const isCompleted = !isOpen && block.visitStatus === "completed";
-                      const isMuted = isPastOpen || isCompleted;
+                      const rowKey = isTaskRow
+                        ? `unassigned-task-${row.taskId}`
+                        : `unassigned-${row.visitId}`;
                       return (
                         <button
-                          key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? block.timeOffId ?? block.taskId ?? "open"}`}
+                          key={rowKey}
                           type="button"
-                          onClick={() =>
-                            isTimeOff || isTask ? undefined : handleBlockClick(tech, block)
-                          }
-                          disabled={isTimeOff || isTask}
-                          className={`w-full text-left px-3 py-1.5 transition-colors ${
-                            isTimeOff
-                              ? "bg-amber-50/60 cursor-default"
-                              : isTask
-                                ? "bg-indigo-50/60 cursor-default"
-                                : "hover:bg-[#F0F5F0]"
-                          } ${
-                            !isLastBlock ? "border-b border-slate-100" : ""
-                          } ${isPastOpen ? "opacity-60" : isCompleted ? "opacity-70" : ""}`}
+                          onClick={() => !isTaskRow ? handleOffRosterClick(row) : undefined}
+                          disabled={isTaskRow}
+                          className={cn(
+                            "w-full text-left px-3 py-1.5 transition-colors",
+                            isTaskRow ? "bg-indigo-50/60 cursor-default" : "hover:bg-white/60",
+                            !isLastBlock && "border-b border-border/40",
+                          )}
                           data-testid={
-                            isTask
-                              ? `schedule-block-task-${block.taskId ?? `${tech.technicianId}-${block.startISO}`}`
-                              : isTimeOff
-                                ? `schedule-block-time-off-${block.timeOffId ?? `${tech.technicianId}-${block.startISO}`}`
-                                : `schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`
+                            isTaskRow
+                              ? `schedule-unassigned-task-${row.taskId}`
+                              : `schedule-unassigned-row-${row.visitId}`
                           }
                         >
-                          {/* 2026-04-26 v2: rigid 3-column grid mirroring
-                              the single-tech view, with a tighter time
-                              gutter (96px) sized for the smaller text-xs
-                              font and the multi-tech column constraints
-                              (full-width grid for ≤4 techs; 220px-wide
-                              scrolling columns for ≥5 techs). On a 220px
-                              column the layout is: 96px time + ~12px
-                              gap + name (ellipsized) + ~50px duration.
-                              The name column is the only flex element
-                              so it absorbs the remaining width and
-                              truncates first per spec.
-                              2026-04-30: muted state mirrors the
-                              single-tech view above. */}
                           <div
-                            className={`grid items-baseline gap-1.5 text-row ${
-                              isMuted
-                                ? "text-text-muted line-through"
-                                : isTimeOff
-                                  ? "text-amber-800"
-                                  : isTask
-                                    ? "text-indigo-800"
-                                    : isOpen
-                                      ? "text-emerald-700"
-                                      : "text-[#111827]"
-                            }`}
-                            style={{ gridTemplateColumns: "96px minmax(0, 1fr) auto" }}
+                            className={cn(
+                              "text-[11px] leading-tight tabular-nums font-medium",
+                              isTaskRow ? "text-indigo-700" : "text-slate-500",
+                            )}
                           >
-                            <span
-                              className={`tabular-nums font-medium ${
-                                isMuted
-                                  ? "text-text-muted"
-                                  : isTimeOff
-                                    ? "text-amber-700"
-                                    : isTask
-                                      ? "text-indigo-700"
-                                      : isOpen
-                                        ? "text-emerald-700"
-                                        : "text-slate-600"
-                              }`}
-                            >
-                              {timeRange}
-                            </span>
-                            <span className="flex items-baseline gap-1 min-w-0">
-                              <span className={`shrink-0 ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-400" : isTask ? "text-indigo-400" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
-                              <span className={`font-semibold truncate${!isOpen && !isTask && !isTimeOff ? " text-list-primary" : ""}`}>{nameLabel}</span>
-                            </span>
-                            <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isTimeOff ? "text-amber-600" : isTask ? "text-indigo-600" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
+                            {timeRange}
+                          </div>
+                          <div
+                            className={cn(
+                              "text-[12px] truncate font-medium mt-0.5",
+                              isTaskRow ? "text-indigo-800" : "text-foreground",
+                            )}
+                          >
+                            {nameLabel}
+                            {row.technicianName && (
+                              <span className="text-[10px] text-muted-foreground ml-1">
+                                · {row.technicianName}
+                              </span>
+                            )}
                           </div>
                         </button>
                       );
-                    })
-                  )}
+                    })}
+                  </div>
                 </div>
               </div>
-              );
-            };
-
-            // 2026-04-26: both layouts now stretch full-height
-            // (`flex-1` on the grid / scroll wrapper, `h-full` on the
-            // inner column row) so the per-tech `border-r` dividers
-            // paint to the bottom of the card body. Empty columns
-            // (or columns with fewer rows than their neighbour) still
-            // render their full-height boundary.
-            //
-            // 2026-04-30 (responsive pass) — the ≤ 4-tech grid now
-            // collapses to a vertical stack below `xl` (1280 px). The
-            // previous unconditional `repeat(N, minmax(0, 1fr))` with
-            // `min-w-0` on each column let columns crush below their
-            // intrinsic minimum at narrow desktop / tablet widths,
-            // truncating tech names and visit labels. At `< xl` the
-            // wrapper is now `flex flex-col` (each tech becomes a
-            // full-width section); at `xl+` it stays `grid` with the
-            // unchanged inline `gridTemplateColumns`. The
-            // `gridTemplateColumns` inline style is harmless on a
-            // `display: flex` parent — the browser ignores it.
-            // Stacked: vertical sections at every breakpoint, no
-            // grid, no horizontal scroll. Each tech becomes a
-            // full-width section with its name as a compact header
-            // and its rows below. Body wrapper's overflow-y-auto
-            // (set on the parent) handles the internal scroll when
-            // stacked content exceeds the fixed card height.
-            //
-            // Renders off-roster (unassigned / non-schedulable) visits
-            // in the same column/section structure as regular tech rows.
-            // The "Unassigned" label is italic to distinguish it from
-            // named technician columns without adding visual noise.
-            const renderUnassignedColumn = (
-              isLastCol: boolean,
-              widthClass: string,
-              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
-            ) => (
-              <div
-                key="unassigned-visits"
-                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
-                data-testid="schedule-unassigned-column"
-              >
-                <div className="px-3 py-2 text-[13px] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
-                  <span
-                    className="italic text-slate-500"
-                    data-testid="schedule-unassigned-label"
-                  >
-                    Unassigned
-                  </span>
-                </div>
-                <div className="py-0.5">
-                  {offRosterRows.map((row, bIdx, bArr) => {
-                    const isTaskRow = !!row.taskId && !row.visitId;
-                    const timeRange = formatTimeRange(
-                      row.scheduledStart,
-                      row.scheduledEnd,
-                    );
-                    const isLastBlock = bIdx === bArr.length - 1;
-                    const durationMinutes = Math.round(
-                      (Date.parse(row.scheduledEnd) -
-                        Date.parse(row.scheduledStart)) /
-                        60_000,
-                    );
-                    const duration = formatDurationLabel(durationMinutes);
-                    const nameLabel = isTaskRow
-                      ? `${row.title ?? "Task"} (task)`
-                      : (row.title ?? "Visit");
-                    const rowKey = isTaskRow
-                      ? `unassigned-task-${row.taskId}`
-                      : `unassigned-${row.visitId}`;
-                    return (
-                      <button
-                        key={rowKey}
-                        type="button"
-                        onClick={() => isTaskRow ? undefined : handleOffRosterClick(row)}
-                        disabled={isTaskRow}
-                        className={`w-full text-left px-3 py-1.5 transition-colors ${
-                          isTaskRow
-                            ? "bg-indigo-50/60 cursor-default"
-                            : "hover:bg-[#F0F5F0]"
-                        } ${
-                          !isLastBlock ? "border-b border-slate-100" : ""
-                        }`}
-                        data-testid={isTaskRow ? `schedule-unassigned-task-${row.taskId}` : `schedule-unassigned-row-${row.visitId}`}
-                      >
-                        <div
-                          className={`grid items-baseline gap-1.5 text-row ${isTaskRow ? "text-indigo-800" : "text-[#111827]"}`}
-                          style={{
-                            gridTemplateColumns: "96px minmax(0, 1fr) auto",
-                          }}
-                        >
-                          <span className={`tabular-nums font-medium ${isTaskRow ? "text-indigo-700" : "text-slate-600"}`}>
-                            {timeRange}
-                          </span>
-                          <span className="flex items-baseline gap-1 min-w-0">
-                            <span
-                              className={`shrink-0 ${isTaskRow ? "text-indigo-400" : "text-slate-300"}`}
-                              aria-hidden
-                            >
-                              •
-                            </span>
-                            <span className={`font-semibold truncate${!isTaskRow ? " text-list-primary" : ""}`}>
-                              {nameLabel}
-                            </span>
-                          </span>
-                          <span className={`tabular-nums font-normal text-right ${isTaskRow ? "text-indigo-600" : "text-slate-500"}`}>
-                            ({duration})
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-            // 2026-05-07 RALPH (idle grouping): the column branches
-            // below render `activeTechsForRender` as dedicated
-            // columns and append ONE grouped "Available" column when
-            // `idleTechsForRender.length > 0`. Stacked mode is
-            // unchanged — every tech still gets their own section.
-            if (isStacked) {
-              return (
-                <div
-                  className="flex flex-col flex-1"
-                  data-testid="schedule-multi-column-view"
-                  data-display-mode="stacked"
-                >
-                  {visibleTechs.map((tech, i) =>
-                    renderColumn(
-                      tech,
-                      i === visibleTechs.length - 1 && !hasUnassigned,
-                      "w-full",
-                    ),
-                  )}
-                  {hasUnassigned && renderUnassignedColumn(true, "w-full")}
-                </div>
-              );
-            }
-            // Compact "Available" column rendered ONCE at the right
-            // edge of column-mode layouts when at least one idle
-            // tech exists. Each row shows the tech name + a green
-            // "Open" pill; clicking promotes to the schedule
-            // creation flow if the tech has any open block, falling
-            // back to a no-op when they have none (off-shift).
-            const renderGroupedAvailableColumn = (
-              isLastCol: boolean,
-              widthClass: string,
-              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
-            ) => (
-              <div
-                key="available-techs"
-                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
-                data-testid="schedule-available-column"
-              >
-                <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
-                  Available
-                </div>
-                <div className="py-0.5">
-                  {idleTechsForRender.map((tech, idx) => {
-                    const firstOpen = tech.scheduleBlocks.find(
-                      (b) => b.kind === "open",
-                    );
-                    // 2026-05-07 RALPH (technician time off): render
-                    // an "Off" pill (amber) when the tech has any
-                    // time-off block today. Takes precedence over
-                    // the "Open" pill since a tech on time-off
-                    // shouldn't read as available even if a tiny
-                    // sliver of open slot remains around the
-                    // blocked window.
-                    const hasTimeOff = tech.scheduleBlocks.some(
-                      (b) => b.kind === "time_off",
-                    );
-                    const isOffShift = tech.state === "off_today";
-                    const isLastRow = idx === idleTechsForRender.length - 1;
-                    const hasClickable = !!firstOpen && !hasTimeOff;
-                    return (
-                      <button
-                        key={tech.technicianId}
-                        type="button"
-                        onClick={() =>
-                          hasClickable &&
-                          firstOpen &&
-                          handleBlockClick(tech, firstOpen)
-                        }
-                        disabled={!hasClickable}
-                        data-testid={`schedule-available-row-${tech.technicianId}`}
-                        className={`w-full text-left px-3 py-1 transition-colors flex items-center gap-2 ${
-                          !isLastRow ? "border-b border-slate-100" : ""
-                        } ${
-                          hasClickable
-                            ? "hover:bg-[#F0F5F0]"
-                            : "cursor-default opacity-70"
-                        }`}
-                      >
-                        <span className="flex-1 text-helper font-medium text-slate-700 dark:text-gray-200 truncate">
-                          {tech.name}
-                          {isOffShift && !hasTimeOff && (
-                            <span className="ml-1 text-[10px] font-normal text-amber-700 align-middle">
-                              (off)
-                            </span>
-                          )}
-                        </span>
-                        <span
-                          className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                            hasTimeOff
-                              ? "bg-amber-100 text-amber-700"
-                              : hasClickable
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-slate-100 text-slate-500"
-                          }`}
-                          data-testid={`schedule-available-status-${tech.technicianId}`}
-                        >
-                          {hasTimeOff ? "Off" : hasClickable ? "Open" : "—"}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-            const activeColumnsLastIdx = activeTechsForRender.length - 1;
-            return useGrid ? (
-              <div
-                className="flex flex-col xl:grid flex-1"
-                style={{
-                  gridTemplateColumns: `repeat(${effectiveColumnCount}, minmax(0, 1fr))`,
-                }}
-                data-testid="schedule-multi-column-view"
-                data-display-mode="column"
-              >
-                {activeTechsForRender.map((tech, i) =>
-                  renderColumn(
-                    tech,
-                    !hasIdleGroup && !hasUnassigned && i === activeColumnsLastIdx,
-                    "w-full xl:min-w-0",
-                  ),
-                )}
-                {hasIdleGroup &&
-                  renderGroupedAvailableColumn(!hasUnassigned, "w-full xl:min-w-0")}
-                {hasUnassigned && renderUnassignedColumn(true, "w-full xl:min-w-0")}
-              </div>
-            ) : (
-              <div
-                className="overflow-x-auto flex-1"
-                data-testid="schedule-multi-column-view"
-                data-display-mode="column"
-              >
-                {/* minmax(220px, 1fr): columns stretch to fill available
-                    card width on wide screens, and enforce a 220px floor
-                    so horizontal scroll triggers correctly on narrow ones.
-                    minWidth ensures the grid element itself is wide enough
-                    to overflow the overflow-x-auto wrapper (a grid box
-                    won't exceed its containing block width on its own). */}
-                <div
-                  className="grid h-full"
-                  style={{
-                    gridTemplateColumns: `repeat(${effectiveColumnCount}, minmax(220px, 1fr))`,
-                    minWidth: `${effectiveColumnCount * 220}px`,
-                  }}
-                >
-                  {activeTechsForRender.map((tech, i) =>
-                    renderColumn(
-                      tech,
-                      !hasIdleGroup && !hasUnassigned && i === activeColumnsLastIdx,
-                      "min-w-0",
-                      "border-r border-[#e2e8f0]",
-                    ),
-                  )}
-                  {hasIdleGroup &&
-                    renderGroupedAvailableColumn(!hasUnassigned, "min-w-0", "border-r border-[#e2e8f0]")}
-                  {hasUnassigned && renderUnassignedColumn(true, "min-w-0", "border-r border-[#e2e8f0]")}
-                </div>
-              </div>
-            );
-          })()
+            )}
+          </div>
         )}
       </div>
       {/* 2026-05-07 RALPH (technician time off): mounted at the

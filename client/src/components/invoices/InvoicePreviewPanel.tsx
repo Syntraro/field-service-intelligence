@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { X, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/StatusBadge";
+import { StatusChip } from "@/components/ui/chip";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import type { InvoiceLine } from "@shared/schema";
@@ -101,7 +101,9 @@ export function InvoicePreviewPanel({ invoiceId, onClose }: InvoicePreviewPanelP
                 Invoice #{invoice.invoiceNumber ?? "—"}
               </span>
               {statusMeta && (
-                <StatusBadge meta={statusMeta} data-testid="preview-status-badge" />
+                <StatusChip tone={statusMeta.tone} size="compact" data-testid="preview-status-badge">
+                  {statusMeta.label}
+                </StatusChip>
               )}
               {clientName && (
                 <span

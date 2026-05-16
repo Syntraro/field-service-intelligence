@@ -98,7 +98,7 @@ export function buildTenantNavItems(
     hoverText: "Service Plans",
   });
 
-  // Group 3: Invoices → Payments → Price Book
+  // Group 3: Invoices → Invoices 2 (experimental) → Payments → Price Book
   items.push({
     title: "Invoices",
     icon: Inbox,
@@ -110,6 +110,13 @@ export function buildTenantNavItems(
       location.startsWith("/invoices/"),
     testId: "nav-receivables",
     isDivider: true,
+  });
+  items.push({
+    title: "Invoices 2",
+    icon: Inbox,
+    href: "/invoices-v2",
+    isActive: location === "/invoices-v2" || location.startsWith("/invoices-v2/"),
+    testId: "nav-receivables-v2",
   });
   if (userRole !== "dispatcher") {
     items.push({

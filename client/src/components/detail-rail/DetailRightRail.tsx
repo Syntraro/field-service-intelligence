@@ -180,7 +180,7 @@ export function DetailRightRail({
   };
 
   return (
-    // Outer container: full height, white surface, left border.
+    // Outer container: full height, white surface, subtle left border.
     // `flex-col` stacks the expanded panel (header + body) or the
     // collapsed strip vertically.
     //
@@ -190,7 +190,7 @@ export function DetailRightRail({
     // close animation — see rail-animation.test.ts for rationale.
     <div
       className={cn(
-        "h-full flex flex-col overflow-hidden bg-app-bg border-l border-app-bg",
+        "h-full flex flex-col overflow-hidden bg-white border-l border-slate-100",
         !displayedTab && "w-fit",
         className,
       )}
@@ -216,9 +216,11 @@ export function DetailRightRail({
           aria-label={`${displayedTab.label} panel`}
           aria-hidden={activeTab ? undefined : true}
         >
-          {/* ── Panel header: horizontal tabs + action + close ─── */}
+          {/* ── Panel header: horizontal tabs + close ───────────── */}
+          {/* Sticky in the flex-col layout: header has no flex-grow so
+              only the body div (flex-1 overflow-y-auto) scrolls. */}
           <header
-            className="flex items-center border-b border-slate-200 px-1 min-w-0"
+            className="flex items-center gap-1 border-b border-slate-100 bg-white px-2 shrink-0"
             data-testid={`${testIdPrefix}-panel-header-${displayedTab.id}`}
           >
             {/* Horizontal tab navigation — hidden when noTabNav */}
@@ -227,7 +229,7 @@ export function DetailRightRail({
             ) : (
               <nav
                 aria-label={ariaLabel}
-                className="flex items-center flex-1 overflow-hidden min-w-0"
+                className="flex items-center flex-1 overflow-hidden min-w-0 py-1.5 gap-0.5"
                 data-testid={`${testIdPrefix}-rail`}
               >
                 {tabs.map((tab) => {
@@ -241,26 +243,24 @@ export function DetailRightRail({
                       onClick={handleClick}
                       aria-pressed={isActive}
                       className={cn(
-                        "flex-shrink-0 inline-flex items-center gap-1",
-                        // 2026-05-11 top-tab typography: regular-weight
-                        // text-helper (canonical 13px). Active emphasis
-                        // lives in color + bottom-border underline — not
-                        // font weight. `-mb-px` overlaps the header's
-                        // 1px border-b so the active 2px green underline
-                        // renders flush at the panel separator.
-                        "px-2.5 py-2 text-helper transition-colors",
-                        "border-b-2 -mb-px",
+                        "flex-shrink-0 inline-flex items-center gap-1.5",
+                        "px-2.5 py-1.5 rounded-md text-helper transition-colors",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
                         isActive
-                          ? "text-brand border-[#76B054]"
-                          : "text-slate-600 hover:text-slate-900 border-transparent",
+                          ? "bg-[#76B054]/10 text-slate-900 font-medium"
+                          : "text-slate-500 hover:text-slate-700 hover:bg-slate-50",
                       )}
                       data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
                     >
                       {tab.label}
                       {typeof tab.count === "number" && (
                         <span
-                          className="text-helper text-slate-500 tabular-nums leading-none"
+                          className={cn(
+                            "inline-flex items-center justify-center rounded-full min-w-[18px] h-[18px] px-1 text-[11px] font-medium tabular-nums leading-none",
+                            isActive
+                              ? "bg-[#76B054]/20 text-[#3d6b26]"
+                              : "bg-slate-100 text-slate-500",
+                          )}
                           data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
                         >
                           {tab.count}
@@ -276,7 +276,7 @@ export function DetailRightRail({
               <button
                 type="button"
                 onClick={() => onActiveTabChange(null)}
-                className="flex-shrink-0 ml-1 h-6 w-6 inline-flex items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+                className="flex-shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
                 aria-label="Close panel"
                 data-testid={`${testIdPrefix}-panel-close`}
                 // Disabled during close animation so a second click
