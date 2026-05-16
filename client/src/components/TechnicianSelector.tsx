@@ -128,7 +128,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
           variant="outline"
           size="sm"
           className={cn(
-            "h-9 text-xs gap-1.5 min-w-[120px] max-w-[220px] justify-between",
+            "text-xs gap-1.5 min-w-[120px] max-w-[220px] justify-between",
             selectedIds.length === 0 && "text-muted-foreground",
             className,
           )}

@@ -111,6 +111,10 @@ export interface DetailRightRailProps {
   onActiveTabChange: (id: string | null) => void;
   /** When false the close-X is hidden. Defaults to true. */
   showClose?: boolean;
+  /** When true, hides the tab navigation strip and suppresses the
+   *  collapsed strip. Use for rails with a single content pane that
+   *  needs no visible tab switching. The close-X remains visible. */
+  noTabNav?: boolean;
   /** Stable prefix for `data-testid` values. Defaults to
    *  `"detail-rail"`. */
   testIdPrefix?: string;
@@ -125,6 +129,7 @@ export function DetailRightRail({
   activeTabId,
   onActiveTabChange,
   showClose = true,
+  noTabNav = false,
   testIdPrefix = "detail-rail",
   ariaLabel = "Detail rail",
   className,
@@ -185,7 +190,7 @@ export function DetailRightRail({
     // close animation — see rail-animation.test.ts for rationale.
     <div
       className={cn(
-        "h-full flex flex-col overflow-hidden bg-white border-l border-slate-200",
+        "h-full flex flex-col overflow-hidden bg-app-bg border-l border-app-bg",
         !displayedTab && "w-fit",
         className,
       )}
@@ -216,52 +221,56 @@ export function DetailRightRail({
             className="flex items-center border-b border-slate-200 px-1 min-w-0"
             data-testid={`${testIdPrefix}-panel-header-${displayedTab.id}`}
           >
-            {/* Horizontal tab navigation */}
-            <nav
-              aria-label={ariaLabel}
-              className="flex items-center flex-1 overflow-hidden min-w-0"
-              data-testid={`${testIdPrefix}-rail`}
-            >
-              {tabs.map((tab) => {
-                const isActive = activeTabId === tab.id;
-                const handleClick = () =>
-                  onActiveTabChange(isActive ? null : tab.id);
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={handleClick}
-                    aria-pressed={isActive}
-                    className={cn(
-                      "flex-shrink-0 inline-flex items-center gap-1",
-                      // 2026-05-11 top-tab typography: regular-weight
-                      // text-helper (canonical 13px). Active emphasis
-                      // lives in color + bottom-border underline — not
-                      // font weight. `-mb-px` overlaps the header's
-                      // 1px border-b so the active 2px green underline
-                      // renders flush at the panel separator.
-                      "px-2.5 py-2 text-helper transition-colors",
-                      "border-b-2 -mb-px",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
-                      isActive
-                        ? "text-brand border-[#76B054]"
-                        : "text-slate-600 hover:text-slate-900 border-transparent",
-                    )}
-                    data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
-                  >
-                    {tab.label}
-                    {typeof tab.count === "number" && (
-                      <span
-                        className="text-helper text-slate-500 tabular-nums leading-none"
-                        data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
-                      >
-                        {tab.count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </nav>
+            {/* Horizontal tab navigation — hidden when noTabNav */}
+            {noTabNav ? (
+              <div className="flex-1" />
+            ) : (
+              <nav
+                aria-label={ariaLabel}
+                className="flex items-center flex-1 overflow-hidden min-w-0"
+                data-testid={`${testIdPrefix}-rail`}
+              >
+                {tabs.map((tab) => {
+                  const isActive = activeTabId === tab.id;
+                  const handleClick = () =>
+                    onActiveTabChange(isActive ? null : tab.id);
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={handleClick}
+                      aria-pressed={isActive}
+                      className={cn(
+                        "flex-shrink-0 inline-flex items-center gap-1",
+                        // 2026-05-11 top-tab typography: regular-weight
+                        // text-helper (canonical 13px). Active emphasis
+                        // lives in color + bottom-border underline — not
+                        // font weight. `-mb-px` overlaps the header's
+                        // 1px border-b so the active 2px green underline
+                        // renders flush at the panel separator.
+                        "px-2.5 py-2 text-helper transition-colors",
+                        "border-b-2 -mb-px",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#76B054]/40",
+                        isActive
+                          ? "text-brand border-[#76B054]"
+                          : "text-slate-600 hover:text-slate-900 border-transparent",
+                      )}
+                      data-testid={tab.testId ?? `${testIdPrefix}-tab-${tab.id}`}
+                    >
+                      {tab.label}
+                      {typeof tab.count === "number" && (
+                        <span
+                          className="text-helper text-slate-500 tabular-nums leading-none"
+                          data-testid={`${testIdPrefix}-tab-count-${tab.id}`}
+                        >
+                          {tab.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </nav>
+            )}
             {/* Close button */}
             {showClose && (
               <button
@@ -309,7 +318,7 @@ export function DetailRightRail({
         The strip is ~48px wide (matches the page-level CSS variable value
         when collapsed).
       */}
-      {!displayedTab && collapsedTab && (
+      {!displayedTab && collapsedTab && !noTabNav && (
         <div
           className="flex flex-col items-center pt-2 gap-1.5 px-1 w-12"
           data-testid={`${testIdPrefix}-collapsed`}

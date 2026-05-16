@@ -33,6 +33,7 @@ import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
 import { useTheme } from "@/hooks/useTheme";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Jobs from "@/pages/Jobs";
+import JobsPage from "@/pages/JobsPage";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
@@ -40,7 +41,7 @@ import NewInvoicePage from "@/pages/NewInvoicePage";
 // 2026-05-13: Receivables workspace — unified financial operations center.
 // Replaces the top-level "Invoices" sidebar entry; /invoices/* routes preserved.
 import ReceivablesPage from "@/pages/ReceivablesPage";
-import Quotes from "@/pages/Quotes";
+import QuotesPage from "@/pages/QuotesPage";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
 // 2026-05-06: full-page lead creation flow.
@@ -48,16 +49,16 @@ import CreateLeadPage from "@/pages/CreateLeadPage";
 // 2026-05-06: full-page quote creation flow at /quotes/new.
 import CreateQuotePage from "@/pages/CreateQuotePage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
-import Reports from "@/pages/Reports";
-import ReportsLibrary from "@/pages/ReportsLibrary";
-import ReportsAR from "@/pages/ReportsAR";
-import ReportsRevenue from "@/pages/ReportsRevenue";
-import ReportsJobs from "@/pages/ReportsJobs";
-import ReportsSalesFunnel from "@/pages/ReportsSalesFunnel";
-import ReportsTeam from "@/pages/ReportsTeam";
-import ReportsPartsForecast from "@/pages/ReportsPartsForecast";
-import TimesheetReportPage from "@/pages/TimesheetReportPage";
-import WeekStackPage from "@/pages/timesheets/WeekStackPage";
+const Reports = lazy(() => import("@/pages/Reports"));
+const ReportsLibrary = lazy(() => import("@/pages/ReportsLibrary"));
+const ReportsAR = lazy(() => import("@/pages/ReportsAR"));
+const ReportsRevenue = lazy(() => import("@/pages/ReportsRevenue"));
+const ReportsJobs = lazy(() => import("@/pages/ReportsJobs"));
+const ReportsSalesFunnel = lazy(() => import("@/pages/ReportsSalesFunnel"));
+const ReportsTeam = lazy(() => import("@/pages/ReportsTeam"));
+const ReportsPartsForecast = lazy(() => import("@/pages/ReportsPartsForecast"));
+const TimesheetReportPage = lazy(() => import("@/pages/TimesheetReportPage"));
+const WeekStackPage = lazy(() => import("@/pages/timesheets/WeekStackPage"));
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 // 2026-04-21: Financial Dashboard reintroduced with full nav + header-button wiring.
 // The prior page (removed 2026-04-10 for zero navigation entries) has been replaced
@@ -124,7 +125,7 @@ import RecurringJobsPage from "@/pages/RecurringJobsPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
 import SubscriptionSettings from "@/pages/SubscriptionSettings";
 // UnassignedTimePage removed — no longer in settings (2026-04-04)
-import PayrollPage from "@/pages/PayrollPage";
+const PayrollPage = lazy(() => import("@/pages/PayrollPage"));
 // DailyTimesheetPage (AdminTimesheetsPage) — legacy, replaced by PayrollPage (2026-04-04)
 // TimeAnalyticsPage removed — no longer in settings (2026-04-04)
 import NotificationsPage from "@/pages/NotificationsPage";
@@ -140,7 +141,7 @@ import PaymentsSettingsPage from "@/pages/PaymentsSettingsPage";
 // PR2/PR4/PR5/PR6 backend (account / transactions / payouts /
 // disputes) without duplicating onboarding (handled by
 // PaymentsSettingsPage above).
-import PaymentsDashboardPage from "@/pages/PaymentsDashboardPage";
+const PaymentsDashboardPage = lazy(() => import("@/pages/PaymentsDashboardPage"));
 // Phase 11 (2026-04-12): tenant-facing communication template editor.
 import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
 // 2026-04-22 Import Center consolidation: the three per-entity pages
@@ -184,7 +185,9 @@ import { GlobalNotice } from "@/components/GlobalNotice";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 // 2026-03-21: QuickAddClientModal removed — replaced by canonical CreateClientModal
 import { CreateClientModal } from "@/components/CreateClientModal";
-import { CreateNewDialog, type CreateNewTab } from "@/components/CreateNewDialog";
+import { CreateJobModal } from "@/components/CreateJobModal";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
+import type { CreateNewTab } from "@/components/create/createMenuConfig";
 import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { TasksPanel, useActiveTaskCount } from "@/components/tasks/TasksPanel";
@@ -201,9 +204,11 @@ import { MessagesHeaderButton } from "@/components/communications/MessagesHeader
 import CommunicationsHub from "@/pages/CommunicationsHub";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useState, useEffect } from "react";
-import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield, Moon, Sun } from "lucide-react";
+import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield, Moon, Sun, PanelLeft, PanelTop } from "lucide-react";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { makeCreateMenuItems } from "@/components/create/createMenuConfig";
+import { AppTopNav } from "@/components/AppTopNav";
+import { useLayoutPreference } from "@/hooks/useLayoutPreference";
 import { HelpPanel } from "@/components/help/HelpPanel";
 // 2026-04-26: TaskDialog import removed from App.tsx — the canonical
 // CreateNewDialog mount below owns Task creation now (Task / Supplier Visit
@@ -225,13 +230,13 @@ import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
 import Locations from "@/pages/Locations";
 import DispatchBoard from "@/pages/DispatchPreview";
-import PMWorkspacePage from "@/pages/PMWorkspacePage";
-import PMWizardPage from "@/pages/PMWizardPage";
-import PMDetailPage from "@/pages/PMDetailPage";
+const ServicePlansPage = lazy(() => import("@/pages/ServicePlansPage"));
+const PMWizardPage = lazy(() => import("@/pages/PMWizardPage"));
+const PMDetailPage = lazy(() => import("@/pages/PMDetailPage"));
 // 2026-04-26: PMEditPage was merged into PMDetailPage (unified view+edit
 // surface). The /pm/:id/edit route now renders the same component, which
 // detects the route and pre-selects edit mode.
-import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
+const PMTemplateEditorPage = lazy(() => import("@/pages/PMTemplateEditorPage"));
 // Technician PWA preview — self-contained mock prototype (no backend)
 import TechApp from "@/tech-app/app/TechApp";
 
@@ -328,12 +333,12 @@ function Router() {
       </Route>
       <Route path="/pm">
         <ProtectedRoute requireAdmin>
-          <PMWorkspacePage />
+          <ServicePlansPage />
         </ProtectedRoute>
       </Route>
       <Route path="/jobs">
         <ProtectedRoute requireAdmin>
-          <Jobs />
+          <JobsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/jobs/:id">
@@ -368,7 +373,7 @@ function Router() {
       </Route>
       <Route path="/quotes">
         <ProtectedRoute requireAdmin>
-          <Quotes />
+          <QuotesPage />
         </ProtectedRoute>
       </Route>
       {/* 2026-05-06: /quotes/new MUST be registered before /quotes/:id.
@@ -986,6 +991,7 @@ function AppContent() {
   // can pick From Scratch / Use Template / Duplicate before landing
   // in the wizard. /pm/new remains the canonical create surface.
   const [createPmDialogOpen, setCreatePmDialogOpen] = useState(false);
+  const { mode: layoutMode, toggle: toggleLayout } = useLayoutPreference();
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
@@ -1338,6 +1344,12 @@ function AppContent() {
                     {theme === "light" ? <Moon className="h-4 w-4 mr-2" /> : <Sun className="h-4 w-4 mr-2" />}
                     {theme === "light" ? "Dark mode" : "Light mode"}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={toggleLayout} data-testid="menu-layout-toggle">
+                    {layoutMode === "sidebar"
+                      ? <PanelTop className="h-4 w-4 mr-2" />
+                      : <PanelLeft className="h-4 w-4 mr-2" />}
+                    {layoutMode === "sidebar" ? "Top navigation" : "Side navigation"}
+                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setFeedbackOpen(true)} data-testid="menu-feedback">
                     <MessageCircle className="h-4 w-4 mr-2" />
                     Feedback
@@ -1363,16 +1375,25 @@ function AppContent() {
             </div>
           )}
         </header>
+        {/* Topbar nav row — only rendered in topbar layout mode.
+            Sits between the dark header and the content area so it
+            spans the full viewport width with no sidebar offset. */}
+        {layoutMode === "topbar" && (
+          <AppTopNav onDashboardClick={handleDashboardClick} />
+        )}
         {/* Sidebar + page content row */}
         {/* 2026-04-29 Color Phase 2: shell wrapper bg moved from inline
             `#222b36` to the canonical `bg-sidebar-bg` token. */}
         <div className="flex flex-1 overflow-hidden bg-sidebar-bg">
-          <AppSidebar
+          {/* AppSidebar is only mounted in sidebar layout mode.
+              Omitting it also omits the gap-spacer that pushes content
+              right, so the content div fills full viewport width. */}
+          {layoutMode === "sidebar" && <AppSidebar
             onDashboardClick={handleDashboardClick}
             onOpenCreate={openCreate}
             onOpenAddClient={() => setAddClientModalOpen(true)}
             onOpenCreatePm={() => setCreatePmDialogOpen(true)}
-          />
+          />}
           <div className="flex flex-col flex-1 overflow-hidden">
             <ImpersonationBanner />
             {/* 2026-04-29: `<SubscriptionBanner />` removed — its trial
@@ -1386,7 +1407,7 @@ function AppContent() {
                 inline `#F4F8F4` (warm green-gray) to the canonical
                 `--app-bg` (#F3F5F7, cool neutral gray) via `bg-app-bg`.
                 This is the visible product change for this phase. */}
-            <main className="flex-1 overflow-auto rounded-tl-xl bg-app-bg">
+            <main className={`flex-1 overflow-auto bg-app-bg${layoutMode === "sidebar" ? " rounded-tl-xl" : ""}`}>
               <Router />
             </main>
           </div>
@@ -1397,17 +1418,15 @@ function AppContent() {
         open={addClientModalOpen}
         onOpenChange={setAddClientModalOpen}
       />
-      {/* 2026-04-26: Canonical "+ New" entry — Job / Task / Supplier Visit
-          tabs in one compact modal. Replaces the separate QuickAddJobDialog
-          + TaskDialog mounts. The header "+ New" dropdown is the only
-          surface-level entry point; it flows through this single mount via
-          openCreate(tab). Standalone QuickAddJobDialog/TaskDialog mounts on
-          detail pages still own their EDIT flows; this only consolidates
-          CREATE. */}
-      <CreateNewDialog
-        open={createNewOpen}
-        onOpenChange={setCreateNewOpen}
-        defaultTab={createNewTab}
+      {/* Separate Job and Task create modals. openCreate("job"|"task") in the
+          header "+ New" dropdown routes to the appropriate modal. */}
+      <CreateJobModal
+        open={createNewOpen && (createNewTab === "job")}
+        onOpenChange={(open) => { if (!open) setCreateNewOpen(false); }}
+      />
+      <CreateTaskModal
+        open={createNewOpen && (createNewTab === "task" || createNewTab === "supplier-visit")}
+        onOpenChange={(open) => { if (!open) setCreateNewOpen(false); }}
       />
       <CreateMaintenancePlanDialog
         open={createPmDialogOpen}

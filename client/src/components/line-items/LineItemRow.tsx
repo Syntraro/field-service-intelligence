@@ -422,7 +422,7 @@ function EditCells({
           <Button
             variant="ghost"
             size="icon"
-            className="h-9 w-9 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+            className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
             onClick={onDelete}
             aria-label="Delete line item"
             data-testid={`button-delete-line-${clientKey}`}

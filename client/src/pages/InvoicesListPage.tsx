@@ -48,7 +48,6 @@ export default function InvoicesListPage({ embedded = false }: { embedded?: bool
           <div className="flex items-start justify-between mb-5">
             <div>
               <h1 className="text-title font-medium text-slate-900">Invoices</h1>
-              <p className="text-row text-slate-500 mt-0.5">Invoice performance overview with full invoice list.</p>
             </div>
             <Link href="/invoices/new">
               <Button size="sm" className="rounded-lg px-3.5" data-testid="button-new-invoice">

@@ -231,6 +231,23 @@ export interface EntityListTableProps<Row> {
    * The detail spans the full container width naturally (block flow).
    */
   inlineRowDetail?: (row: Row, rowKey: string) => React.ReactNode | null | undefined;
+  /**
+   * Optional ref callback invoked when a row mounts or unmounts.
+   * Receives the row key and the DOM element (or null on unmount).
+   * Used by receivables mode to track row positions for auto-scroll.
+   */
+  rowRef?: (key: string, el: HTMLElement | null) => void;
+  /**
+   * Optional per-row extra className injected after all other row classes.
+   * Receives the row and whether it is currently selected.
+   * Used by receivables workspace for focused-selection dim/blur effect.
+   */
+  getRowClassName?: (row: Row, isSelected: boolean) => string;
+  /**
+   * Vertical padding class applied to every data cell (default "py-1.5").
+   * Pass "py-2.5" in workspaces that want taller rows.
+   */
+  cellPy?: string;
 }
 
 // ─── Default per-kind track sizing ──────────────────────────────────────────
@@ -276,7 +293,7 @@ function kindToTrack(col: EntityListColumn<unknown>): string {
  * 2026-05-09 normalization: text / date / money bumped from text-helper (13px)
  * to text-list-body (15px / 20px / 400) for visual consistency with primary.
  */
-function kindCellClasses(kind: EntityListColumnKind, align?: "left" | "right" | "center"): string {
+function kindCellClasses(kind: EntityListColumnKind, align?: "left" | "right" | "center", cellPy = "py-1.5"): string {
   const alignCls = align === "center" ? " justify-center text-center"
     : align === "right" ? " text-right"
     : "";
@@ -284,22 +301,22 @@ function kindCellClasses(kind: EntityListColumnKind, align?: "left" | "right" | 
   switch (kind) {
     case "select":
       // Centered checkbox; stop-propagation added in renderRow.
-      return "px-4 py-1.5 flex items-center justify-center";
+      return `px-4 ${cellPy} flex items-center justify-center`;
     case "primary":
-      return `px-4 py-1.5 min-w-0 text-list-primary text-slate-800${alignCls}`;
+      return `px-4 ${cellPy} min-w-0 text-list-primary text-slate-800${alignCls}`;
     case "body":
-      return `px-4 py-1.5 min-w-0 text-list-body text-slate-700${alignCls}`;
+      return `px-4 ${cellPy} min-w-0 text-list-body text-slate-700${alignCls}`;
     case "text":
-      return `px-4 py-1.5 min-w-0 text-list-body text-slate-700${alignCls}`;
+      return `px-4 ${cellPy} min-w-0 text-list-body text-slate-700${alignCls}`;
     case "status":
-      return `px-4 py-1.5 min-w-0 text-row${alignCls}`;
+      return `px-4 ${cellPy} min-w-0 text-row${alignCls}`;
     case "date":
-      return `px-4 py-1.5 whitespace-nowrap text-list-body text-slate-700${alignCls}`;
+      return `px-4 ${cellPy} whitespace-nowrap text-list-body text-slate-700${alignCls}`;
     case "money":
       // Money defaults to right; caller can override via `align`.
-      return `px-4 py-1.5 whitespace-nowrap tabular-nums text-right text-list-body text-slate-700${align === "left" || align === "center" ? alignCls : ""}`;
+      return `px-4 ${cellPy} whitespace-nowrap tabular-nums text-right text-list-body text-slate-700${align === "left" || align === "center" ? alignCls : ""}`;
     case "badge":
-      return `px-4 py-1.5 text-row${alignCls}`;
+      return `px-4 ${cellPy} text-row${alignCls}`;
   }
 }
 
@@ -448,6 +465,9 @@ export function EntityListTable<Row>({
   sortDirection,
   onSort,
   inlineRowDetail,
+  rowRef,
+  getRowClassName,
+  cellPy = "py-1.5",
 }: EntityListTableProps<Row>) {
   const gridTemplate = React.useMemo(
     () => buildGridTemplate(columns as EntityListColumn<unknown>[]),
@@ -539,11 +559,12 @@ export function EntityListTable<Row>({
           renderGroupHeader,
           sortField,
           sortDirection,
+          cellPy,
         })
       ) : (
         rows.map((row) => {
           const key = rowKey(row);
-          const rowNode = renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, selectedHighlightClass, gridTemplate });
+          const rowNode = renderRow({ row, columns, rowKey, onRowClick, selectedRowKey, selectedHighlightClass, gridTemplate, rowRef, getRowClassName, cellPy });
           if (!inlineRowDetail) return rowNode;
           const detail = inlineRowDetail(row, key);
           if (!detail) return rowNode;
@@ -569,6 +590,9 @@ interface RenderRowArgs<Row> {
   selectedRowKey?: string;
   selectedHighlightClass?: string;
   gridTemplate: string;
+  rowRef?: (key: string, el: HTMLElement | null) => void;
+  getRowClassName?: (row: Row, isSelected: boolean) => string;
+  cellPy?: string;
 }
 
 function renderRow<Row>({
@@ -579,6 +603,9 @@ function renderRow<Row>({
   selectedRowKey,
   selectedHighlightClass,
   gridTemplate,
+  rowRef,
+  getRowClassName,
+  cellPy = "py-1.5",
 }: RenderRowArgs<Row>): React.ReactNode {
   const key = rowKey(row);
   const isSelected = selectedRowKey === key;
@@ -586,10 +613,12 @@ function renderRow<Row>({
   return (
     <div
       key={key}
+      ref={rowRef ? (el) => rowRef(key, el) : undefined}
       className={cn(
         "grid items-center",
         tableRowClass,
         isSelected && (selectedHighlightClass ?? "bg-slate-50"),
+        getRowClassName?.(row, isSelected),
       )}
       style={{ gridTemplateColumns: gridTemplate }}
       onClick={interactive ? () => onRowClick!(row) : undefined}
@@ -622,7 +651,7 @@ function renderRow<Row>({
         return (
           <div
             key={col.id}
-            className={cn(kindCellClasses(col.kind, col.align), col.className)}
+            className={cn(kindCellClasses(col.kind, col.align, cellPy), col.className)}
             onClick={isSelectCell ? (e) => e.stopPropagation() : undefined}
           >
             {wrappedContent}
@@ -647,10 +676,11 @@ interface RenderGroupedBodyArgs<Row> {
   renderGroupHeader?: (groupKey: string, rows: Row[]) => React.ReactNode;
   sortField?: string;
   sortDirection?: "asc" | "desc";
+  cellPy?: string;
 }
 
 function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNode {
-  const { rows, rowKey, gridTemplate, groupBy, renderGroupHeader, selectedHighlightClass } = args;
+  const { rows, rowKey, gridTemplate, groupBy, renderGroupHeader, selectedHighlightClass, cellPy } = args;
 
   const bucketOrder: (string | null)[] = [];
   const buckets = new Map<string | null, Row[]>();
@@ -690,6 +720,7 @@ function renderGroupedBody<Row>(args: RenderGroupedBodyArgs<Row>): React.ReactNo
             selectedRowKey: args.selectedRowKey,
             selectedHighlightClass,
             gridTemplate,
+            cellPy,
           }),
         )}
       </React.Fragment>

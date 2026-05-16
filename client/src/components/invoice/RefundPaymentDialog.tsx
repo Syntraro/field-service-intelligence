@@ -61,6 +61,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
+import { receivablesKeys } from "@/lib/receivablesQueryKeys";
 
 interface RefundPaymentDialogProps {
   open: boolean;
@@ -175,6 +176,9 @@ export function RefundPaymentDialog({
       // becomes a settled row within seconds of the webhook arriving.
       queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
       queryClient.invalidateQueries({ queryKey: paymentsQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
 
       if (r.kind === "settled") {
         toast({

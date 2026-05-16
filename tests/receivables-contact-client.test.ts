@@ -54,7 +54,6 @@ describe("follow-up quick button date math", () => {
 
 interface FormState {
   outcome: string | null;
-  method: string;
   dateStr: string;
   timeStr: string;
   promiseEnabled: boolean;
@@ -66,7 +65,6 @@ interface FormState {
 function validateModal(state: FormState): Record<string, string> {
   const errs: Record<string, string> = {};
   if (!state.outcome) errs.outcome = "Select an outcome.";
-  if (!state.method) errs.method = "Select a method.";
   if (!state.dateStr) errs.date = "Date is required.";
   if (!state.timeStr) errs.time = "Time is required.";
   if (state.promiseEnabled && !state.promiseDateStr) {
@@ -80,7 +78,6 @@ function validateModal(state: FormState): Record<string, string> {
 
 const validBase: FormState = {
   outcome: "spoke_with",
-  method: "phone_call",
   dateStr: "2026-05-20",
   timeStr: "14:00",
   promiseEnabled: false,
@@ -97,11 +94,6 @@ describe("modal validation", () => {
   it("fails when outcome is missing", () => {
     const errs = validateModal({ ...validBase, outcome: null });
     expect(errs.outcome).toBeTruthy();
-  });
-
-  it("fails when method is missing", () => {
-    const errs = validateModal({ ...validBase, method: "" });
-    expect(errs.method).toBeTruthy();
   });
 
   it("fails when date is missing", () => {
@@ -186,7 +178,7 @@ const communicateSchema = z
   .object({
     outcome: z.enum(COMMUNICATION_OUTCOMES),
     contactPersonId: z.string().uuid().nullable().optional(),
-    method: z.enum(COMMUNICATION_METHODS),
+    method: z.enum(COMMUNICATION_METHODS).optional(),
     communicatedAt: z.string().datetime({ offset: true }),
     notes: z.string().max(500).optional(),
     promiseToPay: z
@@ -221,7 +213,6 @@ const communicateSchema = z
 
 const validPayload = {
   outcome: "spoke_with" as const,
-  method: "phone_call" as const,
   communicatedAt: "2026-05-20T14:00:00.000Z",
 };
 
@@ -344,6 +335,39 @@ describe("ReceivablesActionsRail source pins", () => {
 
   it("does not have data-testid receivables-action-promise-to-pay", () => {
     expect(src).not.toContain("receivables-action-promise-to-pay");
+  });
+});
+
+// ── ContactClientModal source pins ───────────────────────────────────────────
+
+const MODAL_PATH = path.resolve(
+  __dirname,
+  "../client/src/components/receivables/ContactClientModal.tsx",
+);
+
+describe("ContactClientModal source pins", () => {
+  let msrc: string;
+  beforeAll(() => {
+    msrc = fs.readFileSync(MODAL_PATH, "utf-8");
+  });
+
+  it("does not have the method Select field", () => {
+    expect(msrc).not.toContain("Via phone, text, email");
+    expect(msrc).not.toContain("contact-client-method");
+  });
+
+  it("does not require method in isFormValid", () => {
+    // isFormValid should only gate on outcome + dateStr
+    expect(msrc).not.toMatch(/isFormValid\s*=\s*.*&&\s*!!method/);
+  });
+
+  it("does not include method in validation errors", () => {
+    expect(msrc).not.toContain('errs.method');
+  });
+
+  it("maps unknown contactPersonId to null", () => {
+    // The fix: 'unknown' contact option is sent as null UUID to avoid validation failure
+    expect(msrc).toContain("!== \"unknown\"");
   });
 });
 

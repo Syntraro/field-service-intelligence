@@ -193,7 +193,7 @@ export function ActionRequiredModal({
               onChange={(next) => setNextActionDate(next ?? "")}
               placeholder="Optional"
               clearable
-              className="w-full h-9 text-sm"
+              className="w-full text-sm"
               data-testid="input-next-action-date"
             />
           </FormField>

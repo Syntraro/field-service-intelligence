@@ -325,17 +325,11 @@ export default function LeadDetailPage() {
     >
       {/* ═════════ LEFT COLUMN: header + body ═════════ */}
       <div
-        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-y-auto"
         data-testid="lead-detail-left-column-shell"
       >
-        {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer
-            owns its own `flex-1 min-h-0 overflow-y-auto` — that pattern
-            created a split-scroll feel with the rail static on the
-            right while only the inner column scrolled. Per the App.tsx
-            shell comment, `<main className="flex-1 overflow-auto">` is
-            THE SOLE canonical vertical scroll surface. Mirror Job
-            Detail exactly: padding + space-y on the body, scrolling
-            delegated to <main>. */}
+        {/* Sole scroll surface for the left column. Right rail is a
+            pinned shrink-0 sibling with its own internal scroll. */}
         <div className="px-4 lg:px-6 py-4 space-y-4">
 
           {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard.
@@ -406,8 +400,8 @@ export default function LeadDetailPage() {
           stacks under the body. */}
       <aside
         className={cn(
-          "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
-          "border-t lg:border-t-0 lg:border-l border-slate-200",
+          "relative lg:shrink-0 lg:h-full flex flex-col bg-app-bg",
+          "border-t lg:border-t-0 lg:border-l border-app-bg",
         )}
         style={{
           ["--lead-rail-width" as any]: `${leadRailTab === null ? 48 : 380}px`,

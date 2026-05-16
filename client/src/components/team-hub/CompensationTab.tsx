@@ -280,7 +280,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
                     type="color"
                     value={form.color}
                     onChange={(e) => setField("color", e.target.value)}
-                    className="w-16 h-9 p-1"
+                    className="w-16 h-8 p-1"
                     data-testid="input-comp-color"
                   />
                   <div

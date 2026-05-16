@@ -23,6 +23,7 @@ import fs from "fs";
 import { randomUUID } from "crypto";
 import { filesRepository } from "../storage/files";
 import { extractNameplateFields } from "../services/nameplateOcr";
+import { triggerCleanupAsync } from "../services/fileCleanupService";
 import { computeNextDueDate } from "@shared/nextDue";
 // 2026-04-18 Client-billing workstream: per-location aggregates reuse the
 // canonical invoices-feed storage methods (no direct table access here).
@@ -1408,7 +1409,7 @@ router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (
   res.json(updated);
 }));
 
-// GET /api/clients/:id/delete-check - Check location delete eligibility
+// GET /api/clients/:id/delete-check - Check location delete eligibility (legacy)
 router.get("/:id/delete-check", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const result = await customerCompanyRepository.checkLocationDeleteEligibility(
     req.companyId!,
@@ -1417,35 +1418,58 @@ router.get("/:id/delete-check", requireRole(MANAGER_ROLES), asyncHandler(async (
   res.json(result);
 }));
 
-// DELETE /api/clients/:id - Delete location (hard if eligible + confirm=DELETE, else soft-delete)
+// GET /api/clients/:id/delete-impact - Counts of records that would be permanently deleted
+router.get("/:id/delete-impact", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const impact = await customerCompanyRepository.getLocationDeleteImpact(
+    req.companyId!,
+    req.params.id
+  );
+  res.json(impact);
+}));
+
+// DELETE /api/clients/:id - Permanently delete location (confirm=DELETE) or archive (default)
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const locationId = req.params.id;
 
-  // If body has confirm=DELETE, attempt hard delete
   if (req.body?.confirm === "DELETE") {
-    const eligibility = await customerCompanyRepository.checkLocationDeleteEligibility(companyId, locationId);
+    const location = await storage.getClient(companyId, locationId);
+    if (!location) throw createError(404, "Location not found");
 
-    if (!eligibility.canHardDelete) {
-      throw createError(409, `Cannot hard-delete: ${eligibility.reasons.join(", ")}. Archive instead.`);
-    }
-    if (eligibility.isLastLocation) {
-      throw createError(409, "Cannot delete the only location. Delete the company instead.");
-    }
-
-    const deleted = await customerCompanyRepository.hardDeleteLocation(companyId, locationId);
+    const impact = await customerCompanyRepository.getLocationDeleteImpact(companyId, locationId);
+    const deleted = await customerCompanyRepository.permanentDeleteLocation(companyId, locationId);
     if (!deleted) throw createError(404, "Location not found");
 
-    return res.json({ success: true, action: "hard_delete" });
+    // Best-effort post-commit R2 cleanup — errors are logged and retried by the background worker.
+    triggerCleanupAsync(`location_delete:${locationId}`, companyId);
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "client.location_permanently_deleted",
+      entityType: "location",
+      entityId: locationId,
+      severity: "important",
+      summary: `Permanently deleted location "${location.location || location.companyName || locationId}"`,
+      meta: { locationId, companyId, ...impact },
+    });
+
+    return res.json({ success: true, action: "permanently_deleted" });
   }
 
-  // Default: soft-delete (backward compatible)
+  // Default: soft-delete (archive)
   await storage.deleteAllClientParts(companyId, locationId);
   const deleted = await storage.deleteClient(companyId, locationId);
-  if (!deleted) {
-    throw createError(404, "Client not found");
-  }
-  res.json({ success: true, action: "soft_delete" });
+  if (!deleted) throw createError(404, "Client not found");
+
+  logEventAsync(getQueryCtx(req), {
+    eventType: "client.location_archived",
+    entityType: "location",
+    entityId: locationId,
+    severity: "info",
+    summary: `Archived location`,
+    meta: { locationId, companyId },
+  });
+
+  res.json({ success: true, action: "archived" });
 }));
 
 // POST /api/clients/bulk-delete - Bulk delete clients (soft delete)

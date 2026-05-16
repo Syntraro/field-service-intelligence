@@ -256,7 +256,7 @@ function TemplatePicker({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search templates..."
-          className="pl-9 h-9"
+          className="pl-9"
           data-testid="create-pm-template-search"
         />
       </div>
@@ -363,7 +363,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search by client, location, or plan name..."
-          className="pl-9 h-9"
+          className="pl-9"
           data-testid="create-pm-plan-search"
         />
       </div>

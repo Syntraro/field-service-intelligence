@@ -186,7 +186,7 @@ export function AddLineItemForm({
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+          className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
           onClick={onDelete}
           aria-label="Discard new line item"
           data-testid={`button-discard-new-line-${clientKey}`}

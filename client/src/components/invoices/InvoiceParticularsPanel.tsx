@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { X, ExternalLink } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
+import {
+  X, ExternalLink,
+  Briefcase, CalendarDays, CalendarClock, Clock, DollarSign, CreditCard,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/StatusBadge";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
@@ -33,6 +35,18 @@ interface ParticularsInvoice {
 interface ParticularsJob {
   id: string;
   jobNumber: number;
+  summary: string;
+  // "Scope of work" field — labeled as such in the job UI (CanonicalDetailHeader DESCRIPTION_LABEL).
+  // job.summary is the job title; job.description is the scope/detail text.
+  description: string | null;
+}
+
+interface ParticularsJobNote {
+  id: string;
+  noteText: string;
+  createdAt: string;
+  origin?: string;
+  user?: { fullName?: string | null; firstName?: string | null } | null;
 }
 
 interface ParticularsDetails {
@@ -41,12 +55,6 @@ interface ParticularsDetails {
   location?: { companyName?: string | null; location?: string | null } | null;
   customerCompany?: { name?: string | null } | null;
   job?: ParticularsJob | null;
-}
-
-interface InvoiceNote {
-  id: string;
-  noteText: string;
-  createdAt: string;
 }
 
 interface InvoiceParticularsPanelProps {
@@ -59,6 +67,8 @@ interface InvoiceParticularsPanelProps {
 export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticularsPanelProps) {
   const [, setLocation] = useLocation();
 
+  // staleTime: 0 — ensures job.description is never served from a stale cache
+  // after the user edits the job and returns to the invoice list.
   const { data, isLoading, isError } = useQuery<ParticularsDetails>({
     queryKey: ["invoices", "detail", invoiceId],
     queryFn: async () => {
@@ -66,22 +76,24 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
       if (!res.ok) throw new Error(`Failed to load invoice (HTTP ${res.status})`);
       return res.json();
     },
-    staleTime: 30_000,
+    staleTime: 0,
   });
 
-  const {
-    data: notesData,
-    isLoading: notesLoading,
-    isError: notesError,
-  } = useQuery<InvoiceNote[]>({
-    queryKey: ["/api/invoices", invoiceId, "notes"],
+  const jobId = data?.job?.id ?? null;
+
+  // Fetch notes attached to the linked job. staleTime: 0 ensures notes added on the
+  // job detail page are immediately visible when returning to the invoice list.
+  // throwOnError: false — a notes fetch failure must not crash the invoice card.
+  const { data: rawJobNotes = [] } = useQuery<ParticularsJobNote[]>({
+    queryKey: ["jobs", jobId, "notes"],
     queryFn: async () => {
-      const res = await fetch(`/api/invoices/${invoiceId}/notes`, { credentials: "include" });
-      if (!res.ok) throw new Error(`Failed to load notes (HTTP ${res.status})`);
+      const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
+      if (!res.ok) throw new Error(`Failed to load job notes (HTTP ${res.status})`);
       return res.json();
     },
-    enabled: !!invoiceId,
-    staleTime: 30_000,
+    enabled: !!jobId,
+    staleTime: 0,
+    throwOnError: false,
   });
 
   const invoice = data?.invoice;
@@ -104,29 +116,35 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
         ? invoice.issuedAt.toISOString()
         : invoice?.issueDate ?? null;
 
-  const hasTax      = !!invoice?.taxTotal && parseFloat(invoice.taxTotal) > 0;
-  const hasDiscount = !!invoice?.discountAmount && parseFloat(invoice.discountAmount) > 0;
-  const hasPaid     = !!invoice?.amountPaid && parseFloat(invoice.amountPaid) > 0;
-  const recentNotes = (notesData ?? []).slice(0, 3);
+  // Scope of Work = job.description (the "Scope of work" field in the job UI).
+  // job.summary is the job title — do NOT use it here.
+  // invoice.summary / invoice.workDescription are invoice fields — do NOT use them.
+  const scopeText = data?.job?.description?.trim() || null;
+
+  // Job notes: all notes returned by the job notes endpoint. Empty-text notes filtered out.
+  const jobNotesList = rawJobNotes.filter((n) => n.noteText.trim());
+
+  const hasScope = !!scopeText;
+  const hasNotes = jobNotesList.length > 0;
 
   return (
     <div
-      className="bg-white rounded-md border border-border"
+      className="bg-white rounded-md border border-slate-200/70 border-l-4 border-l-brand shadow-[0_2px_8px_rgba(15,23,42,0.06)]"
       data-testid="invoice-particulars-panel"
     >
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-slate-50/60">
         <div className="flex items-center gap-2.5 min-w-0">
           {isLoading ? (
-            <span className="text-sm text-muted-foreground">Loading…</span>
+            <span className="text-body text-muted-foreground">Loading…</span>
           ) : isError ? (
-            <span className="text-sm text-destructive" data-testid="particulars-error">
+            <span className="text-body text-destructive" data-testid="particulars-error">
               Failed to load invoice
             </span>
           ) : invoice ? (
             <>
               <span
-                className="text-sm font-semibold text-slate-800 shrink-0"
+                className="text-body font-semibold text-slate-800 shrink-0"
                 data-testid="particulars-invoice-number"
               >
                 Invoice #{invoice.invoiceNumber ?? "—"}
@@ -136,7 +154,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
               )}
               {clientName && (
                 <span
-                  className="text-sm text-muted-foreground truncate"
+                  className="text-body text-muted-foreground truncate"
                   data-testid="particulars-client-name"
                 >
                   {clientName}
@@ -170,220 +188,171 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
         </div>
       </div>
 
-      {/* ── Body ── */}
+      {/* ── Metadata strip + body (invoice loaded) ── */}
       {invoice && (
-        <div className="px-4 pt-3 pb-4 space-y-4" data-testid="particulars-body">
+        <>
+          {/* Full-width 6-column metadata strip */}
+          <div
+            className="grid grid-cols-6 divide-x divide-slate-100 border-b border-slate-100"
+            data-testid="particulars-metadata-strip"
+          >
+            {/* Linked Job */}
+            <div className="px-4 py-3" data-testid="particulars-linked-job">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <Briefcase className="h-3.5 w-3.5 shrink-0" />
+                <span>Linked Job</span>
+              </div>
+              {data?.job ? (
+                <button
+                  type="button"
+                  className="text-body text-blue-600 hover:underline font-medium text-left"
+                  onClick={() => setLocation(`/jobs/${data.job!.id}`)}
+                >
+                  Job #{data.job.jobNumber}
+                </button>
+              ) : (
+                <span className="text-body text-slate-400">—</span>
+              )}
+            </div>
 
-          {/* Primary fields */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
-            <div>
-              <div className="text-helper text-muted-foreground mb-0.5">Total</div>
-              <div
-                className="text-sm font-semibold tabular-nums text-slate-800"
-                data-testid="particulars-total"
-              >
-                {formatCurrency(invoice.total)}
+            {/* Issued */}
+            <div className="px-4 py-3" data-testid="particulars-issue-date">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+                <span>Issued</span>
               </div>
+              <span className="text-body text-slate-700">
+                {issueDateStr ? formatDate(issueDateStr) : "—"}
+              </span>
             </div>
-            <div>
-              <div className="text-helper text-muted-foreground mb-0.5">Balance Due</div>
-              <div
-                className={`text-sm font-semibold tabular-nums ${
-                  parseFloat(invoice.balance) === 0
-                    ? "text-emerald-600"
-                    : invoice.isPastDue
-                      ? "text-destructive"
-                      : "text-amber-600"
-                }`}
-                data-testid="particulars-balance"
-              >
-                {formatCurrency(invoice.balance)}
+
+            {/* Due Date */}
+            <div className="px-4 py-3" data-testid="particulars-due-date">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <CalendarClock className="h-3.5 w-3.5 shrink-0" />
+                <span>Due Date</span>
               </div>
-            </div>
-            {issueDateStr && (
-              <div>
-                <div className="text-helper text-muted-foreground mb-0.5">Issued</div>
-                <div className="text-sm text-slate-700" data-testid="particulars-issue-date">
-                  {formatDate(issueDateStr)}
-                </div>
-              </div>
-            )}
-            {invoice.dueDate && (
-              <div>
-                <div className="text-helper text-muted-foreground mb-0.5">Due Date</div>
-                <div
-                  className={`text-sm ${
-                    invoice.isPastDue ? "text-destructive font-medium" : "text-slate-700"
+              {invoice.dueDate ? (
+                <span
+                  className={`text-body ${
+                    invoice.isPastDue ? "text-amber-600 font-medium" : "text-slate-700"
                   }`}
-                  data-testid="particulars-due-date"
                 >
                   {formatDate(invoice.dueDate)}
-                </div>
-              </div>
-            )}
-            {invoice.paymentTermsDays != null && (
-              <div>
-                <div className="text-helper text-muted-foreground mb-0.5">Terms</div>
-                <div className="text-sm text-slate-700" data-testid="particulars-terms">
-                  Net {invoice.paymentTermsDays}
-                </div>
-              </div>
-            )}
-            {data?.job && (
-              <div>
-                <div className="text-helper text-muted-foreground mb-0.5">Linked Job</div>
-                <div className="text-sm text-slate-700" data-testid="particulars-linked-job">
-                  Job #{data.job.jobNumber}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Description / Summary */}
-          {(invoice.summary || invoice.workDescription) && (
-            <div>
-              <div className="text-helper text-muted-foreground mb-1">
-                {invoice.summary ? "Summary" : "Description"}
-              </div>
-              {invoice.summary && (
-                <p
-                  className="text-sm font-medium text-slate-800"
-                  data-testid="particulars-summary"
-                >
-                  {invoice.summary}
-                </p>
-              )}
-              {invoice.workDescription && (
-                <p
-                  className="text-sm text-slate-700 line-clamp-3 mt-0.5"
-                  data-testid="particulars-description"
-                >
-                  {invoice.workDescription}
-                </p>
+                </span>
+              ) : (
+                <span className="text-body text-slate-400">—</span>
               )}
             </div>
-          )}
 
-          {/* Line Items */}
-          {lines.length > 0 && (
-            <div>
-              <div className="text-helper font-medium text-muted-foreground mb-1.5">Line Items</div>
-              <div className="border border-border rounded overflow-hidden text-sm">
-                <div className="grid grid-cols-[1fr_48px_72px_72px] bg-slate-50 border-b border-border px-3 py-1.5 text-helper font-medium text-muted-foreground">
-                  <span>Item</span>
-                  <span className="text-right">Qty</span>
-                  <span className="text-right pr-1">Rate</span>
-                  <span className="text-right">Amount</span>
-                </div>
-                {lines.map((line) => (
-                  <div
-                    key={line.id}
-                    className="grid grid-cols-[1fr_48px_72px_72px] px-3 py-1.5 border-b border-border last:border-b-0 items-baseline"
-                    data-testid={`particulars-line-${line.id}`}
-                  >
-                    <span className="text-slate-800 truncate pr-2 text-xs">
-                      {line.description || "—"}
-                    </span>
-                    <span className="text-right tabular-nums text-slate-600 text-xs">
-                      {line.quantity}
-                    </span>
-                    <span className="text-right tabular-nums text-slate-600 text-xs pr-1">
-                      {formatCurrency(line.unitPrice)}
-                    </span>
-                    <span className="text-right tabular-nums text-slate-700 font-medium text-xs">
-                      {formatCurrency(line.lineTotal ?? line.lineSubtotal)}
-                    </span>
-                  </div>
-                ))}
+            {/* Terms */}
+            <div className="px-4 py-3" data-testid="particulars-terms">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <Clock className="h-3.5 w-3.5 shrink-0" />
+                <span>Terms</span>
               </div>
+              <span className="text-body text-slate-700">
+                {invoice.paymentTermsDays != null ? `Net ${invoice.paymentTermsDays}` : "—"}
+              </span>
             </div>
-          )}
 
-          {/* Totals summary */}
-          <div className="flex justify-end">
-            <div className="w-48 space-y-1 text-sm">
-              <div className="flex justify-between text-slate-600">
-                <span>Subtotal</span>
-                <span className="tabular-nums">{formatCurrency(invoice.subtotal)}</span>
-              </div>
-              {hasTax && (
-                <div className="flex justify-between text-slate-600">
-                  <span>Tax</span>
-                  <span className="tabular-nums">{formatCurrency(invoice.taxTotal)}</span>
-                </div>
-              )}
-              {hasDiscount && (
-                <div className="flex justify-between text-emerald-700">
-                  <span>Discount</span>
-                  <span className="tabular-nums">−{formatCurrency(invoice.discountAmount!)}</span>
-                </div>
-              )}
-              <div className="flex justify-between font-semibold text-slate-800 pt-1 border-t border-border">
+            {/* Total */}
+            <div className="px-4 py-3" data-testid="particulars-total">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <DollarSign className="h-3.5 w-3.5 shrink-0" />
                 <span>Total</span>
-                <span className="tabular-nums">{formatCurrency(invoice.total)}</span>
               </div>
-              <div
-                className={`flex justify-between font-semibold ${
-                  parseFloat(invoice.balance) === 0
-                    ? "text-emerald-600"
-                    : invoice.isPastDue
-                      ? "text-destructive"
-                      : "text-amber-600"
-                }`}
-                data-testid="particulars-balance-due-row"
-              >
+              <span className="text-body text-slate-800 font-medium tabular-nums">
+                {formatCurrency(invoice.total)}
+              </span>
+            </div>
+
+            {/* Balance Due */}
+            <div className="px-4 py-3" data-testid="particulars-balance">
+              <div className="flex items-center gap-1 text-muted-foreground mb-1 text-body">
+                <CreditCard className="h-3.5 w-3.5 shrink-0" />
                 <span>Balance Due</span>
-                <span className="tabular-nums">{formatCurrency(invoice.balance)}</span>
               </div>
+              <span
+                className={`text-body font-medium tabular-nums ${
+                  parseFloat(invoice.balance) === 0 ? "text-emerald-600" : "text-amber-600"
+                }`}
+              >
+                {formatCurrency(invoice.balance)}
+              </span>
             </div>
           </div>
 
-          {/* Notes — from canonical invoice_notes table */}
-          <div className="border-t border-border pt-3">
-            <div className="text-helper font-medium text-muted-foreground mb-1.5">Notes</div>
-            {notesLoading ? (
-              <p className="text-sm text-muted-foreground" data-testid="particulars-notes-loading">
-                Loading…
-              </p>
-            ) : notesError ? (
-              <p className="text-sm text-destructive" data-testid="particulars-notes-error">
-                Failed to load notes.
-              </p>
-            ) : recentNotes.length > 0 ? (
-              <div className="space-y-2" data-testid="particulars-notes-list">
-                {recentNotes.map((note) => (
-                  <div key={note.id} className="space-y-0.5" data-testid={`particulars-note-${note.id}`}>
-                    <p className="text-sm text-slate-700">{note.noteText}</p>
-                    <p className="text-helper text-muted-foreground">
-                      {formatDistanceToNow(new Date(note.createdAt), { addSuffix: true })}
+          {/* Body */}
+          <div className="px-4 pt-3 pb-4 space-y-4" data-testid="particulars-body">
+
+            {/* Line Items */}
+            {lines.length > 0 && (
+              <div>
+                <div className="text-body font-medium text-muted-foreground mb-1.5">Line Items</div>
+                <div className="overflow-hidden">
+                  <div className="grid grid-cols-[1fr_52px_80px_80px] border-b border-slate-100 px-3 py-2 text-body font-medium text-muted-foreground">
+                    <span>Item</span>
+                    <span className="text-right">Qty</span>
+                    <span className="text-right pr-1">Rate</span>
+                    <span className="text-right">Amount</span>
+                  </div>
+                  {lines.map((line) => (
+                    <div
+                      key={line.id}
+                      className="grid grid-cols-[1fr_52px_80px_80px] px-3 py-2 border-b border-slate-100 last:border-b-0 items-baseline"
+                      data-testid={`particulars-line-${line.id}`}
+                    >
+                      <span className="text-body text-slate-800 truncate pr-2">
+                        {line.description || "—"}
+                      </span>
+                      <span className="text-body text-right tabular-nums text-slate-600">
+                        {line.quantity}
+                      </span>
+                      <span className="text-body text-right tabular-nums text-slate-600 pr-1">
+                        {formatCurrency(line.unitPrice)}
+                      </span>
+                      <span className="text-body text-right tabular-nums text-slate-700 font-medium">
+                        {formatCurrency(line.lineTotal ?? line.lineSubtotal)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Scope of Work + Job Notes — side-by-side when both exist, full-width when one */}
+            {(hasScope || hasNotes) && (
+              <div className={hasScope && hasNotes ? "grid grid-cols-2 gap-3" : "flex flex-col"}>
+                {hasScope && (
+                  <div className="bg-slate-50/70 rounded-md p-3" data-testid="particulars-scope">
+                    <div className="text-body font-semibold text-slate-700 mb-1.5">Scope of Work</div>
+                    <p className="text-body text-slate-600" data-testid="particulars-scope-text">
+                      {scopeText}
                     </p>
                   </div>
-                ))}
+                )}
+                {hasNotes && (
+                  <div className="bg-slate-50/70 rounded-md p-3" data-testid="particulars-job-notes">
+                    <div className="text-body font-semibold text-slate-700 mb-1.5">Job Notes</div>
+                    <div className="space-y-2" data-testid="particulars-job-notes-list">
+                      {jobNotesList.slice(0, 3).map((note) => (
+                        <p
+                          key={note.id}
+                          className="text-body text-slate-600"
+                          data-testid={`particulars-job-note-${note.id}`}
+                        >
+                          {note.noteText}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground" data-testid="particulars-no-notes">
-                No invoice notes.
-              </p>
             )}
-          </div>
 
-          {/* Payment Summary — derived from invoice.amountPaid; no separate endpoint needed */}
-          <div className="border-t border-border pt-3">
-            <div className="text-helper font-medium text-muted-foreground mb-1.5">Payment History</div>
-            {hasPaid ? (
-              <p className="text-sm text-slate-700" data-testid="particulars-payment-summary">
-                {formatCurrency(invoice.amountPaid)} paid
-                {parseFloat(invoice.balance) > 0
-                  ? ` · ${formatCurrency(invoice.balance)} remaining`
-                  : ""}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground" data-testid="particulars-no-payments">
-                No payments recorded.
-              </p>
-            )}
           </div>
-        </div>
+        </>
       )}
     </div>
   );

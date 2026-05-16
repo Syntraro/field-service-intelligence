@@ -41,7 +41,7 @@ import { apiRequest } from "@/lib/queryClient";
 import type {
   DashboardLayoutResponse,
   DashboardLayoutResponseEntry,
-} from "./dashboardLayoutSchemas";
+} from "@shared/dashboardLayoutSchemas";
 
 const LAYOUT_QUERY_KEY = (dashboardKey: string) =>
   ["dashboard-layout", dashboardKey] as const;

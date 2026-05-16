@@ -26,6 +26,7 @@ import {
 } from "@shared/lib/emailValidation";
 import { generateStatementPdf, computeAgingBands } from "../services/statementPdfService";
 import type { StatementPdfData, StatementInvoiceItem } from "../services/statementPdfService";
+import { triggerCleanupAsync } from "../services/fileCleanupService";
 import { companyTaxRegistrationRepository } from "../storage/companyTaxRegistrations";
 import { getResendClient, formatFromHeader, isPlausibleEmail } from "../resendClient";
 import { normalizeEmailList } from "../services/recipientResolverService";
@@ -1788,12 +1789,12 @@ router.delete("/:companyId/assignments/:assignmentId", requireRole(MANAGER_ROLES
 }));
 
 // ============================================================================
-// Deletion — eligibility check, hard delete, soft delete/archive
+// Deletion — impact counts, permanent delete, soft delete/archive
 // ============================================================================
 
 /**
  * GET /api/customer-companies/:companyId/delete-check
- * Returns eligibility info for deleting a customer company.
+ * Returns eligibility info for deleting a customer company (legacy — kept for compat).
  */
 router.get("/:companyId/delete-check", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { companyId: tenantCompanyId } = req;
@@ -1808,9 +1809,26 @@ router.get("/:companyId/delete-check", requireRole(MANAGER_ROLES), asyncHandler(
 }));
 
 /**
+ * GET /api/customer-companies/:companyId/delete-impact
+ * Returns counts of all records that would be permanently deleted.
+ */
+router.get("/:companyId/delete-impact", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const impact = await customerCompanyRepository.getCompanyDeleteImpact(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  res.json(impact);
+}));
+
+/**
  * DELETE /api/customer-companies/:companyId
- * Hard-delete a customer company (only if no operational history exists).
+ * Permanently delete a customer company and all owned records.
  * Requires typed confirmation: body.confirm === "DELETE"
+ * No longer blocked by existing jobs/invoices — cascade-deletes everything.
  */
 router.delete("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { companyId: tenantCompanyId } = req;
@@ -1819,24 +1837,40 @@ router.delete("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req
   const confirmSchema = z.object({ confirm: z.literal("DELETE") }).strict();
   validateSchema(confirmSchema, req.body);
 
-  // Re-check eligibility at delete time (race condition safety)
-  const eligibility = await customerCompanyRepository.checkCompanyDeleteEligibility(
+  // Capture impact before delete for audit log
+  const impact = await customerCompanyRepository.getCompanyDeleteImpact(tenantCompanyId!, customerCompanyId);
+  // Fetch company name before delete
+  const company = await customerCompanyRepository.getCustomerCompany(tenantCompanyId!, customerCompanyId);
+  if (!company) throw createError(404, "Customer company not found");
+
+  const result = await customerCompanyRepository.permanentDeleteCustomerCompany(
     tenantCompanyId!,
     customerCompanyId
   );
 
-  if (!eligibility.canHardDelete) {
-    throw createError(409, `Cannot hard-delete: ${eligibility.reasons.join(", ")}. Archive instead.`);
-  }
+  // Best-effort post-commit R2 cleanup — errors are logged and retried by the background worker.
+  triggerCleanupAsync(`client_delete:${customerCompanyId}`, tenantCompanyId!);
 
-  const deleted = await customerCompanyRepository.hardDeleteCustomerCompany(
-    tenantCompanyId!,
-    customerCompanyId
-  );
+  const displayName = (company.name ?? [company.firstName, company.lastName].filter(Boolean).join(" ")) || customerCompanyId;
+  logEventAsync(getQueryCtx(req), {
+    eventType: "client.permanently_deleted",
+    entityType: "customer_company",
+    entityId: customerCompanyId,
+    severity: "important",
+    summary: `Permanently deleted client "${displayName}"`,
+    meta: {
+      customerCompanyId,
+      displayName,
+      deletedLocationCount: result.locationCount,
+      jobs: impact.jobs,
+      invoices: impact.invoices,
+      quotes: impact.quotes,
+      visits: impact.visits,
+      leads: impact.leads,
+    },
+  });
 
-  if (!deleted) throw createError(404, "Customer company not found");
-
-  res.json({ success: true, action: "hard_delete" });
+  res.json({ success: true, action: "permanently_deleted" });
 }));
 
 /**
@@ -1853,6 +1887,15 @@ router.post("/:companyId/archive", requireRole(MANAGER_ROLES), asyncHandler(asyn
   );
 
   if (!archived) throw createError(404, "Customer company not found");
+
+  const archivedName = (archived.name ?? [archived.firstName, archived.lastName].filter(Boolean).join(" ")) || customerCompanyId;
+  logEventAsync(getQueryCtx(req), {
+    eventType: "client.archived",
+    entityType: "customer_company",
+    entityId: customerCompanyId,
+    summary: `Archived client "${archivedName}"`,
+    meta: { customerCompanyId },
+  });
 
   res.json({ success: true, action: "archived", company: archived });
 }));

@@ -3,15 +3,13 @@
  *
  * Tests cover the ten fixes applied in the stabilization pass:
  *   C-1  Stats cache key mismatch in InvoiceListPanel bulk reminders
- *   C-2  SetFollowUpDialog receives currentFollowUpAt from SelectionContext
+ *   C-2  SelectionContext carries followUpAt through to ContactClientModal
  *   C-3  Narrow invalidation: dialogs target view-scoped keys, not broad prefix
  *   H-2  View counts query has refetchInterval + refetchIntervalInBackground: false
- *   H-3  PromiseToPayDialog/MarkDisputedDialog do NOT invalidate broad notes key
+ *   H-3  MarkDisputedDialog does NOT invalidate broad notes key
  *   H-4  Reminder send does NOT invalidate receivables invoice list
  *   M-1  Notes query throws on error; error state rendered instead of empty state
  *   M-2  Multi-select hides action buttons; renders disambiguation message only
- *   M-4  Promise date uses local-time midnight (no forced UTC suffix)
- *   M-6  Activity and Insights tabs show coming-soon state; no mock data
  *   P-9  receivablesQueryKeys helpers export stable key shapes
  */
 
@@ -28,11 +26,7 @@ function src(relPath: string) {
 const invoiceListPanel       = src("client/src/components/invoices/InvoiceListPanel.tsx");
 const receivablesActionsRail = src("client/src/pages/receivables/ReceivablesActionsRail.tsx");
 const invoicesWorkspaceTab   = src("client/src/pages/receivables/InvoicesWorkspaceTab.tsx");
-const setFollowUpDialog      = src("client/src/components/invoices/SetFollowUpDialog.tsx");
-const promiseToPayDialog     = src("client/src/components/invoices/PromiseToPayDialog.tsx");
 const markDisputedDialog     = src("client/src/components/invoices/MarkDisputedDialog.tsx");
-const activityTab            = src("client/src/pages/receivables/ActivityTab.tsx");
-const insightsTab            = src("client/src/pages/receivables/InsightsTab.tsx");
 const queryKeysLib           = src("client/src/lib/receivablesQueryKeys.ts");
 
 // ── Part 9: receivablesQueryKeys helper ──────────────────────────────────────
@@ -81,7 +75,7 @@ describe("C-1: InvoiceListPanel stats invalidation key", () => {
   });
 });
 
-// ── C-2: SetFollowUpDialog current value wiring ──────────────────────────────
+// ── C-2: SelectionContext carries followUpAt ─────────────────────────────────
 
 describe("C-2: SelectionContext carries followUpAt", () => {
   it("SelectionContext interface includes followUpAt field", () => {
@@ -101,56 +95,9 @@ describe("C-2: SelectionContext carries followUpAt", () => {
     expect(invoicesWorkspaceTab).toMatch(/followUpAt: ctx\.followUpAt/);
   });
 
-  it("ReceivablesActionsRail passes context?.followUpAt to SetFollowUpDialog", () => {
-    expect(receivablesActionsRail).toMatch(/currentFollowUpAt=\{context\?\.followUpAt/);
-  });
-
-  it("SetFollowUpDialog accepts currentFollowUpAt prop (already existed — verified still present)", () => {
-    expect(setFollowUpDialog).toMatch(/currentFollowUpAt\?/);
-  });
-
-  it("SetFollowUpDialog useEffect syncs dateStr when dialog opens", () => {
-    expect(setFollowUpDialog).toMatch(/useEffect/);
-    expect(setFollowUpDialog).toMatch(/if \(open\)/);
-    expect(setFollowUpDialog).toMatch(/currentFollowUpAt/);
-  });
 });
 
 // ── C-3: Narrow invalidation scope ──────────────────────────────────────────
-
-describe("C-3: Scoped invalidation in SetFollowUpDialog", () => {
-  it("uses receivablesKeys.invoices(activeView) not broad prefix", () => {
-    expect(setFollowUpDialog).toMatch(/receivablesKeys\.invoices\(activeView\)/);
-  });
-
-  it("does NOT invalidate the broad [\"receivables\", \"invoices\"] key", () => {
-    expect(setFollowUpDialog).not.toMatch(/"receivables", "invoices"\]/);
-  });
-
-  it("uses receivablesKeys.viewsCounts() for counts invalidation", () => {
-    expect(setFollowUpDialog).toMatch(/receivablesKeys\.viewsCounts\(\)/);
-  });
-
-  it("accepts activeView prop with default \"all\"", () => {
-    expect(setFollowUpDialog).toMatch(/activeView\??: InvoiceView/);
-    expect(setFollowUpDialog).toMatch(/activeView = "all"/);
-  });
-});
-
-describe("C-3: Scoped invalidation in PromiseToPayDialog", () => {
-  it("uses receivablesKeys.invoices(activeView) not broad prefix", () => {
-    expect(promiseToPayDialog).toMatch(/receivablesKeys\.invoices\(activeView\)/);
-  });
-
-  it("does NOT invalidate the broad [\"receivables\", \"invoices\"] key", () => {
-    expect(promiseToPayDialog).not.toMatch(/"receivables", "invoices"\]/);
-  });
-
-  it("accepts activeView prop with default \"all\"", () => {
-    expect(promiseToPayDialog).toMatch(/activeView\??: InvoiceView/);
-    expect(promiseToPayDialog).toMatch(/activeView = "all"/);
-  });
-});
 
 describe("C-3: Scoped invalidation in MarkDisputedDialog", () => {
   it("uses receivablesKeys.invoices(activeView) not broad prefix", () => {
@@ -167,15 +114,7 @@ describe("C-3: Scoped invalidation in MarkDisputedDialog", () => {
   });
 });
 
-describe("C-3: ReceivablesActionsRail passes activeView to all three dialogs", () => {
-  it("passes activeView to SetFollowUpDialog", () => {
-    expect(receivablesActionsRail).toMatch(/SetFollowUpDialog[\s\S]{0,200}activeView=\{activeView\}/);
-  });
-
-  it("passes activeView to PromiseToPayDialog", () => {
-    expect(receivablesActionsRail).toMatch(/PromiseToPayDialog[\s\S]{0,200}activeView=\{activeView\}/);
-  });
-
+describe("C-3: ReceivablesActionsRail passes activeView to MarkDisputedDialog", () => {
   it("passes activeView to MarkDisputedDialog", () => {
     expect(receivablesActionsRail).toMatch(/MarkDisputedDialog[\s\S]{0,200}activeView=\{activeView\}/);
   });
@@ -207,10 +146,6 @@ describe("H-2: View counts refetchInterval", () => {
 // ── H-3: No broad notes invalidation in dialogs ─────────────────────────────
 
 describe("H-3: Dialogs do not invalidate broad notes key", () => {
-  it("PromiseToPayDialog does NOT invalidate [\"receivables\", \"notes\"] broadly", () => {
-    expect(promiseToPayDialog).not.toMatch(/"receivables", "notes"\]/);
-  });
-
   it("MarkDisputedDialog does NOT invalidate [\"receivables\", \"notes\"] broadly", () => {
     expect(markDisputedDialog).not.toMatch(/"receivables", "notes"\]/);
   });
@@ -313,85 +248,6 @@ describe("M-2: Multi-select hides action buttons", () => {
   });
 });
 
-// ── M-4: Promise date timezone handling ─────────────────────────────────────
-
-describe("M-4: Promise date uses local-time midnight", () => {
-  it("builds promisedAt with T00:00:00 (local time, no Z suffix)", () => {
-    expect(promiseToPayDialog).toMatch(/T00:00:00"\)\.toISOString\(\)/);
-  });
-
-  it("does NOT append the UTC-forcing .000Z suffix", () => {
-    expect(promiseToPayDialog).not.toMatch(/T00:00:00\.000Z/);
-  });
-
-  it("has a comment explaining the local-time intent", () => {
-    expect(promiseToPayDialog).toMatch(/[Ll]ocal.time midnight/);
-  });
-});
-
-// ── M-6: Activity/Insights coming-soon state ────────────────────────────────
-
-describe("M-6: ActivityTab coming-soon state", () => {
-  it("renders data-testid=activity-tab-coming-soon", () => {
-    expect(activityTab).toMatch(/data-testid="activity-tab-coming-soon"/);
-  });
-
-  it("shows 'Coming soon' text", () => {
-    expect(activityTab).toMatch(/Coming soon/);
-  });
-
-  it("does NOT contain MOCK_EVENTS array", () => {
-    expect(activityTab).not.toMatch(/MOCK_EVENTS/);
-  });
-
-  it("does NOT contain hardcoded fake customer names (Fady's Hockey etc.)", () => {
-    expect(activityTab).not.toMatch(/Fady['']s Hockey/);
-    expect(activityTab).not.toMatch(/Northern HVAC/);
-    expect(activityTab).not.toMatch(/IceCap Services/);
-  });
-
-  it("still has a testid on the outer container", () => {
-    expect(activityTab).toMatch(/data-testid="receivables-activity-tab"/);
-  });
-
-  it("still has TODO comment pointing to future API endpoint", () => {
-    expect(activityTab).toMatch(/TODO.*\/api\/receivables\/activity/);
-  });
-});
-
-describe("M-6: InsightsTab coming-soon state", () => {
-  it("renders data-testid=insights-tab-coming-soon", () => {
-    expect(insightsTab).toMatch(/data-testid="insights-tab-coming-soon"/);
-  });
-
-  it("shows 'Coming soon' text", () => {
-    expect(insightsTab).toMatch(/Coming soon/);
-  });
-
-  it("does NOT contain MOCK_METRICS array", () => {
-    expect(insightsTab).not.toMatch(/MOCK_METRICS/);
-  });
-
-  it("does NOT contain AGING_BUCKETS array", () => {
-    expect(insightsTab).not.toMatch(/AGING_BUCKETS/);
-  });
-
-  it("does NOT contain hardcoded financial figures ($128,450 etc.)", () => {
-    expect(insightsTab).not.toMatch(/\$128,450/);
-    expect(insightsTab).not.toMatch(/\$18,200/);
-  });
-
-  it("still has a testid on the outer container", () => {
-    expect(insightsTab).toMatch(/data-testid="receivables-insights-tab"/);
-  });
-
-  it("still has TODO comment pointing to future API endpoints", () => {
-    // The TODO spans multiple lines — check both strings independently
-    expect(insightsTab).toMatch(/TODO/);
-    expect(insightsTab).toMatch(/\/api\/receivables/);
-  });
-});
-
 // ── Regression: existing invariants not broken ───────────────────────────────
 
 describe("Regression: existing receivables invariants", () => {
@@ -422,15 +278,6 @@ describe("Regression: existing receivables invariants", () => {
 
   it("ReceivablesActionsRail still uses receivablesKeys.notes for the query key", () => {
     expect(receivablesActionsRail).toMatch(/queryKey: receivablesKeys\.notes\(singleInvoiceId\)/);
-  });
-
-  it("SetFollowUpDialog mutation still patches /api/receivables/invoices/:id/follow-up", () => {
-    // Template literal — dollar sign must be escaped in regex
-    expect(setFollowUpDialog).toMatch(/\/api\/receivables\/invoices\/\$\{invoiceId\}\/follow-up/);
-  });
-
-  it("PromiseToPayDialog mutation still patches /api/receivables/invoices/:id/promise-to-pay", () => {
-    expect(promiseToPayDialog).toMatch(/\/api\/receivables\/invoices\/\$\{invoiceId\}\/promise-to-pay/);
   });
 
   it("MarkDisputedDialog mutation still patches /api/receivables/invoices/:id/mark-disputed", () => {

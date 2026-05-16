@@ -1,7 +1,17 @@
-import { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { addDays, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Phone, Check } from "lucide-react";
+import {
+  Phone,
+  Check,
+  Voicemail,
+  PhoneOff,
+  Mail,
+  MessageSquare,
+  MoreHorizontal,
+  BadgeDollarSign,
+  CalendarCheck,
+} from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -59,22 +69,20 @@ type OutcomeValue =
   | "text_sent"
   | "other";
 
-const OUTCOME_OPTIONS: { value: OutcomeValue; label: string }[] = [
-  { value: "spoke_with", label: "Spoke with Client" },
-  { value: "left_message", label: "Left Message" },
-  { value: "no_answer", label: "No Answer" },
-  { value: "email_sent", label: "Email Sent" },
-  { value: "text_sent", label: "Text Sent" },
-  { value: "other", label: "Other" },
+const OUTCOME_OPTIONS: {
+  value: OutcomeValue;
+  label: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  iconBg: string;
+  iconColor: string;
+}[] = [
+  { value: "spoke_with",  label: "Spoke with Client", Icon: Phone,          iconBg: "bg-green-50",   iconColor: "text-green-600"  },
+  { value: "left_message",label: "Left Message",      Icon: Voicemail,      iconBg: "bg-blue-50",    iconColor: "text-blue-600"   },
+  { value: "no_answer",   label: "No Answer",         Icon: PhoneOff,       iconBg: "bg-red-50",     iconColor: "text-red-500"    },
+  { value: "email_sent",  label: "Email Sent",        Icon: Mail,           iconBg: "bg-emerald-50", iconColor: "text-emerald-600"},
+  { value: "text_sent",   label: "Text Sent",         Icon: MessageSquare,  iconBg: "bg-purple-50",  iconColor: "text-purple-600" },
+  { value: "other",       label: "Other",             Icon: MoreHorizontal, iconBg: "bg-slate-100",  iconColor: "text-slate-500"  },
 ];
-
-const METHOD_OPTIONS = [
-  { value: "phone_call", label: "Phone Call" },
-  { value: "email", label: "Email" },
-  { value: "text_message", label: "Text Message" },
-  { value: "in_person", label: "In Person" },
-  { value: "other", label: "Other" },
-] as const;
 
 const FOLLOW_UP_TYPE_OPTIONS = [
   { value: "call", label: "Call" },
@@ -121,7 +129,6 @@ export function ContactClientModal({
 
   const [outcome, setOutcome] = useState<OutcomeValue | null>(null);
   const [contactedId, setContactedId] = useState<string>("");
-  const [method, setMethod] = useState<string>("");
   const [dateStr, setDateStr] = useState<string>(todayStr());
   const [notes, setNotes] = useState<string>("");
 
@@ -142,7 +149,6 @@ export function ContactClientModal({
     if (!open) {
       setOutcome(null);
       setContactedId("");
-      setMethod("");
       setDateStr(todayStr());
       setNotes("");
       setPromiseEnabled(false);
@@ -233,7 +239,6 @@ export function ContactClientModal({
   function validate(): Record<string, string> {
     const errs: Record<string, string> = {};
     if (!outcome) errs.outcome = "Select an outcome.";
-    if (!method) errs.method = "Select a method.";
     if (!dateStr) errs.date = "Date is required.";
     if (promiseEnabled && !promiseDateStr) {
       errs.promiseDate = "Payment date is required.";
@@ -254,8 +259,7 @@ export function ContactClientModal({
 
     const payload: Record<string, unknown> = {
       outcome,
-      contactPersonId: contactedId || null,
-      method,
+      contactPersonId: (contactedId && contactedId !== "unknown") ? contactedId : null,
       communicatedAt: toISONoon(dateStr),
       notes: notes.trim() || undefined,
     };
@@ -277,7 +281,7 @@ export function ContactClientModal({
     mutation.mutate(payload);
   }
 
-  const isFormValid = !!outcome && !!method && !!dateStr;
+  const isFormValid = !!outcome && !!dateStr;
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -317,19 +321,35 @@ export function ContactClientModal({
                       setErrors((e) => ({ ...e, outcome: "" }));
                     }}
                     className={cn(
-                      "relative flex items-center justify-between h-9 px-[10px] rounded-lg border text-left transition-colors",
+                      "relative flex items-center gap-2 h-8 px-2.5 rounded-lg border text-left transition-colors duration-150",
                       selected
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-background hover:border-primary/40 hover:bg-slate-50",
+                        ? "border-green-500 bg-green-50 ring-1 ring-green-100"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50",
                     )}
                     data-testid={`outcome-${opt.value}`}
                   >
-                    <span className="text-caption font-medium text-foreground">
+                    <span
+                      className={cn(
+                        "flex shrink-0 items-center justify-center rounded-full w-6 h-6",
+                        opt.iconBg,
+                      )}
+                    >
+                      <opt.Icon
+                        className={cn("w-4 h-4", opt.iconColor)}
+                        aria-hidden="true"
+                      />
+                    </span>
+                    <span
+                      className={cn(
+                        "flex-1 min-w-0 text-row font-medium truncate",
+                        selected ? "text-green-800" : "text-foreground",
+                      )}
+                    >
                       {opt.label}
                     </span>
                     {selected && (
                       <Check
-                        className="h-4 w-4 shrink-0 text-primary"
+                        className="shrink-0 h-3.5 w-3.5 text-green-600"
                         aria-hidden="true"
                       />
                     )}
@@ -361,29 +381,6 @@ export function ContactClientModal({
                     ))}
                   </SelectContent>
                 </Select>
-              </FormField>
-
-              {/* Method */}
-              <FormField>
-                <Select
-                  value={method}
-                  onValueChange={(v) => {
-                    setMethod(v);
-                    setErrors((e) => ({ ...e, method: "" }));
-                  }}
-                >
-                  <SelectTrigger className="h-[34px]" data-testid="contact-client-method">
-                    <SelectValue placeholder="Via phone, text, email…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {METHOD_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {errors.method && <FormErrorText>{errors.method}</FormErrorText>}
               </FormField>
 
               {/* Contact Date */}
@@ -436,7 +433,8 @@ export function ContactClientModal({
               className="rounded-md border border-border p-3 space-y-3"
               data-testid="promise-to-pay-card"
             >
-              <div className="text-caption font-medium text-foreground">
+              <div className="flex items-center gap-1.5 text-row font-medium text-foreground">
+                <BadgeDollarSign className="w-3.5 h-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
                 Promise to Pay
               </div>
 
@@ -453,7 +451,7 @@ export function ContactClientModal({
                   }}
                   data-testid="promise-enabled-checkbox"
                 />
-                <span className="text-caption text-foreground">
+                <span className="text-row text-foreground">
                   Client promised to pay
                 </span>
               </label>
@@ -485,7 +483,8 @@ export function ContactClientModal({
               className="rounded-md border border-border p-3 space-y-3"
               data-testid="follow-up-card"
             >
-              <div className="text-caption font-medium text-foreground">
+              <div className="flex items-center gap-1.5 text-row font-medium text-foreground">
+                <CalendarCheck className="w-3.5 h-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
                 Set Follow-up
               </div>
 
@@ -503,7 +502,7 @@ export function ContactClientModal({
                   }}
                   data-testid="followup-enabled-checkbox"
                 />
-                <span className="text-caption text-foreground">
+                <span className="text-row text-foreground">
                   Create follow-up
                 </span>
               </label>
@@ -570,14 +569,14 @@ export function ContactClientModal({
 
       <ModalFooter>
         <ModalSecondaryAction
-          className="w-[82px] h-9 rounded-lg"
+          className="w-[82px] rounded-lg"
           onClick={() => onOpenChange(false)}
           data-testid="contact-client-cancel"
         >
           Cancel
         </ModalSecondaryAction>
         <ModalPrimaryAction
-          className="w-[164px] h-9 rounded-lg"
+          className="w-[164px] rounded-lg"
           onClick={handleSave}
           disabled={!isFormValid || mutation.isPending}
           data-testid="contact-client-save"

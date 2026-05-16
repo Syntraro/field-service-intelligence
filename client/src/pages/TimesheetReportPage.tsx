@@ -482,7 +482,7 @@ export default function TimesheetReportPage() {
                 <CanonicalDatePicker
                   value={customStart}
                   onChange={(next) => setCustomStart(next ?? "")}
-                  className="w-full h-9 text-sm"
+                  className="w-full text-sm"
                 />
               </div>
               <div>
@@ -490,7 +490,7 @@ export default function TimesheetReportPage() {
                 <CanonicalDatePicker
                   value={customEnd}
                   onChange={(next) => setCustomEnd(next ?? "")}
-                  className="w-full h-9 text-sm"
+                  className="w-full text-sm"
                 />
               </div>
             </div>
@@ -736,7 +736,7 @@ function PayrollSettingsDialog({
             <CanonicalDatePicker
               value={anchor}
               onChange={(next) => setAnchor(next ?? "")}
-              className="w-full h-9 text-sm"
+              className="w-full text-sm"
             />
             <p className="text-helper text-muted-foreground mt-1">
               Any date that was the first day of one concrete pay period. All other periods are

@@ -158,14 +158,18 @@ export interface LineItemsCardProps<TServerLine extends DisplayLine> {
    *  mode via the parent's external trigger. The empty-state caption
    *  still renders. */
   hideEmptyStateCta?: boolean;
+  /** Suppress the Revenue/Profit/Margin KPI strip in the card header.
+   *  Job Detail passes true — those metrics already appear in the right-rail
+   *  Financial Summary and would duplicate on the main column. */
+  hideMetrics?: boolean;
   /**
    * Visual surface variant forwarded to the outer CardShell.
    * "contained" (default) — canonical card chrome.
-   * "open" — borderless; removes outer card border/shadow/background.
-   *   Internal column header, row dividers, and footer dividers are preserved.
-   *   Used by Job Detail only (2026-05-13 open-surface pass).
+   * "open" — minimal chrome: rounded-md bg-white border border-slate-100.
+   * "workspace" — inert wrapper (no border, background, or rounding).
+   * "inset" — bg-app-bg surface inside a white parent card (Financial Details).
    */
-  surface?: "contained" | "open";
+  surface?: "contained" | "open" | "workspace" | "inset";
 }
 
 export function LineItemsCard<TServerLine extends DisplayLine>({
@@ -177,6 +181,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
   title = "Line items",
   hidePencilButton = false,
   hideEmptyStateCta = false,
+  hideMetrics = false,
   surface,
 }: LineItemsCardProps<TServerLine>) {
   // 2026-05-07: Pricebook bulk picker. One modal mount lives inside the
@@ -407,7 +412,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               verbatim from the previous local `HeaderMetricBlock`).
               Tone (`valueClassName`) and emphasis flag stay caller-
               owned — CardMetricBlock has no business-math hooks. */}
-          {showMetrics && (
+          {showMetrics && !hideMetrics && (
             <div
               className="flex flex-wrap items-start gap-x-5 gap-y-1 min-w-0"
               data-testid="text-line-items-metrics"
@@ -440,7 +445,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
             <Button
               size="icon"
               variant="ghost"
-              className="h-9 w-9 flex-shrink-0"
+              className="flex-shrink-0"
               onClick={drafts.enterEdit}
               aria-label="Edit line items"
               data-testid="button-toggle-edit-lines"
@@ -510,7 +515,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               <>
                 {/* Column header row */}
                 <div
-                  className="grid border-b border-card-border bg-surface-subtle px-5 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                  className="grid border-b border-slate-100 bg-transparent px-5 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500"
                   style={{ gridTemplateColumns: gridTemplate(columns) }}
                 >
                   <span className="pr-2" />
@@ -552,7 +557,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                     <tr>
                       <td
                         colSpan={showCost ? 7 : 6}
-                        className="py-8 text-center text-xs text-slate-500"
+                        className="py-5 text-center text-xs text-slate-500"
                       >
                         No line items. Use "+ Add another line item" below to add one.
                       </td>
@@ -608,7 +613,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                     <tr>
                       <td
                         colSpan={showCost ? 7 : 6}
-                        className="py-12 text-center text-xs text-slate-500"
+                        className="py-6 text-center text-xs text-slate-500"
                       >
                         {isLocked || hideEmptyStateCta ? (
                           <span>{adapter.emptyStateLabel}</span>
@@ -624,7 +629,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                                   legacy enterEdit + appendNew flow. */}
                               <Button
                                 size="default"
-                                className="h-9 gap-1.5 text-sm"
+                                className="gap-1.5 text-sm"
                                 onClick={() => {
                                   if (isPersisted) {
                                     setAddModalOpen(true);
@@ -646,7 +651,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                               <Button
                                 size="default"
                                 variant="outline"
-                                className="h-9 gap-1.5 text-sm"
+                                className="gap-1.5 text-sm"
                                 onClick={() => {
                                   if (!isPersisted && !drafts.editing) drafts.enterEdit();
                                   setPricebookOpen(true);

@@ -33,7 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TaskDialog } from "@/components/TaskDialog";
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
 import { ClipboardList, Plus, CheckSquare, Square, X } from "lucide-react";
 
 // Local shape matching the /api/tasks payload — same fields the prior
@@ -396,13 +396,10 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
         onChanged={invalidateAllTaskQueries}
       />
 
-      {/* Canonical CreateNewDialog — Task tab. Replaces the prior path that
-          opened TaskDialog directly for create. */}
-      <CreateNewDialog
+      <CreateTaskModal
         open={createNewOpen}
         onOpenChange={setCreateNewOpen}
-        defaultTab="task"
-        onTaskChanged={invalidateAllTaskQueries}
+        onChanged={invalidateAllTaskQueries}
       />
     </div>
   );

@@ -792,7 +792,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                 id="startDate"
                 value={formData.startDate}
                 onChange={(next) => setFormData({ ...formData, startDate: next ?? "" })}
-                className="w-full h-9 text-row"
+                className="w-full text-row"
               />
             </div>
 
@@ -805,7 +805,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                 onChange={(next) => setFormData({ ...formData, endDate: next ?? "" })}
                 placeholder="Optional"
                 clearable
-                className="w-full h-9 text-row"
+                className="w-full text-row"
               />
             </div>
 

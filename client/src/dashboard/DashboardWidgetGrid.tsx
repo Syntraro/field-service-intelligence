@@ -73,7 +73,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { DashboardLayoutResponseEntry } from "./dashboardLayoutSchemas";
+import type { DashboardLayoutResponseEntry } from "@shared/dashboardLayoutSchemas";
 
 /** Width unit on the canonical 3-column card grid. */
 export type DashboardWidgetWidthUnits = 1 | 2 | 3;

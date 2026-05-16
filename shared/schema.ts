@@ -1857,6 +1857,23 @@ export type FileStatus = (typeof fileStatusEnum)[number];
 export const fileStorageProviderEnum = ["r2", "local"] as const;
 export type FileStorageProvider = (typeof fileStorageProviderEnum)[number];
 
+// Durable queue for post-delete R2 object cleanup.
+export const fileCleanupQueue = pgTable("file_cleanup_queue", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull(),
+  bucket: varchar("bucket").notNull(),
+  storageKey: varchar("storage_key").notNull(),
+  storageProvider: varchar("storage_provider").notNull().default("r2"),
+  sourceRef: varchar("source_ref").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`now()`),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  failedAt: timestamp("failed_at", { withTimezone: true }),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastError: text("last_error"),
+});
+export type FileCleanupQueueEntry = typeof fileCleanupQueue.$inferSelect;
+
 // Kept intentionally open — new entity types will add categories without
 // requiring an enum migration.
 export const fileCategoryEnum = [

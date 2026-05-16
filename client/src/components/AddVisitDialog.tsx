@@ -175,7 +175,7 @@ export function AddVisitDialog({
                 id="scheduledDate"
                 value={scheduledDate}
                 onChange={(next) => setScheduledDate(next ?? "")}
-                className="w-full h-9 text-sm"
+                className="w-full text-sm"
                 data-testid="input-visit-date"
               />
             </FormField>

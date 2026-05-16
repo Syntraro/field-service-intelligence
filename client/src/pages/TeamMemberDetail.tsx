@@ -286,7 +286,7 @@ export default function TeamMemberDetail() {
                   id="firstName"
                   value={basic.firstName}
                   onChange={(e) => setBasicField("firstName", e.target.value)}
-                  className="h-9"
+                  className=""
                   data-testid="input-first-name"
                 />
               </FormField>
@@ -296,7 +296,7 @@ export default function TeamMemberDetail() {
                   id="lastName"
                   value={basic.lastName}
                   onChange={(e) => setBasicField("lastName", e.target.value)}
-                  className="h-9"
+                  className=""
                   data-testid="input-last-name"
                 />
               </FormField>
@@ -307,7 +307,7 @@ export default function TeamMemberDetail() {
                   value={basic.phone}
                   onChange={(e) => setBasicField("phone", e.target.value)}
                   placeholder="(555) 123-4567"
-                  className="h-9"
+                  className=""
                   data-testid="input-phone"
                 />
               </FormField>
@@ -317,7 +317,7 @@ export default function TeamMemberDetail() {
                   value={basic.roleId}
                   onValueChange={(v) => setBasicField("roleId", v)}
                 >
-                  <SelectTrigger id="role" className="h-9" data-testid="select-role">
+                  <SelectTrigger id="role" data-testid="select-role">
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
                   <SelectContent>
@@ -337,7 +337,7 @@ export default function TeamMemberDetail() {
                     type="email"
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
-                    className="h-9"
+                    className=""
                     data-testid="input-email"
                   />
                   {emailInput !== member.email && (

@@ -467,7 +467,7 @@ function ExtendTrialDialog({
                 id="trial-end-date"
                 value={newEnd}
                 onChange={(next) => setNewEnd(next ?? "")}
-                className="w-full h-9 text-sm"
+                className="w-full text-sm"
                 data-testid="input-trial-end-date"
               />
             </div>

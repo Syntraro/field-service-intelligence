@@ -480,7 +480,7 @@ function StepBasics({
             <Button
               variant="outline"
               role="combobox"
-              className="w-full justify-between font-normal h-9"
+              className="w-full justify-between font-normal"
               data-testid="pm-wizard-company-select"
             >
               {state.customerName || "Select a customer..."}
@@ -526,7 +526,7 @@ function StepBasics({
             <Button
               variant="outline"
               role="combobox"
-              className="w-full justify-between font-normal h-9"
+              className="w-full justify-between font-normal"
               disabled={!state.customerCompanyId}
               data-testid="pm-wizard-location-select"
             >
@@ -577,7 +577,7 @@ function StepBasics({
       <div className="space-y-1.5">
         <Label className="text-sm">Plan Name</Label>
         <Input
-          className="h-9"
+          className=""
           value={state.title}
           onChange={(e) => onChange({ title: e.target.value })}
           placeholder="e.g. Quarterly HVAC Maintenance — Warehouse"
@@ -696,7 +696,7 @@ function StepSchedule({
         <CanonicalDatePicker
           value={state.startDate}
           onChange={(next) => setStartDate(next ?? "")}
-          className="h-9 w-48 text-sm"
+          className="w-48 text-sm"
           data-testid="pm-wizard-start-date"
         />
         <p className="text-helper text-muted-foreground leading-snug">
@@ -1006,7 +1006,7 @@ function StepPricing({
             value={state.billingOption}
             onValueChange={(v) => onChange({ billingOption: v as BillingOption })}
           >
-            <SelectTrigger className="h-9" data-testid="pm-wizard-charge-type">
+            <SelectTrigger className="" data-testid="pm-wizard-charge-type">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -1033,7 +1033,7 @@ function StepPricing({
                 type="number"
                 step="0.01"
                 min="0"
-                className="pl-7 h-9"
+                className="pl-7"
                 value={state.contractAmount}
                 onChange={(e) => onChange({ contractAmount: e.target.value })}
                 placeholder="0.00"
@@ -1314,7 +1314,7 @@ function FinalActionBar({
         </div>
         <Button
           size="sm"
-          className="h-9"
+          className=""
           onClick={onCreate}
           disabled={isPending}
           data-testid="pm-wizard-create"

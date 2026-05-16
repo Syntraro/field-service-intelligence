@@ -50,7 +50,7 @@ import {
   listDashboardWidgets,
   type DashboardWidgetDefinition,
 } from "@shared/dashboardWidgetRegistry";
-import { dashboardLayoutPutSchema } from "../../client/src/dashboard/dashboardLayoutSchemas";
+import { dashboardLayoutPutSchema } from "@shared/dashboardLayoutSchemas";
 
 const router = Router();
 

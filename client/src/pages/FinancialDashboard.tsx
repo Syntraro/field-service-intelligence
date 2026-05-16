@@ -399,7 +399,7 @@ export default function FinancialDashboard() {
   // network round-trip, so this is a free read from the same cache.
   const [scheduleScopeIds, setScheduleScopeIds] = useState<string[]>([]);
   const scheduleCapacityQuery = useQuery<CapacityResponseDto>({
-    queryKey: ["/api/dashboard/capacity"],
+    queryKey: ["/api/dashboard/capacity", "today"],
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -1225,7 +1225,7 @@ function TodaysScheduleCard({
   const scheduleDisplayMode = displayMode;
 
   const capacityQuery = useQuery<CapacityResponseDto>({
-    queryKey: ["/api/dashboard/capacity"],
+    queryKey: ["/api/dashboard/capacity", "today"],
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -1620,7 +1620,7 @@ function TodaysScheduleCard({
         // scope suffix are dropped because they don't fit the narrow
         // 1/3-width card.
         <div
-          className="px-4 py-2 border-b border-card-border flex flex-col gap-2"
+          className="pl-4 pr-10 py-2 border-b border-card-border flex flex-col gap-2"
           data-testid="todays-schedule-header"
           data-header-variant="stacked"
         >
@@ -1644,7 +1644,7 @@ function TodaysScheduleCard({
         // Default single-row header — preserved verbatim from the
         // pre-stacked layout so column mode stays untouched.
         <div
-          className="px-4 py-2.5 border-b border-card-border flex items-center justify-between gap-3"
+          className="pl-4 pr-10 py-2.5 border-b border-card-border flex items-center justify-between gap-3"
           data-testid="todays-schedule-header"
           data-header-variant="default"
         >
@@ -1851,7 +1851,12 @@ function TodaysScheduleCard({
             // continues to iterate `visibleTechs` directly — no
             // grouping in stacked, every tech gets their own section.
             const useGrid = !isStacked && effectiveColumnCount <= 4;
-            const renderColumn = (tech: CapacityTechDto, isLastCol: boolean, widthClass: string) => {
+            const renderColumn = (
+              tech: CapacityTechDto,
+              isLastCol: boolean,
+              widthClass: string,
+              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
+            ) => {
               // 2026-04-26 polish v6: off-shift technicians can still have
               // assigned visits (e.g. accidental booking on a day-off). The
               // server now returns those blocks for off_today techs; the
@@ -1872,11 +1877,7 @@ function TodaysScheduleCard({
               return (
               <div
                 key={tech.technicianId}
-                className={`${widthClass} ${
-                  !isLastCol
-                    ? "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"
-                    : ""
-                }`}
+                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
               >
                 <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
                   {tech.name}
@@ -2036,14 +2037,11 @@ function TodaysScheduleCard({
             const renderUnassignedColumn = (
               isLastCol: boolean,
               widthClass: string,
+              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
             ) => (
               <div
                 key="unassigned-visits"
-                className={`${widthClass} ${
-                  !isLastCol
-                    ? "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"
-                    : ""
-                }`}
+                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
                 data-testid="schedule-unassigned-column"
               >
                 <div className="px-3 py-2 text-[13px] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
@@ -2151,14 +2149,11 @@ function TodaysScheduleCard({
             const renderGroupedAvailableColumn = (
               isLastCol: boolean,
               widthClass: string,
+              borderClass = "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]",
             ) => (
               <div
                 key="available-techs"
-                className={`${widthClass} ${
-                  !isLastCol
-                    ? "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"
-                    : ""
-                }`}
+                className={`${widthClass} ${!isLastCol ? borderClass : ""}`}
                 data-testid="schedule-available-column"
               >
                 <div className="px-3 py-2 text-helper font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
@@ -2254,17 +2249,30 @@ function TodaysScheduleCard({
                 data-testid="schedule-multi-column-view"
                 data-display-mode="column"
               >
-                <div className="flex h-full" style={{ minWidth: "min-content" }}>
+                {/* minmax(220px, 1fr): columns stretch to fill available
+                    card width on wide screens, and enforce a 220px floor
+                    so horizontal scroll triggers correctly on narrow ones.
+                    minWidth ensures the grid element itself is wide enough
+                    to overflow the overflow-x-auto wrapper (a grid box
+                    won't exceed its containing block width on its own). */}
+                <div
+                  className="grid h-full"
+                  style={{
+                    gridTemplateColumns: `repeat(${effectiveColumnCount}, minmax(220px, 1fr))`,
+                    minWidth: `${effectiveColumnCount * 220}px`,
+                  }}
+                >
                   {activeTechsForRender.map((tech, i) =>
                     renderColumn(
                       tech,
                       !hasIdleGroup && !hasUnassigned && i === activeColumnsLastIdx,
-                      "flex-none w-[220px]",
+                      "min-w-0",
+                      "border-r border-[#e2e8f0]",
                     ),
                   )}
                   {hasIdleGroup &&
-                    renderGroupedAvailableColumn(!hasUnassigned, "flex-none w-[220px]")}
-                  {hasUnassigned && renderUnassignedColumn(true, "flex-none w-[220px]")}
+                    renderGroupedAvailableColumn(!hasUnassigned, "min-w-0", "border-r border-[#e2e8f0]")}
+                  {hasUnassigned && renderUnassignedColumn(true, "min-w-0", "border-r border-[#e2e8f0]")}
                 </div>
               </div>
             );

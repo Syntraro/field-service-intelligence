@@ -102,7 +102,7 @@ export function SourceSelector({ value, onChange }: SourceSelectorProps) {
               onClick={() => onChange(option.id)}
               data-testid={`source-option-${option.id}`}
               title={option.description}
-              className={`inline-flex items-center gap-2 h-9 px-3.5 rounded-md text-sm font-medium border bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
+              className={`inline-flex items-center gap-2 h-8 px-3.5 rounded-md text-sm font-medium border bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
                 isActive
                   ? "border-[#76B054] text-[#111827] ring-1 ring-[#76B054]/30 shadow-sm"
                   : "border-[#e2e8f0] text-[#4b5563] hover:border-[#76B054]/60 hover:text-[#111827]"

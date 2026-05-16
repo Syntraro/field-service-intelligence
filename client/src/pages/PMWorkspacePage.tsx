@@ -719,7 +719,7 @@ function WorkDueTab({
       >
         <div className="flex items-center gap-2 flex-wrap">
           <Select value={filter} onValueChange={(v) => setFilter(v as WorkDueFilter)}>
-            <SelectTrigger className="h-9 w-[140px] rounded-md" data-testid="work-due-filter">
+            <SelectTrigger className="w-[140px] rounded-md" data-testid="work-due-filter">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -735,7 +735,7 @@ function WorkDueTab({
               placeholder="Search plans..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-9 w-[220px]"
+              className="pl-9 w-[220px]"
               data-testid="work-due-search"
             />
           </div>
@@ -746,7 +746,6 @@ function WorkDueTab({
             onClick={onOpenBulkConfirm}
             disabled={isGenerating}
             data-testid="work-due-generate-all"
-            className="h-9"
           >
             {isGenerating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Zap className="mr-1.5 h-3.5 w-3.5" />}
             Generate All Due Work ({counts.dueNow + counts.overdue})
@@ -1044,12 +1043,12 @@ function PlansTab({
             placeholder="Search plans..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 h-9"
+            className="pl-9"
             data-testid="plans-search"
           />
         </div>
         <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as PlanStatusFilter)}>
-          <SelectTrigger className="h-9 w-[140px] rounded-md" data-testid="plans-status-filter">
+          <SelectTrigger className="w-[140px] rounded-md" data-testid="plans-status-filter">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1250,7 +1249,7 @@ function TemplatesTab() {
             placeholder="Search templates..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 h-9"
+            className="pl-9"
             data-testid="templates-search"
           />
         </div>

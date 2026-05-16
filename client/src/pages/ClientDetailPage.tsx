@@ -54,13 +54,14 @@ import {
   // 2026-05-07 right-rail icons. Wrench already imported above; reused.
   // 2026-05-12 RALPH: Users / Wallet / CalendarClock / Activity removed
   // (tabs they backed are gone). LayoutDashboard added for Summary tab.
-  StickyNote, LayoutDashboard, X,
+  // 2026-05-14: Users restored — Contacts tab re-added to right rail.
+  StickyNote, LayoutDashboard, X, Users,
 } from "lucide-react";
 import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 // 2026-05-08 chip canonicalization: the local FilterChips generic
 // below now composes the canonical <FilterChip> from chip.tsx.
-import { FilterChip } from "@/components/ui/chip";
+import { Chip, FilterChip } from "@/components/ui/chip";
 import {
   Popover, PopoverTrigger, PopoverContent,
 } from "@/components/ui/popover";
@@ -99,11 +100,7 @@ import type {
   RailMetaRowDescriptor,
 } from "@/components/detail-rail/railTypes";
 import { formatRailActivity } from "@/components/activity-feed/formatRailActivity";
-// 2026-04-26: Routed through the canonical CreateNewDialog (Job tab). The
-// `preselectedLocationId` contract maps one-for-one onto CreateNewDialog's
-// `jobPreselectedLocationId`, so the client-scoped create still keeps its
-// location prefill.
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+import { CreateJobModal } from "@/components/CreateJobModal";
 import LocationFormModal from "@/components/LocationFormModal";
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import PMScheduleCard from "@/components/PMScheduleCard";
@@ -174,6 +171,7 @@ type WorkspaceTab =
 type UtilityTab =
   | "summary"
   | "notes"
+  | "contacts"
   | "equipment-parts";
 
 type UtilityPanel = UtilityTab | null;
@@ -267,26 +265,6 @@ const WORKSPACE_TAB_KEYS = new Set(LOCATION_TABS.map(t => t.key));
 const fmt = new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Compact label for a scope-bar shortcut pill. Short single-word
- *  names (≤ 8 chars) render verbatim — `Office`, `Shop`. Multi-word
- *  names collapse to leading-letter initials with non-letter tokens
- *  filtered out — `Yonge & Finch` → `YF`,
- *  `Toronto General Hospital` → `TGH`. Single long words get a
- *  3-letter prefix as a last resort. The full name is always set as
- *  the pill's `title` so hovering reveals it. */
-function locationShortName(name: string): string {
-  const trimmed = (name ?? "").trim();
-  if (!trimmed) return "?";
-  if (trimmed.length <= 8 && !trimmed.includes(" ")) return trimmed;
-  const wordTokens = trimmed
-    .split(/\s+/)
-    .filter((w) => w && /[A-Za-z0-9]/.test(w[0]!));
-  if (wordTokens.length >= 2) {
-    return wordTokens.slice(0, 4).map((w) => w[0]!.toUpperCase()).join("");
-  }
-  return trimmed.slice(0, 3).toUpperCase();
-}
 
 function locationDisplayName(loc: Client): string {
   return loc.location?.trim()
@@ -661,14 +639,21 @@ export default function ClientDetailPage() {
   // EntityNotesPanel reacts via a useEffect.
   const [notesAddSignal, setNotesAddSignal] = useState(0);
 
-  // Delete dialog state
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<"company" | "location">("company");
-  const [deleteConfirmText, setDeleteConfirmText] = useState("");
-  const [deleteEligibility, setDeleteEligibility] = useState<{
-    canHardDelete: boolean; reasons: string[]; isLastLocation?: boolean; locationCount?: number;
+  // Archive dialog state
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<"company" | "location">("company");
+
+  // Permanent delete dialog state
+  const [permDeleteDialogOpen, setPermDeleteDialogOpen] = useState(false);
+  const [permDeleteTarget, setPermDeleteTarget] = useState<"company" | "location">("company");
+  const [permDeleteConfirmText, setPermDeleteConfirmText] = useState("");
+  const [deleteImpact, setDeleteImpact] = useState<{
+    locationCount?: number; jobs: number; visits: number; invoices: number; quotes: number;
+    leads: number; servicePlans: number; recurringJobs: number; notes: number; files: number;
+    maintenanceRecords: number;
   } | null>(null);
-  const [deleteCheckLoading, setDeleteCheckLoading] = useState(false);
+  const [deleteImpactLoading, setDeleteImpactLoading] = useState(false);
+  const [deleteImpactError, setDeleteImpactError] = useState<string | null>(null);
 
   // ── Data queries ──
   const { data: client, isLoading: clientLoading, error: clientError } = useQuery<Client>({
@@ -881,71 +866,94 @@ export default function ClientDetailPage() {
     onError: () => toast({ title: "Error", description: "Failed to remove equipment.", variant: "destructive" }),
   });
 
-  // ── Delete / Archive handlers ──
-  const openDeleteDialog = useCallback(async (target: "company" | "location") => {
-    setDeleteTarget(target);
-    setDeleteConfirmText("");
-    setDeleteEligibility(null);
-    setDeleteCheckLoading(true);
-    setDeleteDialogOpen(true);
+  // ── Archive / Delete handlers ──
+  const openArchiveDialog = useCallback((target: "company" | "location") => {
+    setArchiveTarget(target);
+    setArchiveDialogOpen(true);
+  }, []);
+
+  const openPermDeleteDialog = useCallback(async (target: "company" | "location") => {
+    setPermDeleteTarget(target);
+    setPermDeleteConfirmText("");
+    setDeleteImpact(null);
+    setDeleteImpactError(null);
+    setDeleteImpactLoading(true);
+    setPermDeleteDialogOpen(true);
 
     try {
       const targetId = target === "company" ? companyId : selectedLocationId;
       if (!targetId) throw new Error("No entity selected");
       const url = target === "company"
-        ? `/api/customer-companies/${targetId}/delete-check`
-        : `/api/clients/${targetId}/delete-check`;
+        ? `/api/customer-companies/${targetId}/delete-impact`
+        : `/api/clients/${targetId}/delete-impact`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error || body?.message || `Server returned ${res.status}`);
       }
-      setDeleteEligibility(await res.json());
+      setDeleteImpact(await res.json());
     } catch (err: any) {
-      setDeleteEligibility({ canHardDelete: false, reasons: [err?.message || "Failed to check eligibility"] });
+      setDeleteImpactError(err?.message || "Failed to load affected records");
     } finally {
-      setDeleteCheckLoading(false);
+      setDeleteImpactLoading(false);
     }
   }, [companyId, selectedLocationId]);
 
-  const executeDelete = useMutation({
+  const executeArchive = useMutation({
     mutationFn: async () => {
-      if (deleteTarget === "company") {
-        if (deleteEligibility?.canHardDelete) {
-          await apiRequest(`/api/customer-companies/${companyId}`, {
-            method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
-          });
-        } else {
-          await apiRequest(`/api/customer-companies/${companyId}/archive`, { method: "POST" });
-        }
+      if (archiveTarget === "company") {
+        await apiRequest(`/api/customer-companies/${companyId}/archive`, { method: "POST" });
       } else {
-        if (deleteEligibility?.canHardDelete && !deleteEligibility?.isLastLocation) {
-          await apiRequest(`/api/clients/${selectedLocationId}`, {
-            method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
-          });
-        } else {
-          await apiRequest(`/api/clients/${selectedLocationId}`, { method: "DELETE" });
-        }
+        await apiRequest(`/api/clients/${selectedLocationId}`, { method: "DELETE" });
       }
     },
     onSuccess: () => {
-      const isHard = deleteEligibility?.canHardDelete;
-      setDeleteDialogOpen(false);
-      if (deleteTarget === "company") {
-        toast({ title: isHard ? "Client deleted" : "Client archived" });
+      setArchiveDialogOpen(false);
+      if (archiveTarget === "company") {
+        toast({ title: "Client archived" });
         queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
         setLocation("/clients");
       } else {
-        toast({ title: isHard ? "Location deleted" : "Location archived" });
+        toast({ title: "Location archived" });
         queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
         queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
-        // Switch to company scope after location deletion
         setScopeType("company");
         setSelectedLocationId(null);
       }
     },
     onError: (err: any) => {
-      toast({ title: "Error", description: err?.message || "Delete failed", variant: "destructive" });
+      toast({ title: "Error", description: err?.message || "Archive failed", variant: "destructive" });
+    },
+  });
+
+  const executePermanentDelete = useMutation({
+    mutationFn: async () => {
+      if (permDeleteTarget === "company") {
+        await apiRequest(`/api/customer-companies/${companyId}`, {
+          method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
+        });
+      } else {
+        await apiRequest(`/api/clients/${selectedLocationId}`, {
+          method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
+        });
+      }
+    },
+    onSuccess: () => {
+      setPermDeleteDialogOpen(false);
+      if (permDeleteTarget === "company") {
+        toast({ title: "Client permanently deleted" });
+        queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+        setLocation("/clients");
+      } else {
+        toast({ title: "Location permanently deleted" });
+        queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
+        setScopeType("company");
+        setSelectedLocationId(null);
+      }
+    },
+    onError: (err: any) => {
+      toast({ title: "Delete failed", description: err?.message || "Permanent delete failed", variant: "destructive" });
     },
   });
 
@@ -1194,17 +1202,6 @@ export default function ClientDetailPage() {
       label: "Summary",
       icon: LayoutDashboard,
       testId: "rail-item-summary",
-      action: (
-        <button
-          type="button"
-          onClick={() => setEditClientDialogOpen(true)}
-          className={RAIL_ACTION_BTN_CLASS}
-          data-testid="client-side-panel-action-edit-billing"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          Edit
-        </button>
-      ),
       content: (
         <ClientSummaryTabContent
           billing={billingPanelData}
@@ -1259,6 +1256,52 @@ export default function ClientDetailPage() {
         <DetailRightRailEmpty
           message="No notes yet."
           hint="Add one to keep your team aligned."
+          testIdPrefix="client-side"
+        />
+      ),
+    },
+    {
+      id: "contacts",
+      label: "Contacts",
+      icon: Users,
+      testId: "rail-item-contacts",
+      action: (
+        <button
+          type="button"
+          onClick={() => {
+            if (scopeType === "company") companyContactsRef.current?.startAdding();
+            else locContactsRef.current?.startAdding();
+          }}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-contact"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Contact
+        </button>
+      ),
+      content: scopeType === "company" && companyId ? (
+        <CompanyContactsCompact
+          ref={companyContactsRef}
+          companyContacts={clientLevelContacts}
+          locationContacts={allLocationContacts}
+          locations={locations}
+          companyId={companyId}
+          hideHeader
+        />
+      ) : scopeType === "location" && selectedLocationId ? (
+        <LocContactsCompact
+          ref={locContactsRef}
+          locationContacts={locContacts}
+          companyContacts={locCompanyContacts}
+          locationId={selectedLocationId}
+          parentCompanyId={companyId}
+          locations={locations}
+          allLocationContacts={allLocationContacts}
+          hideHeader
+        />
+      ) : (
+        <DetailRightRailEmpty
+          message="No contacts."
           testIdPrefix="client-side"
         />
       ),
@@ -1395,12 +1438,6 @@ export default function ClientDetailPage() {
             <ActionMenu
               items={[
                 {
-                  id: "add-location",
-                  label: "Add Location",
-                  icon: Plus,
-                  onSelect: () => setAddLocationDialogOpen(true),
-                },
-                {
                   id: "edit-client",
                   label: "Edit Client",
                   icon: Pencil,
@@ -1414,34 +1451,17 @@ export default function ClientDetailPage() {
                   hidden: !(scopeType === "company" && Boolean(companyId)),
                 },
                 {
-                  id: "edit-location",
-                  label: "Edit Location",
-                  icon: Pencil,
-                  onSelect: () => setEditLocationModalOpen(true),
-                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
-                },
-                {
-                  id: "edit-location-tags",
-                  label: "Edit Location Tags",
-                  icon: Tag,
-                  onSelect: () => setEditLocationTagsOpen(true),
-                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
-                },
-                {
-                  id: "delete-location",
-                  label: "Delete Location",
-                  icon: Trash2,
-                  onSelect: () => openDeleteDialog("location"),
-                  hidden: !(scopeType === "location" && Boolean(selectedLoc)),
+                  id: "archive-client",
+                  label: "Archive Client",
+                  icon: Archive,
+                  onSelect: () => openArchiveDialog("company"),
                   separator: true,
-                  tone: "destructive",
                 },
                 {
                   id: "delete-client",
                   label: "Delete Client",
                   icon: Trash2,
-                  onSelect: () => openDeleteDialog("company"),
-                  separator: !(scopeType === "location" && Boolean(selectedLoc)),
+                  onSelect: () => openPermDeleteDialog("company"),
                   tone: "destructive",
                 },
               ] satisfies ActionMenuItemDescriptor[]}
@@ -1624,40 +1644,32 @@ export default function ClientDetailPage() {
               data-testid="client-scope-pills"
             >
               {/* All-Locations shortcut */}
-              <button
-                type="button"
+              <FilterChip
+                selected={scopeType === "company"}
+                size="compact"
                 onClick={handleSelectCompany}
                 data-testid="client-scope-pill-all"
                 title="All Locations"
-                className={cn(
-                  "h-6 px-2 rounded-full border text-[11px] font-medium transition-colors flex-shrink-0",
-                  scopeType === "company"
-                    ? "bg-[#76B054] text-white border-[#76B054]"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-400",
-                )}
+                className="flex-shrink-0"
               >
                 All
-              </button>
+              </FilterChip>
               {displayed.map((loc) => {
                 const isActive = scopeType === "location" && selectedLocationId === loc.id;
-                const fullName = locationDisplayName(loc);
+                const chipLabel = loc.location?.trim() || loc.address?.trim() || "Unnamed";
+                const titleLabel = locationDisplayName(loc);
                 return (
-                  <button
+                  <FilterChip
                     key={loc.id}
-                    type="button"
+                    selected={isActive}
+                    size="compact"
                     onClick={() => handleSelectLocation(loc.id)}
-                    title={fullName}
+                    title={titleLabel}
                     data-testid={`client-scope-pill-${loc.id}`}
-                    className={cn(
-                      "h-6 px-2 rounded-full border text-[11px] font-medium transition-colors flex-shrink-0",
-                      "max-w-[80px] truncate",
-                      isActive
-                        ? "bg-[#76B054] text-white border-[#76B054]"
-                        : "bg-white text-slate-600 border-slate-200 hover:border-slate-400",
-                    )}
+                    className="flex-shrink-0 max-w-[120px] truncate"
                   >
-                    {locationShortName(fullName)}
-                  </button>
+                    {chipLabel}
+                  </FilterChip>
                 );
               })}
               {/* Overflow indicator — clicking opens the canonical
@@ -1665,15 +1677,18 @@ export default function ClientDetailPage() {
                   the pill row. Only rendered when something is
                   actually hidden. */}
               {hiddenCount > 0 && (
-                <button
-                  type="button"
+                <Chip
+                  as="button"
+                  tone="neutral"
+                  size="compact"
+                  interactive={true}
                   onClick={() => setScopePopoverOpen(true)}
                   title={`${hiddenCount} more location${hiddenCount === 1 ? "" : "s"}`}
                   data-testid="client-scope-pill-overflow"
-                  className="inline-flex h-6 px-2 rounded-full border border-dashed border-slate-300 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:border-slate-400 transition-colors flex-shrink-0"
+                  className="flex-shrink-0 border-dashed"
                 >
                   +{hiddenCount}
-                </button>
+                </Chip>
               )}
             </div>
           );
@@ -1919,8 +1934,8 @@ export default function ClientDetailPage() {
              - panel closed → fixed RAIL_COLLAPSED_WIDTH (compact strip only) */}
       <aside
         className={cn(
-          "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
-          "border-t lg:border-t-0 lg:border-l border-slate-200",
+          "relative lg:shrink-0 lg:h-full flex flex-col bg-app-bg",
+          "border-t lg:border-t-0 lg:border-l border-app-bg",
         )}
         style={{
           ["--client-rail-width" as any]: `${
@@ -1981,81 +1996,122 @@ export default function ClientDetailPage() {
       </aside>
 
       {/* ── Dialogs ── */}
-      <CreateNewDialog
+      <CreateJobModal
         open={jobDialogOpen}
         onOpenChange={setJobDialogOpen}
-        defaultTab="job"
-        jobPreselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
+        preselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
 
-      {/* Delete / Archive Confirmation Dialog — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      {/* Archive Confirmation — AlertDialog per CLAUDE.md taxonomy rule #1 */}
+      <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
-              {deleteEligibility?.canHardDelete ? (
-                <><AlertTriangle className="h-5 w-5 text-destructive" /> Delete {deleteTarget === "company" ? "Client" : "Location"}</>
-              ) : (
-                <><Archive className="h-5 w-5 text-amber-500" /> Archive {deleteTarget === "company" ? "Client" : "Location"}</>
-              )}
+              <Archive className="h-5 w-5 text-amber-500" />
+              Archive {archiveTarget === "company" ? "Client" : "Location"}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {deleteCheckLoading ? "Checking dependencies..." :
-                deleteEligibility?.canHardDelete
-                  ? deleteTarget === "company"
-                    ? `This will permanently remove "${companyName}" and all associated locations and contacts. This cannot be undone.`
-                    : deleteEligibility?.isLastLocation
-                      ? "This is the only location for this client. Delete the client instead."
-                      : `This will permanently remove "${selectedLoc ? locationDisplayName(selectedLoc) : "this location"}". This cannot be undone.`
-                  : `Cannot permanently delete — ${(deleteEligibility?.reasons ?? []).join(", ")}. You can archive instead, which hides it from lists while preserving historical records.`
+              {archiveTarget === "company"
+                ? `Archiving hides "${companyName}" from active client lists while preserving all history, jobs, invoices, and records. You can restore it later.`
+                : `Archiving hides "${selectedLoc ? locationDisplayName(selectedLoc) : "this location"}" from active lists while preserving all related records.`
               }
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => executeArchive.mutate()}
+              disabled={executeArchive.isPending}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              {executeArchive.isPending ? "Archiving..." : "Archive"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-          {!deleteCheckLoading && deleteEligibility && (
-            <div className="space-y-4 py-2">
-              {!deleteEligibility.canHardDelete && deleteEligibility.reasons.length > 0 && (
-                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm">
-                  <p className="font-medium text-amber-800 mb-1">Blocking dependencies:</p>
-                  <ul className="list-disc pl-5 text-amber-700 space-y-0.5">
-                    {deleteEligibility.reasons.map((r, i) => <li key={i}>{r}</li>)}
+      {/* Permanent Delete Confirmation — AlertDialog per CLAUDE.md taxonomy rule #1 */}
+      <AlertDialog open={permDeleteDialogOpen} onOpenChange={setPermDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Delete {permDeleteTarget === "company" ? "Client" : "Location"} Permanently
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. Deleting this {permDeleteTarget === "company" ? "client" : "location"} will permanently remove all associated records.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-3 py-1">
+            {deleteImpactLoading && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading affected records…
+              </p>
+            )}
+            {deleteImpactError && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
+                {deleteImpactError}
+              </div>
+            )}
+            {!deleteImpactLoading && !deleteImpactError && deleteImpact && (
+              <>
+                <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-sm">
+                  <p className="font-medium text-destructive mb-1.5">The following will be permanently deleted:</p>
+                  <ul className="space-y-0.5 text-muted-foreground list-disc pl-4">
+                    {deleteImpact.jobs > 0 && <li>{deleteImpact.jobs} job{deleteImpact.jobs !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.visits > 0 && <li>{deleteImpact.visits} visit{deleteImpact.visits !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.invoices > 0 && <li>{deleteImpact.invoices} invoice{deleteImpact.invoices !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.quotes > 0 && <li>{deleteImpact.quotes} quote{deleteImpact.quotes !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.leads > 0 && <li>{deleteImpact.leads} lead{deleteImpact.leads !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.servicePlans > 0 && <li>{deleteImpact.servicePlans} service plan{deleteImpact.servicePlans !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.recurringJobs > 0 && <li>{deleteImpact.recurringJobs} recurring job series</li>}
+                    {deleteImpact.notes > 0 && <li>{deleteImpact.notes} note{deleteImpact.notes !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.files > 0 && <li>{deleteImpact.files} attached file{deleteImpact.files !== 1 ? "s" : ""}</li>}
+                    {deleteImpact.maintenanceRecords > 0 && <li>{deleteImpact.maintenanceRecords} maintenance record{deleteImpact.maintenanceRecords !== 1 ? "s" : ""}</li>}
+                    {permDeleteTarget === "company"
+                      ? <li>{deleteImpact.locationCount ?? 0} location{(deleteImpact.locationCount ?? 0) !== 1 ? "s" : ""}, all contacts and equipment</li>
+                      : <li>All location equipment, tags, and contacts</li>
+                    }
                   </ul>
                 </div>
-              )}
-
-              {deleteEligibility.canHardDelete && !(deleteTarget === "location" && deleteEligibility.isLastLocation) && (
-                <div className="space-y-2">
-                  <Label>Type <span className="font-mono font-bold">DELETE</span> to confirm</Label>
+                <div className="space-y-1.5">
+                  <Label htmlFor="perm-delete-confirm">
+                    Type <span className="font-mono font-bold">DELETE</span> to confirm
+                  </Label>
                   <Input
-                    value={deleteConfirmText}
-                    onChange={e => setDeleteConfirmText(e.target.value)}
+                    id="perm-delete-confirm"
+                    value={permDeleteConfirmText}
+                    onChange={e => setPermDeleteConfirmText(e.target.value)}
                     placeholder="DELETE"
                     autoFocus
                   />
                 </div>
-              )}
-            </div>
-          )}
+              </>
+            )}
+          </div>
 
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteDialogOpen(false)}>Cancel</AlertDialogCancel>
-            {deleteEligibility?.canHardDelete && !(deleteTarget === "location" && deleteEligibility.isLastLocation) ? (
-              <AlertDialogAction
-                onClick={() => executeDelete.mutate()}
-                disabled={deleteConfirmText !== "DELETE" || executeDelete.isPending}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              >
-                {executeDelete.isPending ? "Deleting..." : "Permanently Delete"}
-              </AlertDialogAction>
-            ) : deleteEligibility && !(deleteTarget === "location" && deleteEligibility?.isLastLocation) ? (
-              <AlertDialogAction
-                onClick={() => executeDelete.mutate()}
-                disabled={executeDelete.isPending}
-                className="bg-amber-600 hover:bg-amber-700 text-white"
-              >
-                {executeDelete.isPending ? "Archiving..." : "Archive"}
-              </AlertDialogAction>
-            ) : null}
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={() => { setPermDeleteDialogOpen(false); openArchiveDialog(permDeleteTarget); }}
+              disabled={executePermanentDelete.isPending}
+            >
+              Archive Instead
+            </Button>
+            <AlertDialogAction
+              onClick={() => executePermanentDelete.mutate()}
+              disabled={
+                deleteImpactLoading ||
+                Boolean(deleteImpactError) ||
+                permDeleteConfirmText !== "DELETE" ||
+                executePermanentDelete.isPending
+              }
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {executePermanentDelete.isPending ? "Deleting…" : "Delete Permanently"}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

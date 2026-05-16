@@ -768,7 +768,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       // dashboard-scoped keys are dashboard-action drill-down specific and
       // not currently in the hook's invalidation set.
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
     } catch (err: any) {
       // The hook surfaces its own toast for dispatch-level failures; this
       // catch only fires for pre-hook validation issues.
@@ -892,7 +891,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       setShowBulkConfirm(false);
       refetchAll();
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });

@@ -2051,21 +2051,11 @@ export default function InvoiceDetailPage() {
       >
         {/* ═════════ LEFT COLUMN: header + body ═════════ */}
         <div
-          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden"
+          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-y-auto"
           data-testid="invoice-detail-left-column-shell"
         >
-          {/* 2026-05-08 (scroll-canonicalization): body wrapper no longer
-              owns its own `flex-1 min-w-0 min-h-0 overflow-y-auto` — that
-              pattern combined with the prior placement of
-              <CanonicalDetailHeader> OUTSIDE the body wrapper to make
-              the header look pinned/sticky and the rail static on the
-              right while only the inner column scrolled (split-scroll
-              feel). Per the App.tsx shell comment, `<main
-              className="flex-1 overflow-auto">` is THE SOLE canonical
-              vertical scroll surface. Mirror Job Detail exactly:
-              padding + space-y on the body, scrolling delegated to
-              <main>. The detail header now lives INSIDE the body
-              wrapper so it scrolls with the rest of the content. */}
+          {/* Sole scroll surface for the left column. Right rail is a
+              pinned shrink-0 sibling with its own internal scroll. */}
           <div className="px-4 lg:px-6 pt-4 pb-4 space-y-2.5">
           {/* Invoice header — CanonicalDetailHeader (2026-05-09 migration). */}
           <CanonicalDetailHeader
@@ -2499,8 +2489,8 @@ export default function InvoiceDetailPage() {
             icon strip. */}
         <aside
           className={cn(
-            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
-            "border-t lg:border-t-0 lg:border-l border-slate-200",
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-app-bg",
+            "border-t lg:border-t-0 lg:border-l border-app-bg",
           )}
           style={{
             ["--invoice-rail-width" as any]: `${invoiceRailTab === null ? 48 : 380}px`,

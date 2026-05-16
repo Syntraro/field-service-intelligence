@@ -2,8 +2,9 @@
  * TimeEntryModal — Canonical modal for creating and editing time entries.
  *
  * 2026-04-03: Unified from AddTimeEntryModal + EditTimeEntryModal.
- * Mode-driven: "create" for new entries, "edit" for existing.
- * Layout: wider dialog, denser field grouping, compact vertical spacing.
+ * 2026-05-16: Layout redesign — four named sections (Technician/Date,
+ *   Time, Billing, Type/Notes). Shared duration helpers extracted to
+ *   timeEntryHelpers.ts.
  *
  * Business rules:
  * - Create: technician selectable, cost/hr editable, costRateOverride sent when changed
@@ -25,7 +26,7 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { FormField, FormLabel, FormHelperText, FormErrorText, FormRow } from "@/components/ui/form-field";
+import { FormField, FormLabel, FormErrorText, FormRow } from "@/components/ui/form-field";
 import {
   Dialog,
   DialogContent,
@@ -40,13 +41,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-// 2026-05-09: nested AlertDialog (showDeleteConfirm) migrated to canonical
-// ConfirmModal. AlertDialog import removed.
 import { ConfirmModal } from "@/components/ui/modal";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { TimeEntryType } from "@shared/schema";
+import { computeEndTime, computeDuration, toISODateTime } from "./timeEntryHelpers";
 
 // Canonical entry types — same 4 for both create and edit
 const ENTRY_TYPES: { value: TimeEntryType; label: string }[] = [
@@ -79,7 +79,7 @@ export interface TimeEntryForModal {
 interface TimeEntryModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  jobId?: string | null; // Optional — validated server-side if provided
+  jobId?: string | null;
   mode: "create" | "edit";
   assignedTechnicianIds?: string[];
   entry?: TimeEntryForModal | null;
@@ -88,31 +88,6 @@ interface TimeEntryModalProps {
   extraInvalidateKeys?: string[][];
   /** When set, technician is pre-assigned and locked (e.g. payroll tech-specific context) */
   lockedTechnicianId?: string | null;
-}
-
-// ── Duration helpers ──
-
-function computeEndTime(startTime: string, hours: number, minutes: number): string {
-  if (!startTime) return "";
-  const [sh, sm] = startTime.split(":").map(Number);
-  const totalMin = (sh * 60 + sm) + (hours * 60 + minutes);
-  const eh = Math.floor(totalMin / 60) % 24;
-  const em = totalMin % 60;
-  return `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`;
-}
-
-function computeDuration(startTime: string, endTime: string): { hours: number; minutes: number } {
-  if (!startTime || !endTime) return { hours: 0, minutes: 0 };
-  const [sh, sm] = startTime.split(":").map(Number);
-  const [eh, em] = endTime.split(":").map(Number);
-  let diffMin = (eh * 60 + em) - (sh * 60 + sm);
-  if (diffMin < 0) diffMin = 0;
-  return { hours: Math.floor(diffMin / 60), minutes: diffMin % 60 };
-}
-
-function toISODateTime(dateStr: string, timeStr: string): string {
-  if (!dateStr || !timeStr) return "";
-  return new Date(`${dateStr}T${timeStr}`).toISOString();
 }
 
 export function TimeEntryModal({
@@ -141,7 +116,7 @@ export function TimeEntryModal({
   const [durationMinutes, setDurationMinutes] = useState(0);
   const [type, setType] = useState<TimeEntryType>("on_site");
   const [notes, setNotes] = useState("");
-  const [billable, setBillable] = useState(true);
+  // billable is always true for job-detail labor — not exposed in the UI
   const [costManuallyEdited, setCostManuallyEdited] = useState(false);
   const [lastEditSource, setLastEditSource] = useState<"time" | "duration" | null>(null);
 
@@ -162,8 +137,7 @@ export function TimeEntryModal({
 
     if (isEdit && entry) {
       setTechnicianId(entry.technicianId);
-      // Edit: use costRateSnapshot (employee cost), not billableRateSnapshot
-      // Nullish check: preserve "0" as a valid stored rate; only fallback when null/undefined
+      // Preserve "0" as a valid stored rate; only fallback when null/undefined
       setCostPerHour(entry.costRateSnapshot ?? "");
       setCostManuallyEdited(false);
       const start = new Date(entry.startAt);
@@ -182,13 +156,10 @@ export function TimeEntryModal({
       }
       setType(entry.type);
       setNotes(entry.notes || "");
-      setBillable(entry.billable);
       setOverrideAcknowledged(false);
       setOverrideReason("");
     } else {
-      // Create: defaults — don't set cost yet, wait for technicians to load
       const today = format(new Date(), "yyyy-MM-dd");
-      // Locked tech takes priority (payroll tech-specific context), then assigned list
       setTechnicianId(lockedTechnicianId || assignedTechnicianIds[0] || "");
       setCostPerHour("");
       setCostManuallyEdited(false);
@@ -199,7 +170,6 @@ export function TimeEntryModal({
       setDurationMinutes(0);
       setType("on_site");
       setNotes("");
-      setBillable(true);
     }
     setLastEditSource(null);
     setShowDeleteConfirm(false);
@@ -211,8 +181,6 @@ export function TimeEntryModal({
   // which fixes the $0.00 bug on initial load caused by the async fetch race condition.
   useEffect(() => {
     if (costManuallyEdited) return;
-    // In edit mode, only fill if costRateSnapshot was truly absent (null/undefined → empty string)
-    // Preserve "0" or any valid stored rate — only fallback when costPerHour is empty string
     if (isEdit && costPerHour !== "") return;
     if (!technicianId || technicians.length === 0) return;
     const tech = technicians.find(t => t.id === technicianId);
@@ -237,11 +205,6 @@ export function TimeEntryModal({
     if (newEnd) setEndTime(newEnd);
     setLastEditSource(null);
   }, [durationHours, durationMinutes, lastEditSource, startTime]);
-
-  // ── Break = not billable ──
-  useEffect(() => {
-    if (type === "break") setBillable(false);
-  }, [type]);
 
   // ── Derived values ──
   const totalDurationHours = durationHours + durationMinutes / 60;
@@ -276,7 +239,7 @@ export function TimeEntryModal({
           startAt: toISODateTime(startDate, startTime),
           endAt: endTime ? toISODateTime(startDate, endTime) : null,
           notes: notes.trim() || null,
-          billable: type === "break" ? false : billable,
+          billable: true,
         };
         const url = isLocked
           ? `/api/time/entries/${entry.id}/manager`
@@ -295,7 +258,7 @@ export function TimeEntryModal({
             startAt: toISODateTime(startDate, startTime),
             endAt: toISODateTime(startDate, endTime),
             notes: notes.trim() || null,
-            billable: type === "break" ? false : billable,
+            billable: true,
             technicianId,
             costRateOverride: isRateOverridden ? costPerHour : null,
           }),
@@ -391,7 +354,7 @@ export function TimeEntryModal({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-[600px]" data-testid="time-entry-modal">
+        <DialogContent className="sm:max-w-[620px]" data-testid="time-entry-modal">
           <form onSubmit={handleSubmit}>
             <DialogHeader className="pb-3">
               <DialogTitle className="flex items-center gap-2">
@@ -407,7 +370,7 @@ export function TimeEntryModal({
             </DialogHeader>
 
             <div className="space-y-3">
-              {/* Lock Warning (edit locked entries only) */}
+              {/* Lock Warning */}
               {isLocked && (
                 <Alert
                   variant="destructive"
@@ -424,19 +387,26 @@ export function TimeEntryModal({
                 </Alert>
               )}
 
-              {/* Row 1: Technician + Cost/hr + Total cost — same layout for both modes */}
-              <FormRow className="grid-cols-3">
+              {/* Section 1: Technician + Date */}
+              <FormRow className="grid-cols-2">
                 <FormField>
                   <FormLabel>Technician</FormLabel>
                   {isEdit || lockedTechnicianId ? (
                     <div className="h-8 flex items-center gap-1.5 px-3 rounded-md border border-input bg-muted/50 text-sm">
                       <LockKeyhole className="h-3 w-3 text-muted-foreground shrink-0" />
-                      <span className="truncate">{isEdit ? techName : (selectedTech ? getMemberDisplayName(selectedTech) : "Technician")}</span>
+                      <span className="truncate">
+                        {isEdit
+                          ? techName
+                          : (selectedTech ? getMemberDisplayName(selectedTech) : "Technician")}
+                      </span>
                     </div>
                   ) : (
-                    <Select value={technicianId} onValueChange={(v) => { setTechnicianId(v); setCostManuallyEdited(false); }}>
+                    <Select
+                      value={technicianId}
+                      onValueChange={(v) => { setTechnicianId(v); setCostManuallyEdited(false); }}
+                    >
                       <SelectTrigger className="h-8 text-sm" data-testid="select-technician">
-                        <SelectValue placeholder="Select" />
+                        <SelectValue placeholder="Select technician" />
                       </SelectTrigger>
                       <SelectContent>
                         {sortedTechnicians.map(tech => (
@@ -451,16 +421,102 @@ export function TimeEntryModal({
                     </Select>
                   )}
                 </FormField>
+
                 <FormField>
-                  <FormLabel srOnly>Cost / hr</FormLabel>
+                  <FormLabel>Date</FormLabel>
+                  <CanonicalDatePicker
+                    value={startDate}
+                    onChange={(next) => setStartDate(next ?? "")}
+                    className="w-full h-8 text-sm"
+                    data-testid="input-start-date"
+                  />
+                </FormField>
+              </FormRow>
+
+              {/* Section 2: Time */}
+              <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                <FormRow className="grid-cols-3">
+                  <FormField>
+                    <FormLabel htmlFor="input-start-time">Start</FormLabel>
+                    <Input
+                      id="input-start-time"
+                      type="time"
+                      value={startTime}
+                      onChange={e => { setStartTime(e.target.value); setLastEditSource("time"); }}
+                      className="h-8 text-sm"
+                      data-testid="input-start-time"
+                    />
+                  </FormField>
+                  <FormField>
+                    <FormLabel htmlFor="input-end-time">End</FormLabel>
+                    <Input
+                      id="input-end-time"
+                      type="time"
+                      value={endTime}
+                      onChange={e => { setEndTime(e.target.value); setLastEditSource("time"); }}
+                      className="h-8 text-sm"
+                      data-testid="input-end-time"
+                    />
+                  </FormField>
+                  <FormField>
+                    <FormLabel>Duration</FormLabel>
+                    <div className="flex items-start gap-1.5">
+                      <div className="flex-1">
+                        <Input
+                          id="input-hours"
+                          type="number"
+                          min="0"
+                          max="23"
+                          value={durationHours}
+                          onChange={e => {
+                            setDurationHours(Math.max(0, parseInt(e.target.value) || 0));
+                            setLastEditSource("duration");
+                          }}
+                          className="h-8 text-sm text-center"
+                          data-testid="input-hours"
+                        />
+                        <p className="text-[10px] text-muted-foreground text-center mt-0.5">hrs</p>
+                      </div>
+                      <div className="h-8 flex items-center shrink-0">
+                        <span className="text-muted-foreground text-sm">:</span>
+                      </div>
+                      <div className="flex-1">
+                        <Input
+                          id="input-minutes"
+                          type="number"
+                          min="0"
+                          max="59"
+                          value={durationMinutes}
+                          onChange={e => {
+                            let m = parseInt(e.target.value) || 0;
+                            if (m > 59) m = 59;
+                            if (m < 0) m = 0;
+                            setDurationMinutes(m);
+                            setLastEditSource("duration");
+                          }}
+                          className="h-8 text-sm text-center"
+                          data-testid="input-minutes"
+                        />
+                        <p className="text-[10px] text-muted-foreground text-center mt-0.5">min</p>
+                      </div>
+                    </div>
+                  </FormField>
+                </FormRow>
+              </div>
+
+              {/* Section 3: Cost */}
+              <FormRow className="grid-cols-2">
+                <FormField>
+                  <FormLabel htmlFor="input-cost-per-hour">Cost / hr</FormLabel>
                   {isEdit ? (
                     <div className="h-8 flex items-center px-3 rounded-md border border-input bg-muted/50 text-sm tabular-nums">
                       {costPerHour ? `$${parseFloat(costPerHour).toFixed(2)}` : "—"}
                     </div>
                   ) : (
                     <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-helper text-muted-foreground">$</span>
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-helper text-muted-foreground pointer-events-none">$</span>
                       <Input
+                        id="input-cost-per-hour"
                         type="number"
                         step="0.01"
                         min="0"
@@ -481,75 +537,8 @@ export function TimeEntryModal({
                 </FormField>
               </FormRow>
 
-              {/* Row 2: Date + Start/End times */}
-              <FormRow className="grid-cols-3">
-                <FormField>
-                  <FormLabel>Date</FormLabel>
-                  <CanonicalDatePicker
-                    value={startDate}
-                    onChange={(next) => setStartDate(next ?? "")}
-                    className="w-full h-8 text-sm"
-                    data-testid="input-start-date"
-                  />
-                </FormField>
-                <FormField>
-                  <FormLabel htmlFor="input-start-time" srOnly>Start</FormLabel>
-                  <Input
-                    id="input-start-time"
-                    type="time"
-                    value={startTime}
-                    onChange={e => { setStartTime(e.target.value); setLastEditSource("time"); }}
-                    className="h-8 text-sm"
-                    data-testid="input-start-time"
-                  />
-                </FormField>
-                <FormField>
-                  <FormLabel htmlFor="input-end-time" srOnly>End</FormLabel>
-                  <Input
-                    id="input-end-time"
-                    type="time"
-                    value={endTime}
-                    onChange={e => { setEndTime(e.target.value); setLastEditSource("time"); }}
-                    className="h-8 text-sm"
-                    data-testid="input-end-time"
-                  />
-                </FormField>
-              </FormRow>
-
-              {/* Row 3: Hours + Minutes + Entry Type */}
-              <FormRow className="grid-cols-3">
-                <FormField>
-                  <FormLabel htmlFor="input-hours" srOnly>Hours</FormLabel>
-                  <Input
-                    id="input-hours"
-                    type="number"
-                    min="0"
-                    max="23"
-                    value={durationHours}
-                    onChange={e => { setDurationHours(Math.max(0, parseInt(e.target.value) || 0)); setLastEditSource("duration"); }}
-                    className="h-8 text-sm"
-                    data-testid="input-hours"
-                  />
-                </FormField>
-                <FormField>
-                  <FormLabel htmlFor="input-minutes" srOnly>Minutes</FormLabel>
-                  <Input
-                    id="input-minutes"
-                    type="number"
-                    min="0"
-                    max="59"
-                    value={durationMinutes}
-                    onChange={e => {
-                      let m = parseInt(e.target.value) || 0;
-                      if (m > 59) m = 59;
-                      if (m < 0) m = 0;
-                      setDurationMinutes(m);
-                      setLastEditSource("duration");
-                    }}
-                    className="h-8 text-sm"
-                    data-testid="input-minutes"
-                  />
-                </FormField>
+              {/* Section 4: Type + Notes */}
+              <FormRow className="grid-cols-[1fr_2fr]">
                 <FormField>
                   <FormLabel>Type</FormLabel>
                   <Select value={type} onValueChange={v => setType(v as TimeEntryType)}>
@@ -563,39 +552,19 @@ export function TimeEntryModal({
                     </SelectContent>
                   </Select>
                 </FormField>
+                <FormField>
+                  <FormLabel htmlFor="input-notes">Notes (optional)</FormLabel>
+                  <Textarea
+                    id="input-notes"
+                    value={notes}
+                    onChange={e => setNotes(e.target.value)}
+                    placeholder="Optional notes..."
+                    className="min-h-[72px] text-sm resize-none"
+                    rows={3}
+                    data-testid="input-notes"
+                  />
+                </FormField>
               </FormRow>
-
-              {/* Row 4: Notes + Billable */}
-              <FormField>
-                <div className="flex items-center justify-between">
-                  <FormLabel htmlFor="input-notes" srOnly>Notes</FormLabel>
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="billable"
-                      checked={billable}
-                      onCheckedChange={checked => setBillable(checked === true)}
-                      disabled={type === "break"}
-                      className="h-3.5 w-3.5"
-                      data-testid="checkbox-billable"
-                    />
-                    <label htmlFor="billable" className="text-xs cursor-pointer">
-                      Billable
-                    </label>
-                  </div>
-                </div>
-                <Textarea
-                  id="input-notes"
-                  value={notes}
-                  onChange={e => setNotes(e.target.value)}
-                  placeholder="Optional notes..."
-                  className="min-h-[48px] text-sm resize-none"
-                  rows={2}
-                  data-testid="input-notes"
-                />
-                {type === "break" && (
-                  <FormHelperText>Breaks are never billable.</FormHelperText>
-                )}
-              </FormField>
 
               {/* Lock Override Section (edit locked entries only) */}
               {isLocked && (
@@ -619,7 +588,7 @@ export function TimeEntryModal({
                     <Textarea
                       value={overrideReason}
                       onChange={e => setOverrideReason(e.target.value)}
-                      placeholder="Explain why this edit is needed..."
+                      placeholder="Explain why this edit is needed…"
                       className="min-h-[40px] text-sm resize-none"
                       rows={2}
                       data-testid="input-override-reason"
@@ -632,8 +601,7 @@ export function TimeEntryModal({
               )}
             </div>
 
-            <DialogFooter className="pt-3">
-              {/* Delete button — edit mode only, left-aligned */}
+            <DialogFooter className="pt-4">
               {isEdit && (
                 <Button
                   type="button"
@@ -648,7 +616,13 @@ export function TimeEntryModal({
                   Delete
                 </Button>
               )}
-              <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={isBusy}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => onOpenChange(false)}
+                disabled={isBusy}
+              >
                 Cancel
               </Button>
               <Button

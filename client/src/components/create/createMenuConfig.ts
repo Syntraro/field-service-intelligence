@@ -29,10 +29,13 @@ import {
   CheckSquare,
 } from "lucide-react";
 import type { ActionMenuItemDescriptor } from "@/components/ui/action-menu";
-import type { CreateNewTab } from "@/components/CreateNewDialog";
+
+/** Which creation modal to open. "supplier-visit" is preserved for any
+ *  legacy callers that still pass it — it maps to the task modal. */
+export type CreateNewTab = "job" | "task" | "supplier-visit";
 
 export interface CreateMenuCallbacks {
-  /** Opens CreateNewDialog at the specified tab (job | task). */
+  /** Opens the appropriate create modal for the given tab type. */
   openCreate: (tab: CreateNewTab) => void;
   /** Opens CreateClientModal. Item is hidden when absent. */
   openAddClient?: () => void;

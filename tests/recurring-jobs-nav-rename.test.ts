@@ -24,8 +24,20 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
+// Nav item definitions moved to tenantNavConfig.ts (2026-05-14) so that both
+// AppSidebar and AppTopNav render from one canonical source. Test assertions
+// about nav structure now read from navConfigSrc; AppSidebar is verified only
+// for what it still owns (the component wrapper itself, not the item literals).
 const sidebarSrc = readFileSync(
   resolve(__dirname, "../client/src/components/AppSidebar.tsx"),
+  "utf-8",
+);
+const navConfigSrc = readFileSync(
+  resolve(__dirname, "../client/src/lib/tenantNavConfig.ts"),
+  "utf-8",
+);
+const createMenuSrc = readFileSync(
+  resolve(__dirname, "../client/src/components/create/createMenuConfig.ts"),
   "utf-8",
 );
 const recurringPageSrc = readFileSync(
@@ -41,52 +53,64 @@ const quickAddSrc = readFileSync(
   "utf-8",
 );
 
-// ── Sidebar destination label ─────────────────────────────────────────
+// ── Nav config destination label ──────────────────────────────────────
+// Nav item literals live in tenantNavConfig.ts (canonical source of truth
+// shared by AppSidebar and AppTopNav). AppSidebar is verified only for
+// structural consistency — it must import from tenantNavConfig, not
+// duplicate the item definitions inline.
 
-describe("AppSidebar — /pm destination label", () => {
+describe("tenantNavConfig — /pm destination label", () => {
   it("nav row at href=/pm displays 'Service Plans' as its title", () => {
     // Pin the entry shape: title literal AND href together so a
     // future menu reorder can't accidentally pass.
-    expect(sidebarSrc).toMatch(
+    expect(navConfigSrc).toMatch(
       /title:\s*"Service Plans"[\s\S]+?href:\s*"\/pm"/,
     );
   });
 
   it("hover tooltip on the /pm row reads 'Service Plans' (not 'Maintenance' or 'Recurring Jobs')", () => {
-    expect(sidebarSrc).toMatch(
+    expect(navConfigSrc).toMatch(
       /href:\s*"\/pm"[\s\S]+?hoverText:\s*"Service Plans"/,
     );
     // The legacy hover labels are gone.
-    expect(sidebarSrc).not.toMatch(
+    expect(navConfigSrc).not.toMatch(
       /hoverText:\s*"Preventive Maintenance & Recurring Jobs"/,
     );
-    expect(sidebarSrc).not.toMatch(
+    expect(navConfigSrc).not.toMatch(
       /hoverText:\s*"Maintenance"/,
     );
   });
 
-  it("does NOT carry a sidebar nav title literal of 'Recurring Jobs' or 'Maintenance'", () => {
+  it("does NOT carry a nav title literal of 'Recurring Jobs' or 'Maintenance'", () => {
     // Code comments may still mention either prior label (the data
     // model is still recurring jobs and the jobType enum is still
     // "maintenance") — but no `title: "..."` literal exists as a
     // menu entry for either prior label. Pin the assignment shape.
-    expect(sidebarSrc).not.toMatch(/title:\s*"Recurring Jobs"/);
-    expect(sidebarSrc).not.toMatch(/title:\s*"Maintenance"\s*,/);
+    expect(navConfigSrc).not.toMatch(/title:\s*"Recurring Jobs"/);
+    expect(navConfigSrc).not.toMatch(/title:\s*"Maintenance"\s*,/);
   });
 
   it("the nav route + testid are intentionally unchanged (rename is UI-only)", () => {
     // The brief explicitly says "Do not change routes like /pm
     // … internal variable names". `/pm` was the prior route and
     // `nav-pm` was the prior testid; both stay across the rename.
-    expect(sidebarSrc).toMatch(/href:\s*"\/pm"/);
-    expect(sidebarSrc).toMatch(/testId:\s*"nav-pm"/);
+    expect(navConfigSrc).toMatch(/href:\s*"\/pm"/);
+    expect(navConfigSrc).toMatch(/testId:\s*"nav-pm"/);
+  });
+
+  it("AppSidebar delegates to tenantNavConfig (no inline nav item definitions)", () => {
+    // Since tenantNavConfig is the canonical source, AppSidebar must
+    // import from it rather than re-declaring item literals.
+    expect(sidebarSrc).toMatch(/from\s+["']@\/lib\/tenantNavConfig["']/);
+    expect(sidebarSrc).toMatch(/buildTenantNavItems/);
   });
 
   it("the quick-create header dropdown reads 'New Service Plan'", () => {
     // The old "New Maintenance Plan" / "New Recurring Job" labels
     // are both gone from the user-facing dropdown trigger.
-    expect(sidebarSrc).toMatch(/New Service Plan/);
-    expect(sidebarSrc).not.toMatch(/New Maintenance Plan/);
+    // createMenuConfig.ts is the source of truth for create-menu labels.
+    expect(createMenuSrc).toMatch(/New Service Plan/);
+    expect(createMenuSrc).not.toMatch(/New Maintenance Plan/);
   });
 });
 

@@ -3,3 +3,4 @@
  */
 
 export { TimeEntryModal, type TimeEntryForModal } from "./TimeEntryModal";
+export { computeEndTime, computeDuration, toISODateTime } from "./timeEntryHelpers";

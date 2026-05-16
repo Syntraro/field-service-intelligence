@@ -51,9 +51,7 @@ interface DispatchSignal {
 // Not invalidated (static config, not changed by mutations):
 //   ["/api/team/technicians/working-hours"]
 //
-// 2026-04-08: Dashboard "attention" query is no longer used by Dashboard.tsx —
-// the Jobs widget now reads ["dashboard","workflow"].jobs.overdueCount (live SQL).
-// The ["attention"] prefix is still listed for non-dashboard consumers.
+
 
 /** Prefix-matched query keys for visit/job dispatch signals */
 const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
@@ -73,8 +71,6 @@ const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
   ["/api/dashboard/capacity"],
   // Modal action lists still keyed broadly (modal opens on demand)
   ["dashboard-action"],
-  // Attention API stays for non-dashboard consumers (per-entity badges, etc.)
-  ["attention"],
   // 2026-04-05: Job/visit detail surfaces — tech status changes must propagate to office
   ["jobs"],          // prefix-matches ["jobs", "detail", jobId] and ["jobs", ...] list queries
   ["visits"],        // prefix-matches ["visits", jobId, "all"] visit list on job detail
@@ -93,7 +89,6 @@ const TASK_KEYS: readonly (readonly string[])[] = [
   // TASKS_PREDICATE below. No dashboard-workflow / today-summary invalidation
   // needed for task signals.
   ["dashboard-action"],
-  ["attention"],
 ];
 
 /**

@@ -210,7 +210,6 @@ function LocationCombobox({
           aria-expanded={open}
           className={cn(
             "w-full justify-between text-xs font-normal bg-white",
-            compact ? "h-8" : "h-9",
           )}
           disabled={disabled}
           data-testid="select-location"
@@ -554,7 +553,7 @@ function EquipmentCombobox({
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="h-9 w-full justify-between text-xs font-normal bg-white"
+            className="w-full justify-between text-xs font-normal bg-white"
             disabled={triggerDisabled}
             data-testid="select-equipment"
           >
@@ -1012,7 +1011,6 @@ function DurationHoursInput({ durationMinutes, onChange, disabled, compact = fal
         placeholder="1"
         className={cn(
           "w-full text-xs pr-6 bg-white",
-          compact ? "h-8" : "h-9",
         )}
         data-testid="input-duration-hours"
       />
@@ -2194,8 +2192,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               }}
               placeholder="Brief description of the job"
               className={cn(
-                "bg-white",
-                isCompact ? "h-8 text-xs" : "h-9",
+                "bg-white text-xs",
               )}
               data-testid="input-summary"
             />
@@ -2281,7 +2278,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               <div className="flex items-start gap-3">
                 <CompactFormField label="Recurrence" className="flex-1" labelClassName="mb-1">
                   <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
-                    <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                    <SelectTrigger className="text-xs" data-testid="select-recurrence-preset">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -2295,7 +2292,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   <CanonicalDatePicker
                     value={recurringStartDate}
                     onChange={(next) => setRecurringStartDate(next ?? "")}
-                    className="w-full h-9 text-xs"
+                    className="w-full text-xs"
                     data-testid="input-recurring-start"
                   />
                 </CompactFormField>
@@ -2305,7 +2302,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     onChange={(next) => setRecurringEndDate(next ?? "")}
                     placeholder="Optional"
                     clearable
-                    className="w-full h-9 text-xs"
+                    className="w-full text-xs"
                     data-testid="input-recurring-end"
                   />
                 </CompactFormField>
@@ -2317,7 +2314,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   <div className="flex items-center gap-3">
                     <CompactFormField label="Frequency" className="flex-1" labelClassName="mb-1">
                       <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
-                        <SelectTrigger className="h-9 text-xs">
+                        <SelectTrigger className="text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -2333,7 +2330,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         max={52}
                         value={recurringInterval}
                         onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
-                        className="h-9 text-xs"
+                        className="text-xs"
                         data-testid="input-recurring-interval"
                       />
                     </CompactFormField>
@@ -2380,7 +2377,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         max={31}
                         value={recurringDayOfMonth}
                         onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
-                        className="h-9 text-xs"
+                        className="text-xs"
                         data-testid="input-day-of-month"
                       />
                     </CompactFormField>
@@ -2428,7 +2425,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     max={31}
                     value={recurringDayOfMonth}
                     onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
-                    className="h-9 text-xs"
+                    className="text-xs"
                     data-testid="input-day-of-month"
                   />
                 </CompactFormField>
@@ -2474,7 +2471,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                       size="sm"
                       className={cn(
                         "w-full text-xs justify-start gap-1.5 bg-white",
-                        isCompact ? "h-8" : "h-9",
                         !scheduleValue.date && "text-muted-foreground",
                       )}
                       disabled={isScheduleDisabled}
@@ -2514,7 +2510,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   disabled={isScheduleDisabled}
                   className={cn(
                     "w-full text-xs bg-white",
-                    isCompact ? "h-8" : "h-9",
                   )}
                   data-testid="input-time"
                 />
@@ -3083,7 +3078,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         <div className="flex items-start gap-3">
                           <CompactFormField label="Recurrence" className="flex-1" labelClassName="mb-1">
                             <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
-                              <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                              <SelectTrigger className="text-xs" data-testid="select-recurrence-preset">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
@@ -3097,7 +3092,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                             <CanonicalDatePicker
                               value={recurringStartDate}
                               onChange={(next) => setRecurringStartDate(next ?? "")}
-                              className="w-full h-9 text-xs"
+                              className="w-full text-xs"
                               data-testid="input-recurring-start"
                             />
                           </CompactFormField>
@@ -3107,7 +3102,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                               onChange={(next) => setRecurringEndDate(next ?? "")}
                               placeholder="Optional"
                               clearable
-                              className="w-full h-9 text-xs"
+                              className="w-full text-xs"
                               data-testid="input-recurring-end"
                             />
                           </CompactFormField>
@@ -3117,7 +3112,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                             <div className="flex items-center gap-3">
                               <CompactFormField label="Frequency" className="flex-1" labelClassName="mb-1">
                                 <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
-                                  <SelectTrigger className="h-9 text-xs">
+                                  <SelectTrigger className="text-xs">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -3133,7 +3128,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                   max={52}
                                   value={recurringInterval}
                                   onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
-                                  className="h-9 text-xs"
+                                  className="text-xs"
                                   data-testid="input-recurring-interval"
                                 />
                               </CompactFormField>
@@ -3176,7 +3171,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                   max={31}
                                   value={recurringDayOfMonth}
                                   onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
-                                  className="h-9 w-20 text-xs"
+                                  className="w-20 text-xs"
                                   data-testid="input-recurring-day-of-month"
                                 />
                               </CompactFormField>

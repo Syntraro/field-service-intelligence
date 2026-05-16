@@ -9,7 +9,7 @@
  *   Jobs:     ?lifecycle=open|completed  &subStatus=on_hold|in_progress  (Jobs.tsx)
  *   Invoices: ?filter=awaiting_payment|overdue|paid|...  (InvoicesListPage.tsx)
  *   Quotes:   ?status=draft|approved|sent|...  (Quotes.tsx)
- *   PM:       ?tab=upcoming  &urgency=overdue|coming_due|upcoming  (PMWorkspacePage.tsx)
+ *   PM:       ?view=overdue|work_due|upcoming  (ServicePlansWorkspaceTab.tsx)
  *   Dispatch: /dispatch  (no URL-driven filters yet)
  */
 
@@ -61,9 +61,9 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "invoices.outstanding":  { pathname: "/receivables", search: "tab=invoices&filter=awaiting_payment" },
   "invoices.pastDue":      { pathname: "/receivables", search: "tab=invoices&filter=overdue" },
   "invoices.draft":        { pathname: "/receivables", search: "tab=invoices&filter=draft" },
-  "pm.overdue":            { pathname: "/pm", search: "tab=upcoming&urgency=overdue" },
-  "pm.comingDue":          { pathname: "/pm", search: "tab=upcoming&urgency=coming_due" },
-  "pm.upcoming":           { pathname: "/pm", search: "tab=upcoming&urgency=upcoming" },
+  "pm.overdue":            { pathname: "/pm", search: "view=overdue" },
+  "pm.comingDue":          { pathname: "/pm", search: "view=work_due" },
+  "pm.upcoming":           { pathname: "/pm", search: "view=upcoming" },
 
   // ── Today's Operations ──
   "ops.activeJobs":        { pathname: "/dispatch" },
@@ -78,7 +78,7 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "alerts.techAlerts":     { pathname: "/dispatch" },
 
   // ── Work Pipeline ──
-  "pipeline.pmAwaiting":            { pathname: "/pm", search: "tab=upcoming" },
+  "pipeline.pmAwaiting":            { pathname: "/pm", search: "view=work_due" },
   "pipeline.quotesAwaitingApproval":{ pathname: "/quotes", search: "status=sent" },
   "pipeline.approvedNotConverted":  { pathname: "/quotes", search: "status=approved" },
   "pipeline.jobsAwaitingScheduling":{ pathname: "/jobs", search: "lifecycle=open&scheduling=unscheduled" },

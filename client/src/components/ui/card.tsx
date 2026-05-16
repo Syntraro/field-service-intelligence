@@ -163,11 +163,15 @@ export interface CardShellProps extends React.HTMLAttributes<HTMLDivElement> {
   /**
    * Visual surface variant.
    * "contained" (default) — canonical card chrome (rounded border, bg-card, shadow-card).
-   * "open" — borderless/open style: renders a plain <div> without card chrome.
-   *   Internal CardShellHeader/Body/Footer dividers are preserved.
-   *   Used by Job Detail only (2026-05-13 open-surface pass).
+   * "open" — minimal chrome: rounded-md bg-white border border-slate-100.
+   *   Used by Job Detail separate surface cards (2026-05-13 open-surface pass).
+   * "workspace" — inert wrapper: renders a plain <div className="overflow-hidden">.
+   *   No border, no background, no rounding. Intended for sections inside a
+   *   parent unified workspace container that provides all outer chrome.
+   * "inset" — nested inner-section surface: bg-app-bg border border-card-border.
+   *   Used for inner sections inside a white parent card (e.g. Financial Details).
    */
-  surface?: "contained" | "open";
+  surface?: "contained" | "open" | "workspace" | "inset";
 }
 
 /**
@@ -189,6 +193,24 @@ const CardShell = React.forwardRef<HTMLDivElement, CardShellProps>(
         <div
           ref={ref}
           className={cn("overflow-hidden rounded-md bg-white border border-slate-100", className)}
+          {...props}
+        />
+      );
+    }
+    if (surface === "workspace") {
+      return (
+        <div
+          ref={ref}
+          className={cn("overflow-hidden", className)}
+          {...props}
+        />
+      );
+    }
+    if (surface === "inset") {
+      return (
+        <div
+          ref={ref}
+          className={cn("overflow-hidden rounded-md bg-inset-surface border border-card-border", className)}
           {...props}
         />
       );
@@ -233,7 +255,7 @@ const CardShellHeader = React.forwardRef<HTMLDivElement, CardShellHeaderProps>(
     <div
       ref={ref}
       className={cn(
-        "flex items-center justify-between gap-3 px-4 border-b border-card-border",
+        "flex items-center justify-between gap-3 pl-4 pr-10 border-b border-card-border",
         compact ? "h-11" : "py-2.5",
         className,
       )}

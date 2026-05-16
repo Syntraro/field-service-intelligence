@@ -616,7 +616,6 @@ export default function PayrollPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-title">Timesheets</h1>
-          <p className="text-muted-foreground text-row">Weekly and daily time tracking</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -677,7 +676,7 @@ export default function PayrollPage() {
             <Button variant="ghost" size="icon" className="hover:bg-slate-100" onClick={goToPreviousDay} aria-label="Previous day"><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
               <PopoverTrigger asChild>
-                <Button variant="outline" className="h-9 gap-2 font-semibold text-row px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
+                <Button variant="outline" className="gap-2 font-semibold text-row px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
                   <CalendarIcon className="h-4 w-4 text-primary" />
                   {format(parseISO(dayViewDate), "EEE, MMM d, yyyy")}
                 </Button>

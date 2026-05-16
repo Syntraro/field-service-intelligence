@@ -221,8 +221,11 @@ export interface CanonicalDetailHeaderProps {
    * "open" — removes the outer card border/shadow/background so the header
    *   blends with the page background. Internal dividers and padding are
    *   preserved. Used by Job Detail only (2026-05-13 open-surface pass).
+   * "workspace" — inert wrapper (overflow-hidden only). No border, no
+   *   rounding, no background. Intended for use inside the Job Detail
+   *   unified workspace canvas which provides all outer chrome.
    */
-  surface?: "contained" | "open";
+  surface?: "contained" | "open" | "workspace";
 
   // ── Title ────────────────────────────────────────────────────────
   /** Primary title string (shown in <h1> or as titleEdit textarea fallback). */
@@ -291,6 +294,13 @@ export interface CanonicalDetailHeaderProps {
   /** Typed save/cancel footer. CDH renders border-t chrome + buttons.
    *  Pass `undefined` in read mode. */
   editControls?: HeaderEditControls;
+
+  // ── Layout variant ───────────────────────────────────────────────
+  /** When true, wraps the client/address block, metadata grid, and description
+   *  section inside a subtle inset card below the top header row.
+   *  Used by Job Detail to achieve the two-surface nested layout.
+   *  Default false — all other callers (Invoice, Lead) use the flat layout. */
+  innerCard?: boolean;
 }
 
 // ── Alert tone → CSS class map ─────────────────────────────────────────
@@ -515,6 +525,7 @@ export function CanonicalDetailHeader({
   descriptionLabel,
   descriptionEdit,
   editControls,
+  innerCard = false,
 }: CanonicalDetailHeaderProps) {
   // Visible meta items (filter hidden in read mode; always show editNode in edit mode)
   const visibleItems = items.filter(
@@ -527,8 +538,9 @@ export function CanonicalDetailHeader({
 
   const hasDescription = description != null && description.trim().length > 0;
 
-  // Description section: show when content exists or edit descriptor present.
-  const showDescription = hasDescription || descriptionEdit !== undefined;
+  // Description section: show when content exists, edit mode is active, OR
+  // innerCard=true (scope-of-work is always structurally visible inside the inset card).
+  const showDescription = hasDescription || descriptionEdit !== undefined || innerCard;
 
   // Render description content area (CDH owns all chrome)
   let descriptionContent: ReactNode;
@@ -546,8 +558,8 @@ export function CanonicalDetailHeader({
     );
   } else {
     descriptionContent = (
-      <p className="text-row text-text-primary whitespace-pre-line">
-        {description}
+      <p className={cn("text-row whitespace-pre-line", hasDescription ? "text-text-primary" : "text-text-disabled")}>
+        {hasDescription ? description : "Scope of work."}
       </p>
     );
   }
@@ -562,13 +574,131 @@ export function CanonicalDetailHeader({
   );
   const hasBodyRow = hasClientBlock || visibleItems.length > 0;
 
+  // Extracted so the same JSX is shared between the flat body row and the
+  // inner-card body row — avoids duplicating ~80 lines of client/metadata markup.
+  const bodyRowContent = (
+    <>
+      {/* Client block — left column, fixed ~40% width */}
+      {hasClientBlock && (
+        <div
+          className={cn(
+            "w-2/5 shrink-0 min-w-0 space-y-2",
+            visibleItems.length > 0 && "pr-6",
+          )}
+          data-testid={`${testId}-client-block`}
+        >
+          {clientName && (
+            <div className="space-y-0.5">
+              {clientHref ? (
+                <Link href={clientHref}>
+                  <span
+                    className="text-header text-text-primary hover:text-brand transition-colors cursor-pointer truncate block"
+                    data-testid={`${testId}-client`}
+                  >
+                    {clientName}
+                  </span>
+                </Link>
+              ) : (
+                <span
+                  className="text-header text-text-primary truncate block"
+                  data-testid={`${testId}-client`}
+                >
+                  {clientName}
+                </span>
+              )}
+              {contactName && (
+                <p className="text-helper text-muted-foreground flex items-center gap-1">
+                  <User className="h-3 w-3 text-slate-400 shrink-0" />
+                  {contactName}
+                </p>
+              )}
+            </div>
+          )}
+          {((addressLines && addressLines.length > 0) || phone || email) && (
+            <div className="space-y-0.5 text-list-body text-muted-foreground">
+              {addressLabel && (
+                <p className="text-label uppercase text-muted-foreground">
+                  {addressLabel}
+                </p>
+              )}
+              {addressLines?.map((line, i) => (
+                <p key={i} className="flex items-center gap-1">
+                  {i === 0
+                    ? <MapPin className="h-3 w-3 shrink-0" />
+                    : <span className="w-3 shrink-0" />}
+                  {line}
+                </p>
+              ))}
+              {phone && (
+                <p className="flex items-center gap-1">
+                  <Phone className="h-3 w-3 shrink-0" />
+                  {phone}
+                </p>
+              )}
+              {email && (
+                <p className="flex items-center gap-1">
+                  <Mail className="h-3 w-3 shrink-0" />
+                  <a href={`mailto:${email}`} className="hover:text-brand truncate">
+                    {email}
+                  </a>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Metadata grid — right column, flex-1 so it takes remaining ~60% */}
+      {visibleItems.length > 0 && (
+        <div
+          className={cn(
+            "flex-1 min-w-0 grid gap-x-6 gap-y-3",
+            itemsColumns === 3 ? "grid-cols-3" : "grid-cols-2",
+            hasClientBlock && "border-l border-card-border pl-6",
+          )}
+          data-testid={`${testId}-items`}
+        >
+          {visibleItems.map((it) => {
+            const renderEdit = isEditing && it.editNode !== undefined;
+            return (
+              <div
+                key={it.key}
+                className="flex flex-col items-start min-w-0"
+                data-testid={`${testId}-item-${it.key}`}
+              >
+                <span className="text-label uppercase text-text-muted">
+                  {it.label}
+                </span>
+                <span className="mt-1 text-row font-medium text-text-primary truncate leading-tight">
+                  {renderEdit ? it.editNode : it.value}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+
+  // Description header + body — shared between flat and inner-card description sections.
+  const descriptionSection = showDescription ? (
+    <>
+      <h3 className="m-0 mb-1.5 text-label uppercase text-text-muted">
+        {descriptionLabel ?? DESCRIPTION_LABEL}
+      </h3>
+      {descriptionContent}
+    </>
+  ) : null;
+
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-md",
-        surface === "open"
-          ? "bg-white border border-slate-100"
-          : "border bg-card border-card-border shadow-card",
+        "overflow-hidden",
+        surface === "workspace"
+          ? ""
+          : surface === "open"
+          ? "rounded-md bg-white border border-slate-200"
+          : "rounded-md border bg-card border-card-border shadow-card",
       )}
       data-testid={testId}
     >
@@ -591,7 +721,9 @@ export function CanonicalDetailHeader({
       )}
 
       {/* ── Identity section ───────────────────────────────────────── */}
-      <div className={cn("px-5 pt-4", !hasBodyRow && "pb-4")}>
+      {/* pb-4 applies when: no body row (flat), OR innerCard mode (inner card
+          handles its own bottom padding but identity section provides the gap). */}
+      <div className={cn("px-5 pt-4", (innerCard || !hasBodyRow) && "pb-4")}>
 
         {/* TOP ROW: title + status (left) | actions + workflow (right) */}
         <div className="flex items-start justify-between gap-4">
@@ -682,7 +814,7 @@ export function CanonicalDetailHeader({
                       variant="ghost"
                       size="icon"
                       onClick={editCapability.onStartEdit}
-                      className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                      className="shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
                       aria-label={editCapability.ariaLabel ?? "Edit"}
                       data-testid={`${testId}-edit`}
                       disabled={isEditing}
@@ -729,129 +861,50 @@ export function CanonicalDetailHeader({
           )}
         </div>
 
-        {/* BODY ROW: client/address (left) | metadata grid (right) */}
-        {hasBodyRow && (
+        {/* ── FLAT layout: body row inline (unchanged default) ─────── */}
+        {!innerCard && hasBodyRow && (
           <div
             className={cn(
               "flex mt-3 pt-3 pb-4 border-t border-card-border",
               !hasClientBlock && "justify-end",
             )}
           >
-            {/* Client block — left column, fixed ~40% width */}
-            {hasClientBlock && (
+            {bodyRowContent}
+          </div>
+        )}
+
+        {/* ── INNER CARD layout: body + description in one inset card ── */}
+        {innerCard && (hasBodyRow || showDescription) && (
+          <div className="mt-3 rounded-md bg-inset-surface border border-card-border overflow-hidden">
+            {hasBodyRow && (
               <div
                 className={cn(
-                  "w-2/5 shrink-0 min-w-0 space-y-2",
-                  visibleItems.length > 0 && "pr-6",
+                  "flex px-4 pt-4 pb-4",
+                  !hasClientBlock && "justify-end",
                 )}
-                data-testid={`${testId}-client-block`}
               >
-                {clientName && (
-                  <div className="space-y-0.5">
-                    {clientHref ? (
-                      <Link href={clientHref}>
-                        <span
-                          className="text-header text-text-primary hover:text-brand transition-colors cursor-pointer truncate block"
-                          data-testid={`${testId}-client`}
-                        >
-                          {clientName}
-                        </span>
-                      </Link>
-                    ) : (
-                      <span
-                        className="text-header text-text-primary truncate block"
-                        data-testid={`${testId}-client`}
-                      >
-                        {clientName}
-                      </span>
-                    )}
-                    {contactName && (
-                      <p className="text-helper text-muted-foreground flex items-center gap-1">
-                        <User className="h-3 w-3 text-slate-400 shrink-0" />
-                        {contactName}
-                      </p>
-                    )}
-                  </div>
-                )}
-                {((addressLines && addressLines.length > 0) || phone || email) && (
-                  <div className="space-y-0.5 text-list-body text-muted-foreground">
-                    {addressLabel && (
-                      <p className="text-label uppercase text-muted-foreground">
-                        {addressLabel}
-                      </p>
-                    )}
-                    {addressLines?.map((line, i) => (
-                      <p key={i} className="flex items-center gap-1">
-                        {i === 0
-                          ? <MapPin className="h-3 w-3 shrink-0" />
-                          : <span className="w-3 shrink-0" />}
-                        {line}
-                      </p>
-                    ))}
-                    {phone && (
-                      <p className="flex items-center gap-1">
-                        <Phone className="h-3 w-3 shrink-0" />
-                        {phone}
-                      </p>
-                    )}
-                    {email && (
-                      <p className="flex items-center gap-1">
-                        <Mail className="h-3 w-3 shrink-0" />
-                        <a href={`mailto:${email}`} className="hover:text-brand truncate">
-                          {email}
-                        </a>
-                      </p>
-                    )}
-                  </div>
-                )}
+                {bodyRowContent}
               </div>
             )}
-
-            {/* Metadata grid — right column, flex-1 so it takes remaining ~60% */}
-            {visibleItems.length > 0 && (
+            {showDescription && (
               <div
-                className={cn(
-                  "flex-1 min-w-0 grid gap-x-6 gap-y-3",
-                  itemsColumns === 3 ? "grid-cols-3" : "grid-cols-2",
-                  hasClientBlock && "border-l border-card-border pl-6",
-                )}
-                data-testid={`${testId}-items`}
+                className={cn("px-4 py-3", hasBodyRow && "border-t border-slate-100")}
+                data-testid={`${testId}-description`}
               >
-                {visibleItems.map((it) => {
-                  const renderEdit = isEditing && it.editNode !== undefined;
-                  return (
-                    <div
-                      key={it.key}
-                      className="flex flex-col items-start min-w-0"
-                      data-testid={`${testId}-item-${it.key}`}
-                    >
-                      <span className="text-label uppercase text-text-muted">
-                        {it.label}
-                      </span>
-                      <span className="mt-1 text-row font-medium text-text-primary truncate leading-tight">
-                        {renderEdit ? it.editNode : it.value}
-                      </span>
-                    </div>
-                  );
-                })}
+                {descriptionSection}
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* ── Description section — CDH owns all chrome ──────────────── */}
-      {showDescription && (
+      {/* ── Description section — flat layout only (outside identity section) ── */}
+      {!innerCard && showDescription && (
         <div
           className="border-t border-card-border px-5 py-3"
           data-testid={`${testId}-description`}
         >
-          {(descriptionLabel || descriptionEdit !== undefined) && (
-            <h3 className="m-0 mb-1.5 text-label uppercase text-text-muted">
-              {descriptionLabel ?? DESCRIPTION_LABEL}
-            </h3>
-          )}
-          {descriptionContent}
+          {descriptionSection}
         </div>
       )}
 
@@ -871,6 +924,7 @@ export function CanonicalDetailHeader({
           )}
           {/* size="sm" (32px) is intentional — commit controls are heavier than header-action (28px) */}
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={editControls.onCancel}
@@ -880,6 +934,7 @@ export function CanonicalDetailHeader({
             {editControls.cancelLabel ?? "Cancel"}
           </Button>
           <Button
+            type="button"
             size="sm"
             onClick={editControls.onSave}
             disabled={editControls.isSaving}

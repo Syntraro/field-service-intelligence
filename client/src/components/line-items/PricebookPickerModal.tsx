@@ -356,7 +356,7 @@ export function PricebookPickerModal({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search pricebook items"
-            className="pl-8 h-9 text-sm"
+            className="pl-8 text-sm"
             data-testid="pricebook-search-input"
           />
         </div>

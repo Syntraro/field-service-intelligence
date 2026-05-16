@@ -218,6 +218,7 @@ export default {
         // `bg-brand`, `hover:bg-brand-hover` consumer keeps working.
         // ──────────────────────────────────────────────────────────────
         "app-bg":          "hsl(var(--app-bg) / <alpha-value>)",
+        "inset-surface":   "hsl(var(--inset-surface) / <alpha-value>)",
         surface: {
           DEFAULT:         "hsl(var(--surface) / <alpha-value>)",
           subtle:          "hsl(var(--surface-subtle) / <alpha-value>)",

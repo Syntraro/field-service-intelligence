@@ -23,7 +23,7 @@ import {
   heightPresetFor,
   PRESET_WIDTH_UNITS,
 } from "../client/src/dashboard/DashboardWidgetGrid";
-import type { DashboardLayoutResponseEntry } from "../client/src/dashboard/dashboardLayoutSchemas";
+import type { DashboardLayoutResponseEntry } from "@shared/dashboardLayoutSchemas";
 import { FINANCIAL_DASHBOARD_WIDGETS } from "../shared/dashboardWidgetRegistry";
 
 const ROOT = resolve(__dirname, "..");
@@ -31,7 +31,7 @@ const path = (p: string) => resolve(ROOT, p);
 const RENDERER_PATH = path("client/src/dashboard/DashboardWidgetRenderer.tsx");
 const GRID_PATH = path("client/src/dashboard/DashboardWidgetGrid.tsx");
 const REGISTRY_PATH = path("shared/dashboardWidgetRegistry.ts");
-const SCHEMAS_PATH = path("client/src/dashboard/dashboardLayoutSchemas.ts");
+const SCHEMAS_PATH = path("shared/dashboardLayoutSchemas.ts");
 const PAGE_PATH = path("client/src/pages/FinancialDashboard.tsx");
 
 function read(p: string): string {

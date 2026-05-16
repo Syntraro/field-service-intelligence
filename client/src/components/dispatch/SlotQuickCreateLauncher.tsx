@@ -1,24 +1,23 @@
 /**
- * SlotQuickCreateLauncher — single canonical quick-create entry point for
- * dispatch / dashboard slot clicks.
+ * SlotQuickCreateLauncher — quick-create entry point for dispatch slot clicks.
  *
- * 2026-04-26 consolidation: dropped the intermediate 3-option chooser
- * ("New Job Visit / General Task / Supplier Visit"). The chooser was a
- * second pre-step on top of what the canonical `CreateNewDialog` already
- * surfaces as its tabs. With the chooser removed, slot click → directly
- * opens `CreateNewDialog` with the slot's prefill applied to BOTH the
- * Job tab and the Task / Supplier-Visit tabs. The user picks the create
- * type by switching tabs inside the modal — same affordance, one click
- * instead of two.
- *
- * The launcher still owns the prefill mapping (slot → tab-specific
- * payload) so consumers (DispatchPreview, dashboard tiles) keep their
- * existing `slot` prop contract.
+ * When a dispatch slot is clicked, a small two-button chooser asks whether
+ * the user wants to create a Job or a Task for that slot. Choosing one opens
+ * the corresponding focused create modal with the slot's prefill applied.
  */
 
-import { useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { format } from "date-fns";
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+import { CreateJobModal } from "@/components/CreateJobModal";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+} from "@/components/ui/modal";
+import { Button } from "@/components/ui/button";
+import { ClipboardList, CheckSquare } from "lucide-react";
 
 export interface QuickCreateSlot {
   technicianId: string;
@@ -52,6 +51,8 @@ function toYmdString(date: Date | string): string {
   return format(date, "yyyy-MM-dd");
 }
 
+type ChosenType = "job" | "task" | null;
+
 export function SlotQuickCreateLauncher({
   slot,
   onClose,
@@ -59,7 +60,15 @@ export function SlotQuickCreateLauncher({
   onJobCreated,
   onTaskChanged,
 }: SlotQuickCreateLauncherProps) {
-  // Job prefill — date / time / duration / single-tech array.
+  // Which modal is open after the user picks a type. null = show chooser.
+  const [chosenType, setChosenType] = useState<ChosenType>(null);
+
+  // Reset type choice whenever the slot clears so the chooser appears fresh
+  // on the next slot click.
+  useEffect(() => {
+    if (!slot) setChosenType(null);
+  }, [slot]);
+
   const jobInitialSchedule = useMemo(() => {
     if (!slot) return undefined;
     return {
@@ -70,7 +79,6 @@ export function SlotQuickCreateLauncher({
     };
   }, [slot, defaultJobDurationMinutes]);
 
-  // Task / Supplier-Visit prefill — separate shape (single user, ymd date).
   const taskInitialData = useMemo(() => {
     if (!slot) return undefined;
     return {
@@ -80,17 +88,62 @@ export function SlotQuickCreateLauncher({
     };
   }, [slot]);
 
+  const isOpen = !!slot;
+  const chooserOpen = isOpen && chosenType === null;
+  const jobOpen = isOpen && chosenType === "job";
+  const taskOpen = isOpen && chosenType === "task";
+
   return (
-    <CreateNewDialog
-      open={!!slot}
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-      defaultTab="job"
-      jobInitialSchedule={jobInitialSchedule}
-      taskInitialData={taskInitialData}
-      onJobCreated={onJobCreated}
-      onTaskChanged={onTaskChanged}
-    />
+    <>
+      {/* Step 1 — pick job or task for this slot. */}
+      <ModalShell
+        open={chooserOpen}
+        onOpenChange={(open) => { if (!open) onClose(); }}
+        className="max-w-xs"
+        data-testid="dialog-slot-chooser"
+      >
+        <ModalHeader className="sr-only">
+          <ModalTitle>Choose what to create</ModalTitle>
+          <ModalDescription>Create a job or task for this time slot.</ModalDescription>
+        </ModalHeader>
+        <div className="p-6 flex flex-col gap-3">
+          <p className="text-sm font-medium text-center text-foreground mb-1">
+            What would you like to create?
+          </p>
+          <Button
+            variant="outline"
+            className="h-12 flex items-center gap-2 justify-center"
+            onClick={() => setChosenType("job")}
+            data-testid="slot-chooser-job"
+          >
+            <ClipboardList className="h-4 w-4" />
+            Create Job
+          </Button>
+          <Button
+            variant="outline"
+            className="h-12 flex items-center gap-2 justify-center"
+            onClick={() => setChosenType("task")}
+            data-testid="slot-chooser-task"
+          >
+            <CheckSquare className="h-4 w-4" />
+            Create Task
+          </Button>
+        </div>
+      </ModalShell>
+
+      {/* Step 2 — focused create modal for the chosen type. */}
+      <CreateJobModal
+        open={jobOpen}
+        onOpenChange={(open) => { if (!open) onClose(); }}
+        initialSchedule={jobInitialSchedule}
+        onSuccess={onJobCreated}
+      />
+      <CreateTaskModal
+        open={taskOpen}
+        onOpenChange={(open) => { if (!open) onClose(); }}
+        initialData={taskInitialData}
+        onChanged={onTaskChanged}
+      />
+    </>
   );
 }

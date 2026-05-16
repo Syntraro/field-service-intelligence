@@ -56,7 +56,7 @@ export interface LogCommunicationInput {
   outcome: string;
   contactPersonId?: string | null;
   contactedName?: string | null;
-  method: string;
+  method?: string | null;
   communicatedAt: string;
   notes?: string;
   promiseToPay?: {
@@ -581,7 +581,9 @@ export class ReceivablesNotesRepository extends BaseRepository {
     const communicatedAt = new Date(input.communicatedAt);
     const noteText =
       input.notes?.trim() ||
-      `${outcomeLabel(input.outcome)} via ${methodLabel(input.method)}.`;
+      (input.method
+        ? `${outcomeLabel(input.outcome)} via ${methodLabel(input.method)}.`
+        : `${outcomeLabel(input.outcome)}.`);
 
     return db.transaction(async (tx) => {
       // 1. Insert communication note.
@@ -594,7 +596,7 @@ export class ReceivablesNotesRepository extends BaseRepository {
           userId,
           noteType: "communication",
           noteText,
-          contactMethod: input.method,
+          contactMethod: input.method ?? null,
           outcome: input.outcome,
           contactPersonId: input.contactPersonId ?? null,
           communicatedAt,
@@ -629,7 +631,7 @@ export class ReceivablesNotesRepository extends BaseRepository {
             noteType: "promise_to_pay",
             noteText: `Promised to pay by ${promisedAt.toLocaleDateString()}.`,
             promisedAt,
-            contactMethod: input.method,
+            contactMethod: input.method ?? null,
             createdBySystem: false,
           });
 

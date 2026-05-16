@@ -101,7 +101,7 @@ const communicateSchema = z
     outcome: z.enum(COMMUNICATION_OUTCOMES),
     contactPersonId: z.string().uuid().nullable().optional(),
     contactedName: z.string().max(200).nullable().optional(),
-    method: z.enum(COMMUNICATION_METHODS),
+    method: z.enum(COMMUNICATION_METHODS).optional(),
     communicatedAt: z.string().datetime({ offset: true }),
     notes: z.string().max(500).optional(),
     promiseToPay: z
@@ -578,7 +578,7 @@ router.post(
       outcome: parsed.data.outcome,
       contactPersonId: parsed.data.contactPersonId ?? null,
       contactedName: parsed.data.contactedName ?? null,
-      method: parsed.data.method,
+      method: parsed.data.method ?? null,
       communicatedAt: parsed.data.communicatedAt,
       notes: parsed.data.notes,
       promiseToPay: parsed.data.promiseToPay,

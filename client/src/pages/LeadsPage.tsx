@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
+import { PageHeader } from "@/components/layout/PageHeader";
 // 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
 // 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
 // See `client/src/components/lists/EntityListTable.tsx` for the rationale
@@ -130,7 +131,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   icon: React.ElementType; iconColor: string; iconBg: string;
 }) {
   return (
-    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-card rounded-md border border-card-border shadow-sm px-5 py-4">
       <div className="flex items-center gap-3">
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
@@ -199,89 +200,85 @@ export default function LeadsPage() {
 
   // List stability: single return path — loading state renders inside content area only
   return (
-    <div className="min-h-screen bg-app-bg" data-testid="leads-page">
-      <div className="p-6 space-y-5">
+    <div className="h-full bg-app-bg flex flex-col overflow-hidden" data-testid="leads-page">
+      <PageHeader title="Leads">
+        {/* Search */}
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Input
+            placeholder="Search leads…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9 w-56 h-8 rounded-lg border-slate-200 bg-white text-sm"
+            data-testid="input-search-leads"
+          />
+        </div>
 
-        {/* Header */}
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-title font-semibold text-slate-900">Leads</h1>
-            <p className="text-row text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
+        {/* Status filter */}
+        <FiltersButton activeCount={activeFilter !== "all" ? 1 : 0} onClear={() => setActiveFilter("all")}>
+          <FilterSection label="Status">
+            <div className="flex flex-wrap gap-1.5">
+              {(["all", "needs_action", "quoted", "won", "lost"] as LeadFilterStatus[]).map((f) => (
+                <FilterChip
+                  key={f}
+                  selected={activeFilter === f}
+                  onClick={() => setActiveFilter(f)}
+                  data-testid={`button-filter-${f}`}
+                >
+                  {f === "all" ? "All" : f === "needs_action" ? "Needs Action" : f.charAt(0).toUpperCase() + f.slice(1)}
+                  {` (${statusCounts[f]})`}
+                </FilterChip>
+              ))}
+            </div>
+          </FilterSection>
+        </FiltersButton>
+
+        {/* New Lead */}
+        {/* 2026-05-06: navigates to the full-page /leads/new flow.
+            The data-testid is preserved so existing test pins still match. */}
+        <Button size="sm" className="gap-1.5 rounded-lg px-3.5" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
+          New Lead
+        </Button>
+      </PageHeader>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-6 space-y-5">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <SummaryCard label="Needs Action" value={String(metrics.needsAction)} note="New + contacted leads" icon={Users} iconColor="text-blue-600" iconBg="bg-blue-100" />
+            <SummaryCard label="Quoted" value={String(metrics.quoted)} note="Converted to quote" icon={FileText} iconColor="text-amber-600" iconBg="bg-amber-100" />
+            <SummaryCard label="Won" value={String(metrics.won)} note="Converted to job" icon={Briefcase} iconColor="text-emerald-600" iconBg="bg-emerald-100" />
+            <SummaryCard label="Lost" value={String(metrics.lost)} note="Declined or expired" icon={TrendingUp} iconColor="text-slate-500" iconBg="bg-slate-100" />
           </div>
-          {/* 2026-05-06: navigates to the full-page /leads/new flow.
-              The data-testid is preserved so existing test pins still match. */}
-          <Button size="sm" className="gap-1.5" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
-            New Lead
-          </Button>
+
+          {/* Table */}
+          <EntityListTable<EnrichedLead>
+            rows={filteredLeads.slice(0, visibleCount)}
+            rowKey={(lead) => lead.id}
+            onRowClick={(lead) => setLocation(`/leads/${lead.id}`)}
+            loadingState={isLoading}
+            emptyState={
+              searchQuery || activeFilter !== "all"
+                ? { kind: "no-results", title: "No leads match your filters", icon: "users" }
+                : { kind: "empty", title: "No leads yet", icon: "users", description: "Create your first lead to start tracking opportunities." }
+            }
+            errorState={
+              isError
+                ? { kind: "error", title: "Failed to load leads", primaryAction: { label: "Retry", onClick: () => refetchLeads(), variant: "outline" } }
+                : undefined
+            }
+            columns={LEAD_COLUMNS}
+          />
+
+          <ListLoadMoreFooter
+            visibleCount={Math.min(visibleCount, filteredLeads.length)}
+            totalCount={filteredLeads.length}
+            hasMore={visibleCount < filteredLeads.length}
+            onLoadMore={() => setVisibleCount((c) => c + LEADS_PAGE_SIZE)}
+            label="lead"
+          />
         </div>
-
-        {/* Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <SummaryCard label="Needs Action" value={String(metrics.needsAction)} note="New + contacted leads" icon={Users} iconColor="text-blue-600" iconBg="bg-blue-100" />
-          <SummaryCard label="Quoted" value={String(metrics.quoted)} note="Converted to quote" icon={FileText} iconColor="text-amber-600" iconBg="bg-amber-100" />
-          <SummaryCard label="Won" value={String(metrics.won)} note="Converted to job" icon={Briefcase} iconColor="text-emerald-600" iconBg="bg-emerald-100" />
-          <SummaryCard label="Lost" value={String(metrics.lost)} note="Declined or expired" icon={TrendingUp} iconColor="text-slate-500" iconBg="bg-slate-100" />
-        </div>
-
-        {/* Search / Filters */}
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-            <Input
-              placeholder="Search leads..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
-              data-testid="input-search-leads"
-            />
-          </div>
-          <FiltersButton activeCount={activeFilter !== "all" ? 1 : 0} onClear={() => setActiveFilter("all")}>
-            <FilterSection label="Status">
-              <div className="flex flex-wrap gap-1.5">
-                {(["all", "needs_action", "quoted", "won", "lost"] as LeadFilterStatus[]).map((f) => (
-                  <FilterChip
-                    key={f}
-                    selected={activeFilter === f}
-                    onClick={() => setActiveFilter(f)}
-                    data-testid={`button-filter-${f}`}
-                  >
-                    {f === "all" ? "All" : f === "needs_action" ? "Needs Action" : f.charAt(0).toUpperCase() + f.slice(1)}
-                    {` (${statusCounts[f]})`}
-                  </FilterChip>
-                ))}
-              </div>
-            </FilterSection>
-          </FiltersButton>
-        </div>
-
-        {/* Table */}
-        <EntityListTable<EnrichedLead>
-          rows={filteredLeads.slice(0, visibleCount)}
-          rowKey={(lead) => lead.id}
-          onRowClick={(lead) => setLocation(`/leads/${lead.id}`)}
-          loadingState={isLoading}
-          emptyState={
-            searchQuery || activeFilter !== "all"
-              ? { kind: "no-results", title: "No leads match your filters", icon: "users" }
-              : { kind: "empty", title: "No leads yet", icon: "users", description: "Create your first lead to start tracking opportunities." }
-          }
-          errorState={
-            isError
-              ? { kind: "error", title: "Failed to load leads", primaryAction: { label: "Retry", onClick: () => refetchLeads(), variant: "outline" } }
-              : undefined
-          }
-          columns={LEAD_COLUMNS}
-        />
-
-        <ListLoadMoreFooter
-          visibleCount={Math.min(visibleCount, filteredLeads.length)}
-          totalCount={filteredLeads.length}
-          hasMore={visibleCount < filteredLeads.length}
-          onLoadMore={() => setVisibleCount((c) => c + LEADS_PAGE_SIZE)}
-          label="lead"
-        />
       </div>
-
     </div>
   );
 }

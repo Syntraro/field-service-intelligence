@@ -494,7 +494,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                   <CanonicalDatePicker
                     value={startDate}
                     onChange={(next) => setStartDate(next ?? "")}
-                    className="w-full h-9 text-sm"
+                    className="w-full text-sm"
                   />
                 </FormField>
 
@@ -506,7 +506,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
                     disabled={!startDate}
-                    className="h-9 text-sm"
+                    className="text-sm"
                   />
                 </FormField>
 
@@ -517,7 +517,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                 <FormLabel>Link to Job (Optional)</FormLabel>
                 <div className="flex gap-1">
                   <Select value={jobId || undefined} onValueChange={setJobId}>
-                    <SelectTrigger className="h-9 text-sm flex-1">
+                    <SelectTrigger className="text-sm flex-1">
                       <SelectValue placeholder="Select..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -534,7 +534,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                       variant="ghost"
                       size="sm"
                       onClick={() => setJobId("")}
-                      className="h-9 px-2"
+                      className="px-2"
                     >
                       ×
                     </Button>
@@ -609,7 +609,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                             }
                           }}
                         >
-                          <SelectTrigger className="h-9 text-sm flex-1">
+                          <SelectTrigger className="text-sm flex-1">
                             <SelectValue placeholder="Select supplier..." />
                           </SelectTrigger>
                           <SelectContent>
@@ -635,7 +635,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                               setSupplierId(undefined);
                               setSupplierLocationId(undefined);
                             }}
-                            className="h-9 px-2"
+                            className="px-2"
                           >
                             ×
                           </Button>
@@ -652,7 +652,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                           onValueChange={setSupplierLocationId}
                           disabled={!supplierId || isLoadingLocations}
                         >
-                          <SelectTrigger className="h-9 text-sm flex-1">
+                          <SelectTrigger className="text-sm flex-1">
                             <SelectValue
                               placeholder={
                                 !supplierId
@@ -680,7 +680,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                             variant="ghost"
                             size="sm"
                             onClick={() => setSupplierLocationId(undefined)}
-                            className="h-9 px-2"
+                            className="px-2"
                           >
                             ×
                           </Button>

@@ -20,10 +20,13 @@ import { EntityNumber } from "@/components/common/EntityNumber";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Invoice } from "@shared/schema";
-import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import {
+  UNPAID_INVOICE_STATUSES,
+  type InvoiceStatusFilter,
+  type InvoiceDateRange,
+} from "@shared/invoiceStatus";
 import { StatusBadge } from "@/components/StatusBadge";
 import { getInvoiceStatusMeta } from "@/lib/statusBadges";
-import { InvoiceParticularsPanel } from "@/components/invoices/InvoiceParticularsPanel";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,11 +35,20 @@ export type InvoiceView =
   | "needs-follow-up" | "sent-this-week" | "no-recent-contact"
   | "high-balance" | "disputed" | "promised-payment";
 
+// Re-export from shared so workspace consumers can import from one place.
+export type { InvoiceStatusFilter, InvoiceDateRange };
+
 export interface SelectionContext {
   selectedInvoiceIds: string[];
   customerCompanyId: string | null;
   /** followUpAt from the sole selected invoice; null/undefined when ≠1 selected. */
   followUpAt?: string | null;
+  /** invoiceNumber from the sole selected invoice; null/undefined when ≠1 selected. */
+  invoiceNumber?: string | null;
+  clientName?: string | null;
+  dueDate?: string | null;
+  balance?: string | null;
+  locationId?: string | null;
 }
 
 interface InvoiceListPanelProps {
@@ -67,17 +79,6 @@ interface InvoiceStats {
   overdue: { amount: number; count: number };
 }
 
-export type InvoiceStatusFilter =
-  | "all" | "draft" | "awaiting_payment" | "partial_paid" | "paid"
-  | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
-
-export type InvoiceDatePreset = "this_month" | "last_month" | "last_30_days" | "custom";
-export interface InvoiceDateRange {
-  preset: InvoiceDatePreset | null;
-  start: string | null; // YYYY-MM-DD
-  end: string | null;   // YYYY-MM-DD
-}
-
 const INVOICES_PAGE_SIZE = 50;
 
 function viewToFilter(view: InvoiceView): InvoiceStatusFilter {
@@ -97,7 +98,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   icon: React.ElementType; iconColor: string; iconBg: string;
 }) {
   return (
-    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-card rounded-md border border-card-border shadow-sm px-5 py-4">
       <div className="flex items-center gap-3">
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
@@ -124,6 +125,8 @@ export function InvoiceListPanel({
   const [visibleCount, setVisibleCount] = useState(INVOICES_PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [batchOpen, setBatchOpen] = useState(false);
+  // receivablesMode uses a simple single-selection string instead of the Set.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -132,6 +135,7 @@ export function InvoiceListPanel({
     setActiveFilter(viewToFilter(activeView));
     setVisibleCount(INVOICES_PAGE_SIZE);
     setSelectedIds(new Set());
+    setSelectedId(null);
   }, [activeView]);
 
   // Reset visible slice on local filter, search, or date range change.
@@ -236,6 +240,9 @@ export function InvoiceListPanel({
       return res.json();
     },
     staleTime: 60_000,
+    // Only fetch reconciliation issues in standard (non-receivables) mode —
+    // the result is not rendered in receivablesMode, so the request would be wasted.
+    enabled: !receivablesMode,
   });
   const reconciliationIssues = reconciliationData?.data ?? [];
 
@@ -307,16 +314,28 @@ export function InvoiceListPanel({
   // Propagate selection context to the workspace coordinator.
   useEffect(() => {
     if (!onSelectionChange) return;
-    const ids = Array.from(selectedIds);
+    const ids = receivablesMode
+      ? (selectedId ? [selectedId] : [])
+      : Array.from(selectedIds);
     let customerCompanyId: string | null = null;
     let followUpAt: string | null | undefined;
+    let invoiceNumber: string | null | undefined;
+    let clientName: string | null | undefined;
+    let dueDate: string | null | undefined;
+    let balance: string | null | undefined;
+    let locationId: string | null | undefined;
     if (ids.length === 1) {
       const inv = enrichedInvoices.find(i => i.id === ids[0]);
       customerCompanyId = (inv as any)?.customerCompanyId ?? null;
       followUpAt = (inv as any)?.followUpAt ?? null;
+      invoiceNumber = inv?.invoiceNumber ?? null;
+      clientName = inv?.locationDisplayName ?? inv?.customerCompanyName ?? null;
+      dueDate = inv?.dueDate ?? null;
+      balance = inv?.balance ?? null;
+      locationId = inv?.locationId ?? null;
     }
-    onSelectionChange({ selectedInvoiceIds: ids, customerCompanyId, followUpAt });
-  }, [selectedIds, enrichedInvoices, onSelectionChange]);
+    onSelectionChange({ selectedInvoiceIds: ids, customerCompanyId, followUpAt, invoiceNumber, clientName, dueDate, balance, locationId });
+  }, [selectedId, selectedIds, enrichedInvoices, onSelectionChange, receivablesMode]);
 
   type InvoiceRow = typeof filteredInvoices[number];
   const allChecked = filteredInvoices.length > 0 && filteredInvoices.every((inv) => selectedIds.has(inv.id));
@@ -443,7 +462,7 @@ export function InvoiceListPanel({
   // selection. Standard mode uses invoiceColumns directly (no open button).
 
   const receivablesColumns = useMemo<EntityListColumn<InvoiceRow>[]>(() => [
-    ...invoiceColumns,
+    ...invoiceColumns.filter(c => c.id !== "select"),
     {
       id: "open",
       header: "",
@@ -466,26 +485,13 @@ export function InvoiceListPanel({
     },
   ], [invoiceColumns, setLocation]);
 
-  // In receivablesMode, the selected invoice drives the inline particulars panel.
-  const particularsInvoiceId = receivablesMode && selectedIds.size === 1
-    ? Array.from(selectedIds)[0]
-    : null;
-
-  // Single selected row key for receivablesMode highlight — only when exactly 1
-  // invoice is selected (row body click). Multi-select via checkboxes uses the
-  // checkbox checked state for visual indication.
-  const receivablesSelectedKey = particularsInvoiceId ?? undefined;
-
-  // Clear selection when the selected invoice is no longer in the filtered list
-  // (e.g. the user types in search and the selected row disappears).
+  // Clear selectedId when the selected invoice is no longer in the filtered list.
   useEffect(() => {
-    if (!receivablesMode) return;
-    if (selectedIds.size !== 1) return;
-    const selectedId = Array.from(selectedIds)[0];
+    if (!receivablesMode || !selectedId) return;
     if (!filteredInvoices.some((inv) => inv.id === selectedId)) {
-      setSelectedIds(new Set());
+      setSelectedId(null);
     }
-  }, [filteredInvoices, receivablesMode, selectedIds]);
+  }, [filteredInvoices, receivablesMode, selectedId]);
 
   // ── Shared section nodes (used in both receivablesMode and standard mode) ──────
 
@@ -606,18 +612,16 @@ export function InvoiceListPanel({
           </div>
         )}
 
-        {/* Single scrollable area — table and particulars panel scroll as one unit */}
+        {/* Scrollable table area */}
         <div className="flex-1 min-h-0 overflow-y-auto" data-testid="invoice-table-area">
-          <div className="px-4 pt-3 pb-4">
+          <div>
             <EntityListTable<InvoiceRow>
               rows={filteredInvoices.slice(0, visibleCount)}
               rowKey={(invoice) => invoice.id}
               onRowClick={(invoice) => {
-                setSelectedIds((prev) =>
-                  prev.size === 1 && prev.has(invoice.id) ? new Set() : new Set([invoice.id]),
-                );
+                setSelectedId((prev) => prev === invoice.id ? null : invoice.id);
               }}
-              selectedRowKey={receivablesSelectedKey}
+              selectedRowKey={selectedId ?? undefined}
               selectedHighlightClass="bg-blue-50"
               loadingState={isLoadingInvoices ? { kind: "loading", title: "Loading invoices…", testId: "invoices-loading" } : undefined}
               emptyState={
@@ -631,18 +635,8 @@ export function InvoiceListPanel({
                   : undefined
               }
               columns={receivablesColumns}
-              fillHeight={!particularsInvoiceId}
-              inlineRowDetail={(invoice) => {
-                if (invoice.id !== particularsInvoiceId) return null;
-                return (
-                  <div className="border-t border-border" data-testid="invoice-particulars-container">
-                    <InvoiceParticularsPanel
-                      invoiceId={invoice.id}
-                      onClose={() => setSelectedIds(new Set())}
-                    />
-                  </div>
-                );
-              }}
+              fillHeight
+              cellPy="py-2.5"
               data-testid="invoice-list-table-receivables"
             />
             <ListLoadMoreFooter
@@ -653,10 +647,16 @@ export function InvoiceListPanel({
               label="invoice"
               hideCountText
             />
+            {baseInvoices.length === 200 && (
+              <p
+                className="text-helper text-muted-foreground text-center pt-2 pb-1"
+                data-testid="invoice-list-cap-notice"
+              >
+                Showing first 200 invoices — use filters or search to narrow results.
+              </p>
+            )}
           </div>
         </div>
-
-        {batchModalNode}
       </div>
     );
   }
@@ -704,7 +704,7 @@ export function InvoiceListPanel({
             placeholder="Search invoices, clients, numbers"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 h-9 rounded-md border-slate-200 bg-white"
+            className="pl-9 rounded-md border-slate-200 bg-white"
             data-testid="input-search-invoices"
           />
         </div>

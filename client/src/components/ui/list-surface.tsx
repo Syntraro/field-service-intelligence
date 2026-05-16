@@ -15,7 +15,7 @@ import {
  * Shared class constants for list/table surfaces.
  * Standardized across Clients, Jobs, and Invoices list pages.
  */
-export const listSurfaceClass = "rounded-md bg-[#ffffff] dark:bg-gray-900 overflow-hidden border border-[#e5e7eb] dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
+export const listSurfaceClass = "bg-[#ffffff] dark:bg-gray-900 overflow-hidden"
 
 export const listRowClass = "border-b border-[#e5e7eb] dark:border-gray-800 last:border-b-0 hover:bg-[#f8fafc] dark:hover:bg-gray-800/60 transition-colors"
 
@@ -34,7 +34,7 @@ export const tableRowClass = "cursor-pointer hover:bg-[#f8fafc] dark:hover:bg-gr
 // Phase H2 owns that migration.
 
 /** Table header row: background, border, padding, text */
-export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-row text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
+export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-row text-muted-foreground bg-transparent"
 /** Primary cell text (company name, job location, invoice client) */
 export const listPrimaryClass = ENTITY_NAME_CLASS
 /** Secondary cell text (contact, sublocation, description) */

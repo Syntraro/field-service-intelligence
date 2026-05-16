@@ -141,6 +141,12 @@ export interface InvoiceStatsResult {
    *  replaces the pre-Phase-9 "overdue uses outstanding total"
    *  approximation on the route layer. */
   totalOverdue: number;
+  /** SUM(payments.amount) for non-refund payments received in the last 30 days. */
+  collectedLast30Days: number;
+  /** COUNT of non-draft invoices with issueDate within the last 30 days. */
+  invoicesIssuedLast30Days: number;
+  /** AVG days from issueDate to payment receivedAt for legacy 1:1 payments. Null when no paid data exists. */
+  averagePaymentTimeDays: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +534,54 @@ export async function getInvoiceStats(
   overdueCount = Number(overdueRows[0]?.count ?? 0);
   const totalOverdue = Number(overdueRows[0]?.total ?? 0);
 
+  // Payments received in the last 30 days (refunds/reversals excluded via paymentType filter).
+  const collected30dRows = await ctx.db
+    .select({
+      total: sql<string>`COALESCE(SUM(CAST(${payments.amount} AS numeric)) FILTER (WHERE ${payments.paymentType} = 'payment'), 0)::text`,
+    })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.companyId, ctx.tenantId),
+        sql`${payments.receivedAt} >= NOW() - INTERVAL '30 days'`
+      )
+    );
+  const collectedLast30Days = Number(collected30dRows[0]?.total ?? 0);
+
+  // Non-draft invoices issued in the last 30 calendar days.
+  const issued30dRows = await ctx.db
+    .select({
+      count: sql<number>`count(*)::int`,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.companyId, ctx.tenantId),
+        sql`${invoices.status} != 'draft'`,
+        sql`${invoices.issueDate} >= CURRENT_DATE - INTERVAL '30 days'`
+      )
+    );
+  const invoicesIssuedLast30Days = Number(issued30dRows[0]?.count ?? 0);
+
+  // Average days from issue date to first payment — legacy 1:1 payments only (invoiceId IS NOT NULL).
+  const avgPayRows = await ctx.db
+    .select({
+      avgDays: sql<number | null>`AVG(EXTRACT(EPOCH FROM (${payments.receivedAt} - CAST(${invoices.issueDate} AS timestamp))) / 86400.0)`,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+    .where(
+      and(
+        eq(payments.companyId, ctx.tenantId),
+        eq(payments.paymentType, "payment"),
+        isNotNull(payments.invoiceId),
+        eq(invoices.companyId, ctx.tenantId)
+      )
+    );
+  const averagePaymentTimeDays = avgPayRows[0]?.avgDays != null
+    ? Math.round(Number(avgPayRows[0].avgDays) * 10) / 10
+    : null;
+
   return {
     byStatus: rows.map(r => ({
       status: r.status ?? "unknown",
@@ -539,6 +593,9 @@ export async function getInvoiceStats(
     draftCount,
     totalOutstanding,
     totalOverdue,
+    collectedLast30Days,
+    invoicesIssuedLast30Days,
+    averagePaymentTimeDays,
   };
 }
 

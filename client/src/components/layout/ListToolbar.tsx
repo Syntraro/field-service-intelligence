@@ -40,7 +40,7 @@ export function ListToolbar({
           placeholder={searchPlaceholder}
           value={searchValue}
           onChange={(e) => onSearchChange(e.target.value)}
-          className="pl-9 h-9"
+          className="pl-9"
           data-testid={searchTestId}
         />
       </div>

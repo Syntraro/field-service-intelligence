@@ -38,6 +38,7 @@ import {
 import { startInvoiceReminderWorker, stopInvoiceReminderWorker } from "./services/invoiceReminderWorker";
 import { startMidnightRolloverWorker, stopMidnightRolloverWorker } from "./services/midnightRolloverWorker";
 import { stopPmAutoGeneration } from "./services/pmAutoGeneration";
+import { startFileCleanupWorker } from "./services/fileCleanupService";
 
 /**
  * Production security defaults.
@@ -249,11 +250,12 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // Start listening when run directly (Replit/Node entry)
 const port = Number(process.env.PORT ?? 5000);
 
-// Handles to the two sweepers that return their NodeJS.Timeout so the
+// Handles to the sweepers that return their NodeJS.Timeout so the
 // SIGTERM/SIGINT handler can clear them cleanly. The other workers expose
 // explicit stop*() helpers.
 let orphanSweeperHandle: NodeJS.Timeout | null = null;
 let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
+let fileCleanupWorkerHandle: NodeJS.Timeout | null = null;
 
 // Validate schema before accepting requests
 (async () => {
@@ -297,6 +299,10 @@ let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
       // rows past expires_at. Both transitions go through conditional
       // UPDATEs in the repo so duplicate workers can't double-act.
       startTenantTeardownExecutorWorker();
+      // 2026-05-15: durable R2 cleanup after client/location permanent delete.
+      // Processes file_cleanup_queue rows on a 5-minute interval, batching
+      // R2 DeleteObjects calls by bucket. See fileCleanupService.ts.
+      fileCleanupWorkerHandle = startFileCleanupWorker();
     });
   } catch (error) {
     console.error("Failed to start server:", error);
@@ -324,6 +330,10 @@ function shutdownBackgroundWorkers() {
   if (queuedEmailSweeperHandle) {
     clearInterval(queuedEmailSweeperHandle);
     queuedEmailSweeperHandle = null;
+  }
+  if (fileCleanupWorkerHandle) {
+    clearInterval(fileCleanupWorkerHandle);
+    fileCleanupWorkerHandle = null;
   }
 }
 process.on("SIGTERM", shutdownBackgroundWorkers);

@@ -293,7 +293,7 @@ function TemplateLineItemRow({
         placeholder="Qty"
         value={item.quantity}
         onChange={(e) => onChange(index, { quantity: e.target.value })}
-        className="w-20 h-9 text-sm"
+        className="w-20 text-sm"
       />
       <Input
         type="number"
@@ -301,9 +301,9 @@ function TemplateLineItemRow({
         placeholder="Price"
         value={item.unitPrice}
         onChange={(e) => onChange(index, { unitPrice: e.target.value })}
-        className="w-28 h-9 text-sm"
+        className="w-28 text-sm"
       />
-      <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => onRemove(index)}>
+      <Button variant="ghost" size="icon" className="shrink-0" onClick={() => onRemove(index)}>
         <Trash2 className="h-4 w-4 text-muted-foreground" />
       </Button>
     </div>
@@ -581,7 +581,7 @@ export default function PMTemplateEditorPage() {
               <FormLabel srOnly htmlFor="tpl-name">Template Name</FormLabel>
               <Input
                 id="tpl-name"
-                className="h-9"
+                className=""
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. RTU Cooling PM, Fall Startup Quarterly"
@@ -592,7 +592,7 @@ export default function PMTemplateEditorPage() {
               <FormLabel srOnly htmlFor="tpl-summary">PM Summary</FormLabel>
               <Input
                 id="tpl-summary"
-                className="h-9"
+                className=""
                 value={summary}
                 onChange={(e) => setSummary(e.target.value)}
                 placeholder="Default plan name applied to new plans"
@@ -616,7 +616,7 @@ export default function PMTemplateEditorPage() {
                 value={billingMode || "none-unset"}
                 onValueChange={(v) => setBillingMode(v === "none-unset" ? "" : v)}
               >
-                <SelectTrigger className="h-9" data-testid="pm-tpl-billing">
+                <SelectTrigger className="" data-testid="pm-tpl-billing">
                   <SelectValue placeholder="Not set" />
                 </SelectTrigger>
                 <SelectContent>
@@ -637,7 +637,7 @@ export default function PMTemplateEditorPage() {
                   type="number"
                   step="0.01"
                   min={0}
-                  className="h-9 pl-7"
+                  className="pl-7"
                   value={defaultPrice}
                   onChange={(e) => setDefaultPrice(e.target.value)}
                   placeholder="0.00"
@@ -698,7 +698,7 @@ export default function PMTemplateEditorPage() {
                   value={genMode || "none"}
                   onValueChange={(v) => setGenMode(v === "none" ? "" : (v as "period_start" | "day_of_month"))}
                 >
-                  <SelectTrigger className="h-9 flex-1" data-testid="pm-tpl-gen-mode">
+                  <SelectTrigger className="flex-1" data-testid="pm-tpl-gen-mode">
                     <SelectValue placeholder="Not set" />
                   </SelectTrigger>
                   <SelectContent>
@@ -710,7 +710,7 @@ export default function PMTemplateEditorPage() {
                 {genMode === "day_of_month" && (
                   <Input
                     type="number"
-                    className="h-9 w-20"
+                    className="w-20"
                     min={1}
                     max={28}
                     value={genDay}
@@ -741,7 +741,7 @@ export default function PMTemplateEditorPage() {
                 <FormLabel>Days Before</FormLabel>
                 <Input
                   type="number"
-                  className="h-9"
+                  className=""
                   min={0}
                   max={90}
                   value={swBefore}
@@ -754,7 +754,7 @@ export default function PMTemplateEditorPage() {
                 <FormLabel>Days After</FormLabel>
                 <Input
                   type="number"
-                  className="h-9"
+                  className=""
                   min={0}
                   max={90}
                   value={swAfter}

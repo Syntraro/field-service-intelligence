@@ -11,7 +11,7 @@
  *   sub   — text-helper text-muted-foreground mt-1
  *
  * Semantic tokens (no hardcoded hex):
- *   bg-card             — card surface (default)
+ *   bg-card             — KPI tile surface (default, white primary surface)
  *   border-card-border  — card border
  *   text-foreground     — default value color
  *   text-destructive    — danger tone value color

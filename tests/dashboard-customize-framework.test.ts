@@ -33,13 +33,13 @@ import {
 import {
   dashboardLayoutPutSchema,
   dashboardLayoutEntrySchema,
-} from "../client/src/dashboard/dashboardLayoutSchemas";
+} from "@shared/dashboardLayoutSchemas";
 
 const ROOT = resolve(__dirname, "..");
 const path = (p: string) => resolve(ROOT, p);
 
 const REGISTRY_PATH = path("shared/dashboardWidgetRegistry.ts");
-const SCHEMAS_PATH = path("client/src/dashboard/dashboardLayoutSchemas.ts");
+const SCHEMAS_PATH = path("shared/dashboardLayoutSchemas.ts");
 const HOOK_PATH = path("client/src/dashboard/useDashboardLayout.ts");
 const GRID_PATH = path("client/src/dashboard/DashboardWidgetGrid.tsx");
 const DRAWER_PATH = path("client/src/dashboard/DashboardCustomizeDrawer.tsx");

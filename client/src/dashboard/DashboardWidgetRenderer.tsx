@@ -23,7 +23,7 @@
  * gap-3). Typography uses the existing tokens — no one-off classes.
  */
 import { Switch } from "@/components/ui/switch";
-import type { DashboardLayoutResponseEntry } from "./dashboardLayoutSchemas";
+import type { DashboardLayoutResponseEntry } from "@shared/dashboardLayoutSchemas";
 
 interface DashboardWidgetRendererProps {
   widget: DashboardLayoutResponseEntry;

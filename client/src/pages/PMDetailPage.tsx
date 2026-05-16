@@ -496,7 +496,7 @@ function ScheduleCard({
               <CanonicalDatePicker
                 value={form.startDate}
                 onChange={(next) => onChange({ startDate: next ?? "" })}
-                className="w-full h-9 text-sm"
+                className="w-full text-sm"
                 data-testid="pm-detail-start-date"
               />
             </FormField>
@@ -507,7 +507,7 @@ function ScheduleCard({
                 onChange={(next) => onChange({ endDate: next ?? "" })}
                 placeholder="Optional"
                 clearable
-                className="w-full h-9 text-sm"
+                className="w-full text-sm"
                 data-testid="pm-detail-end-date"
               />
             </FormField>

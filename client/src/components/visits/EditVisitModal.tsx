@@ -1177,7 +1177,7 @@ export function EditVisitModal({
                   variant="outline"
                   size="sm"
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 text-xs h-9 px-3"
+                  className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 text-xs px-3"
                   data-testid="button-delete-visit"
                 >
                   <Trash2 className="h-3 w-3 mr-1" />Delete Visit
@@ -1187,7 +1187,7 @@ export function EditVisitModal({
                     variant="outline"
                     size="sm"
                     onClick={() => onOpenChange(false)}
-                    className="h-9 text-xs px-3"
+                    className="text-xs px-3"
                     data-testid="button-cancel-visit-edit"
                   >
                     Cancel
@@ -1196,7 +1196,7 @@ export function EditVisitModal({
                     size="sm"
                     onClick={handleSave}
                     disabled={isPending}
-                    className="h-9 text-xs px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                    className="text-xs px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
                     data-testid="button-save-visit"
                   >
                     {isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}

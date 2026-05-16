@@ -1,7 +1,14 @@
 import { db } from "../db";
-import { eq, and, desc, ilike, inArray, isNull, isNotNull, sql } from "drizzle-orm";
-import { customerCompanies, clients, jobs, invoices, quotes, contactPersons, clientParts, clientNotes } from "@shared/schema";
+import { eq, and, desc, ilike, inArray, isNull, isNotNull, sql, or } from "drizzle-orm";
+import {
+  customerCompanies, clients, jobs, invoices, quotes, contactPersons, clientParts, clientNotes,
+  leads, payments, paymentAllocations, maintenanceRecords, jobVisits, recurringJobSeries, clientFiles, locationPMPlans,
+  paymentDisputes, noteAttachments, jobNotes, jobNoteAttachments, invoiceNotes, invoiceNoteAttachments,
+  quoteNotes, quoteNoteAttachments, leadNotes, leadNoteAttachments, locationEquipment, equipmentOcrScans, files,
+  fileCleanupQueue,
+} from "@shared/schema";
 import type { Client } from "@shared/schema";
+import { queueFileCleanupInTx, type FileCleanupEntry } from "../services/fileCleanupService";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
 import { activeJobFilter, notDeletedClientFilter, notDeletedCustomerCompanyFilter } from "./jobFilters";
 import { geocodeToLatLng } from "../utils/geocode";
@@ -984,8 +991,125 @@ export class CustomerCompanyRepository extends BaseRepository {
   }
 
   // ========================================
-  // DELETION — eligibility checks and hard/soft delete
+  // DELETION — impact counts, cascade delete, soft delete/archive
   // ========================================
+
+  /** Counts of records that would be permanently deleted for a given customer company. */
+  async getCompanyDeleteImpact(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<{
+    locationCount: number; jobs: number; visits: number; invoices: number;
+    quotes: number; leads: number; servicePlans: number; recurringJobs: number;
+    notes: number; files: number; maintenanceRecords: number;
+  }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    const locationRows = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.companyId, companyId), eq(clients.parentCompanyId, customerCompanyId)));
+    const locationIds = locationRows.map(r => r.id);
+
+    if (locationIds.length === 0) {
+      return { locationCount: 0, jobs: 0, visits: 0, invoices: 0, quotes: 0, leads: 0, servicePlans: 0, recurringJobs: 0, notes: 0, files: 0, maintenanceRecords: 0 };
+    }
+
+    const [
+      [jobRow], [visitRow], [invRow], [quoteRow], [leadRow],
+      [planRow], [recurRow], [noteRow], [fileRow], [maintRow],
+    ] = await Promise.all([
+      db.select({ count: sql<number>`count(*)` }).from(jobs)
+        .where(and(eq(jobs.companyId, companyId), inArray(jobs.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(jobVisits)
+        .innerJoin(jobs, eq(jobs.id, jobVisits.jobId))
+        .where(and(eq(jobs.companyId, companyId), inArray(jobs.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(invoices)
+        .where(and(eq(invoices.companyId, companyId), inArray(invoices.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(quotes)
+        .where(and(eq(quotes.companyId, companyId), inArray(quotes.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(leads)
+        .where(and(eq(leads.companyId, companyId), inArray(leads.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(locationPMPlans)
+        .where(and(eq(locationPMPlans.companyId, companyId), inArray(locationPMPlans.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(recurringJobSeries)
+        .where(and(eq(recurringJobSeries.companyId, companyId), inArray(recurringJobSeries.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(clientNotes)
+        .where(and(eq(clientNotes.companyId, companyId), inArray(clientNotes.locationId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(clientFiles)
+        .where(and(eq(clientFiles.companyId, companyId), inArray(clientFiles.clientId, locationIds))),
+      db.select({ count: sql<number>`count(*)` }).from(maintenanceRecords)
+        .where(and(eq(maintenanceRecords.companyId, companyId), inArray(maintenanceRecords.locationId, locationIds))),
+    ]);
+
+    return {
+      locationCount: locationIds.length,
+      jobs: Number(jobRow.count),
+      visits: Number(visitRow.count),
+      invoices: Number(invRow.count),
+      quotes: Number(quoteRow.count),
+      leads: Number(leadRow.count),
+      servicePlans: Number(planRow.count),
+      recurringJobs: Number(recurRow.count),
+      notes: Number(noteRow.count),
+      files: Number(fileRow.count),
+      maintenanceRecords: Number(maintRow.count),
+    };
+  }
+
+  /** Counts of records that would be permanently deleted for a single location. */
+  async getLocationDeleteImpact(
+    companyId: string,
+    locationId: string
+  ): Promise<{
+    jobs: number; visits: number; invoices: number; quotes: number;
+    leads: number; servicePlans: number; recurringJobs: number;
+    notes: number; files: number; maintenanceRecords: number;
+  }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(locationId, "locationId");
+
+    const [
+      [jobRow], [visitRow], [invRow], [quoteRow], [leadRow],
+      [planRow], [recurRow], [noteRow], [fileRow], [maintRow],
+    ] = await Promise.all([
+      db.select({ count: sql<number>`count(*)` }).from(jobs)
+        .where(and(eq(jobs.companyId, companyId), eq(jobs.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(jobVisits)
+        .innerJoin(jobs, eq(jobs.id, jobVisits.jobId))
+        .where(and(eq(jobs.companyId, companyId), eq(jobs.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(invoices)
+        .where(and(eq(invoices.companyId, companyId), eq(invoices.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(quotes)
+        .where(and(eq(quotes.companyId, companyId), eq(quotes.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(leads)
+        .where(and(eq(leads.companyId, companyId), eq(leads.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(locationPMPlans)
+        .where(and(eq(locationPMPlans.companyId, companyId), eq(locationPMPlans.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(recurringJobSeries)
+        .where(and(eq(recurringJobSeries.companyId, companyId), eq(recurringJobSeries.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(clientNotes)
+        .where(and(eq(clientNotes.companyId, companyId), eq(clientNotes.locationId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(clientFiles)
+        .where(and(eq(clientFiles.companyId, companyId), eq(clientFiles.clientId, locationId))),
+      db.select({ count: sql<number>`count(*)` }).from(maintenanceRecords)
+        .where(and(eq(maintenanceRecords.companyId, companyId), eq(maintenanceRecords.locationId, locationId))),
+    ]);
+
+    return {
+      jobs: Number(jobRow.count),
+      visits: Number(visitRow.count),
+      invoices: Number(invRow.count),
+      quotes: Number(quoteRow.count),
+      leads: Number(leadRow.count),
+      servicePlans: Number(planRow.count),
+      recurringJobs: Number(recurRow.count),
+      notes: Number(noteRow.count),
+      files: Number(fileRow.count),
+      maintenanceRecords: Number(maintRow.count),
+    };
+  }
 
   /**
    * Check whether a customer company can be hard-deleted.
@@ -1090,6 +1214,368 @@ export class CustomerCompanyRepository extends BaseRepository {
         .returning();
 
       return deleted.length > 0;
+    });
+  }
+
+  /**
+   * Fully cascade-delete a single location and all owned records.
+   * Call inside an existing transaction. Handles FK order:
+   *   payments/allocations → invoices → jobs → quotes → leads →
+   *   maintenance_records → client_parts → client_notes → location (cascade rest)
+   *
+   * Orphaned after delete (known limitation): `files` metadata rows and any
+   * cloud storage objects (R2/local) that were referenced by client_files or
+   * equipment_ocr_scans. These require a separate async cleanup job.
+   */
+  /**
+   * Collects all file refs attached to a location and its child entities.
+   * Called before cascade deletes so attachment join rows still exist.
+   */
+  private async collectLocationFileRefs(
+    tx: typeof db,
+    companyId: string,
+    locationId: string,
+    invoiceIds: string[],
+    jobIds: string[],
+    quoteIds: string[],
+    leadIds: string[],
+  ): Promise<FileCleanupEntry[]> {
+    const fileIdSet = new Set<string>();
+
+    // 1. Client notes → note_attachments
+    const clientNoteRows = await (tx as any)
+      .select({ id: clientNotes.id })
+      .from(clientNotes)
+      .where(and(
+        eq(clientNotes.companyId, companyId),
+        or(eq(clientNotes.locationId, locationId), eq(clientNotes.clientId, locationId)),
+      ));
+    const clientNoteIds: string[] = clientNoteRows.map((r: any) => r.id);
+    if (clientNoteIds.length > 0) {
+      const rows = await (tx as any)
+        .select({ fileId: noteAttachments.fileId })
+        .from(noteAttachments)
+        .where(inArray(noteAttachments.noteId, clientNoteIds));
+      rows.forEach((r: any) => fileIdSet.add(r.fileId));
+    }
+
+    // 2. Job notes → job_note_attachments
+    if (jobIds.length > 0) {
+      const jnRows = await (tx as any)
+        .select({ id: jobNotes.id })
+        .from(jobNotes)
+        .where(inArray(jobNotes.jobId, jobIds));
+      const jnIds: string[] = jnRows.map((r: any) => r.id);
+      if (jnIds.length > 0) {
+        const rows = await (tx as any)
+          .select({ fileId: jobNoteAttachments.fileId })
+          .from(jobNoteAttachments)
+          .where(inArray(jobNoteAttachments.noteId, jnIds));
+        rows.forEach((r: any) => fileIdSet.add(r.fileId));
+      }
+    }
+
+    // 3. Invoice notes → invoice_note_attachments
+    if (invoiceIds.length > 0) {
+      const inRows = await (tx as any)
+        .select({ id: invoiceNotes.id })
+        .from(invoiceNotes)
+        .where(inArray(invoiceNotes.invoiceId, invoiceIds));
+      const inIds: string[] = inRows.map((r: any) => r.id);
+      if (inIds.length > 0) {
+        const rows = await (tx as any)
+          .select({ fileId: invoiceNoteAttachments.fileId })
+          .from(invoiceNoteAttachments)
+          .where(inArray(invoiceNoteAttachments.noteId, inIds));
+        rows.forEach((r: any) => fileIdSet.add(r.fileId));
+      }
+    }
+
+    // 4. Quote notes → quote_note_attachments
+    if (quoteIds.length > 0) {
+      const qnRows = await (tx as any)
+        .select({ id: quoteNotes.id })
+        .from(quoteNotes)
+        .where(inArray(quoteNotes.quoteId, quoteIds));
+      const qnIds: string[] = qnRows.map((r: any) => r.id);
+      if (qnIds.length > 0) {
+        const rows = await (tx as any)
+          .select({ fileId: quoteNoteAttachments.fileId })
+          .from(quoteNoteAttachments)
+          .where(inArray(quoteNoteAttachments.noteId, qnIds));
+        rows.forEach((r: any) => fileIdSet.add(r.fileId));
+      }
+    }
+
+    // 5. Lead notes → lead_note_attachments
+    if (leadIds.length > 0) {
+      const lnRows = await (tx as any)
+        .select({ id: leadNotes.id })
+        .from(leadNotes)
+        .where(inArray(leadNotes.leadId, leadIds));
+      const lnIds: string[] = lnRows.map((r: any) => r.id);
+      if (lnIds.length > 0) {
+        const rows = await (tx as any)
+          .select({ fileId: leadNoteAttachments.fileId })
+          .from(leadNoteAttachments)
+          .where(inArray(leadNoteAttachments.noteId, lnIds));
+        rows.forEach((r: any) => fileIdSet.add(r.fileId));
+      }
+    }
+
+    // 6. Client files (location documents)
+    const cfRows = await (tx as any)
+      .select({ fileId: clientFiles.fileId })
+      .from(clientFiles)
+      .where(and(eq(clientFiles.companyId, companyId), eq(clientFiles.clientId, locationId)));
+    cfRows.forEach((r: any) => fileIdSet.add(r.fileId));
+
+    // 7. Equipment — OCR scan files and nameplate photos
+    const equipRows = await (tx as any)
+      .select({ id: locationEquipment.id, nameplatePhotoId: locationEquipment.nameplatePhotoId })
+      .from(locationEquipment)
+      .where(and(eq(locationEquipment.companyId, companyId), eq(locationEquipment.locationId, locationId)));
+    const equipIds: string[] = equipRows.map((r: any) => r.id);
+    equipRows.forEach((r: any) => { if (r.nameplatePhotoId) fileIdSet.add(r.nameplatePhotoId); });
+    if (equipIds.length > 0) {
+      const scanRows = await (tx as any)
+        .select({ fileId: equipmentOcrScans.fileId })
+        .from(equipmentOcrScans)
+        .where(inArray(equipmentOcrScans.equipmentId, equipIds));
+      scanRows.forEach((r: any) => fileIdSet.add(r.fileId));
+    }
+
+    if (fileIdSet.size === 0) return [];
+
+    // Resolve file metadata for queued entries.
+    const allFileIds = Array.from(fileIdSet);
+    const fileRows = await (tx as any)
+      .select({
+        id: files.id,
+        bucket: files.bucket,
+        storageKey: files.storageKey,
+        storageProvider: files.storageProvider,
+      })
+      .from(files)
+      .where(and(
+        eq(files.companyId, companyId),
+        inArray(files.id, allFileIds),
+        isNotNull(files.bucket),
+      ));
+
+    return fileRows
+      .filter((r: any) => r.bucket && r.storageKey)
+      .map((r: any) => ({
+        fileId: r.id,
+        bucket: r.bucket as string,
+        storageKey: r.storageKey as string,
+        storageProvider: (r.storageProvider as string) ?? "r2",
+      }));
+  }
+
+  private async deleteLocationCascadeInTx(
+    tx: typeof db,
+    companyId: string,
+    locationId: string
+  ): Promise<void> {
+    // ── Collect entity IDs upfront for file ref collection and cascade ────────
+    const invoiceRows = await (tx as any)
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.locationId, locationId)));
+    const invoiceIds: string[] = invoiceRows.map((r: { id: string }) => r.id);
+
+    const jobRows = await (tx as any)
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.companyId, companyId), eq(jobs.locationId, locationId)));
+    const jobIds: string[] = jobRows.map((r: { id: string }) => r.id);
+
+    const quoteRows = await (tx as any)
+      .select({ id: quotes.id })
+      .from(quotes)
+      .where(and(eq(quotes.companyId, companyId), eq(quotes.locationId, locationId)));
+    const quoteIds: string[] = quoteRows.map((r: { id: string }) => r.id);
+
+    const leadRows = await (tx as any)
+      .select({ id: leads.id })
+      .from(leads)
+      .where(and(eq(leads.companyId, companyId), eq(leads.locationId, locationId)));
+    const leadIds: string[] = leadRows.map((r: { id: string }) => r.id);
+
+    // ── Collect file refs and queue cleanup before deleting anything ──────────
+    const fileEntries = await this.collectLocationFileRefs(
+      tx, companyId, locationId, invoiceIds, jobIds, quoteIds, leadIds,
+    );
+    if (fileEntries.length > 0) {
+      await queueFileCleanupInTx(tx, companyId, fileEntries, `location_delete:${locationId}`);
+    }
+
+    // ── Payments ─────────────────────────────────────────────────────────────
+    if (invoiceIds.length > 0) {
+      // Multi-invoice payments that have allocations to these invoices
+      const multiPayRows = await (tx as any)
+        .selectDistinct({ paymentId: paymentAllocations.paymentId })
+        .from(paymentAllocations)
+        .where(inArray(paymentAllocations.invoiceId, invoiceIds));
+      const multiPayIds: string[] = multiPayRows.map((r: { paymentId: string }) => r.paymentId);
+
+      // Legacy 1:1 payments directly linked to these invoices
+      const legacyPayRows = await (tx as any)
+        .select({ id: payments.id })
+        .from(payments)
+        .where(and(eq(payments.companyId, companyId), inArray(payments.invoiceId, invoiceIds)));
+      const legacyPayIds: string[] = legacyPayRows.map((r: { id: string }) => r.id);
+
+      const allPayIds = Array.from(new Set([...multiPayIds, ...legacyPayIds]));
+
+      // Delete refund/reversal children first (RESTRICT on parentPaymentId)
+      if (allPayIds.length > 0) {
+        await (tx as any).delete(payments).where(
+          and(eq(payments.companyId, companyId), inArray(payments.parentPaymentId, allPayIds))
+        );
+      }
+
+      // Delete payment_disputes that reference these invoices or payments.
+      // paymentDisputes.invoiceId/paymentId are SET NULL, but we delete them
+      // explicitly so orphaned disputes don't accumulate with null FKs.
+      await (tx as any).delete(paymentDisputes).where(
+        and(
+          eq(paymentDisputes.companyId, companyId),
+          inArray(paymentDisputes.invoiceId, invoiceIds),
+        )
+      );
+      if (allPayIds.length > 0) {
+        await (tx as any).delete(paymentDisputes).where(
+          and(
+            eq(paymentDisputes.companyId, companyId),
+            inArray(paymentDisputes.paymentId, allPayIds),
+          )
+        );
+      }
+
+      // Delete allocations for these invoices
+      await (tx as any).delete(paymentAllocations).where(
+        inArray(paymentAllocations.invoiceId, invoiceIds)
+      );
+
+      // Delete multi-invoice payments that now have no remaining allocations
+      if (multiPayIds.length > 0) {
+        const remainingRows = await (tx as any)
+          .select({ paymentId: paymentAllocations.paymentId })
+          .from(paymentAllocations)
+          .where(inArray(paymentAllocations.paymentId, multiPayIds));
+        const remainingIds = new Set(remainingRows.map((r: { paymentId: string }) => r.paymentId));
+        const orphanedIds = multiPayIds.filter(id => !remainingIds.has(id));
+        if (orphanedIds.length > 0) {
+          await (tx as any).delete(payments).where(
+            and(eq(payments.companyId, companyId), isNull(payments.invoiceId), inArray(payments.id, orphanedIds))
+          );
+        }
+      }
+    }
+
+    // ── Invoices — CASCADE: invoice_lines, invoice_notes, legacy 1:1 payments ──
+    await (tx as any).delete(invoices).where(
+      and(eq(invoices.companyId, companyId), eq(invoices.locationId, locationId))
+    );
+
+    // ── Jobs — CASCADE: job_notes, job_visits, job_parts, job_equipment, labor_entries, etc. ──
+    await (tx as any).delete(jobs).where(
+      and(eq(jobs.companyId, companyId), eq(jobs.locationId, locationId))
+    );
+
+    // ── Quotes — CASCADE: quote_lines, quote_notes ────────────────────────────
+    await (tx as any).delete(quotes).where(
+      and(eq(quotes.companyId, companyId), eq(quotes.locationId, locationId))
+    );
+
+    // ── Leads ─────────────────────────────────────────────────────────────────
+    await (tx as any).delete(leads).where(
+      and(eq(leads.companyId, companyId), eq(leads.locationId, locationId))
+    );
+
+    // ── Maintenance records ───────────────────────────────────────────────────
+    await (tx as any).delete(maintenanceRecords).where(
+      and(eq(maintenanceRecords.companyId, companyId), eq(maintenanceRecords.locationId, locationId))
+    );
+
+    // ── Client parts ──────────────────────────────────────────────────────────
+    await (tx as any).delete(clientParts).where(
+      and(eq(clientParts.companyId, companyId), eq(clientParts.locationId, locationId))
+    );
+
+    // ── Client notes — both locationId and deprecated clientId reference this location ──
+    await (tx as any).delete(clientNotes).where(
+      and(
+        eq(clientNotes.companyId, companyId),
+        or(eq(clientNotes.locationId, locationId), eq(clientNotes.clientId, locationId))
+      )
+    );
+
+    // ── Location — CASCADE: location_tag_assignments, contact_assignments,
+    //   client_files, location_pm_plans, location_pm_part_templates,
+    //   location_equipment (→ equipment_ocr_scans, equipment_catalog_items),
+    //   recurring_job_series (→ recurring_job_phases) ──────────────────────────
+    await (tx as any).delete(clients).where(
+      and(eq(clients.id, locationId), eq(clients.companyId, companyId))
+    );
+  }
+
+  /**
+   * Permanently delete a customer company and all owned records.
+   * No eligibility gate — always proceeds. Returns { deletedCount } summary.
+   * Wrap all sub-deletes in a single transaction for atomicity.
+   */
+  async permanentDeleteCustomerCompany(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<{ locationCount: number }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    return await db.transaction(async (tx) => {
+      const locationRows = await (tx as any)
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.companyId, companyId), eq(clients.parentCompanyId, customerCompanyId)));
+
+      for (const loc of locationRows) {
+        await this.deleteLocationCascadeInTx(tx as any, companyId, loc.id);
+      }
+
+      // Delete customer company — CASCADE handles company-level clientNotes
+      // (customerCompanyId FK), contactAssignments, clientTagAssignments
+      const deleted = await (tx as any)
+        .delete(customerCompanies)
+        .where(and(eq(customerCompanies.id, customerCompanyId), eq(customerCompanies.companyId, companyId)))
+        .returning();
+
+      if (deleted.length === 0) throw this.notFoundError("Customer company");
+      return { locationCount: locationRows.length };
+    });
+  }
+
+  /**
+   * Permanently delete a single location and all owned records.
+   * No eligibility gate. Does NOT check isLastLocation — caller is responsible.
+   */
+  async permanentDeleteLocation(
+    companyId: string,
+    locationId: string
+  ): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(locationId, "locationId");
+
+    return await db.transaction(async (tx) => {
+      const locRows = await (tx as any)
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.id, locationId), eq(clients.companyId, companyId)));
+      if (locRows.length === 0) return false;
+
+      await this.deleteLocationCascadeInTx(tx as any, companyId, locationId);
+      return true;
     });
   }
 

@@ -157,6 +157,61 @@ router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(stats);
 }));
 
+// GET /api/quotes/views/counts - Badge counts for workspace view rail
+router.get("/views/counts", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+
+  const rows = await db
+    .select({
+      status: quotes.status,
+      assessmentStatus: quotes.assessmentStatus,
+      expiryDate: quotes.expiryDate,
+    })
+    .from(quotes)
+    .where(eq(quotes.companyId, companyId));
+
+  const now = new Date();
+  const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  let all = 0, draft = 0, sent = 0, awaitingApproval = 0, expiringSoon = 0;
+  let approved = 0, expired = 0, declined = 0, converted = 0;
+  let needsAssessment = 0, assessmentScheduled = 0;
+
+  for (const row of rows) {
+    all++;
+    switch (row.status) {
+      case "draft":
+        draft++;
+        break;
+      case "sent": {
+        sent++;
+        const expiry = row.expiryDate ? new Date(row.expiryDate) : null;
+        if (!expiry || expiry > now) {
+          awaitingApproval++;
+          if (expiry && expiry <= sevenDaysFromNow) expiringSoon++;
+        }
+        break;
+      }
+      case "approved":
+        approved++;
+        break;
+      case "expired":
+        expired++;
+        break;
+      case "declined":
+        declined++;
+        break;
+      case "converted":
+        converted++;
+        break;
+    }
+    if (row.assessmentStatus === "required") needsAssessment++;
+    if (row.assessmentStatus === "scheduled") assessmentScheduled++;
+  }
+
+  res.json({ all, draft, sent, awaitingApproval, expiringSoon, approved, expired, declined, converted, needsAssessment, assessmentScheduled });
+}));
+
 // GET /api/quotes/:id - Get single quote
 router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const quote = await quoteRepository.getQuote(req.companyId!, req.params.id);

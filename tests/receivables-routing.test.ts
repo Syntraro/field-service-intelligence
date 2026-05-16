@@ -1,17 +1,17 @@
 /**
- * Receivables routing audit (2026-05-13, updated 2026-05-13 Phase 1 restructure).
+ * Receivables routing audit (2026-05-13, updated 2026-05-14 simplification).
  *
- * Source-level guards for the Receivables workspace routing:
- *   - /receivables renders ReceivablesPage with invoices as default tab
- *   - Queue tab removed; ?tab=queue normalizes to invoices
+ * Source-level guards for the Invoices workspace routing:
+ *   - /receivables renders ReceivablesPage (page heading: "Invoices")
+ *   - Tabs (Payments, Insights) removed; InvoicesWorkspaceTab rendered directly
  *   - InvoicesWorkspaceTab is the three-panel invoice workspace
  *   - InvoiceViewRail renders five Phase 1 views
  *   - ReceivablesActionsRail shows empty state and action buttons
  *   - InvoiceListPanel accepts activeView prop and maps views to filters
- *   - URL-based tab + view switching wired via useSearch
+ *   - URL-based view switching wired via useSearch
  *   - /invoices redirects to /receivables
  *   - Dashboard filter links target /receivables?tab=invoices&filter=...
- *   - Sidebar item is "Receivables" pointing at /receivables
+ *   - Sidebar item is "Invoices" pointing at /receivables
  *   - Sidebar active state covers /receivables, /invoices/new, /invoices/:id
  */
 
@@ -30,8 +30,6 @@ const invoicesWorkspaceTab   = src("client/src/pages/receivables/InvoicesWorkspa
 const invoiceViewRail        = src("client/src/pages/receivables/InvoiceViewRail.tsx");
 const receivablesActionsRail = src("client/src/pages/receivables/ReceivablesActionsRail.tsx");
 const invoiceListPanel       = src("client/src/components/invoices/InvoiceListPanel.tsx");
-const paymentsTab            = src("client/src/pages/receivables/PaymentsTab.tsx");
-const insightsTab            = src("client/src/pages/receivables/InsightsTab.tsx");
 const invoicesListPage       = src("client/src/pages/InvoicesListPage.tsx");
 const paymentsDashPage       = src("client/src/pages/PaymentsDashboardPage.tsx");
 const appSrc                 = src("client/src/App.tsx");
@@ -50,49 +48,37 @@ describe("ReceivablesPage", () => {
     expect(receivablesPage).toMatch(/data-testid="receivables-page"/);
   });
 
-  it("invoices is the default tab (readTabFromSearch returns invoices when no param)", () => {
-    // Default branch returns "invoices", not "queue"
-    expect(receivablesPage).toMatch(/: "invoices"/);
-    expect(receivablesPage).toMatch(/readTabFromSearch/);
-  });
-
-  it("normalizes ?tab=queue to invoices", () => {
-    expect(receivablesPage).toMatch(/t === "queue".*return "invoices"/);
-  });
-
-  it("reads active tab from URL search params via useSearch", () => {
-    expect(receivablesPage).toMatch(/useSearch/);
-    expect(receivablesPage).toMatch(/params\.get\("tab"\)/);
-  });
-
-  it("updates URL on tab change (handleTabChange)", () => {
-    expect(receivablesPage).toMatch(/handleTabChange/);
-    expect(receivablesPage).toMatch(/setLocation.*receivables/);
-  });
-
-  it("tab list contains Invoices, Payments, Insights (Activity removed)", () => {
-    expect(receivablesPage).toMatch(/value: "invoices"/);
-    expect(receivablesPage).toMatch(/value: "payments"/);
-    expect(receivablesPage).toMatch(/value: "insights"/);
-    expect(receivablesPage).not.toMatch(/value: "activity"/);
-  });
-
-  it("tab list does NOT contain a Queue tab", () => {
-    expect(receivablesPage).not.toMatch(/value: "queue"/);
-    expect(receivablesPage).not.toMatch(/label: "Queue"/);
-  });
-
-  it("tab-content-invoices wraps InvoicesWorkspaceTab with h-full overflow-hidden", () => {
-    expect(receivablesPage).toMatch(/h-full overflow-hidden.*data-testid="tab-content-invoices"/s);
-  });
-
-  it("renders InvoicesWorkspaceTab for the invoices tab", () => {
-    expect(receivablesPage).toMatch(/InvoicesWorkspaceTab/);
-    expect(receivablesPage).toMatch(/<InvoicesWorkspaceTab/);
+  it("page heading says Invoices", () => {
+    expect(receivablesPage).toMatch(/Invoices/);
+    expect(receivablesPage).not.toMatch(/>Receivables</);
   });
 
   it("does not carry font-semibold on text-title", () => {
     expect(receivablesPage).not.toMatch(/text-title font-semibold/);
+  });
+
+  it("renders InvoicesWorkspaceTab directly (no tab bar)", () => {
+    expect(receivablesPage).toMatch(/InvoicesWorkspaceTab/);
+    expect(receivablesPage).toMatch(/<InvoicesWorkspaceTab/);
+  });
+
+  it("wraps InvoicesWorkspaceTab in tab-content-invoices container", () => {
+    expect(receivablesPage).toMatch(/data-testid="tab-content-invoices"/);
+  });
+
+  it("does NOT have a Payments tab", () => {
+    expect(receivablesPage).not.toMatch(/PaymentsTab/);
+    expect(receivablesPage).not.toMatch(/value: "payments"/);
+  });
+
+  it("does NOT have an Insights tab", () => {
+    expect(receivablesPage).not.toMatch(/InsightsTab/);
+    expect(receivablesPage).not.toMatch(/value: "insights"/);
+  });
+
+  it("does NOT contain tab bar machinery (readTabFromSearch, handleTabChange)", () => {
+    expect(receivablesPage).not.toMatch(/readTabFromSearch/);
+    expect(receivablesPage).not.toMatch(/handleTabChange/);
   });
 
   it("does NOT import or render QueueTab", () => {
@@ -348,17 +334,6 @@ describe("ReceivablesActionsRail", () => {
     expect(receivablesActionsRail).toMatch(/<DropdownMenuItem disabled>Write Off Balance<\/DropdownMenuItem>/);
   });
 
-  it("Set Follow-up opens SetFollowUpDialog", () => {
-    expect(receivablesActionsRail).toMatch(/SetFollowUpDialog/);
-    expect(receivablesActionsRail).toMatch(/followUpOpen/);
-    expect(receivablesActionsRail).toMatch(/setFollowUpOpen/);
-  });
-
-  it("Record Promise to Pay opens PromiseToPayDialog", () => {
-    expect(receivablesActionsRail).toMatch(/PromiseToPayDialog/);
-    expect(receivablesActionsRail).toMatch(/promiseOpen/);
-  });
-
   it("Mark Disputed opens MarkDisputedDialog", () => {
     expect(receivablesActionsRail).toMatch(/MarkDisputedDialog/);
     expect(receivablesActionsRail).toMatch(/disputeOpen/);
@@ -475,18 +450,6 @@ describe("InvoiceListPanel", () => {
   });
 });
 
-// ── InsightsTab ──────────────────────────────────────────────────────
-
-describe("InsightsTab", () => {
-  it("shows coming-soon state; no mock financial data (Phase 2B stabilization)", () => {
-    // Mock metrics removed — Insights tab now shows a coming-soon placeholder.
-    expect(insightsTab).toMatch(/data-testid="insights-tab-coming-soon"/);
-    expect(insightsTab).toMatch(/Coming soon/);
-    expect(insightsTab).not.toMatch(/MOCK_METRICS/);
-    expect(insightsTab).not.toMatch(/text-title font-semibold/);
-  });
-});
-
 // ── Embedded mode — InvoicesListPage ────────────────────────────────
 
 describe("InvoicesListPage embedded mode", () => {
@@ -529,14 +492,6 @@ describe("PaymentsDashboardPage embedded mode", () => {
   });
 });
 
-// ── PaymentsTab passes embedded prop ────────────────────────────────
-
-describe("PaymentsTab", () => {
-  it("renders PaymentsDashboardPage with embedded prop", () => {
-    expect(paymentsTab).toMatch(/<PaymentsDashboardPage embedded/);
-  });
-});
-
 // ── /invoices redirect ───────────────────────────────────────────────
 
 describe("App.tsx routing", () => {
@@ -563,8 +518,8 @@ describe("App.tsx routing", () => {
 // ── Sidebar ──────────────────────────────────────────────────────────
 
 describe("AppSidebar", () => {
-  it('sidebar item label is "Receivables"', () => {
-    expect(sidebar).toMatch(/title: "Receivables"/);
+  it('sidebar item label is "Invoices"', () => {
+    expect(sidebar).toMatch(/title: "Invoices"/);
   });
 
   it("sidebar item href is /receivables", () => {

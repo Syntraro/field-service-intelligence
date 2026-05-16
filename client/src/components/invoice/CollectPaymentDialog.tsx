@@ -64,6 +64,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/formatters";
 import { EmbeddedStripeCardForm } from "@/components/invoice/EmbeddedStripeCardForm";
 import { PickerShell } from "@/components/ui/picker-shell";
+import { receivablesKeys } from "@/lib/receivablesQueryKeys";
 
 type PaymentMethod = "cash" | "credit" | "debit" | "e-transfer" | "cheque" | "other";
 
@@ -254,15 +255,16 @@ export function CollectPaymentDialog({
   useEffect(() => {
     if (!cardSucceeded) return;
     const timers: number[] = [];
+    // Poll at 1500/3500/7500ms after Stripe confirms so the UI refreshes as soon
+    // as the webhook lands the canonical payment row. Same cadence as StaffTakeCardDialog.
+    // Narrow invalidation mirrors the manual-save path — root-prefix nukes avoided.
     [1500, 3500, 7500].forEach((delay) => {
       timers.push(
         window.setTimeout(() => {
           queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
           queryClient.invalidateQueries({ queryKey: paymentsQueryKey });
-          queryClient.invalidateQueries({ queryKey: ["invoices"] });
-          queryClient.invalidateQueries({ queryKey: ["payments"] });
-          queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-          queryClient.invalidateQueries({ queryKey: ["/api/payments/transactions"] });
+          queryClient.invalidateQueries({ queryKey: ["collect-payment-context", invoiceId] });
+          queryClient.invalidateQueries({ queryKey: receivablesKeys.notes(invoiceId) });
         }, delay),
       );
     });
@@ -370,13 +372,16 @@ export function CollectPaymentDialog({
       });
     },
     onSuccess: (data, emailReceipt) => {
+      // Narrow invalidation: only keys directly affected by this payment.
+      // invoiceQueryKey = the specific receivables view slice (caller-provided).
+      // paymentsQueryKey = view counts or caller-specific payments context.
+      // Root-prefix keys (["invoices"], ["payments"], ["dashboard"]) are intentionally
+      // avoided — they cascade to every matching query in the app, including
+      // unrelated pages (Dashboard, PaymentsDashboard).
       queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
       queryClient.invalidateQueries({ queryKey: paymentsQueryKey });
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["payments"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/payments/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["customer-companies"] });
+      queryClient.invalidateQueries({ queryKey: ["collect-payment-context", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: receivablesKeys.notes(invoiceId) });
 
       const summary = `$${totalAmount} across ${selectedDrafts.length} invoice${selectedDrafts.length === 1 ? "" : "s"}`;
 
@@ -494,7 +499,7 @@ export function CollectPaymentDialog({
           >
             <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
               <p className="text-label text-muted-foreground mb-0.5">Total payment</p>
-              <p className="text-xl font-semibold text-slate-900 tabular-nums leading-tight">
+              <p className="text-header font-semibold text-slate-900 tabular-nums">
                 {formatCurrency(totalAmount)}
               </p>
               {selectedDrafts.length > 0 && (
@@ -505,7 +510,7 @@ export function CollectPaymentDialog({
             </div>
             <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
               <p className="text-label text-muted-foreground mb-0.5">Account balance</p>
-              <p className="text-xl font-semibold text-slate-900 tabular-nums leading-tight">
+              <p className="text-header font-semibold text-slate-900 tabular-nums">
                 {context ? formatCurrency(context.accountBalance) : "—"}
               </p>
             </div>
@@ -520,6 +525,7 @@ export function CollectPaymentDialog({
               <InlineSelectTrigger
                 id="payment-method"
                 label="Payment method"
+                className="text-row"
                 data-testid="collect-payment-method"
               >
                 <SelectValue placeholder="Select method" />
@@ -539,6 +545,7 @@ export function CollectPaymentDialog({
                 id="payment-date"
                 label="Transaction date"
                 type="date"
+                className="text-row"
                 value={transactionDate}
                 onChange={(e) => setTransactionDate(e.target.value)}
                 data-testid="collect-payment-date"
@@ -552,6 +559,7 @@ export function CollectPaymentDialog({
               id="payment-reference"
               label={REFERENCE_LABEL_BY_METHOD[method]}
               value={reference}
+              className="text-row"
               onChange={(e) => setReference(e.target.value)}
               placeholder={REFERENCE_PLACEHOLDER_BY_METHOD[method]}
               data-testid="collect-payment-reference"
@@ -564,6 +572,7 @@ export function CollectPaymentDialog({
               id="payment-notes"
               label="Details"
               value={notes}
+              className="text-row"
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
               placeholder="Optional notes"
@@ -574,11 +583,11 @@ export function CollectPaymentDialog({
           {/* Outstanding invoices list. */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <h3 className="text-caption font-semibold text-slate-900">
+              <h3 className="text-row font-semibold text-slate-900">
                 Outstanding invoices
               </h3>
               {context && (
-                <span className="text-caption text-muted-foreground">
+                <span className="text-helper text-muted-foreground">
                   {context.invoices.length} outstanding
                 </span>
               )}
@@ -591,11 +600,11 @@ export function CollectPaymentDialog({
               </div>
             ) : contextError ? (
               <Alert variant="error" className="px-3 py-2">
-                <AlertDescription className="text-xs">Failed to load outstanding invoices.</AlertDescription>
+                <AlertDescription className="text-helper">Failed to load outstanding invoices.</AlertDescription>
               </Alert>
             ) : !context || context.invoices.length === 0 ? (
               <Alert variant="neutral" className="px-3 py-2">
-                <AlertDescription className="text-xs">No outstanding invoices for this account.</AlertDescription>
+                <AlertDescription className="text-helper">No outstanding invoices for this account.</AlertDescription>
               </Alert>
             ) : (
               <PickerShell
@@ -627,7 +636,7 @@ export function CollectPaymentDialog({
                             href={`/invoices/${inv.id}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-caption font-semibold text-slate-900 hover:text-primary"
+                            className="text-row font-semibold text-slate-900 hover:text-primary"
                           >
                             #{inv.invoiceNumber ?? inv.id.slice(0, 8)}
                           </a>
@@ -637,12 +646,12 @@ export function CollectPaymentDialog({
                             </Badge>
                           )}
                           {inv.dueDate && (
-                            <span className="text-caption text-muted-foreground">
+                            <span className="text-helper text-muted-foreground">
                               Due {format(new Date(inv.dueDate), "MMM d, yyyy")}
                             </span>
                           )}
                         </div>
-                        <div className="text-caption text-muted-foreground tabular-nums">
+                        <div className="text-helper text-muted-foreground tabular-nums">
                           Total {formatCurrency(inv.total)} · Balance{" "}
                           <span className="font-medium text-slate-800">
                             {formatCurrency(inv.balance)}
@@ -657,7 +666,7 @@ export function CollectPaymentDialog({
                           onChange={(e) => setDraft(inv.id, { amount: e.target.value })}
                           disabled={!draft.selected || isCardMode && !!cardIntent}
                           placeholder="0.00"
-                          className="text-right tabular-nums h-8 text-caption"
+                          className="text-right tabular-nums h-8 text-row"
                           aria-label={`Payment amount for invoice ${inv.invoiceNumber ?? ""}`}
                           data-testid={`collect-payment-amount-${inv.id}`}
                         />
@@ -670,7 +679,7 @@ export function CollectPaymentDialog({
 
             {validationError && (
               <p
-                className="mt-1.5 text-xs text-rose-600"
+                className="mt-1.5 text-helper text-rose-600"
                 data-testid="collect-payment-validation"
               >
                 {validationError}
@@ -684,7 +693,7 @@ export function CollectPaymentDialog({
               className="rounded-md border border-slate-200 bg-white px-3 py-3 space-y-2"
               data-testid="collect-payment-card-panel"
             >
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-900">
+              <div className="flex items-center gap-2 text-helper font-semibold text-slate-900">
                 <CreditCard className="h-3.5 w-3.5 text-emerald-600" />
                 Charge total {formatCurrency(totalAmount)} to a card
               </div>
@@ -694,7 +703,7 @@ export function CollectPaymentDialog({
                   className="px-3 py-2"
                   data-testid="collect-payment-card-success"
                 >
-                  <AlertDescription className="flex items-start gap-2 text-xs">
+                  <AlertDescription className="flex items-start gap-2 text-helper">
                     <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
                       <p className="font-semibold">Card charged</p>
@@ -712,7 +721,7 @@ export function CollectPaymentDialog({
                       <AlertDescription className="flex items-start gap-2">
                         <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                         <p
-                          className="text-xs"
+                          className="text-helper"
                           data-testid="collect-payment-card-error"
                         >
                           {cardIntentError}
@@ -725,7 +734,7 @@ export function CollectPaymentDialog({
                       Preparing secure payment…
                     </div>
                   ) : (
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-helper text-muted-foreground">
                       Click <span className="font-medium">Continue</span> below to enter card details.
                     </p>
                   )}
@@ -743,7 +752,7 @@ export function CollectPaymentDialog({
                 </Elements>
               ) : (
                 <p
-                  className="text-xs text-rose-600"
+                  className="text-helper text-rose-600"
                   data-testid="collect-payment-card-config-error"
                 >
                   Stripe is not fully configured. Ask an admin to set STRIPE_PUBLISHABLE_KEY.
@@ -827,7 +836,7 @@ export function CollectPaymentDialog({
         {/* Footer-row inline note when email is unavailable in manual mode. */}
         {!isCardMode && !hasBillingEmail && context && (
           <p
-            className="px-5 py-1 text-[11px] text-amber-700 bg-amber-50 border-t border-amber-100"
+            className="px-5 py-1 text-helper text-amber-700 bg-amber-50 border-t border-amber-100"
             data-testid="collect-payment-no-billing-email"
           >
             No billing email on file — receipts cannot be emailed for this customer.

@@ -750,7 +750,7 @@ export default function CreateQuotePage() {
       >
         {/* ═════════ LEFT COLUMN: header + body ═════════ */}
         <div
-          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-y-auto"
           data-testid="create-quote-left-column-shell"
         >
           <div className="px-4 lg:px-6 pt-4 pb-4 space-y-4">

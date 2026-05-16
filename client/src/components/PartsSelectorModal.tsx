@@ -435,7 +435,7 @@ function PartsSelectorRow({
             step="any"
             value={row.quantity}
             onChange={(e) => onQtyChange(e.target.value)}
-            className="w-16 h-9 text-center text-sm"
+            className="w-16 text-center text-sm"
             data-testid={`input-qty-${index}`}
           />
         </div>
@@ -443,7 +443,7 @@ function PartsSelectorRow({
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 text-muted-foreground hover:text-destructive shrink-0 mt-1"
+          className="text-muted-foreground hover:text-destructive shrink-0 mt-1"
           onClick={onRemove}
           data-testid={`button-remove-row-${index}`}
         >

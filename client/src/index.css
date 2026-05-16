@@ -38,7 +38,8 @@
    * ────────────────────────────────────────────────────────────────── */
 
   /* Surface */
-  --app-bg: 210 20% 96%;        /* #F3F5F7 — global page background */
+  --app-bg: 45 20% 96%;         /* #F7F6F3 — global page background (warm neutral) */
+  --inset-surface: 42 21% 94%;  /* #F2F0EB — inset/grouped surface (filter bars, metadata blocks, embedded sections) */
   --surface: 0 0% 100%;         /* #FFFFFF — cards, popovers, modals */
   --surface-subtle: 210 31% 95%;/* #EEF2F6 — zebra rows, list hover, subtle surface */
 
@@ -88,7 +89,7 @@
      `tailwind.config.ts` (`0 8px 18px rgba(15, 23, 42, 0.04)`) so the
      same elevation is reachable outside Tailwind utilities (inline
      styles, raw CSS, future tokens). Soft 8px y-offset / 18px blur /
-     4% opacity — lifts cards from the #F3F5F7 page bg without a heavy
+     4% opacity — lifts cards from the #F7F6F3 page bg without a heavy
      drop shadow. Update both this var and `boxShadow.card` together. */
   --card-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
 
@@ -244,6 +245,137 @@
   
   --status-unscheduled-border: hsl(var(--status-unscheduled));
   --status-unscheduled-border: hsl(from hsl(var(--status-unscheduled)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Chrome-only light appearance.
+ *
+ * Applied via data-chrome-theme="light" on <html> by applyTheme() in
+ * useTheme.ts. Only overrides chrome/layout tokens — header, sidebar,
+ * and the shell background. Content surface tokens (card, popover,
+ * foreground, muted, border, ring, status, chart) are intentionally
+ * NOT overridden here; they remain at their :root (light) values in
+ * both appearances.
+ *
+ * Dark appearance is the default state: no attribute, :root values
+ * active, header/sidebar stay at #222B36. This block only needs to
+ * exist for the light variant.
+ * ──────────────────────────────────────────────────────────────────── */
+[data-chrome-theme="light"] {
+  /* Header */
+  --header-bg: 0 0% 100%;
+  --header-foreground: 222 47% 11%;
+
+  /* Sidebar */
+  --sidebar-bg: 0 0% 100%;
+  --sidebar: 0 0% 100%;
+  --sidebar-foreground: 222 47% 11%;
+  --sidebar-border: 220 13% 91%;
+  --sidebar-accent: 45 20% 96%;
+  --sidebar-accent-foreground: 222 47% 11%;
+
+  /* App shell background — slightly off-white so cards (white) lift off it */
+  --app-bg: 45 20% 98%;
+  --background: 0 0% 100%;
+}
+
+/* ── Light chrome: component overrides ──────────────────────────────────
+ * Descendant selectors keyed on data-testid / data-slot attributes that
+ * are already present on all targets. These override hardcoded dark-tonal
+ * Tailwind utilities (e.g. bg-slate-800/60, text-white/70, border-white/10)
+ * without requiring component-level theme awareness.
+ *
+ * Specificity: [attr][attr] = (0,2,0) beats any single Tailwind utility
+ * class (0,1,0), and [attr][attr]:hover = (0,2,1) beats hover:utility
+ * (0,1,1). No !important needed.
+ *
+ * All rules are scoped to [data-chrome-theme="light"] and are inert in
+ * the default dark appearance. The .dark {} block is untouched.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/* Header bottom border — border-white/[0.06] is invisible on white */
+[data-chrome-theme="light"] header {
+  border-bottom-color: hsl(var(--border-default));
+}
+
+/* Header company text — replaces hardcoded text-slate-400 / text-white */
+[data-chrome-theme="light"] [data-testid="header-logo"] div span:first-child {
+  color: hsl(var(--text-muted));
+}
+[data-chrome-theme="light"] [data-testid="header-logo"] div span:last-child {
+  color: hsl(var(--text-primary));
+}
+
+/* Search input — border-white/20 vanishes on white background */
+[data-chrome-theme="light"] [data-testid="universal-search-input"] {
+  border-color: hsl(var(--border-strong));
+}
+
+/* Header icon buttons — override dark-tonal bg-slate-800/60 / border-slate-700 / text-slate-100.
+   Active (aria-expanded=true) state stays brand-green from component; excluded here. */
+[data-chrome-theme="light"] [data-testid="button-activity-header"]:not([aria-expanded="true"]),
+[data-chrome-theme="light"] [data-testid="button-messages-header"]:not([aria-expanded="true"]),
+[data-chrome-theme="light"] [data-testid="button-tasks-header"],
+[data-chrome-theme="light"] [data-testid="button-help-header"] {
+  background-color: hsl(var(--surface-subtle));
+  border-color: hsl(var(--border-default));
+  color: hsl(var(--text-secondary));
+}
+[data-chrome-theme="light"] [data-testid="button-activity-header"]:not([aria-expanded="true"]):hover,
+[data-chrome-theme="light"] [data-testid="button-messages-header"]:not([aria-expanded="true"]):hover,
+[data-chrome-theme="light"] [data-testid="button-tasks-header"]:hover,
+[data-chrome-theme="light"] [data-testid="button-help-header"]:hover {
+  background-color: hsl(var(--border-default));
+  color: hsl(var(--text-primary));
+}
+
+/* More menu trigger — override text-slate-400 / hover:bg-white/10 */
+[data-chrome-theme="light"] [data-testid="button-more-menu"] {
+  color: hsl(var(--text-secondary));
+}
+[data-chrome-theme="light"] [data-testid="button-more-menu"]:hover {
+  background-color: hsl(var(--surface-subtle));
+  color: hsl(var(--text-primary));
+}
+
+/* Sidebar right border — inset box-shadow avoids conflict with inline borderRight:'none' */
+[data-chrome-theme="light"] [data-slot="sidebar"] {
+  box-shadow: inset -1px 0 0 0 hsl(var(--sidebar-border));
+}
+
+/* Sidebar collapse toggle — override text-white/50 */
+[data-chrome-theme="light"] [data-slot="sidebar-trigger"] {
+  color: hsl(var(--text-muted));
+}
+[data-chrome-theme="light"] [data-slot="sidebar-trigger"]:hover {
+  color: hsl(var(--text-primary));
+  background-color: hsl(var(--surface-subtle));
+}
+
+/* Sidebar nav items — override text-white/70 / hover:bg-white/[0.08] / data-[active=true]:bg-white/[0.16] */
+[data-chrome-theme="light"] [data-slot="sidebar-menu-button"] {
+  color: hsl(var(--text-secondary));
+}
+[data-chrome-theme="light"] [data-slot="sidebar-menu-button"]:hover {
+  color: hsl(var(--text-primary));
+  background-color: hsl(var(--surface-subtle));
+}
+[data-chrome-theme="light"] [data-slot="sidebar-menu-button"][data-active="true"] {
+  color: hsl(var(--text-primary));
+  background-color: hsl(var(--brand) / 0.08);
+}
+
+/* Sidebar nav icons — override text-white/50 (inactive) and text-[#C2E974] (active) */
+[data-chrome-theme="light"] [data-slot="sidebar-menu-button"] svg {
+  color: hsl(var(--text-muted));
+}
+[data-chrome-theme="light"] [data-slot="sidebar-menu-button"][data-active="true"] svg {
+  color: hsl(var(--brand));
+}
+
+/* Sidebar dividers (border-white/10 inside sidebar-content) */
+[data-chrome-theme="light"] [data-slot="sidebar-content"] div.border-t {
+  border-color: hsl(var(--border-default));
 }
 
 .dark {
@@ -502,6 +634,16 @@
  * need to be distinguished from eachother visually.
  */
 @layer utilities {
+
+  /* Cross-browser scrollbar hiding — used by AppTopNav and other
+     horizontally-scrollable surfaces that don't want a visible scrollbar. */
+  .scrollbar-none {
+    scrollbar-width: none;       /* Firefox */
+    -ms-overflow-style: none;    /* IE/Edge legacy */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;               /* Chrome, Safari, Opera */
+  }
 
   /* Hide ugly search cancel button in Chrome until we can style it properly */
   input[type="search"]::-webkit-search-cancel-button {

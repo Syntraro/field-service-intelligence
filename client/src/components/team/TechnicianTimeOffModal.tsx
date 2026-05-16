@@ -269,7 +269,7 @@ export function TechnicianTimeOffModal({
             id="time-off-tech"
             value={techId}
             onChange={(e) => setTechId(e.target.value)}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-row shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 text-row shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="time-off-technician-select"
           >
             <option value="">Select a technician</option>
@@ -290,7 +290,7 @@ export function TechnicianTimeOffModal({
             onChange={(e) =>
               setReason(e.target.value as TechnicianTimeOffReason)
             }
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-row shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 text-row shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="time-off-reason-select"
           >
             {TECHNICIAN_TIME_OFF_REASONS.map((r) => (

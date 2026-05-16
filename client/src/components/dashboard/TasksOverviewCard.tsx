@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { TaskDialog } from "@/components/TaskDialog";
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
 import type { TaskRow } from "@/components/tasks/TasksPanel";
 
 // Shared with TasksPanel so both surfaces stay in sync.
@@ -301,11 +301,10 @@ export function TasksOverviewCard() {
         taskId={selectedTaskId}
         onChanged={invalidateAllTaskQueries}
       />
-      <CreateNewDialog
+      <CreateTaskModal
         open={createNewOpen}
         onOpenChange={setCreateNewOpen}
-        defaultTab="task"
-        onTaskChanged={invalidateAllTaskQueries}
+        onChanged={invalidateAllTaskQueries}
       />
     </CardShell>
   );

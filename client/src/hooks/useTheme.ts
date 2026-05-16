@@ -8,12 +8,17 @@ export type AppearanceTheme = "dark" | "light";
  * Apply a theme to the document root and write the localStorage hint used by
  * the zero-flicker inline script in index.html. DOM-only — does not persist
  * to the DB. Call setTheme() from useTheme() for durable persistence.
+ *
+ * Chrome-only theming: sets data-chrome-theme="light" for light appearance;
+ * removes it for dark (the default `:root` values already define dark chrome).
+ * Does NOT add/remove `.dark` — the app uses chrome-only theming, not full
+ * Tailwind dark mode.
  */
 export function applyTheme(theme: AppearanceTheme): void {
   if (theme === "light") {
-    document.documentElement.classList.add("light");
+    document.documentElement.setAttribute("data-chrome-theme", "light");
   } else {
-    document.documentElement.classList.remove("light");
+    document.documentElement.removeAttribute("data-chrome-theme");
   }
   localStorage.setItem("appearance", theme);
 }

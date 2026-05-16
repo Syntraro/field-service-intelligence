@@ -28,9 +28,7 @@ import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { getJobStatusMeta } from "@/lib/statusBadges";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-// 2026-04-26: Routed through the canonical CreateNewDialog (Job / Task /
-// Supplier Visit tabs). Same defaults — opens on the Job tab.
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+import { CreateJobModal } from "@/components/CreateJobModal";
 // 2026-05-02 entity-number visual language: blue pill for current entity row.
 import { EntityNumber } from "@/components/common/EntityNumber";
 // 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
@@ -93,7 +91,7 @@ function formatCurrency(amount: number): string {
 
 function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
   return (
-    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-card rounded-md border border-card-border shadow-sm px-5 py-4">
       <div className="text-row font-medium text-slate-500 mb-1">{label}</div>
       <div className="text-title font-bold text-slate-900 tabular-nums">{value}</div>
       <div className="text-row text-slate-500 mt-1">{note}</div>
@@ -538,7 +536,6 @@ export default function Jobs() {
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-title font-semibold text-slate-900">Jobs</h1>
-            <p className="text-row text-slate-500 mt-0.5">Job activity and performance overview with full job list.</p>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -584,7 +581,7 @@ export default function Jobs() {
               placeholder={isHistoryMode ? "Search all job history..." : "Search jobs, clients, addresses"}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
+              className="pl-9 rounded-md border-slate-200 bg-white"
               data-testid="input-search-jobs"
             />
           </div>
@@ -716,7 +713,7 @@ export default function Jobs() {
         )}
       </div>
 
-      <CreateNewDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} defaultTab="job" />
+      <CreateJobModal open={showCreateDialog} onOpenChange={setShowCreateDialog} />
     </div>
   );
 }

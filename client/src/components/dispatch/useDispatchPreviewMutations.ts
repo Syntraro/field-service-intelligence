@@ -647,11 +647,9 @@ export function useDispatchPreviewMutations() {
       }
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
-      // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard, attention
+      // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      // 2026-03-28: Attention counts (past due, on hold, unassigned) must refresh after scheduling changes
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
       // 2026-03-28: Dashboard action modal data must refresh so modal/card counts stay in sync
       queryClient.invalidateQueries({ queryKey: ["dashboard-action"] });
       // 2026-03-20: Invalidate Job Detail visits section so it reflects completed/resolved visits
@@ -686,8 +684,6 @@ export function useDispatchPreviewMutations() {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      // 2026-03-28: Attention + dashboard-action must refresh after completion lifecycle events
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-action"] });
       queryClient.invalidateQueries({ queryKey: ["visits"] });
       // 2026-03-23: Invalidate visit-detail so modal reflects completion state

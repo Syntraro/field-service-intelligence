@@ -42,7 +42,9 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
-import * as archiver from "archiver";
+import type { Archiver as IArchiver } from "archiver";
+// @ts-expect-error archiver v7+ ships ESM with named class exports; @types/archiver still describes the pre-v7 factory API.
+import { ZipArchive } from "archiver";
 // 2026-05-03: tenant tax-registration identity (multi-row).
 // Loaded alongside the company row and passed to the PDF service so
 // every active registration renders as its own line under the
@@ -555,10 +557,13 @@ router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json({
     outstanding: { amount: stats.totalOutstanding, count: stats.outstandingCount },
     overdue: { amount: stats.totalOverdue, count: stats.overdueCount },
-    issuedLast30Days: { count: totalIssued }, // simplified — full 30d filter would need date range
+    issuedLast30Days: { count: totalIssued },
     averageInvoice: Math.round(averageInvoice * 100) / 100,
     draftCount: stats.draftCount,
     byStatus: stats.byStatus,
+    collectedLast30Days: stats.collectedLast30Days,
+    invoicesIssuedLast30Days: stats.invoicesIssuedLast30Days,
+    averagePaymentTimeDays: stats.averagePaymentTimeDays,
   });
 }));
 
@@ -694,7 +699,7 @@ router.post(
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="Invoices-${dateStr}.zip"`);
 
-    const archive = archiver("zip", { zlib: { level: 6 } });
+    const archive = new ZipArchive({ zlib: { level: 6 } }) as unknown as IArchiver;
     archive.pipe(res);
 
     for (const invoiceId of invoiceIds) {

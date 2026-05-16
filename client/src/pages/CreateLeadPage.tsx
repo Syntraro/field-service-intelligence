@@ -223,14 +223,11 @@ export default function CreateLeadPage() {
     >
       {/* ═════════ LEFT COLUMN: header + body ═════════ */}
       <div
-        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+        className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-y-auto"
         data-testid="create-lead-left-column-shell"
       >
-        {/* 2026-05-08 (single-scroll canonicalization): body wrapper has
-            no inner `flex-1 min-h-0 overflow-y-auto` — App.tsx's
-            `<main className="flex-1 overflow-auto">` is the SOLE
-            canonical scroll surface. Mirrors the saved Lead detail page
-            after the scroll-canonicalization fix. */}
+        {/* Sole scroll surface for the left column. Right rail is a
+            pinned shrink-0 sibling with its own internal scroll. */}
         <div className="px-4 lg:px-6 pt-4 pb-4 space-y-3">
           <CanonicalCreateHeader
             testId="create-lead-header"

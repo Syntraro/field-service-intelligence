@@ -56,13 +56,11 @@ import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatc
 import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 // 2026-05-01: QuickAddJobDialog import removed — the Job Detail page no
 // longer mounts the modal (see comment near the bottom of the JSX). The
-// component itself is still imported by CreateNewDialog / PMWorkspacePage
-// / RecurringJobsPage; do not delete it.
-// 2026-05-02: CreateNewDialog mounted locally for "Create Similar Job"
-// (replaces the broken `/jobs/new?cloneFrom=…` navigation). The dialog
-// is the canonical create surface; we just open it pre-seeded with the
-// source job's id so QuickAddJobDialog can fetch + prefill.
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+// component itself is still imported by PMWorkspacePage / RecurringJobsPage;
+// do not delete it.
+// 2026-05-02: "Create Similar Job" — CreateJobModal opened pre-seeded with
+// the source job id so QuickAddJobDialog can fetch + prefill.
+import { CreateJobModal } from "@/components/CreateJobModal";
 import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
 // 2026-05-01: InvoiceCompositionDialog mount removed from this page.
 // The "Close & Invoice" CTA now fires `createInvoiceFromJobMutation`
@@ -407,6 +405,7 @@ interface JobPartDisplayLine {
 function LineItemsTable({
   jobId,
   onTotalsChange,
+  surface,
 }: {
   jobId: string;
   onTotalsChange: (totals: {
@@ -415,6 +414,7 @@ function LineItemsTable({
     profit: number;
     margin: number;
   }) => void;
+  surface?: "contained" | "open" | "workspace" | "inset";
 }) {
   const { toast } = useToast();
 
@@ -717,7 +717,8 @@ function LineItemsTable({
         drafts={drafts}
         serverItems={displayItems}
         title="Line Items"
-        surface="open"
+        surface={surface ?? "open"}
+        hideMetrics
       />
       <AddProductModal
         open={createOpen}
@@ -1009,8 +1010,14 @@ export default function JobDetailPage() {
   // tab is `notes` — Notes is the most-frequent surface a dispatcher
   // hits on a Job page, and starting with Notes mirrors the reading
   // order ClientDetailPage uses.
-  type JobRailTab = "summary" | "notes" | "labour";
+  type JobRailTab = "summary" | "notes-labour";
   const [jobRailTab, setJobRailTab] = useState<JobRailTab | null>("summary");
+  // Reset stale tab id — guards against HMR preserving a value from old code.
+  useEffect(() => {
+    if (jobRailTab !== null && jobRailTab !== "summary" && jobRailTab !== "notes-labour") {
+      setJobRailTab("summary");
+    }
+  }, [jobRailTab]);
 
   // 2026-05-07 controlled add-note trigger: incrementing this counter
   // signals `<EntityNotesSection>` (which already supports the
@@ -1791,95 +1798,102 @@ export default function JobDetailPage() {
       ),
     },
     {
-      id: "notes",
-      label: "Notes",
+      id: "notes-labour",
+      label: "Notes & Labour",
       icon: StickyNote,
-      testId: "job-rail-tab-notes",
-      count: notesCount ?? undefined,
-      // Terse "+ Add" label per spec — the rail panel title to the
-      // left already says "Notes". Bumping `notesAddSignal` opens
-      // the canonical create dialog via the panel's
-      // `openAddNoteSignal` controlled prop.
-      action: (
-        <button
-          type="button"
-          onClick={() => setNotesAddSignal((n) => n + 1)}
-          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
-          data-testid="button-add-note-rail"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add
-        </button>
-      ),
+      testId: "job-rail-tab-notes-labour",
+      count: ((notesCount ?? 0) + jobTimeEntries.length) || undefined,
       content: (
-        <div data-testid="card-notes">
-          {/* 2026-05-08: Tier 4 Notes canonicalization — replaces the
-              prior `<EntityNotesSection cardStyle={true}>` mount with
-              the canonical `<EntityNotesPanel>`. Panel title, count
-              badge, and +Add affordance live on this `DetailRailTab`
-              (label / count / action above) per the rail-shell
-              architecture. EntityNotesPanel owns only the per-row
-              cards + create dialog wiring. */}
-          <EntityNotesPanel
-            entityType="job"
-            entityId={job.id}
-            openAddNoteSignal={notesAddSignal}
-            onCountChange={setNotesCount}
-          />
-        </div>
-      ),
-    },
-    {
-      id: "labour",
-      label: "Labour",
-      icon: Clock,
-      testId: "job-rail-tab-labour",
-      count: jobTimeEntries.length || undefined,
-      action: (
-        <button
-          type="button"
-          onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
-          disabled={!canAddTimeEntry}
-          title={canAddTimeEntry ? undefined : addTimeDisabledHint}
-          className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand disabled:text-text-disabled disabled:hover:bg-transparent disabled:cursor-not-allowed`}
-          data-testid="button-add-labour"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Time
-        </button>
-      ),
-      content: (
-        <div data-testid="card-labour-summary">
-          {/* 2026-05-07 Phase 7 — Labour migrated to the data-driven
-              renderer. Empty case (`jobTimeEntries.length === 0`)
-              keeps the page-level `<EmptyState>` (larger
-              text-subheader title + hint chrome) verbatim. Populated
-              case mounts `<RailPanelRenderer>` with a
-              `kind: "grouped"` descriptor — the renderer owns the
-              panel-header totals, per-tech group spacing, the
-              `text-header` heading, the per-(tech, date)
-              card sectionHeader + subrow chrome, the inter-entry
-              divider, and every typography token. */}
-          {jobTimeEntries.length === 0 ? (
-            <EmptyState
-              title="No time logged yet."
-              hint="Track time against this job to roll travel and on-site hours into the labour total."
-            />
-          ) : (
-            <RailPanelRenderer
-              panel={buildJobLabourPanelDescriptor(
-                labourTechGroups,
-                labourBuckets,
-                (entry) =>
-                  setTimeEntryModal({
-                    open: true,
-                    mode: "edit",
-                    entry,
-                  }),
+        <div data-testid="card-notes-labour" className="space-y-3">
+
+          {/* ── Notes card ── */}
+          <div
+            className="rounded-md border border-slate-200 bg-white shadow-sm"
+            data-testid="card-notes"
+          >
+            <div className="flex items-center justify-between px-3 py-2.5">
+              <h4 className="text-emphasis text-text-primary">Notes</h4>
+              <button
+                type="button"
+                onClick={() => setNotesAddSignal((n) => n + 1)}
+                className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand`}
+                data-testid="button-add-note-rail"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {/* EntityNotesPanel must stay visible (not display:none) so its
+                offsetParent check passes and openAddNoteSignal is honoured.
+                The panel renders its own "No notes yet." text; we append the
+                "Add note" Button below it when the list is empty. */}
+            <div className="px-3 pb-3">
+              <EntityNotesPanel
+                entityType="job"
+                entityId={job.id}
+                openAddNoteSignal={notesAddSignal}
+                onCountChange={setNotesCount}
+              />
+              {notesCount !== null && notesCount === 0 && (
+                <div className="flex justify-center pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setNotesAddSignal((n) => n + 1)}
+                    data-testid="button-add-note-empty"
+                  >
+                    Add note
+                  </Button>
+                </div>
               )}
-              testIdPrefix="job-side"
-            />
-          )}
+            </div>
+          </div>
+
+          {/* ── Labour card ── */}
+          <div
+            className="rounded-md border border-slate-200 bg-white shadow-sm"
+            data-testid="card-labour"
+          >
+            <div className="flex items-center justify-between px-3 py-2.5">
+              <h4 className="text-emphasis text-text-primary">Labour</h4>
+              <button
+                type="button"
+                onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
+                disabled={!canAddTimeEntry}
+                title={canAddTimeEntry ? undefined : addTimeDisabledHint}
+                className={`${RAIL_HEADER_ACTION_CLASS} text-helper text-brand disabled:text-text-disabled disabled:hover:bg-transparent disabled:cursor-not-allowed`}
+                data-testid="button-add-labour"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {jobTimeEntries.length === 0 ? (
+              <div className="px-3 pt-1 pb-4 flex flex-col items-center gap-3 text-center">
+                <p className="text-row text-text-secondary">No labour added yet.</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
+                  disabled={!canAddTimeEntry}
+                  title={canAddTimeEntry ? undefined : addTimeDisabledHint}
+                  data-testid="button-add-time-empty"
+                >
+                  Add time entry
+                </Button>
+              </div>
+            ) : (
+              <div className="px-3 pb-3">
+                <RailPanelRenderer
+                  panel={buildJobLabourPanelDescriptor(
+                    labourTechGroups,
+                    labourBuckets,
+                    (entry) => setTimeEntryModal({ open: true, mode: "edit", entry }),
+                  )}
+                  testIdPrefix="job-side"
+                />
+              </div>
+            )}
+          </div>
+
         </div>
       ),
     },
@@ -1930,7 +1944,7 @@ export default function JobDetailPage() {
 
         {/* ═════════ LEFT COLUMN: page header + body ═════════ */}
         <div
-          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden"
+          className="flex-1 min-w-0 flex flex-col min-h-0 overflow-y-auto"
           data-testid="job-detail-left-column-shell"
         >
         {/* ──────────── BODY ────────────
@@ -1939,10 +1953,12 @@ export default function JobDetailPage() {
             preserved so the unified detail card sits below the app
             top bar with breathing room. */}
         <div className="px-4 lg:px-6 pt-4 pb-4">
-          <div className="flex flex-col gap-5" data-testid="job-detail-grid">
-
-            {/* ═════════ LEFT COLUMN ═════════ */}
-            <div className="flex flex-col gap-4 min-w-0" data-testid="job-detail-left-column">
+          {/* Left column: one unified job detail shell */}
+          <div
+            className="flex flex-col"
+            data-testid="job-detail-left-column"
+          >
+            <CardShell surface="open" data-testid="job-detail-unified-shell">
 
               {/* UNIFIED JOB DETAIL HEADER CARD — primary identity card.
                   2026-05-07: absorbed the standalone top header strip.
@@ -1960,10 +1976,11 @@ export default function JobDetailPage() {
                   typography, icon placement, and layout. */}
               <CanonicalDetailHeader
                   testId="job-detail-header"
-                  surface="open"
+                  surface="workspace"
                   isEditing={editingHeader}
-                  title={job.summary || clientName || "Job"}
-                  titleEdit={
+                  title={clientName || "Job"}
+                  subtitle={job.summary || undefined}
+                  subtitleEdit={
                     editingHeader
                       ? {
                           value: headerDraft.summary,
@@ -1985,6 +2002,7 @@ export default function JobDetailPage() {
                         }
                       : undefined
                   }
+                  innerCard
                   status={{
                     label: getJobStatusDisplay(job).label,
                     tone: statusToChipTone(job.openSubStatus === "on_hold" ? "on_hold" : job.status),
@@ -2235,103 +2253,96 @@ export default function JobDetailPage() {
                   }
               />
 
-              {/* LINE ITEMS — canonical LineItemsCard mount. 2026-04-29
-                  (Phase 3): replaces the prior inline LineItemsTable grid
-                  with the shared shell used by Invoice + Quote. The card
-                  owns its own chrome / header / column header / row bodies /
-                  empty state / Save+Cancel lifecycle. The Expenses sub-section
-                  + the Parts/Labour/Expenses → Subtotal/Tax → Total finance
-                  panel render through the `renderTotalsFooter` slot so they
-                  stay grouped inside the same card outline as the line
-                  items they summarize. */}
-              <LineItemsTable
-                jobId={jobId!}
-                onTotalsChange={setBillingTotals}
-              />
+              {/* Financial sections — inset surfaces inside the unified shell */}
+              <div className="border-t border-card-border" />
+              <div className="p-4 flex flex-col gap-3">
 
-              {/* BILLING SUMMARY — Expenses sub-section + Totals panel.
-                  Kept as a separate Studio-styled card (warm cream chrome)
-                  so it preserves the existing JobDetailPage finance panel
-                  styling while the line-items surface above adopts the
-                  canonical stone/slate card chrome. */}
-              <CardShell surface="open" data-testid="card-billing-summary">
-                <CardShellHeader compact>
-                  <CardShellTitle density="compact">Billing Summary</CardShellTitle>
-                </CardShellHeader>
+                  {/* LINE ITEMS inner section */}
+                  <LineItemsTable
+                    jobId={jobId!}
+                    surface="inset"
+                    onTotalsChange={setBillingTotals}
+                  />
 
-                {/* EXPENSES sub-section. */}
-                <div className="flex items-center justify-between gap-3 px-4 h-10 bg-surface-subtle">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-helper font-semibold uppercase tracking-[0.08em] text-text-secondary">Expenses</span>
-                    {expensesRaw.length > 0 && (
-                      <span className="text-helper font-medium text-text-disabled tabular-nums">{expensesRaw.length}</span>
-                    )}
-                  </div>
-                  <span className="text-helper font-mono tabular-nums text-text-muted">
-                    {formatCurrency(expenseTotalAmount)}
-                  </span>
-                </div>
-
-                {expensesRaw.length === 0 ? (
-                  <div className="px-4 py-3 text-row text-text-disabled" data-testid="expenses-empty">
-                    No expenses recorded for this job.
-                  </div>
-                ) : (
-                  <div className="px-4 divide-y divide-border-default" data-testid="expenses-rows">
-                    {expensesRaw.map((e) => (
-                      <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 text-body">
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium text-text-primary truncate">{e.description || "Expense"}</div>
-                          {(e.category || e.receiptUrl) && (
-                            <div className="text-row text-text-muted mt-0.5 flex items-center gap-1.5">
-                              {e.category && <span>{e.category}</span>}
-                              {e.category && e.receiptUrl && <span className="text-text-disabled">·</span>}
-                              {e.receiptUrl && (
-                                <a href={e.receiptUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline">
-                                  View receipt
-                                </a>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="font-mono tabular-nums font-medium text-text-primary shrink-0">
-                          {formatCurrency(parseFloat(e.amount || "0"))}
+                  {/* BILLING SUMMARY inner section — Parts/Labour/Expenses → Subtotal/Tax → Total */}
+                  <CardShell surface="inset" data-testid="card-billing-summary">
+                    <CardShellHeader compact>
+                      <CardShellTitle density="compact">Billing Summary</CardShellTitle>
+                    </CardShellHeader>
+                    <div className="px-4 py-4" data-testid="line-items-subtotal-block">
+                      <div className="ml-auto max-w-[320px]">
+                        <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row">
+                          <dt className="text-text-secondary">Parts</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(partsTotal)}</dd>
+                          <dt className="text-text-secondary">Labour</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(labourCost)}</dd>
+                          <dt className="text-text-secondary">Expenses</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(expenseTotalAmount)}</dd>
+                        </dl>
+                        <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row mt-3 pt-3 border-t border-border-default">
+                          <dt className="text-text-secondary">Subtotal</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(subtotal)}</dd>
+                          <dt className="text-text-secondary">Tax ({Math.round(taxRate * 100)}%)</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(taxAmount)}</dd>
+                        </dl>
+                        <div className="grid grid-cols-[1fr_auto] gap-x-8 mt-3 pt-3 border-t-2 border-text-primary/12 items-baseline">
+                          <span className="text-row font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
+                          <span className="text-display font-bold tabular-nums font-mono text-brand leading-none" data-testid="text-total">
+                            {formatCurrency(grandTotal)}
+                          </span>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* TOTALS — premium finance panel, right-aligned. */}
-                <div className="border-t border-border-default bg-surface-subtle px-4 py-4" data-testid="line-items-subtotal-block">
-                  <div className="ml-auto max-w-[320px]">
-                    <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row">
-                      <dt className="text-text-secondary">Parts</dt>
-                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(partsTotal)}</dd>
-                      <dt className="text-text-secondary">Labour</dt>
-                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(labourCost)}</dd>
-                      <dt className="text-text-secondary">Expenses</dt>
-                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(expenseTotalAmount)}</dd>
-                    </dl>
-                    <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row mt-3 pt-3 border-t border-border-default">
-                      <dt className="text-text-secondary">Subtotal</dt>
-                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(subtotal)}</dd>
-                      <dt className="text-text-secondary">Tax ({Math.round(taxRate * 100)}%)</dt>
-                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(taxAmount)}</dd>
-                    </dl>
-                    <div className="grid grid-cols-[1fr_auto] gap-x-8 mt-3 pt-3 border-t-2 border-text-primary/12 items-baseline">
-                      <span className="text-row font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
-                      <span className="text-display font-bold tabular-nums font-mono text-brand leading-none" data-testid="text-total">
-                        {formatCurrency(grandTotal)}
-                      </span>
                     </div>
-                  </div>
-                </div>
-              </CardShell>
-            </div>
+                  </CardShell>
+
+                  {/* EXPENSES inner section */}
+                  <CardShell surface="inset" data-testid="card-expenses">
+                    <CardShellHeader compact>
+                      <CardShellTitle density="compact">
+                        Expenses{expensesRaw.length > 0 && (
+                          <span className="ml-1 font-medium normal-case tracking-normal text-slate-400">{expensesRaw.length}</span>
+                        )}
+                      </CardShellTitle>
+                      <span className="text-helper font-mono tabular-nums text-text-muted shrink-0">
+                        {formatCurrency(expenseTotalAmount)}
+                      </span>
+                    </CardShellHeader>
+                    {expensesRaw.length === 0 ? (
+                      <div className="px-4 py-3 text-row text-text-disabled" data-testid="expenses-empty">
+                        No expenses recorded for this job.
+                      </div>
+                    ) : (
+                      <div className="px-4 divide-y divide-border-default" data-testid="expenses-rows">
+                        {expensesRaw.map((e) => (
+                          <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 text-body">
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-text-primary truncate">{e.description || "Expense"}</div>
+                              {(e.category || e.receiptUrl) && (
+                                <div className="text-row text-text-muted mt-0.5 flex items-center gap-1.5">
+                                  {e.category && <span>{e.category}</span>}
+                                  {e.category && e.receiptUrl && <span className="text-text-disabled">·</span>}
+                                  {e.receiptUrl && (
+                                    <a href={e.receiptUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline">
+                                      View receipt
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="font-mono tabular-nums font-medium text-text-primary shrink-0">
+                              {formatCurrency(parseFloat(e.amount || "0"))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardShell>
+
+              </div>
+            </CardShell>
+          </div>
 
           </div>
-        </div>
         </div>
         {/* ═══ /LEFT COLUMN (header + body) ═══ */}
 
@@ -2351,8 +2362,8 @@ export default function JobDetailPage() {
             page-specific rail logic is duplicated here. */}
         <aside
           className={cn(
-            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
-            "border-t lg:border-t-0 lg:border-l border-slate-200",
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-app-bg",
+            "border-t lg:border-t-0 lg:border-l border-app-bg",
           )}
           style={{
             ["--job-rail-width" as any]: `${jobRailTab === null ? 48 : 380}px`,
@@ -2441,24 +2452,18 @@ export default function JobDetailPage() {
         onOpenChange={setShowActionRequiredModal}
       />
 
-      {/* 2026-05-02: Create Similar Job — canonical CreateNewDialog
-          opened with `jobInitialCloneFromJobId` set. QuickAddJobDialog
-          fetches the source and prefills the safe identity fields
-          (location, summary, description); schedule + team are blank.
-          Save flows through the existing `POST /api/jobs` mutation. */}
-      <CreateNewDialog
+      {/* 2026-05-02: Create Similar Job — CreateJobModal opened with
+          `cloneFromJobId` set. QuickAddJobDialog fetches the source and
+          prefills the safe identity fields (location, summary, description);
+          schedule + team are blank. Save flows through POST /api/jobs. */}
+      <CreateJobModal
         open={createSimilarOpen}
         onOpenChange={(next) => {
           setCreateSimilarOpen(next);
           if (!next) setCreateSimilarFromId(null);
         }}
-        defaultTab="job"
-        jobInitialCloneFromJobId={createSimilarFromId ?? undefined}
-        onJobCreated={() => {
-          // Refresh the jobs feed; the user lands back on this detail
-          // page with the new job created. Navigation to the new job
-          // is intentionally NOT done here — matches the rest of the
-          // CreateNewDialog flows (close, refresh, stay).
+        cloneFromJobId={createSimilarFromId ?? undefined}
+        onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }}
       />
