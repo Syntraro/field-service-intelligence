@@ -17,12 +17,14 @@ export type ServicePlanView =
   // Attention
   | "missing_client" | "no_upcoming_visit" | "missing_billing"
   // Setup
-  | "templates";
+  | "templates"
+  // Dispatch queue — instance-level
+  | "dispatch";
 
 // ── View sets ─────────────────────────────────────────────────────────────────
 
 export const VALID_VIEWS: readonly ServicePlanView[] = [
-  "all", "active", "work_due", "overdue", "upcoming",
+  "all", "active", "dispatch", "work_due", "overdue", "upcoming",
   "expiring_soon", "expired", "paused",
   "maintenance", "inspection", "warranty", "recurring",
   "missing_client", "no_upcoming_visit", "missing_billing",

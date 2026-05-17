@@ -30,6 +30,7 @@ import {
 } from "@/lib/servicePlanWorkspaceConfig";
 import { ServicePlansWorkspaceTab } from "./service-plans/ServicePlansWorkspaceTab";
 import { ServicePlanTemplatesTab } from "./service-plans/ServicePlanTemplatesTab";
+import { ServicePlanDispatchTab } from "./service-plans/ServicePlanDispatchTab";
 import { ServicePlanKpiStrip } from "./service-plans/ServicePlanKpiStrip";
 import { ServicePlanRailBody } from "./service-plans/ServicePlanRailBody";
 import type { ServicePlanSelectionContext } from "./service-plans/ServicePlanListPanel";
@@ -45,9 +46,11 @@ export default function ServicePlansPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedContext, setSelectedContext] = useState<ServicePlanSelectionContext | null>(null);
-  // Templates view is a setup surface — no plan selection or right rail.
+  // Dispatch and Templates are non-plan views — no plan selection or right rail.
   const isTemplatesView = activeView === "templates";
-  const railExpanded = selectedContext !== null && !isTemplatesView;
+  const isDispatchView  = activeView === "dispatch";
+  const isNonPlanView   = isTemplatesView || isDispatchView;
+  const railExpanded    = selectedContext !== null && !isNonPlanView;
 
   const [createPmDialogOpen, setCreatePmDialogOpen] = useState(false);
   const [quickAddJobOpen, setQuickAddJobOpen] = useState(false);
@@ -99,8 +102,8 @@ export default function ServicePlansPage() {
         title="Service Plans"
         subtitle="Manage preventive maintenance contracts and schedules."
         search={
-          // Templates tab has its own internal search row; hide the header search.
-          isTemplatesView ? undefined : (
+          // Templates and Dispatch tabs own their own search rows; hide the header search.
+          isNonPlanView ? undefined : (
             <div className="relative">
               <Search
                 className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
@@ -159,6 +162,14 @@ export default function ServicePlansPage() {
             data-testid="service-plan-view-active"
           >
             Active
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "dispatch"}
+            onClick={() => handleViewChange("dispatch")}
+            data-testid="service-plan-view-dispatch"
+          >
+            Dispatch
           </WorkspaceViewChip>
           <WorkspaceViewChip
             size="md"
@@ -277,9 +288,11 @@ export default function ServicePlansPage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Content area — templates view renders its own table; all other views use the plan list. */}
+      {/* Content area — Dispatch and Templates render their own tables; all other views use the plan list. */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {isTemplatesView ? (
+        {isDispatchView ? (
+          <ServicePlanDispatchTab />
+        ) : isTemplatesView ? (
           <ServicePlanTemplatesTab />
         ) : (
           <ServicePlansWorkspaceTab

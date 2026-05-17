@@ -9,7 +9,7 @@
  *   Jobs:     ?lifecycle=open|completed  &subStatus=on_hold|in_progress  (Jobs.tsx)
  *   Invoices: ?filter=awaiting_payment|overdue|paid|...  (InvoicesListPage.tsx)
  *   Quotes:   ?status=draft|approved|sent|...  (Quotes.tsx)
- *   PM:       ?view=overdue|work_due|upcoming  (ServicePlansWorkspaceTab.tsx)
+ *   PM:       ?view=overdue|work_due|upcoming|dispatch  (ServicePlansPage)
  *   Dispatch: /dispatch  (no URL-driven filters yet)
  */
 
@@ -58,11 +58,11 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "quotes.draft":          { pathname: "/quotes", search: "status=draft" },
   "jobs.unscheduled":      { pathname: "/jobs", search: "lifecycle=open&scheduling=unscheduled" },
   "jobs.needsInvoicing":   { pathname: "/jobs", search: "lifecycle=completed" },
-  "invoices.outstanding":  { pathname: "/receivables", search: "tab=invoices&filter=awaiting_payment" },
-  "invoices.pastDue":      { pathname: "/receivables", search: "tab=invoices&filter=overdue" },
-  "invoices.draft":        { pathname: "/receivables", search: "tab=invoices&filter=draft" },
+  "invoices.outstanding":  { pathname: "/invoices", search: "view=awaiting-payment" },
+  "invoices.pastDue":      { pathname: "/invoices", search: "view=overdue" },
+  "invoices.draft":        { pathname: "/invoices", search: "view=drafts" },
   "pm.overdue":            { pathname: "/pm", search: "view=overdue" },
-  "pm.comingDue":          { pathname: "/pm", search: "view=work_due" },
+  "pm.comingDue":          { pathname: "/pm", search: "view=dispatch" },
   "pm.upcoming":           { pathname: "/pm", search: "view=upcoming" },
 
   // ── Today's Operations ──
@@ -78,7 +78,7 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "alerts.techAlerts":     { pathname: "/dispatch" },
 
   // ── Work Pipeline ──
-  "pipeline.pmAwaiting":            { pathname: "/pm", search: "view=work_due" },
+  "pipeline.pmAwaiting":            { pathname: "/pm", search: "view=dispatch" },
   "pipeline.quotesAwaitingApproval":{ pathname: "/quotes", search: "status=sent" },
   "pipeline.approvedNotConverted":  { pathname: "/quotes", search: "status=approved" },
   "pipeline.jobsAwaitingScheduling":{ pathname: "/jobs", search: "lifecycle=open&scheduling=unscheduled" },
