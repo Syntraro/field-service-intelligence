@@ -29,6 +29,7 @@ import {
   type ServicePlanView,
 } from "@/lib/servicePlanWorkspaceConfig";
 import { ServicePlansWorkspaceTab } from "./service-plans/ServicePlansWorkspaceTab";
+import { ServicePlanTemplatesTab } from "./service-plans/ServicePlanTemplatesTab";
 import { ServicePlanKpiStrip } from "./service-plans/ServicePlanKpiStrip";
 import { ServicePlanRailBody } from "./service-plans/ServicePlanRailBody";
 import type { ServicePlanSelectionContext } from "./service-plans/ServicePlanListPanel";
@@ -44,7 +45,9 @@ export default function ServicePlansPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedContext, setSelectedContext] = useState<ServicePlanSelectionContext | null>(null);
-  const railExpanded = selectedContext !== null;
+  // Templates view is a setup surface — no plan selection or right rail.
+  const isTemplatesView = activeView === "templates";
+  const railExpanded = selectedContext !== null && !isTemplatesView;
 
   const [createPmDialogOpen, setCreatePmDialogOpen] = useState(false);
   const [quickAddJobOpen, setQuickAddJobOpen] = useState(false);
@@ -96,19 +99,22 @@ export default function ServicePlansPage() {
         title="Service Plans"
         subtitle="Manage preventive maintenance contracts and schedules."
         search={
-          <div className="relative">
-            <Search
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
-              aria-hidden="true"
-            />
-            <Input
-              placeholder="Search plans, clients, addresses…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 w-56 h-8 rounded-lg border-slate-200 bg-white text-sm"
-              data-testid="input-search-service-plans"
-            />
-          </div>
+          // Templates tab has its own internal search row; hide the header search.
+          isTemplatesView ? undefined : (
+            <div className="relative">
+              <Search
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
+                aria-hidden="true"
+              />
+              <Input
+                placeholder="Search plans, clients, addresses…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 w-56 h-8 rounded-lg border-slate-200 bg-white text-sm"
+                data-testid="input-search-service-plans"
+              />
+            </div>
+          )
         }
         primaryAction={
           <DropdownMenu>
@@ -204,6 +210,13 @@ export default function ServicePlansPage() {
             >
               Paused
             </WorkspaceViewDropdownItem>
+            <WorkspaceViewDropdownItem
+              active={activeView === "templates"}
+              onClick={() => handleViewChange("templates")}
+              data-testid="service-plan-view-templates"
+            >
+              Templates
+            </WorkspaceViewDropdownItem>
           </WorkspaceViewMoreDropdown>
 
           <WorkspaceViewMoreDropdown
@@ -264,17 +277,21 @@ export default function ServicePlansPage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Table — flex-col parent so WorkspaceCenterPane's flex-1 resolves correctly */}
+      {/* Content area — templates view renders its own table; all other views use the plan list. */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <ServicePlansWorkspaceTab
-          activeView={activeView}
-          searchQuery={searchQuery}
-          sortField={ws.sort?.field}
-          sortDirection={ws.sort?.direction}
-          onSort={handleSort}
-          selectedPlanId={selectedContext?.planId ?? null}
-          onRailContextChange={handleRailContextChange}
-        />
+        {isTemplatesView ? (
+          <ServicePlanTemplatesTab />
+        ) : (
+          <ServicePlansWorkspaceTab
+            activeView={activeView}
+            searchQuery={searchQuery}
+            sortField={ws.sort?.field}
+            sortDirection={ws.sort?.direction}
+            onSort={handleSort}
+            selectedPlanId={selectedContext?.planId ?? null}
+            onRailContextChange={handleRailContextChange}
+          />
+        )}
       </div>
     </>
   );

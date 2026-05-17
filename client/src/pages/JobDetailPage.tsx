@@ -56,7 +56,7 @@ import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatc
 import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 // 2026-05-01: QuickAddJobDialog import removed — the Job Detail page no
 // longer mounts the modal (see comment near the bottom of the JSX). The
-// component itself is still imported by PMWorkspacePage / RecurringJobsPage;
+// component itself is still used by ServicePlansPage and other surfaces;
 // do not delete it.
 // 2026-05-02: "Create Similar Job" — CreateJobModal opened pre-seeded with
 // the source job id so QuickAddJobDialog can fetch + prefill.
@@ -191,9 +191,6 @@ function getRunningStatusText(runningType: TimeEntryType | null): string {
       return "Technician en route";
     case "on_site":
       return "Technician on site";
-    case "travel_to_supplier":
-    case "supplier_run":
-      return "At supplier";
     default:
       return "Timer running";
   }
@@ -967,7 +964,7 @@ export default function JobDetailPage() {
   // snapshot contribute $0 (no crash). Each tech may have a different
   // rate, so we sum per-entry rather than per-tech.
   const TRAVEL_TYPES: ReadonlySet<TimeEntryType> = useMemo(
-    () => new Set<TimeEntryType>(["travel_to_job", "travel_between_jobs", "travel_to_supplier"]),
+    () => new Set<TimeEntryType>(["travel_to_job", "travel_between_jobs"]),
     [],
   );
   const entryCostDollars = (e: TimeEntryDisplay): number => {
@@ -2471,7 +2468,7 @@ export default function JobDetailPage() {
           pattern (see `editingHeader` / `headerDraft` /
           `updateHeaderMutation` near the page-level state block).
           QuickAddJobDialog itself is preserved and still used by
-          CreateNewDialog, PMWorkspacePage, and RecurringJobsPage. */}
+          CreateNewDialog, ServicePlansPage, and other create surfaces. */}
 
       <ActionRequiredModal
         jobId={job.id}

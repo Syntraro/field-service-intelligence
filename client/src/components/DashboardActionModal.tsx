@@ -801,11 +801,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   // ── PM job-generation mutation ──────────────────────────────────────────
   //
   // 2026-04-26: dashboard PM rows reuse the canonical generation route
-  // `POST /api/recurring-templates/generate-selected` — same endpoint
-  // PMWorkspacePage drives. No parallel generation logic. Single-row
-  // generation passes a one-element `instanceIds` array. Toast + cache
-  // invalidations mirror the workspace mutation so the dashboard stays
-  // in lockstep with the rest of the PM surface.
+  // `POST /api/recurring-templates/generate-selected`. Single-row generation
+  // passes a one-element `instanceIds` array. Toast + cache invalidations
+  // mirror the ServicePlansPage rail mutation so the dashboard stays in
+  // lockstep with the rest of the PM surface.
   const pmGenerateMutation = useMutation({
     mutationFn: (instanceIds: string[]) =>
       apiRequest<{ jobsCreated?: number }>(

@@ -16,8 +16,8 @@
  *   - Single Dialog with three internal "view" states (mode | template | plan).
  *   - Reuses the existing endpoints `/api/pm/templates` and
  *     `/api/recurring-templates`. No new endpoints are required.
- *   - Search is client-side over the already-cached lists (the same data
- *     PMWorkspacePage uses). Both lists are small (per-tenant), so this is
+ *   - Search is client-side over the already-cached lists (shared with
+ *     ServicePlansPage). Both lists are small (per-tenant), so this is
  *     fine without a server-side search API.
  */
 
@@ -58,8 +58,8 @@ interface CreateMaintenancePlanDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-// Recurring templates list response. PMWorkspacePage uses a richer shape with
-// joined client/location names; we narrow to what the picker needs.
+// Recurring templates list response. The full list query returns joined
+// client/location names; we narrow to what the picker needs.
 interface PlanRow {
   id: string;
   title: string;
@@ -313,7 +313,7 @@ function PlanPicker({ onPick }: { onPick: (planId: string) => void }) {
   const [search, setSearch] = useState("");
 
   // Reuse the canonical recurring-templates endpoint with the PM type filter.
-  // Same data shape PMWorkspacePage's Plans tab consumes — we narrow to PlanRow.
+  // Reuse the canonical recurring-templates endpoint. We narrow to PlanRow.
   const { data: plans = [], isLoading } = useQuery<PlanRow[]>({
     queryKey: ["/api/recurring-templates", { type: "pm" }],
     queryFn: () => apiRequest("/api/recurring-templates?type=pm"),

@@ -1,7 +1,7 @@
 import { format } from "date-fns";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { Chip } from "@/components/ui/chip";
-import type { ServicePlanView } from "@/lib/servicePlanWorkspaceConfig";
+import { type ServicePlanView, formatFrequencyStacked } from "@/lib/servicePlanWorkspaceConfig";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -38,40 +38,6 @@ export interface ServicePlanSelectionContext {
   clientName?: string | null;
   locationName?: string | null;
   locationAddress?: string | null;
-}
-
-// ── Frequency formatter ───────────────────────────────────────────────────────
-
-const MONTH_ABBR = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-export function formatFrequencyStacked(
-  kind: string,
-  interval: number,
-  months: number[] | null,
-): { headline: string; sub: string | null } {
-  const sorted = months?.slice().sort((a, b) => a - b) ?? [];
-  const count = sorted.length;
-
-  if (count === 12) return { headline: "Monthly", sub: "All months" };
-  if (count === 1) return { headline: "Annual", sub: MONTH_ABBR[sorted[0] - 1] };
-  if (count > 0) {
-    const labels = sorted.map((m) => MONTH_ABBR[m - 1]);
-    if (count === 4) {
-      const gaps = sorted.slice(1).map((m, i) => m - sorted[i]);
-      if (gaps.every((g) => g === 3)) return { headline: "Quarterly", sub: labels.join(" • ") };
-    }
-    if (count === 2 && sorted[1] - sorted[0] === 6) {
-      return { headline: "Bi-Annual", sub: labels.join(" • ") };
-    }
-    return { headline: "Custom", sub: labels.join(" • ") };
-  }
-  if (kind === "weekly") {
-    return { headline: interval === 1 ? "Weekly" : `Every ${interval} weeks`, sub: null };
-  }
-  return { headline: interval === 1 ? "Monthly" : `Every ${interval} months`, sub: null };
 }
 
 // ── View predicate ────────────────────────────────────────────────────────────

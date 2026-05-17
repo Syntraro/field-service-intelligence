@@ -1,7 +1,7 @@
 import { format } from "date-fns";
 import { WorkspaceSectionCard } from "@/components/workspace/WorkspaceSectionCard";
 import { StatusChip } from "@/components/ui/chip";
-import { formatFrequencyStacked } from "../ServicePlanListPanel";
+import { formatFrequencyStacked } from "@/lib/servicePlanWorkspaceConfig";
 import type { RecurringPlanDetail } from "../ServicePlanActionsRail";
 
 function parseLocalDate(dateStr: string): Date {

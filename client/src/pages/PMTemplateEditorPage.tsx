@@ -321,7 +321,7 @@ export default function PMTemplateEditorPage() {
   const isEdit = Boolean(params.id);
 
   // Existing template lookup for edit mode. Reuses the canonical list cache
-  // PMWorkspacePage already populates so this is usually instant.
+  // (shared with the Templates tab in ServicePlansPage) so this is usually instant.
   const { data: existingTemplates = [] } = useQuery<PmTemplate[]>({
     queryKey: ["/api/pm/templates"],
     enabled: isEdit,

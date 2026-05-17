@@ -1,7 +1,7 @@
 /**
  * EntityListTable — canonical grid-based list table for core entity list
  * pages (Jobs, Invoices, Quotes, Leads, Clients, Locations, Suppliers,
- * Inventory, PMWorkspacePage).
+ * Inventory, ServicePlans).
  *
  * Architecture (2026-05-08 canonical refactor):
  *   The component is a TRUE canonical renderer, not just a shared shell.
