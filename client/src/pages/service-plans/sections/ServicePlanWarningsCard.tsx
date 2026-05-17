@@ -16,17 +16,21 @@ function deriveWarnings(
   const warnings: Warning[] = [];
   const today = new Date();
 
+  // Active plan with a lapsed contract: generation is still running against an expired agreement.
+  if (plan.isActive && plan.endDate && new Date(plan.endDate) < today) {
+    warnings.push({ key: "expired-active", message: "Contract expired but plan is still active", severity: "high" });
+  }
   if (!plan.clientId) {
     warnings.push({ key: "no-client", message: "No client assigned", severity: "high" });
   }
   if (!plan.locationId) {
     warnings.push({ key: "no-location", message: "No service location assigned", severity: "high" });
   }
-  if (plan.endDate && new Date(plan.endDate) < today) {
-    warnings.push({ key: "expired", message: "Agreement has expired", severity: "high" });
+  if (plan.isActive && !plan.nextOccurrence) {
+    warnings.push({ key: "no-upcoming-visit", message: "No upcoming visit scheduled", severity: "medium" });
   }
-  if (!plan.pmBillingModel) {
-    warnings.push({ key: "no-billing", message: "No billing setup configured", severity: "medium" });
+  if (!plan.pmBillingModel || plan.pmBillingModel === "") {
+    warnings.push({ key: "no-billing", message: "Billing configuration missing", severity: "medium" });
   }
   if (plan.isActive && instances.length > 0) {
     const hasPending = instances.some((i) => i.status === "pending");

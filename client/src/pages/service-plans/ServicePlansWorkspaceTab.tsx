@@ -1,20 +1,10 @@
-import { useState, useMemo } from "react";
-import { useLocation, useSearch } from "wouter";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
-import {
-  WorkspaceFilterBar,
-  WorkspaceViewChip,
-  WorkspaceFilterBarSeparator,
-  WorkspaceViewMoreDropdown,
-  WorkspaceViewDropdownItem,
-} from "@/components/workspace/WorkspaceFilterBar";
-import { useWorkspaceState } from "@/hooks/useWorkspaceState";
 import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
-import { type ServicePlanView } from "./ServicePlanViewRail";
+import { type ServicePlanView } from "@/lib/servicePlanWorkspaceConfig";
 import {
   ServicePlanListPanel,
   applyViewPredicate,
@@ -22,16 +12,8 @@ import {
   type RecurringPlanItem,
   type ServicePlanSelectionContext,
 } from "./ServicePlanListPanel";
-import { ServicePlanActionsRail } from "./ServicePlanActionsRail";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-
-const VALID_VIEWS: readonly ServicePlanView[] = [
-  "all", "active", "work_due", "overdue", "upcoming",
-  "expiring_soon", "expired", "paused",
-  "maintenance", "inspection", "warranty", "recurring",
-  "missing_client", "no_upcoming_visit", "missing_billing",
-];
 
 const PAGE_SIZE = 50;
 
@@ -53,17 +35,11 @@ function sortPlans(
       return sortDirection === "asc" ? diff : -diff;
     }
     const aVal =
-      sortField === "client"
-        ? a.clientName ?? ""
-        : sortField === "plan"
-        ? a.title
-        : "";
+      sortField === "client" ? a.clientName ?? "" :
+      sortField === "plan"   ? a.title          : "";
     const bVal =
-      sortField === "client"
-        ? b.clientName ?? ""
-        : sortField === "plan"
-        ? b.title
-        : "";
+      sortField === "client" ? b.clientName ?? "" :
+      sortField === "plan"   ? b.title          : "";
     const cmp = aVal.localeCompare(bVal, undefined, { sensitivity: "base" });
     return sortDirection === "asc" ? cmp : -cmp;
   });
@@ -71,34 +47,39 @@ function sortPlans(
 
 // ── ServicePlansWorkspaceTab ──────────────────────────────────────────────────
 
+/**
+ * Table-only workspace tab for the canonical Service Plans workspace.
+ * Header shell (title, search, KPI, filters) is owned by ServicePlansPage
+ * so all four sections can share one elevated card.
+ */
+
 interface ServicePlansWorkspaceTabProps {
+  activeView: ServicePlanView;
   searchQuery: string;
-  onSearchChange: (q: string) => void;
+  sortField?: string;
+  sortDirection?: "asc" | "desc";
+  onSort: (key: string) => void;
+  selectedPlanId: string | null;
+  onRailContextChange: (ctx: ServicePlanSelectionContext | null) => void;
 }
 
-export function ServicePlansWorkspaceTab({ searchQuery, onSearchChange }: ServicePlansWorkspaceTabProps) {
-  const [, setLocation] = useLocation();
-  const search = useSearch();
-
-  // ── Domain selection state ─────────────────────────────────────────────────
-  const [selectedContext, setSelectedContext] = useState<ServicePlanSelectionContext | null>(null);
-  const [railExpanded, setRailExpanded] = useState(false);
+export function ServicePlansWorkspaceTab({
+  activeView,
+  searchQuery,
+  sortField,
+  sortDirection,
+  onSort,
+  selectedPlanId,
+  onRailContextChange,
+}: ServicePlansWorkspaceTabProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // ── Workspace infrastructure ───────────────────────────────────────────────
-  const ws = useWorkspaceState({
-    lsKey: "syntraro.servicePlans",
-    validViews: VALID_VIEWS,
-    defaultView: "all",
-    onNavigate: (view) => {
-      const params = new URLSearchParams(search);
-      if (view === "all") params.delete("view");
-      else params.set("view", view);
-      setLocation(`/pm?${params}`);
-    },
-  });
+  // Reset pagination when the active view changes.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [activeView]);
 
-  // ── Plan list query ────────────────────────────────────────────────────────
+  // Plan list query — shared key with ServicePlanKpiStrip (React Query deduplicates).
   const { data: rawPlans = [], isLoading, error } = useQuery<RecurringPlanItem[]>({
     queryKey: ["/api/recurring-templates"],
     queryFn: async () => {
@@ -107,36 +88,25 @@ export function ServicePlansWorkspaceTab({ searchQuery, onSearchChange }: Servic
       return res.json();
     },
     staleTime: 30_000,
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 
-  // ── Active view from URL ───────────────────────────────────────────────────
-  const activeView = useMemo<ServicePlanView>(() => {
-    const p = new URLSearchParams(search);
-    const v = p.get("view");
-    return v && (VALID_VIEWS as readonly string[]).includes(v) ? (v as ServicePlanView) : "all";
-  }, [search]);
-
-  // ── Client-side filtering + sorting ───────────────────────────────────────
+  // Client-side filter + sort.
   const filteredPlans = useMemo(() => {
     const byView = applyViewPredicate(rawPlans, activeView);
     const searched = applyPlanSearch(byView, searchQuery);
-    return sortPlans(searched, ws.sort?.field, ws.sort?.direction);
-  }, [rawPlans, activeView, searchQuery, ws.sort]);
+    return sortPlans(searched, sortField, sortDirection);
+  }, [rawPlans, activeView, searchQuery, sortField, sortDirection]);
 
-  // ── Debounced selection → right rail ──────────────────────────────────────
+  // Debounced selection → rail.
   const { handleSelectionChange } = useWorkspaceSelection<ServicePlanSelectionContext>(
-    (ctx) => {
-      setSelectedContext(ctx);
-      setRailExpanded(ctx !== null);
-    },
+    (ctx) => onRailContextChange(ctx),
   );
 
   const handleRowClick = (plan: RecurringPlanItem) => {
-    const alreadySelected = selectedContext?.planId === plan.id;
-    if (alreadySelected) {
-      setSelectedContext(null);
-      setRailExpanded(false);
+    if (selectedPlanId === plan.id) {
+      onRailContextChange(null);
     } else {
       handleSelectionChange(
         {
@@ -154,184 +124,41 @@ export function ServicePlansWorkspaceTab({ searchQuery, onSearchChange }: Servic
     }
   };
 
-  const handleViewChange = (view: ServicePlanView) => {
-    ws.setView(view);
-    setSelectedContext(null);
-    setRailExpanded(false);
-    setVisibleCount(PAGE_SIZE);
-  };
-
-  // ── Sort handler — cycles asc → desc → clear ──────────────────────────────
-  const handleSort = (key: string) => {
-    const current = ws.sort;
-    if (!current || current.field !== key) {
-      ws.setSort(key, "asc");
-    } else if (current.direction === "asc") {
-      ws.setSort(key, "desc");
-    } else {
-      ws.clearSort();
-    }
-  };
-
   const visiblePlans = filteredPlans.slice(0, visibleCount);
 
-  const SECONDARY_VIEWS: ServicePlanView[] = [
-    "expiring_soon", "expired", "paused",
-    "maintenance", "inspection", "warranty", "recurring",
-    "missing_client", "no_upcoming_visit", "missing_billing",
-  ];
-  const TYPE_VIEWS: ServicePlanView[] = ["maintenance", "inspection", "warranty", "recurring"];
-  const ATTENTION_VIEWS: ServicePlanView[] = ["missing_client", "no_upcoming_visit", "missing_billing"];
-  const MORE_VIEWS: ServicePlanView[] = ["expiring_soon", "expired", "paused"];
-
-  const moreActive = MORE_VIEWS.includes(activeView);
-  const typeActive = TYPE_VIEWS.includes(activeView);
-  const attentionActive = ATTENTION_VIEWS.includes(activeView);
-
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <WorkspaceFilterBar data-testid="service-plan-filter-bar">
-        <WorkspaceViewChip
-          active={activeView === "all"}
-          onClick={() => handleViewChange("all")}
-          data-testid="service-plan-view-all"
-        >
-          All
-        </WorkspaceViewChip>
-        <WorkspaceViewChip
-          active={activeView === "active"}
-          onClick={() => handleViewChange("active")}
-          data-testid="service-plan-view-active"
-        >
-          Active
-        </WorkspaceViewChip>
-        <WorkspaceViewChip
-          active={activeView === "work_due"}
-          onClick={() => handleViewChange("work_due")}
-          data-testid="service-plan-view-work-due"
-        >
-          Work Due
-        </WorkspaceViewChip>
-        <WorkspaceViewChip
-          active={activeView === "overdue"}
-          onClick={() => handleViewChange("overdue")}
-          data-testid="service-plan-view-overdue"
-        >
-          Overdue
-        </WorkspaceViewChip>
-        <WorkspaceViewChip
-          active={activeView === "upcoming"}
-          onClick={() => handleViewChange("upcoming")}
-          data-testid="service-plan-view-upcoming"
-        >
-          Upcoming
-        </WorkspaceViewChip>
-
-        <WorkspaceFilterBarSeparator />
-
-        <WorkspaceViewMoreDropdown label="More" activeInDropdown={moreActive}>
-          <WorkspaceViewDropdownItem
-            active={activeView === "expiring_soon"}
-            onClick={() => handleViewChange("expiring_soon")}
-          >
-            Expiring Soon
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "expired"}
-            onClick={() => handleViewChange("expired")}
-          >
-            Expired
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "paused"}
-            onClick={() => handleViewChange("paused")}
-          >
-            Paused
-          </WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-
-        <WorkspaceViewMoreDropdown label="Type" activeInDropdown={typeActive}>
-          <WorkspaceViewDropdownItem
-            active={activeView === "maintenance"}
-            onClick={() => handleViewChange("maintenance")}
-          >
-            Maintenance
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "inspection"}
-            onClick={() => handleViewChange("inspection")}
-          >
-            Inspection
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "warranty"}
-            onClick={() => handleViewChange("warranty")}
-          >
-            Warranty
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "recurring"}
-            onClick={() => handleViewChange("recurring")}
-          >
-            Recurring
-          </WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-
-        <WorkspaceViewMoreDropdown label="Attention" activeInDropdown={attentionActive}>
-          <WorkspaceViewDropdownItem
-            active={activeView === "missing_client"}
-            onClick={() => handleViewChange("missing_client")}
-          >
-            Missing Client
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "no_upcoming_visit"}
-            onClick={() => handleViewChange("no_upcoming_visit")}
-          >
-            No Upcoming Visit
-          </WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem
-            active={activeView === "missing_billing"}
-            onClick={() => handleViewChange("missing_billing")}
-          >
-            Missing Billing
-          </WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-      </WorkspaceFilterBar>
-
-      <OperationalWorkspace
-        rightRailExpanded={railExpanded}
-        center={
-          <WorkspaceCenterPane>
-            <WorkspaceEntitySurface
-              data-testid="tab-content-service-plans"
-              footer={
-                <ListLoadMoreFooter
-                  visibleCount={Math.min(visibleCount, filteredPlans.length)}
-                  totalCount={filteredPlans.length}
-                  hasMore={visibleCount < filteredPlans.length}
-                  onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
-                  label="plan"
-                />
-              }
-            >
-              <ServicePlanListPanel
-                plans={visiblePlans}
-                isLoading={isLoading}
-                error={error as Error | null}
-                hasPlans={rawPlans.length > 0}
-                selectedPlanId={selectedContext?.planId ?? null}
-                onRowClick={handleRowClick}
-                sortField={ws.sort?.field}
-                sortDirection={ws.sort?.direction}
-                onSort={handleSort}
+    <div
+      className="h-full flex flex-col min-h-0 overflow-hidden"
+      data-testid="service-plans-workspace-tab"
+    >
+      <div className="flex-1 min-h-0 flex flex-col mx-4 mb-6 rounded-md overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.07),0_0_1px_rgba(0,0,0,0.05)]">
+        <WorkspaceCenterPane>
+          <WorkspaceEntitySurface
+            data-testid="tab-content-service-plans"
+            footer={
+              <ListLoadMoreFooter
+                visibleCount={Math.min(visibleCount, filteredPlans.length)}
+                totalCount={filteredPlans.length}
+                hasMore={visibleCount < filteredPlans.length}
+                onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                label="plan"
               />
-            </WorkspaceEntitySurface>
-          </WorkspaceCenterPane>
-        }
-        rightRail={<ServicePlanActionsRail context={selectedContext} />}
-        data-testid="service-plans-workspace-tab"
-      />
+            }
+          >
+            <ServicePlanListPanel
+              plans={visiblePlans}
+              isLoading={isLoading}
+              error={error as Error | null}
+              hasPlans={rawPlans.length > 0}
+              selectedPlanId={selectedPlanId}
+              onRowClick={handleRowClick}
+              sortField={sortField}
+              sortDirection={sortDirection}
+              onSort={onSort}
+            />
+          </WorkspaceEntitySurface>
+        </WorkspaceCenterPane>
+      </div>
     </div>
   );
 }

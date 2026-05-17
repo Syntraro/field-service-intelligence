@@ -1,20 +1,14 @@
+import { useState } from "react";
 import { format, differenceInDays } from "date-fns";
+import { RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { WorkspaceSectionCard } from "@/components/workspace/WorkspaceSectionCard";
+import { RenewPlanModal } from "../modals/RenewPlanModal";
 import type { RecurringPlanDetail } from "../ServicePlanActionsRail";
 
 function parseLocalDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(y, m - 1, d);
-}
-
-function billingModelLabel(model: string | null): string {
-  switch (model) {
-    case "per_visit":      return "Per visit";
-    case "monthly_fixed":  return "Monthly fixed";
-    case "annual_prepaid": return "Annual prepaid";
-    case "do_not_bill":    return "Do not bill";
-    default:               return "Not set";
-  }
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -32,6 +26,7 @@ interface ServicePlanRenewalCardProps {
 }
 
 export function ServicePlanRenewalCard({ plan, loading }: ServicePlanRenewalCardProps) {
+  const [renewOpen, setRenewOpen] = useState(false);
   const today = new Date();
 
   let daysUntilExpiry: number | null = null;
@@ -61,28 +56,38 @@ export function ServicePlanRenewalCard({ plan, loading }: ServicePlanRenewalCard
       data-testid="service-plan-renewal-card"
     >
       {plan && (
-        <div className="space-y-1.5">
-          <Row
-            label="Start"
-            value={plan.startDate ? format(parseLocalDate(plan.startDate), "MMM d, yyyy") : "—"}
-          />
-          <Row
-            label="End"
-            value={
-              <span className={expiryClass}>{expiryLabel}</span>
-            }
-          />
-          <Row label="Billing" value={billingModelLabel(plan.pmBillingModel)} />
-          {plan.pmBillingLabel && (
-            <Row label="Label" value={plan.pmBillingLabel} />
-          )}
-          {plan.pmContractAmount && (
+        <>
+          <div className="space-y-1.5">
             <Row
-              label="Amount"
-              value={`$${Number(plan.pmContractAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              label="Start"
+              value={plan.startDate ? format(parseLocalDate(plan.startDate), "MMM d, yyyy") : "—"}
             />
+            <Row
+              label="End"
+              value={<span className={expiryClass}>{expiryLabel}</span>}
+            />
+
+          </div>
+
+          {daysUntilExpiry !== null && daysUntilExpiry <= 90 && (
+            <div className="pt-2 mt-2 border-t border-border">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-start gap-2 rounded-lg h-8 text-row"
+                onClick={() => setRenewOpen(true)}
+                data-testid="service-plan-action-renew"
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
+                Renew Contract
+              </Button>
+            </div>
           )}
-        </div>
+
+          {renewOpen && (
+            <RenewPlanModal open={renewOpen} onOpenChange={setRenewOpen} plan={plan} />
+          )}
+        </>
       )}
     </WorkspaceSectionCard>
   );

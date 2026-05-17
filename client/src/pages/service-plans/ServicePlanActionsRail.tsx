@@ -1,13 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { WorkspaceRailEmptyState } from "@/components/workspace/WorkspaceRailEmptyState";
 import { ServicePlanWarningsCard } from "./sections/ServicePlanWarningsCard";
 import { ServicePlanNextServiceCard } from "./sections/ServicePlanNextServiceCard";
 import { ServicePlanRenewalCard } from "./sections/ServicePlanRenewalCard";
+import { ServicePlanBillingCard } from "./sections/ServicePlanBillingCard";
 import { ServicePlanQuickActionsCard } from "./sections/ServicePlanQuickActionsCard";
 import { ServicePlanSummaryCard } from "./sections/ServicePlanSummaryCard";
-import { ServicePlanBillingCard } from "./sections/ServicePlanBillingCard";
-import { ServicePlanCoverageCard } from "./sections/ServicePlanCoverageCard";
-import { ServicePlanTimelineCard } from "./sections/ServicePlanTimelineCard";
+import { ServicePlanActivityCard } from "./sections/ServicePlanActivityCard";
 import type { ServicePlanSelectionContext } from "./ServicePlanListPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -64,6 +62,7 @@ export interface PlanInstanceWithJob {
 
 interface ServicePlanActionsRailProps {
   context: ServicePlanSelectionContext | null;
+  onDeleted?: () => void;
 }
 
 /**
@@ -76,7 +75,7 @@ interface ServicePlanActionsRailProps {
  * Section cards receive data via props; they own only their own mutations.
  * No modal state here — section cards own their modal state.
  */
-export function ServicePlanActionsRail({ context }: ServicePlanActionsRailProps) {
+export function ServicePlanActionsRail({ context, onDeleted }: ServicePlanActionsRailProps) {
   const planId = context?.planId ?? null;
 
   // ── Shared rail-root fetches ───────────────────────────────────────────────
@@ -108,16 +107,7 @@ export function ServicePlanActionsRail({ context }: ServicePlanActionsRailProps)
     staleTime: 30_000,
   });
 
-  // ── No selection ──────────────────────────────────────────────────────────
-
-  if (!context) {
-    return (
-      <WorkspaceRailEmptyState
-        message="Select a plan to see actions"
-        data-testid="service-plans-actions-rail-empty"
-      />
-    );
-  }
+  if (!context) return null;
 
   // ── Render — urgency-first ordering ──────────────────────────────────────
 
@@ -135,18 +125,14 @@ export function ServicePlanActionsRail({ context }: ServicePlanActionsRailProps)
     : undefined;
 
   return (
-    <div
-      className="flex flex-col h-full overflow-y-auto scrollbar-none"
-      data-testid="service-plans-actions-rail"
-    >
+    <div data-testid="service-plans-actions-rail">
       <ServicePlanWarningsCard plan={enrichedPlan} instances={instances} loading={railLoading} />
       <ServicePlanNextServiceCard plan={enrichedPlan} instances={instances} loading={railLoading} />
       <ServicePlanRenewalCard plan={enrichedPlan} loading={planLoading} />
-      <ServicePlanBillingCard />
-      <ServicePlanCoverageCard />
-      <ServicePlanQuickActionsCard plan={enrichedPlan} loading={planLoading} />
+      <ServicePlanBillingCard plan={enrichedPlan} loading={planLoading} />
+      <ServicePlanQuickActionsCard plan={enrichedPlan} loading={planLoading} onDeleted={onDeleted} />
       <ServicePlanSummaryCard plan={enrichedPlan} loading={planLoading} />
-      <ServicePlanTimelineCard />
+      <ServicePlanActivityCard plan={enrichedPlan} loading={planLoading} />
     </div>
   );
 }

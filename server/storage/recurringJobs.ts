@@ -338,6 +338,51 @@ export class RecurringJobsRepository extends BaseRepository {
   }
 
   /**
+   * Returns impact counts for the delete confirmation modal.
+   * - generatedJobCount: instances that produced a job (drives archive vs hard-delete)
+   * - pendingInstanceCount: pending instances that would be canceled on archive
+   * - outcome: mirrors the smart-delete branch in the DELETE route
+   */
+  async getDeleteImpact(
+    companyId: string,
+    templateId: string,
+  ): Promise<{ generatedJobCount: number; pendingInstanceCount: number; outcome: "delete" | "archive" }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(templateId, "templateId");
+
+    const [generatedRow] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(recurringJobInstances)
+      .where(
+        and(
+          eq(recurringJobInstances.templateId, templateId),
+          eq(recurringJobInstances.companyId, companyId),
+          sql`${recurringJobInstances.generatedJobId} IS NOT NULL`,
+        )
+      );
+
+    const [pendingRow] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(recurringJobInstances)
+      .where(
+        and(
+          eq(recurringJobInstances.templateId, templateId),
+          eq(recurringJobInstances.companyId, companyId),
+          eq(recurringJobInstances.status, "pending"),
+        )
+      );
+
+    const generatedJobCount = generatedRow?.count ?? 0;
+    const pendingInstanceCount = pendingRow?.count ?? 0;
+
+    return {
+      generatedJobCount,
+      pendingInstanceCount,
+      outcome: generatedJobCount > 0 ? "archive" : "delete",
+    };
+  }
+
+  /**
    * Delete a recurring job template (hard delete).
    * Cascade deletes all instances. Only safe when hasDownstreamActivity is false.
    */
@@ -439,7 +484,7 @@ export class RecurringJobsRepository extends BaseRepository {
   async getInstancesWithJobs(
     companyId: string,
     templateId: string,
-    options?: { from?: string; to?: string; limit?: number }
+    options?: { from?: string; to?: string; limit?: number; status?: string }
   ): Promise<InstanceWithJob[]> {
     this.assertCompanyId(companyId);
     this.validateUUID(templateId, "templateId");
@@ -449,6 +494,10 @@ export class RecurringJobsRepository extends BaseRepository {
       eq(recurringJobInstances.templateId, templateId),
       eq(recurringJobInstances.companyId, companyId),
     ];
+
+    if (options?.status) {
+      conditions.push(eq(recurringJobInstances.status, options.status));
+    }
 
     if (options?.from) {
       conditions.push(gte(recurringJobInstances.instanceDate, options.from));
@@ -544,6 +593,42 @@ export class RecurringJobsRepository extends BaseRepository {
 
     return updated ?? null;
   }
+  /**
+   * Cancel stale pending instances after a plan renewal.
+   *
+   * Targets only instances whose instanceDate falls on or before the previous
+   * endDate — i.e., instances from the lapsed contract period. Future instances
+   * (if any exist) are untouched.
+   *
+   * Mirrors deactivateTemplate cancellation semantics exactly:
+   *   - status = "pending" only (claiming/generated/skipped/canceled untouched)
+   *   - generatedJobId IS NULL (instances that produced jobs are preserved)
+   */
+  async cancelStaleInstancesAfterRenewal(
+    companyId: string,
+    templateId: string,
+    oldEndDate: string,
+  ): Promise<number> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(templateId, "templateId");
+
+    const canceled = await db
+      .update(recurringJobInstances)
+      .set({ status: "canceled" })
+      .where(
+        and(
+          eq(recurringJobInstances.templateId, templateId),
+          eq(recurringJobInstances.companyId, companyId),
+          eq(recurringJobInstances.status, "pending"),
+          isNull(recurringJobInstances.generatedJobId),
+          lte(recurringJobInstances.instanceDate, oldEndDate),
+        )
+      )
+      .returning({ id: recurringJobInstances.id });
+
+    return canceled.length;
+  }
+
   // ============================================================================
   // PM Phase 3+4A: Upcoming Planning Queue with Scheduling Visibility
   // ============================================================================

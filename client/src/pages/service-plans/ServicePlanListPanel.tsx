@@ -1,6 +1,7 @@
 import { format } from "date-fns";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
-import type { ServicePlanView } from "./ServicePlanViewRail";
+import { Chip } from "@/components/ui/chip";
+import type { ServicePlanView } from "@/lib/servicePlanWorkspaceConfig";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -175,9 +176,7 @@ export const SERVICE_PLAN_COLUMNS: EntityListColumn<RecurringPlanItem>[] = [
         <div className="flex items-center gap-2 min-w-0">
           <span className="truncate text-list-primary">{plan.title}</span>
           {plan.jobType !== "maintenance" && (
-            <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 capitalize">
-              {plan.jobType}
-            </span>
+            <Chip tone="neutral" className="shrink-0 capitalize">{plan.jobType}</Chip>
           )}
         </div>
       ),
@@ -284,6 +283,7 @@ export function ServicePlanListPanel({
       }
       errorState={error ? { kind: "error", title: "Failed to load service plans" } : undefined}
       columns={SERVICE_PLAN_COLUMNS}
+      cellPy="py-2.5"
       sortField={sortField}
       sortDirection={sortDirection}
       onSort={onSort}

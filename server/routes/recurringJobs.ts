@@ -23,6 +23,8 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 // 2026-04-21 Phase 1 canonical policy architecture: PM contract cap
 // enforcement routes through the entitlement resolver.
 import { assertFeatureCapacityAuto } from "../services/entitlementEnforcement";
+import { logEvent, logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 import {
   generateInstances,
   generateForSingleTemplate,
@@ -176,14 +178,35 @@ router.get(
     const from = req.query.from ? String(req.query.from) : undefined;
     const to = req.query.to ? String(req.query.to) : undefined;
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    const status = req.query.status ? String(req.query.status) : undefined;
 
     const instances = await recurringJobsRepository.getInstancesWithJobs(
       companyId,
       templateId,
-      { from, to, limit }
+      { from, to, limit, status }
     );
 
     res.json(instances);
+  })
+);
+
+/**
+ * GET /api/recurring-templates/:id/delete-impact
+ * Returns counts used by the delete/archive confirmation modal.
+ * Lightweight read — no mutations. Does not change delete semantics.
+ */
+router.get(
+  "/:id/delete-impact",
+  requireAuth,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const templateId = req.params.id;
+
+    const template = await recurringJobsRepository.getTemplate(companyId, templateId);
+    if (!template) throw createError(404, "Recurring template not found");
+
+    const impact = await recurringJobsRepository.getDeleteImpact(companyId, templateId);
+    res.json(impact);
   })
 );
 
@@ -251,6 +274,15 @@ router.post(
       console.log(`[PM-CREATE] Skipping generation: isActive=${template.isActive}, locationId=${template.locationId}`);
     }
 
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "service_plan.created",
+      entityType: "other",
+      entityId: template.id,
+      summary: `Service plan "${template.title}" created`,
+      meta: { title: template.title, pmBillingModel: template.pmBillingModel ?? null },
+    });
+
     res.status(201).json(template);
   })
 );
@@ -268,12 +300,33 @@ router.patch(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const templateId = req.params.id;
+    // Extract renewalNote before Zod validation — Zod strips unknown fields, so
+    // it must be read from req.body directly. It is never passed to updateTemplate;
+    // it is only used in the logEvent meta below.
+    const renewalNote =
+      typeof req.body.renewalNote === "string" && req.body.renewalNote.trim()
+        ? req.body.renewalNote.trim()
+        : null;
     const data = validateSchema(updateRecurringJobTemplateSchema, req.body);
 
     // Get current template to check constraints
     const existing = await recurringJobsRepository.getTemplate(companyId, templateId);
     if (!existing) {
       throw createError(404, "Recurring template not found");
+    }
+
+    // Reactivation guard: block activating a plan whose effective endDate is already past.
+    // The effective endDate is: the value from this PATCH (if provided), else the stored value.
+    // Sending null for endDate (clearing expiry) alongside isActive=true is allowed.
+    if (data.isActive === true) {
+      const effectiveEndDate = data.endDate !== undefined ? data.endDate : existing.endDate;
+      if (effectiveEndDate) {
+        const today = await getCompanyToday(companyId);
+        const todayStr = formatDateString(today);
+        if (effectiveEndDate < todayStr) {
+          throw createError(400, "Cannot reactivate an expired service plan. Renew the contract first.");
+        }
+      }
     }
 
     // Validate hold reason if transitioning to on_hold
@@ -309,6 +362,65 @@ router.patch(
 
     if (!updated) {
       throw createError(404, "Recurring template not found");
+    }
+
+    // Post-update events — ctx shared across all event paths.
+    const ctx = getQueryCtx(req);
+    const isRenewal = !!(data.endDate && data.endDate !== existing.endDate);
+
+    // Renewal cleanup + audit: fires when endDate actually changes.
+    // Covers both the Renew Contract modal and inline PMDetailPage form edits.
+    if (isRenewal) {
+      // Cancel stale pending instances from the lapsed contract period.
+      // Only runs when a previous endDate existed — instanceDate <= oldEndDate
+      // is the safety bound; future instances (if any) are untouched.
+      let instancesCanceled = 0;
+      if (existing.endDate) {
+        instancesCanceled = await recurringJobsRepository.cancelStaleInstancesAfterRenewal(
+          companyId,
+          templateId,
+          existing.endDate,
+        );
+      }
+
+      await logEvent(ctx, {
+        eventType: "service_plan.renewed",
+        entityType: "other",
+        entityId: updated.id,
+        summary: `Service plan "${updated.title}" renewed — end date extended to ${data.endDate}`,
+        meta: {
+          templateId: updated.id,
+          title: updated.title,
+          previousEndDate: existing.endDate ?? null,
+          newEndDate: data.endDate,
+          pmContractAmount: String(data.pmContractAmount ?? existing.pmContractAmount ?? ""),
+          reactivated: data.isActive === true && !existing.isActive,
+          instancesCanceled,
+          ...(renewalNote ? { renewalNote } : {}),
+        },
+      });
+    }
+
+    if (data.isActive === false && existing.isActive) {
+      logEventAsync(ctx, {
+        eventType: "service_plan.paused",
+        entityType: "other",
+        entityId: updated.id,
+        summary: `Service plan "${updated.title}" paused`,
+        meta: { templateId: updated.id, title: updated.title },
+      });
+    }
+
+    // Standalone reactivation — skipped when a renewal event already fired
+    // (renewal meta already captures reactivated: true in that case).
+    if (data.isActive === true && !existing.isActive && !isRenewal) {
+      logEventAsync(ctx, {
+        eventType: "service_plan.reactivated",
+        entityType: "other",
+        entityId: updated.id,
+        summary: `Service plan "${updated.title}" reactivated`,
+        meta: { templateId: updated.id, title: updated.title },
+      });
     }
 
     // TODO: If an edit makes the PM contract due for the current cycle (e.g. adding
@@ -369,6 +481,17 @@ router.delete(
         action = "deleted";
       }
     }
+
+    const deleteCtx = getQueryCtx(req);
+    logEventAsync(deleteCtx, {
+      eventType: action === "archived" ? "service_plan.archived" : "service_plan.deleted",
+      entityType: "other",
+      entityId: templateId,
+      summary: action === "archived"
+        ? `Service plan "${existing.title}" archived (${instancesCanceled} pending instance${instancesCanceled !== 1 ? "s" : ""} canceled)`
+        : `Service plan "${existing.title}" deleted`,
+      meta: { templateId, title: existing.title, action, instancesCanceled },
+    });
 
     res.json({ action, instancesCanceled });
   })
@@ -528,6 +651,17 @@ router.post(
       throw createError(400, result.errors[0]);
     }
 
+    if (result.instancesCreated > 0) {
+      const genCtx = getQueryCtx(req);
+      logEventAsync(genCtx, {
+        eventType: "service_plan.instances_generated",
+        entityType: "other",
+        entityId: templateId,
+        summary: `${result.instancesCreated} instance${result.instancesCreated !== 1 ? "s" : ""} generated`,
+        meta: { templateId, instancesCreated: result.instancesCreated, windowDays },
+      });
+    }
+
     res.json(result);
   })
 );
@@ -559,6 +693,15 @@ router.post(
       throw createError(404, "Instance not found");
     }
 
+    const cancelCtx = getQueryCtx(req);
+    logEventAsync(cancelCtx, {
+      eventType: "service_plan.instance_canceled",
+      entityType: "other",
+      entityId: instance.templateId,
+      summary: `Instance canceled (${instance.instanceDate})`,
+      meta: { instanceId, instanceDate: instance.instanceDate, templateId: instance.templateId },
+    });
+
     res.json(instance);
   })
 );
@@ -585,6 +728,15 @@ router.post(
     if (!instance) {
       throw createError(404, "Instance not found");
     }
+
+    const skipCtx = getQueryCtx(req);
+    logEventAsync(skipCtx, {
+      eventType: "service_plan.instance_skipped",
+      entityType: "other",
+      entityId: instance.templateId,
+      summary: `Instance skipped (${instance.instanceDate})`,
+      meta: { instanceId, instanceDate: instance.instanceDate, templateId: instance.templateId },
+    });
 
     res.json(instance);
   })
