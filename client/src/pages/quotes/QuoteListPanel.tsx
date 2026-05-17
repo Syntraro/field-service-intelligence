@@ -9,7 +9,7 @@ import { EntityListTable, type EntityListColumn } from "@/components/lists/Entit
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { formatCurrency } from "@/lib/formatters";
 import type { Quote } from "@shared/schema";
-import type { QuoteView } from "./QuoteViewRail";
+import type { QuoteView } from "@/lib/quoteWorkspaceConfig";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,6 +20,13 @@ interface EnrichedQuote extends Quote {
 
 export interface QuoteSelectionContext {
   quoteId: string;
+  quoteNumber?: string | null;
+  clientName?: string | null;
+  locationId?: string | null;
+  customerCompanyId?: string | null;
+  total?: string | null;
+  expiryDate?: string | null;
+  status?: string | null;
 }
 
 interface QuoteListPanelProps {
@@ -216,7 +223,20 @@ export function QuoteListPanel({
   const handleRowClick = (quote: QuoteRow) => {
     const next = selectedQuoteId === quote.id ? null : quote.id;
     setSelectedQuoteId(next);
-    onSelectionChange?.(next ? { quoteId: next } : null);
+    onSelectionChange?.(
+      next
+        ? {
+            quoteId: next,
+            quoteNumber: quote.quoteNumber ?? null,
+            clientName: quote.customerCompany?.name ?? quote.location?.companyName ?? null,
+            locationId: quote.location?.id ?? null,
+            customerCompanyId: quote.customerCompany?.id ?? null,
+            total: quote.total ?? null,
+            expiryDate: quote.expiryDate ?? null,
+            status: quote.status ?? null,
+          }
+        : null,
+    );
   };
 
   return (

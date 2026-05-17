@@ -1,5 +1,4 @@
-import { useState, useMemo } from "react";
-import { useLocation, useSearch } from "wouter";
+import { useState, useMemo, useEffect } from "react";
 import { format } from "date-fns";
 import { Calendar as CalendarIcon } from "lucide-react";
 import { useJobsFeed, type JobFeedItem } from "@/hooks/useJobsFeed";
@@ -8,33 +7,14 @@ import { getJobStatusMeta } from "@/lib/statusBadges";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { EntityNumber } from "@/components/common/EntityNumber";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
-import { type JobView } from "./JobViewRail";
-import { JobActionsRail, type SelectedJobContext } from "./JobActionsRail";
-import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
+import { type JobView } from "@/lib/jobsWorkspaceConfig";
+import { type SelectedJobContext } from "./JobActionsRail";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
-import {
-  WorkspaceFilterBar,
-  WorkspaceViewChip,
-  WorkspaceFilterBarSeparator,
-  WorkspaceViewMoreDropdown,
-  WorkspaceViewDropdownItem,
-} from "@/components/workspace/WorkspaceFilterBar";
-import { useWorkspaceState } from "@/hooks/useWorkspaceState";
-import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type EnrichedJob = JobFeedItem & { _overdue: boolean };
-
-const VALID_VIEWS: readonly JobView[] = [
-  "all", "needs-scheduling", "scheduled-today", "in-progress",
-  "awaiting-follow-up", "waiting-for-parts", "ready-to-invoice",
-  "completed-not-invoiced", "overdue", "unassigned",
-  "service", "maintenance", "install", "warranty", "emergency", "recurring",
-  "missing-labor", "missing-notes", "missing-line-items",
-  "no-future-visit", "return-visit-required", "technician-flagged",
-];
 
 const PAGE_SIZE = 50;
 
@@ -207,43 +187,34 @@ const JOB_COLUMNS: EntityListColumn<EnrichedJob>[] = [
 // ── JobsWorkspaceTab ──────────────────────────────────────────────────────────
 
 interface JobsWorkspaceTabProps {
+  /** Active view — owned and URL-synced by the parent page. */
+  activeView: JobView;
+  /** Search string — owned by the parent page. */
   searchQuery: string;
-  onSearchChange?: (q: string) => void;
+  /** Highlighted row key — drives EntityListTable selection highlight. */
+  selectedJobId: string | null;
+  /** Called when a row is clicked; parent page owns selection state. */
+  onRailContextChange: (ctx: SelectedJobContext | null) => void;
 }
 
-export function JobsWorkspaceTab({ searchQuery }: JobsWorkspaceTabProps) {
-  const [, setLocation] = useLocation();
-  const search = useSearch();
-
-  // ── View URL sync ──────────────────────────────────────────────────────────
-  const activeView = useMemo<JobView>(() => {
-    const p = new URLSearchParams(search);
-    const v = p.get("view");
-    return v && (VALID_VIEWS as readonly string[]).includes(v) ? (v as JobView) : "all";
-  }, [search]);
-
-  // ── Domain selection ───────────────────────────────────────────────────────
-  const [selectedContext, setSelectedContext] = useState<SelectedJobContext | null>(null);
-  const [railExpanded, setRailExpanded] = useState(false);
+/**
+ * Jobs table adapter.
+ * Owns: feed fetch, enrichment, client-side filtering, pagination.
+ * Does NOT own: view state, URL navigation, rail layout, filter bar.
+ * Those are owned by JobsWorkspacePage.
+ */
+export function JobsWorkspaceTab({
+  activeView,
+  searchQuery,
+  selectedJobId,
+  onRailContextChange,
+}: JobsWorkspaceTabProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // ── Workspace infrastructure ───────────────────────────────────────────────
-  const ws = useWorkspaceState({
-    lsKey: "syntraro.jobs",
-    validViews: VALID_VIEWS,
-    defaultView: "all",
-    onNavigate: (view) => {
-      const params = new URLSearchParams(search);
-      if (view === "all") params.delete("view");
-      else params.set("view", view);
-      setLocation(`/jobs?${params}`);
-    },
-    onViewChange: () => {
-      setSelectedContext(null);
-      setRailExpanded(false);
-      setVisibleCount(PAGE_SIZE);
-    },
-  });
+  // Reset pagination when the view changes.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [activeView]);
 
   // ── Feed fetch ─────────────────────────────────────────────────────────────
   const { jobs: rawJobs, isLoading, error } = useJobsFeed({
@@ -262,116 +233,64 @@ export function JobsWorkspaceTab({ searchQuery }: JobsWorkspaceTabProps) {
     return applySearch(byView, searchQuery);
   }, [enrichedJobs, activeView, searchQuery]);
 
-  // ── Selection ──────────────────────────────────────────────────────────────
-  const { handleSelectionChange } = useWorkspaceSelection<SelectedJobContext>(
-    (ctx) => {
-      setSelectedContext(ctx);
-      setRailExpanded(ctx !== null);
-    },
-  );
-
+  // ── Row click — toggle selection ──────────────────────────────────────────
   const handleRowClick = (job: EnrichedJob) => {
-    const ctx: SelectedJobContext = { jobId: job.id };
-    const alreadySelected = selectedContext?.jobId === job.id;
+    const alreadySelected = selectedJobId === job.id;
     if (alreadySelected) {
-      setSelectedContext(null);
-      setRailExpanded(false);
+      onRailContextChange(null);
     } else {
-      handleSelectionChange(ctx, false);
+      onRailContextChange({
+        jobId: job.id,
+        jobNumber: job.jobNumber,
+        locationDisplayName: job.locationDisplayName,
+        locationId: job.locationId,
+        locationAddress: job.locationAddress,
+        locationCity: job.locationCity,
+        status: job.status,
+        openSubStatus: job.openSubStatus,
+        scheduledStart: job.scheduledStart,
+        jobType: job.jobType,
+        priority: job.priority,
+        _overdue: job._overdue,
+      });
     }
   };
 
-  const handleViewChange = (view: JobView) => {
-    ws.setView(view);
-    // Selection clearing and visibleCount reset are handled by onViewChange in useWorkspaceState.
-  };
-
-  const moreActive = ["awaiting-follow-up", "waiting-for-parts", "ready-to-invoice", "completed-not-invoiced", "unassigned"].includes(activeView);
-  const workflowActive = ["service", "maintenance", "install", "warranty", "emergency", "recurring"].includes(activeView);
-  const attentionActive = ["missing-labor", "missing-notes", "missing-line-items", "no-future-visit", "return-visit-required", "technician-flagged"].includes(activeView);
-
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      {/* ── Horizontal view/filter bar ── */}
-      <WorkspaceFilterBar data-testid="job-filter-bar">
-        <WorkspaceViewChip active={activeView === "all"} onClick={() => handleViewChange("all")} data-testid="job-view-all">All</WorkspaceViewChip>
-        <WorkspaceViewChip active={activeView === "scheduled-today"} onClick={() => handleViewChange("scheduled-today")} data-testid="job-view-scheduled-today">Today</WorkspaceViewChip>
-        <WorkspaceViewChip active={activeView === "needs-scheduling"} onClick={() => handleViewChange("needs-scheduling")} data-testid="job-view-needs-scheduling">Unscheduled</WorkspaceViewChip>
-        <WorkspaceViewChip active={activeView === "in-progress"} onClick={() => handleViewChange("in-progress")} data-testid="job-view-in-progress">In Progress</WorkspaceViewChip>
-        <WorkspaceViewChip active={activeView === "overdue"} onClick={() => handleViewChange("overdue")} data-testid="job-view-overdue">Overdue</WorkspaceViewChip>
-
-        <WorkspaceFilterBarSeparator />
-
-        <WorkspaceViewMoreDropdown label="More" activeInDropdown={moreActive}>
-          <WorkspaceViewDropdownItem active={activeView === "awaiting-follow-up"} onClick={() => handleViewChange("awaiting-follow-up")}>Awaiting Follow-up</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "waiting-for-parts"} onClick={() => handleViewChange("waiting-for-parts")}>Waiting for Parts</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "ready-to-invoice"} onClick={() => handleViewChange("ready-to-invoice")}>Ready to Invoice</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "completed-not-invoiced"} onClick={() => handleViewChange("completed-not-invoiced")}>Completed, Not Invoiced</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "unassigned"} onClick={() => handleViewChange("unassigned")}>Unassigned</WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-
-        <WorkspaceViewMoreDropdown label="Workflow" activeInDropdown={workflowActive}>
-          <WorkspaceViewDropdownItem active={activeView === "service"} onClick={() => handleViewChange("service")}>Service</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "maintenance"} onClick={() => handleViewChange("maintenance")}>Maintenance</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "install"} onClick={() => handleViewChange("install")}>Install</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "warranty"} onClick={() => handleViewChange("warranty")}>Warranty</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "emergency"} onClick={() => handleViewChange("emergency")}>Emergency</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "recurring"} onClick={() => handleViewChange("recurring")}>Recurring</WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-
-        <WorkspaceViewMoreDropdown label="Attention" activeInDropdown={attentionActive}>
-          <WorkspaceViewDropdownItem active={activeView === "missing-labor"} onClick={() => handleViewChange("missing-labor")}>Missing Labor</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "missing-notes"} onClick={() => handleViewChange("missing-notes")}>Missing Notes</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "missing-line-items"} onClick={() => handleViewChange("missing-line-items")}>Missing Line Items</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "no-future-visit"} onClick={() => handleViewChange("no-future-visit")}>No Future Visit</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "return-visit-required"} onClick={() => handleViewChange("return-visit-required")}>Return Visit Required</WorkspaceViewDropdownItem>
-          <WorkspaceViewDropdownItem active={activeView === "technician-flagged"} onClick={() => handleViewChange("technician-flagged")}>Flagged by Technician</WorkspaceViewDropdownItem>
-        </WorkspaceViewMoreDropdown>
-      </WorkspaceFilterBar>
-
-      {/* ── Workspace: center list + contextual right rail ── */}
-      <OperationalWorkspace
-        rightRailExpanded={railExpanded}
-        center={
-          <WorkspaceCenterPane>
-            <WorkspaceEntitySurface
-              data-testid="tab-content-jobs"
-              footer={
-                <ListLoadMoreFooter
-                  visibleCount={Math.min(visibleCount, filteredJobs.length)}
-                  totalCount={filteredJobs.length}
-                  hasMore={visibleCount < filteredJobs.length}
-                  onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
-                  label="job"
-                />
-              }
-            >
-              <div className="h-full overflow-y-auto">
-                <EntityListTable<EnrichedJob>
-                  rows={filteredJobs.slice(0, visibleCount)}
-                  rowKey={(job) => job.id}
-                  onRowClick={handleRowClick}
-                  selectedRowKey={selectedContext?.jobId}
-                  loadingState={isLoading ? { kind: "loading", title: "Loading jobs…" } : undefined}
-                  emptyState={
-                    rawJobs.length === 0
-                      ? { kind: "empty", icon: "wrench", title: "No jobs yet" }
-                      : { kind: "no-results", title: "No jobs match this view" }
-                  }
-                  errorState={
-                    error
-                      ? { kind: "error", title: "Failed to load jobs" }
-                      : undefined
-                  }
-                  columns={JOB_COLUMNS}
-                />
-              </div>
-            </WorkspaceEntitySurface>
-          </WorkspaceCenterPane>
+    <WorkspaceCenterPane data-testid="jobs-workspace-tab">
+      <WorkspaceEntitySurface
+        data-testid="tab-content-jobs"
+        footer={
+          <ListLoadMoreFooter
+            visibleCount={Math.min(visibleCount, filteredJobs.length)}
+            totalCount={filteredJobs.length}
+            hasMore={visibleCount < filteredJobs.length}
+            onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
+            label="job"
+          />
         }
-        rightRail={<JobActionsRail context={selectedContext} />}
-        data-testid="jobs-workspace-tab"
-      />
-    </div>
+      >
+        <div className="h-full overflow-y-auto">
+          <EntityListTable<EnrichedJob>
+            rows={filteredJobs.slice(0, visibleCount)}
+            rowKey={(job) => job.id}
+            onRowClick={handleRowClick}
+            selectedRowKey={selectedJobId ?? undefined}
+            loadingState={isLoading ? { kind: "loading", title: "Loading jobs…" } : undefined}
+            emptyState={
+              rawJobs.length === 0
+                ? { kind: "empty", icon: "wrench", title: "No jobs yet" }
+                : { kind: "no-results", title: "No jobs match this view" }
+            }
+            errorState={
+              error
+                ? { kind: "error", title: "Failed to load jobs" }
+                : undefined
+            }
+            columns={JOB_COLUMNS}
+          />
+        </div>
+      </WorkspaceEntitySurface>
+    </WorkspaceCenterPane>
   );
 }

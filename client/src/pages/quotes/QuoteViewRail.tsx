@@ -3,27 +3,7 @@ import {
   Clock, FileText, PenLine, Send, XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-export type QuoteView =
-  | "all" | "draft" | "sent" | "awaiting-approval"
-  | "expiring-soon" | "approved" | "expired" | "declined"
-  | "converted" | "needs-assessment" | "assessment-scheduled";
-
-export interface QuoteViewCounts {
-  all?: number;
-  draft?: number;
-  sent?: number;
-  awaitingApproval?: number;
-  expiringSoon?: number;
-  approved?: number;
-  expired?: number;
-  declined?: number;
-  converted?: number;
-  needsAssessment?: number;
-  assessmentScheduled?: number;
-}
+import type { QuoteView, QuoteViewCounts } from "@/lib/quoteWorkspaceConfig";
 
 interface ViewItem {
   value: QuoteView;

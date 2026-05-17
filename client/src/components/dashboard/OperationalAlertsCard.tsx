@@ -1,61 +1,47 @@
 /**
- * OperationalAlertsCard — triage card on the customizable Financial
- * Dashboard.
+ * OperationalAlertsCard — grouped operational command-center widget on the
+ * customizable Financial Dashboard.
  *
- * 2026-05-07 RALPH: this card is now mounted exclusively from
- * `DashboardWidgetGrid` and lives inside a 1/3-width × 300 px-tall
- * grid cell. It fills its cell (`w-full h-full`) so its visual
- * height matches every other dashboard widget. The previous
- * "right-rail at xl+" variant (collapsed-to-vertical-strip) was
- * built for the legacy Operations Dashboard side rail, which no
- * longer exists — that branch was deleted with this change. The
- * full-card layout is the only render path now.
+ * 2026-05-07 RALPH: mounted exclusively from DashboardWidgetGrid in a
+ * 1/3-width × 300px-tall cell. Fills its cell (w-full h-full) so its visual
+ * height matches every other dashboard widget.
  *
- * Rows — one mode per row (2026-05-06 normalization):
- *   - Ready to invoice   → mode="ready_to_invoice"
- *   - Past due           → mode="past_due"
- *   - Unscheduled        → mode="unscheduled"
- *   - Requires attention → mode="requires_attention"
- *   - Invoices not sent  → mode="invoices_not_sent"  (2026-05-07 — absorbed
- *     from the retired Needs Attention card; routed through the same
- *     shared DashboardActionModal. Lower operational urgency, so it
- *     renders at the bottom of the canonical row order.)
- *
- * Card chrome routes through the canonical `<CardShell>`. Rows with
- * zero count remain visible but de-emphasized so the card height
- * stays predictable. Auto-collapse (when total count is zero) and
- * the user-toggle that overrides it are preserved — collapsing now
- * just hides the body within the fixed-height card; the card itself
- * keeps its canonical height.
+ * 2026-05-16 structural refinement:
+ *   - Flat row list replaced by two grouped sections — REVENUE and SCHEDULING —
+ *     using canonical SectionLabel (text-label token) headers.
+ *   - Row tones updated: ready_to_invoice → "positive"; requires_attention
+ *     reclassified from "danger" to "default" (WARNING tier, amber icon).
+ *   - Compact rows now render count badge + chevron via DashboardMetricRow.
+ *   - Empty state replaced with a structured "Pipeline clear" panel.
+ *   - `order` prop removed; section grouping owns row order.
  */
 
 import {
   AlertTriangle,
   Briefcase,
   Calendar,
+  CheckCircle2,
   FileText,
   Receipt,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CardShell, CardShellHeader, CardShellTitle, CardShellAction } from "@/components/ui/card";
-// 2026-05-08 chip Phase 2: severity-tinted count badge → StatusChip.
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+  CardShellAction,
+} from "@/components/ui/card";
 import { StatusChip } from "@/components/ui/chip";
+import { SectionLabel } from "@/components/ui/typography";
 import type { ChipTone } from "@/lib/chipVariants";
 import type { DashboardActionMode } from "@/components/DashboardActionModal";
-import { DashboardMetricRow } from "@/components/dashboard/DashboardMetricRow";
+import {
+  DashboardMetricRow,
+  type DashboardMetricRowTone,
+} from "@/components/dashboard/DashboardMetricRow";
+import { cn } from "@/lib/utils";
 
-/**
- * 2026-04-25 (Financial Dashboard layout refinement): row keys are now
- * a public union so callers can override row order via the `order` prop
- * without forking this component. The Operations Dashboard does NOT
- * pass `order` and continues to render the historical sequence.
- */
-export type OperationalAlertRowKey =
-  | "ready_to_invoice"
-  | "past_due"
-  | "unscheduled"
-  | "requires_attention"
-  | "invoices_not_sent";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface OperationalAlertsCardProps {
   readyToInvoiceCount: number;
@@ -63,41 +49,31 @@ interface OperationalAlertsCardProps {
   unscheduledCount: number;
   requiresAttentionCount: number;
   /**
-   * 2026-05-07: count of draft invoices waiting to be sent. Absorbed
-   * from the retired Needs Attention card. Optional so callers that
-   * don't have the financial-summary query in scope can omit it (the
-   * row simply renders muted at 0).
+   * Count of draft invoices waiting to be sent. Absorbed from the retired
+   * Needs Attention card (2026-05-07). Optional — renders muted at 0 when omitted.
    */
   invoicesNotSentCount?: number;
   isLoading?: boolean;
-  /** Same handler the top KPI tile + Jobs card use — single modal instance. */
   onOpenActionModal: (mode: DashboardActionMode) => void;
-  /**
-   * Optional row order. When omitted, falls back to the historical
-   * ["ready_to_invoice", "past_due", "unscheduled", "requires_attention",
-   * "invoices_not_sent"]. Unknown keys are ignored; missing keys are
-   * dropped.
-   */
-  order?: OperationalAlertRowKey[];
 }
 
 interface AlertRow {
-  key: OperationalAlertRowKey;
+  key: string;
   label: string;
   count: number;
   icon: React.ComponentType<{ className?: string }>;
   iconColor: string;
   mode: DashboardActionMode;
-  urgent?: boolean;
+  tone: DashboardMetricRowTone;
 }
 
-const DEFAULT_ALERT_ORDER: OperationalAlertRowKey[] = [
-  "ready_to_invoice",
-  "past_due",
-  "unscheduled",
-  "requires_attention",
-  "invoices_not_sent",
-];
+interface AlertSection {
+  key: string;
+  label: string;
+  rows: AlertRow[];
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function OperationalAlertsCard({
   readyToInvoiceCount,
@@ -107,70 +83,72 @@ export function OperationalAlertsCard({
   invoicesNotSentCount = 0,
   isLoading,
   onOpenActionModal,
-  order,
 }: OperationalAlertsCardProps) {
-  const rowsByKey: Record<OperationalAlertRowKey, AlertRow> = {
-    ready_to_invoice: {
-      key: "ready_to_invoice",
-      label: "Ready to invoice",
-      count: readyToInvoiceCount,
-      icon: Receipt,
-      iconColor: "text-emerald-600",
-      mode: "ready_to_invoice",
+  const sections: AlertSection[] = [
+    {
+      key: "revenue",
+      label: "Revenue",
+      rows: [
+        {
+          key: "past_due",
+          label: "Past due invoices",
+          count: pastDueCount,
+          icon: AlertTriangle,
+          iconColor: "text-red-600",
+          mode: "past_due",
+          tone: pastDueCount > 0 ? "danger" : "muted",
+        },
+        {
+          key: "invoices_not_sent",
+          label: "Invoices not sent",
+          count: invoicesNotSentCount,
+          icon: FileText,
+          iconColor: "text-slate-500",
+          mode: "invoices_not_sent",
+          tone: invoicesNotSentCount > 0 ? "default" : "muted",
+        },
+        {
+          key: "ready_to_invoice",
+          label: "Ready to invoice",
+          count: readyToInvoiceCount,
+          icon: Receipt,
+          iconColor: "text-emerald-600",
+          mode: "ready_to_invoice",
+          tone: readyToInvoiceCount > 0 ? "positive" : "muted",
+        },
+      ],
     },
-    past_due: {
-      key: "past_due",
-      label: "Past due",
-      count: pastDueCount,
-      icon: AlertTriangle,
-      iconColor: "text-red-600",
-      mode: "past_due",
-      urgent: pastDueCount > 0,
+    {
+      key: "scheduling",
+      label: "Scheduling",
+      rows: [
+        {
+          key: "unscheduled",
+          label: "Unscheduled visits",
+          count: unscheduledCount,
+          icon: Calendar,
+          iconColor: "text-amber-500",
+          mode: "unscheduled",
+          tone: unscheduledCount > 0 ? "default" : "muted",
+        },
+        {
+          key: "requires_attention",
+          label: "Requires attention",
+          count: requiresAttentionCount,
+          icon: Briefcase,
+          iconColor: "text-amber-600",
+          mode: "requires_attention",
+          tone: requiresAttentionCount > 0 ? "default" : "muted",
+        },
+      ],
     },
-    unscheduled: {
-      key: "unscheduled",
-      label: "Unscheduled",
-      count: unscheduledCount,
-      icon: Calendar,
-      iconColor: "text-amber-600",
-      mode: "unscheduled",
-    },
-    requires_attention: {
-      key: "requires_attention",
-      label: "Requires attention",
-      count: requiresAttentionCount,
-      icon: Briefcase,
-      iconColor: "text-blue-600",
-      mode: "requires_attention",
-      urgent: requiresAttentionCount > 0,
-    },
-    // 2026-05-07: absorbed from the retired Needs Attention card.
-    // Lower operational urgency than scheduling/dispatch issues, so it
-    // sits at the bottom of the canonical order. Slate icon (not red /
-    // amber) signals "billing inbox" rather than "field operations
-    // needs help right now".
-    invoices_not_sent: {
-      key: "invoices_not_sent",
-      label: "Invoices not sent",
-      count: invoicesNotSentCount,
-      icon: FileText,
-      iconColor: "text-muted-foreground",
-      mode: "invoices_not_sent",
-    },
-  };
-
-  const rows: AlertRow[] = (order ?? DEFAULT_ALERT_ORDER)
-    .map((k) => rowsByKey[k])
-    .filter((r): r is AlertRow => Boolean(r));
+  ];
 
   const totalCount =
-    readyToInvoiceCount + pastDueCount + unscheduledCount + requiresAttentionCount + invoicesNotSentCount;
+    pastDueCount + invoicesNotSentCount + readyToInvoiceCount +
+    unscheduledCount + requiresAttentionCount;
 
-  // Badge severity → canonical StatusChip tone:
-  //   • Requires attention > 0 → danger (red soft-tint).
-  //   • Else past due > 0      → warning (amber soft-tint, replaces
-  //                              the orange tint — semantic match).
-  //   • Else                   → neutral slate.
+  // Header badge severity — unchanged from pre-2026-05-16 logic.
   const badgeTone: ChipTone =
     requiresAttentionCount > 0
       ? "danger"
@@ -178,20 +156,6 @@ export function OperationalAlertsCard({
         ? "warning"
         : "neutral";
 
-  // 2026-05-07 RALPH (height fix):
-  //   • `w-full h-full` lets the card fill the dashboard grid cell
-  //     (which owns the canonical `h-[300px]` height + `col-span-*`
-  //     width). The previous `xl:w-[360px]` constraint forced the
-  //     card to a fixed 360 px wide regardless of cell width, leaving
-  //     trailing whitespace inside the cell at xl+; the previous
-  //     content-sized height made it shorter than its peers.
-  //   • `flex flex-col` so the body region can flex-1 + scroll the
-  //     overflow if a future row count exceeds the card height.
-  //   • The legacy "rail at xl+" variant (vertical-strip collapsed
-  //     mode for the old Operations Dashboard right rail) is gone —
-  //     this card has only one consumer today (FinancialDashboard,
-  //     mounted via DashboardWidgetGrid), and the rail variant did
-  //     not fit the 1/3-width grid cell model.
   return (
     <CardShell
       className="w-full h-full flex flex-col"
@@ -217,42 +181,59 @@ export function OperationalAlertsCard({
           </CardShellAction>
         )}
       </CardShellHeader>
+
       <div
         id="operational-alerts-body"
         className="flex-1 min-h-0 overflow-y-auto"
       >
-          {isLoading ? (
-            <div className="px-4 py-3 space-y-2">
-              {/* 2026-05-07: 5 skeleton rows match the canonical row count
-                  after Needs Attention's "Invoices not sent" row was
-                  absorbed into this card. */}
-              {[0, 1, 2, 3, 4].map((i) => (
-                <Skeleton key={i} className="h-6 w-full" />
-              ))}
+        {isLoading ? (
+          <div className="px-4 py-3 space-y-2.5">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-7 w-full" />
+            ))}
+          </div>
+        ) : totalCount === 0 ? (
+          // All categories clear — structured empty state.
+          <div className="flex flex-col items-center justify-center min-h-[180px] h-full py-10 px-6 text-center">
+            <div className="h-9 w-9 rounded-full bg-emerald-50 dark:bg-emerald-950/25 flex items-center justify-center mb-3">
+              <CheckCircle2 className="h-5 w-5 text-emerald-600" />
             </div>
-          ) : (
-            <ul>
-              {rows.map((row, idx) => {
-                const isLast = idx === rows.length - 1;
-                const muted = row.count === 0;
-                return (
+            <p className="text-row font-semibold text-foreground mb-1">Pipeline clear</p>
+            <p className="text-helper text-muted-foreground">
+              No actions currently blocking workflow.
+            </p>
+          </div>
+        ) : (
+          // Grouped operational sections.
+          sections.map((section, sectionIdx) => (
+            <div key={section.key}>
+              {sectionIdx > 0 && (
+                <div className="mx-4 border-t border-card-border/60" />
+              )}
+              <div className={cn("px-4 pb-1.5", sectionIdx === 0 ? "pt-3" : "pt-4")}>
+                <SectionLabel>{section.label}</SectionLabel>
+              </div>
+              <ul>
+                {section.rows.map((row, rowIdx) => (
                   <li key={row.key}>
                     <DashboardMetricRow
                       icon={row.icon}
                       iconColor={row.iconColor}
                       label={row.label}
                       count={row.count}
-                      tone={row.urgent ? "danger" : muted ? "muted" : "default"}
+                      tone={row.tone}
                       density="compact"
+                      showChevron
                       onSelect={() => onOpenActionModal(row.mode)}
-                      isLast={isLast}
+                      isLast={rowIdx === section.rows.length - 1}
                       testId={`alert-row-${row.key}`}
                     />
                   </li>
-                );
-              })}
-            </ul>
-          )}
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
       </div>
     </CardShell>
   );

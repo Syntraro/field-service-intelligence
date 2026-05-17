@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { format } from "date-fns";
@@ -79,7 +79,27 @@ import { TimeEntryModal } from "@/components/time";
 import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { statusToChipTone } from "@/lib/chipVariants";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
+import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
+import { expenseCategoryEnum } from "@shared/schema";
+import { statusToChipTone, type ChipTone } from "@/lib/chipVariants";
+import { Chip } from "@/components/ui/chip";
 import {
   CardShell,
   CardShellHeader,
@@ -406,6 +426,7 @@ function LineItemsTable({
   jobId,
   onTotalsChange,
   surface,
+  renderTotalsFooter,
 }: {
   jobId: string;
   onTotalsChange: (totals: {
@@ -415,6 +436,7 @@ function LineItemsTable({
     margin: number;
   }) => void;
   surface?: "contained" | "open" | "workspace" | "inset";
+  renderTotalsFooter?: ReactNode;
 }) {
   const { toast } = useToast();
 
@@ -719,6 +741,7 @@ function LineItemsTable({
         title="Line Items"
         surface={surface ?? "open"}
         hideMetrics
+        renderTotalsFooter={renderTotalsFooter}
       />
       <AddProductModal
         open={createOpen}
@@ -862,6 +885,37 @@ export default function JobDetailPage() {
     () => expensesRaw.reduce((sum, e) => sum + parseFloat(e.amount || "0"), 0),
     [expensesRaw],
   );
+
+  // Add-expense modal state
+  const [addExpenseOpen, setAddExpenseOpen] = useState(false);
+  const [expenseDraft, setExpenseDraft] = useState({
+    amount: "",
+    category: "" as string,
+    date: format(new Date(), "yyyy-MM-dd"),
+    notes: "",
+  });
+  const addExpenseMutation = useMutation({
+    mutationFn: async (draft: typeof expenseDraft) =>
+      apiRequest(`/api/jobs/${jobId}/expenses`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: draft.amount,
+          category: draft.category,
+          date: draft.date,
+          notes: draft.notes || null,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "expenses"] });
+      setAddExpenseOpen(false);
+      setExpenseDraft({ amount: "", category: "", date: format(new Date(), "yyyy-MM-dd"), notes: "" });
+      toast({ title: "Expense added" });
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Failed to add expense";
+      toast({ title: "Failed to add expense", description: msg, variant: "destructive" });
+    },
+  });
 
   // 2026-04-29 (precision UI v3): the parallel `jobEquipmentRows` and
   // `jobNoteRows` queries (and the `inlineNoteMutation` write path that
@@ -1401,15 +1455,6 @@ export default function JobDetailPage() {
     ? [cityProvince, job.location.postalCode].filter(Boolean).join(" ").trim()
     : "";
 
-  // Derived values for the header KPI strip + totals panel.
-  const partsTotal = billingTotals?.totalPrice ?? 0;
-  const labourCost = labourBuckets.totalCost;
-  const subtotal = partsTotal + labourCost + expenseTotalAmount;
-  // TODO(schema): no per-job/per-company tax rate surfaced here yet —
-  // hardcoded HST 13% (Ontario default) until canonical tax rate is wired.
-  const taxRate = 0.13;
-  const taxAmount = subtotal * taxRate;
-  const grandTotal = subtotal + taxAmount;
 
   // 2026-04-29 (precision UI refactor): `nextVisit` drives the Scheduled
   // row in the primary information card. The companion `nextCrew`
@@ -1555,8 +1600,13 @@ export default function JobDetailPage() {
   // selectedVisitId / VisitEditorLauncher flow.
   const buildJobSummaryPanelDescriptor = (): RailPanelDescriptor => {
     // ── Financial card ────────────────────────────────────────────
-    const profit = billingTotals?.profit ?? 0;
-    const marginPct = billingTotals?.margin ?? 0;
+    // True job profit = Revenue − Line Item Cost − Labour − Expenses.
+    // billingTotals.profit is line-item profit only (totalPrice − totalCost)
+    // and must not be used here — it excludes labour and expense costs.
+    const revenue = billingTotals?.totalPrice ?? 0;
+    const lineItemCost = billingTotals?.totalCost ?? 0;
+    const profit = revenue - lineItemCost - labourBuckets.totalCost - expenseTotalAmount;
+    const marginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
 
     const financialCard: RailCardDescriptor = {
       key: "financial-summary",
@@ -1566,15 +1616,20 @@ export default function JobDetailPage() {
         marginPct,
         profit,
         hasData: !!billingTotals,
-        profitValue: billingTotals ? formatCurrency(billingTotals.profit) : "—",
+        profitValue: billingTotals ? formatCurrency(profit) : "—",
         marginTestId: "job-summary-margin-pct",
         marginBarTestId: "job-summary-margin-bar",
         profitTestId: "job-summary-profit",
         rows: [
           {
             label: "Revenue",
-            value: billingTotals ? formatCurrency(billingTotals.totalPrice) : "—",
+            value: billingTotals ? formatCurrency(revenue) : "—",
             testId: "job-summary-revenue",
+          },
+          {
+            label: "Line Items",
+            value: billingTotals ? formatCurrency(lineItemCost) : "—",
+            testId: "job-summary-line-item-cost",
           },
           {
             label: "Labour",
@@ -1988,23 +2043,33 @@ export default function JobDetailPage() {
                         }
                       : undefined
                   }
-                  innerCard
+                  alwaysShowDescription
+                  titleHref={job.locationId ? `/clients/${job.locationId}` : undefined}
                   status={{
                     label: getJobStatusDisplay(job).label,
                     tone: statusToChipTone(job.openSubStatus === "on_hold" ? "on_hold" : job.status),
                   }}
-                  clientName={clientName ?? undefined}
-                  clientHref={job.locationId ? `/clients/${job.locationId}` : undefined}
-                  addressLines={[
-                    // 2026-05-06 RALPH: pass the RAW `location.location`
-                    // column, NOT the COALESCE `companyName` which duplicates the H1.
-                    resolveServiceLocationName(job.location?.location, clientName),
-                    streetLine,
-                    cityLine,
-                  ].filter(Boolean) as string[]}
-                  addressLabel="Service Address"
-                  phone={job.location?.phone ?? undefined}
-                  email={job.location?.email ?? undefined}
+                  metadataChips={
+                    <>
+                      {job.jobType && (
+                        <Chip tone="neutral">
+                          {job.jobType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                        </Chip>
+                      )}
+                      {job.priority && (
+                        <Chip tone={
+                          (() => {
+                            const p = job.priority.toLowerCase();
+                            if (p === "high" || p === "urgent") return "warning" as ChipTone;
+                            if (p === "low") return "info" as ChipTone;
+                            return "neutral" as ChipTone;
+                          })()
+                        }>
+                          {job.priority.charAt(0).toUpperCase() + job.priority.slice(1).toLowerCase()}
+                        </Chip>
+                      )}
+                    </>
+                  }
                   editCapability={{ enabled: true, ariaLabel: "Edit job header", onStartEdit: enterHeaderEdit }}
                   primaryActions={[
                     ...(job.status === "open" ? [{
@@ -2109,6 +2174,34 @@ export default function JobDetailPage() {
                   ]}
                   items={[
                     {
+                      key: "service-address",
+                      label: "Service Address",
+                      wrapValue: true,
+                      value: streetLine || cityLine ? (
+                        <span className="flex flex-col gap-0">
+                          {streetLine && <span>{streetLine}</span>}
+                          {cityLine && (
+                            <span className="font-normal text-text-secondary">{cityLine}</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-text-disabled">—</span>
+                      ),
+                    },
+                    {
+                      key: "scheduled",
+                      label: "Scheduled",
+                      value: nextVisit?.scheduledStart ? (
+                        <span className="tabular-nums">
+                          {format(new Date(nextVisit.scheduledStart), "MMM d")}
+                          <span className="text-text-disabled mx-1">·</span>
+                          {format(new Date(nextVisit.scheduledStart), "h:mm a")}
+                        </span>
+                      ) : (
+                        <span className="text-text-disabled">—</span>
+                      ),
+                    },
+                    {
                       key: "job-number",
                       label: "Job #",
                       value: (
@@ -2141,43 +2234,6 @@ export default function JobDetailPage() {
                           className="w-20 h-7 px-1.5 text-row font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
                           data-testid="input-job-number"
                         />
-                      ),
-                    },
-                    {
-                      key: "job-type",
-                      label: "Type",
-                      value: job.jobType ? (
-                        <span>
-                          {job.jobType
-                            .replace(/_/g, " ")
-                            .replace(/\b\w/g, (c) => c.toUpperCase())}
-                        </span>
-                      ) : (
-                        <span className="text-text-disabled">—</span>
-                      ),
-                    },
-                    {
-                      key: "priority",
-                      label: "Priority",
-                      value: job.priority ? (
-                        <span>
-                          {job.priority.charAt(0).toUpperCase() + job.priority.slice(1)}
-                        </span>
-                      ) : (
-                        <span className="text-text-disabled">—</span>
-                      ),
-                    },
-                    {
-                      key: "scheduled",
-                      label: "Scheduled",
-                      value: nextVisit?.scheduledStart ? (
-                        <span className="tabular-nums">
-                          {format(new Date(nextVisit.scheduledStart), "MMM d")}
-                          <span className="text-text-disabled mx-1">·</span>
-                          {format(new Date(nextVisit.scheduledStart), "h:mm a")}
-                        </span>
-                      ) : (
-                        <span className="text-text-disabled">—</span>
                       ),
                     },
                     {
@@ -2224,7 +2280,7 @@ export default function JobDetailPage() {
                         }
                       : undefined
                   }
-                  itemsColumns={3}
+                  itemsColumns={4}
                   editControls={
                     editingHeader
                       ? {
@@ -2243,43 +2299,22 @@ export default function JobDetailPage() {
               <div className="border-t border-card-border" />
               <div className="p-4 flex flex-col gap-3">
 
-                  {/* LINE ITEMS inner section */}
+                  {/* LINE ITEMS inner section — compact cost/price footer */}
                   <LineItemsTable
                     jobId={jobId!}
-                    surface="inset"
+                    surface="open"
                     onTotalsChange={setBillingTotals}
-                  />
-
-                  {/* BILLING SUMMARY inner section — Parts/Labour/Expenses → Subtotal/Tax → Total */}
-                  <CardShell surface="inset" data-testid="card-billing-summary">
-                    <CardShellHeader compact>
-                      <CardShellTitle density="compact">Billing Summary</CardShellTitle>
-                    </CardShellHeader>
-                    <div className="px-4 py-4" data-testid="line-items-subtotal-block">
-                      <div className="ml-auto max-w-[320px]">
-                        <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row">
-                          <dt className="text-text-secondary">Parts</dt>
-                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(partsTotal)}</dd>
-                          <dt className="text-text-secondary">Labour</dt>
-                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(labourCost)}</dd>
-                          <dt className="text-text-secondary">Expenses</dt>
-                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(expenseTotalAmount)}</dd>
+                    renderTotalsFooter={
+                      <div className="border-t border-card-border px-5 py-3" data-testid="line-items-subtotal-block">
+                        <dl className="ml-auto max-w-[240px] grid grid-cols-[1fr_auto] gap-x-8 gap-y-1 text-row">
+                          <dt className="text-text-secondary">Total cost</dt>
+                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(billingTotals?.totalCost ?? 0)}</dd>
+                          <dt className="text-text-secondary font-medium">Total price</dt>
+                          <dd className="font-mono tabular-nums font-medium text-emerald-700" data-testid="text-total-price">{formatCurrency(billingTotals?.totalPrice ?? 0)}</dd>
                         </dl>
-                        <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row mt-3 pt-3 border-t border-border-default">
-                          <dt className="text-text-secondary">Subtotal</dt>
-                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(subtotal)}</dd>
-                          <dt className="text-text-secondary">Tax ({Math.round(taxRate * 100)}%)</dt>
-                          <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(taxAmount)}</dd>
-                        </dl>
-                        <div className="grid grid-cols-[1fr_auto] gap-x-8 mt-3 pt-3 border-t-2 border-text-primary/12 items-baseline">
-                          <span className="text-row font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
-                          <span className="text-display font-bold tabular-nums font-mono text-brand leading-none" data-testid="text-total">
-                            {formatCurrency(grandTotal)}
-                          </span>
-                        </div>
                       </div>
-                    </div>
-                  </CardShell>
+                    }
+                  />
 
                   {/* EXPENSES inner section */}
                   <CardShell surface="inset" data-testid="card-expenses">
@@ -2289,9 +2324,16 @@ export default function JobDetailPage() {
                           <span className="ml-1 font-medium normal-case tracking-normal text-slate-400">{expensesRaw.length}</span>
                         )}
                       </CardShellTitle>
-                      <span className="text-helper font-mono tabular-nums text-text-muted shrink-0">
-                        {formatCurrency(expenseTotalAmount)}
-                      </span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() => setAddExpenseOpen(true)}
+                        aria-label="Add expense"
+                        data-testid="button-add-expense"
+                      >
+                        <Plus className="h-4 w-4 text-slate-400" />
+                      </Button>
                     </CardShellHeader>
                     {expensesRaw.length === 0 ? (
                       <div className="px-4 py-3 text-row text-text-disabled" data-testid="expenses-empty">
@@ -2529,6 +2571,91 @@ export default function JobDetailPage() {
           toast({ title: "Job email sent" });
         }}
       />
+
+      {/* Add Expense modal */}
+      <ModalShell open={addExpenseOpen} onOpenChange={(o) => {
+        if (!o) setExpenseDraft({ amount: "", category: "", date: format(new Date(), "yyyy-MM-dd"), notes: "" });
+        setAddExpenseOpen(o);
+      }}>
+        <ModalHeader>
+          <ModalTitle>Add Expense</ModalTitle>
+        </ModalHeader>
+        <ModalBody>
+          <FormRow className="grid-cols-2">
+            <FormField>
+              <FormLabel htmlFor="expense-amount">Amount</FormLabel>
+              <Input
+                id="expense-amount"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={expenseDraft.amount}
+                onChange={(e) => setExpenseDraft((d) => ({ ...d, amount: e.target.value }))}
+                data-testid="input-expense-amount"
+              />
+            </FormField>
+            <FormField>
+              <FormLabel htmlFor="expense-date">Date</FormLabel>
+              <Input
+                id="expense-date"
+                type="date"
+                value={expenseDraft.date}
+                onChange={(e) => setExpenseDraft((d) => ({ ...d, date: e.target.value }))}
+                data-testid="input-expense-date"
+              />
+            </FormField>
+          </FormRow>
+          <FormField>
+            <FormLabel htmlFor="expense-category">Category</FormLabel>
+            <Select
+              value={expenseDraft.category}
+              onValueChange={(v) => setExpenseDraft((d) => ({ ...d, category: v }))}
+            >
+              <SelectTrigger id="expense-category" data-testid="select-expense-category">
+                <SelectValue placeholder="Select category" />
+              </SelectTrigger>
+              <SelectContent>
+                {expenseCategoryEnum.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
+          <FormField>
+            <FormLabel htmlFor="expense-notes">Notes</FormLabel>
+            <Input
+              id="expense-notes"
+              placeholder="Optional description"
+              value={expenseDraft.notes}
+              onChange={(e) => setExpenseDraft((d) => ({ ...d, notes: e.target.value }))}
+              data-testid="input-expense-notes"
+            />
+          </FormField>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction
+            onClick={() => setAddExpenseOpen(false)}
+            disabled={addExpenseMutation.isPending}
+          >
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={() => addExpenseMutation.mutate(expenseDraft)}
+            disabled={
+              addExpenseMutation.isPending ||
+              !expenseDraft.amount ||
+              !expenseDraft.category ||
+              !expenseDraft.date
+            }
+            data-testid="button-expense-save"
+          >
+            {addExpenseMutation.isPending ? "Saving…" : "Add Expense"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </>
   );
 }

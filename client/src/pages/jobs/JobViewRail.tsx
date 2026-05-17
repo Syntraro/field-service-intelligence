@@ -20,35 +20,9 @@ import {
   WorkspaceViewRail,
   type WorkspaceViewGroup,
 } from "@/components/workspace/WorkspaceViewRail";
+import { type JobView } from "@/lib/jobsWorkspaceConfig";
 
-// ── Domain view type ──────────────────────────────────────────────────────────
-
-export type JobView =
-  // Operational State
-  | "all"
-  | "needs-scheduling"
-  | "scheduled-today"
-  | "in-progress"
-  | "awaiting-follow-up"
-  | "waiting-for-parts"
-  | "ready-to-invoice"
-  | "completed-not-invoiced"
-  | "overdue"
-  | "unassigned"
-  // Workflow Type
-  | "service"
-  | "maintenance"
-  | "install"
-  | "warranty"
-  | "emergency"
-  | "recurring"
-  // Attention
-  | "missing-labor"
-  | "missing-notes"
-  | "missing-line-items"
-  | "no-future-visit"
-  | "return-visit-required"
-  | "technician-flagged";
+export type { JobView };
 
 // ── View group definitions ────────────────────────────────────────────────────
 

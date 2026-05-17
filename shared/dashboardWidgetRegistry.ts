@@ -183,11 +183,8 @@ export interface DashboardWidgetDefinition {
  *  this framework landed. */
 export const FINANCIAL_DASHBOARD_WIDGETS: readonly DashboardWidgetDefinition[] = [
   {
-    // 2026-05-07 RALPH: heightPreset is now `summary` like every
-    // other dashboard card. Card height no longer depends on
-    // technician count — TS body scrolls internally if it overflows.
-    // Width is still dynamic (1/2/3 units) via the page's runtime
-    // widthOverrides.
+    // Card grows with content — schedule area is max-h constrained internally.
+    // Width is still dynamic (1/2/3 units) via the page's runtime widthOverrides.
     key: "todays_schedule",
     dashboardKey: "financial",
     title: "Today's Schedule",
@@ -196,7 +193,7 @@ export const FINANCIAL_DASHBOARD_WIDGETS: readonly DashboardWidgetDefinition[] =
     defaultOrder: 10,
     requiredPermission: null,
     sizePreset: "two-thirds",
-    heightPreset: "summary",
+    heightPreset: "auto",
   },
   {
     // 2026-05-07 RALPH: Pipeline now sits next to Today's Schedule on

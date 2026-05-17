@@ -27,9 +27,21 @@ import { useWorkspaceState } from "@/hooks/useWorkspaceState";
 import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
 import { InvoiceKpiStrip } from "./InvoiceKpiStrip";
 
+import {
+  VALID_VIEWS,
+  SECONDARY_VIEWS,
+  INVOICE_STATUS_FILTERS,
+  readViewFromSearch,
+  filterLabel,
+} from "@/lib/invoiceWorkspaceConfig";
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type { InvoiceView, InvoiceStatusFilter };
+
+// Re-exported so ReceivablesPage (v1) can import readViewFromSearch from here
+// without changing its import path.
+export { readViewFromSearch };
 
 export type SelectedReceivablesContext = {
   customerCompanyId: string | null;
@@ -42,50 +54,6 @@ export type SelectedReceivablesContext = {
   balance?: string | null;
   locationId?: string | null;
 };
-
-// ── URL helpers ───────────────────────────────────────────────────────────────
-
-const VALID_VIEWS: readonly InvoiceView[] = [
-  "all", "overdue", "awaiting-payment", "drafts", "paid",
-  "needs-follow-up", "sent-this-week", "no-recent-contact",
-  "high-balance", "disputed", "promised-payment",
-];
-
-const FILTER_TO_VIEW: Record<string, InvoiceView> = {
-  overdue:          "overdue",
-  draft:            "drafts",
-  awaiting_payment: "awaiting-payment",
-  paid:             "paid",
-};
-
-export function readViewFromSearch(search: string): InvoiceView {
-  const params = new URLSearchParams(search);
-  const view = params.get("view");
-  if (view && (VALID_VIEWS as readonly string[]).includes(view)) return view as InvoiceView;
-  const filter = params.get("filter");
-  if (filter && FILTER_TO_VIEW[filter]) return FILTER_TO_VIEW[filter];
-  return "all";
-}
-
-// ── Secondary views (appear in Filters dropdown) ─────────────────────────────
-
-const SECONDARY_VIEWS: InvoiceView[] = [
-  "no-recent-contact", "sent-this-week", "high-balance", "drafts", "paid",
-];
-
-// ── Status filter options (merged into Filters dropdown) ──────────────────────
-
-const INVOICE_STATUS_FILTERS: InvoiceStatusFilter[] = [
-  "all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided",
-];
-
-function filterLabel(f: InvoiceStatusFilter): string {
-  if (f === "all") return "All";
-  if (f === "awaiting_payment") return "Unpaid";
-  if (f === "partial_paid") return "Partial";
-  if (f === "overdue") return "Overdue";
-  return f.charAt(0).toUpperCase() + f.slice(1);
-}
 
 // ── InvoicesWorkspaceTab ──────────────────────────────────────────────────────
 

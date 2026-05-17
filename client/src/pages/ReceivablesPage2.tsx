@@ -4,7 +4,8 @@ import { Download, Search, Inbox } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { WorkspaceRightRail } from "@/components/workspace/WorkspaceRightRail";
+import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
+import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
 import {
   WorkspaceFilterBar,
   WorkspaceViewChip,
@@ -21,6 +22,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useWorkspaceState } from "@/hooks/useWorkspaceState";
 import { cn } from "@/lib/utils";
 import {
+  VALID_VIEWS,
+  SECONDARY_VIEWS,
+  INVOICE_STATUS_FILTERS,
+  readViewFromSearch,
+  filterLabel,
+} from "@/lib/invoiceWorkspaceConfig";
+import {
   InvoicesWorkspaceTab2,
   type InvoiceView,
   type InvoiceStatusFilter,
@@ -30,46 +38,6 @@ import {
 import { InvoiceKpiStrip2 } from "./receivables2/InvoiceKpiStrip2";
 import { InvoiceRailBody } from "./receivables/InvoiceRailBody";
 import type { ViewCounts } from "./receivables/InvoiceViewRail";
-
-// ── Constants (mirrored from InvoicesWorkspaceTab) ────────────────────────────
-
-const VALID_VIEWS: readonly InvoiceView[] = [
-  "all", "overdue", "awaiting-payment", "drafts", "paid",
-  "needs-follow-up", "sent-this-week", "no-recent-contact",
-  "high-balance", "disputed", "promised-payment",
-];
-
-const SECONDARY_VIEWS: InvoiceView[] = [
-  "no-recent-contact", "sent-this-week", "high-balance", "drafts", "paid",
-];
-
-const FILTER_TO_VIEW: Record<string, InvoiceView> = {
-  overdue:          "overdue",
-  draft:            "drafts",
-  awaiting_payment: "awaiting-payment",
-  paid:             "paid",
-};
-
-const INVOICE_STATUS_FILTERS: InvoiceStatusFilter[] = [
-  "all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided",
-];
-
-function readViewFromSearch(search: string): InvoiceView {
-  const params = new URLSearchParams(search);
-  const view = params.get("view");
-  if (view && (VALID_VIEWS as readonly string[]).includes(view)) return view as InvoiceView;
-  const filter = params.get("filter");
-  if (filter && FILTER_TO_VIEW[filter]) return FILTER_TO_VIEW[filter];
-  return "all";
-}
-
-function filterLabel(f: InvoiceStatusFilter): string {
-  if (f === "all") return "All";
-  if (f === "awaiting_payment") return "Unpaid";
-  if (f === "partial_paid") return "Partial";
-  if (f === "overdue") return "Overdue";
-  return f.charAt(0).toUpperCase() + f.slice(1);
-}
 
 // ── ReceivablesPage2 ──────────────────────────────────────────────────────────
 
@@ -108,7 +76,7 @@ export default function ReceivablesPage2() {
     setSelectedContext(ctx);
   }, []);
 
-  // View counts (same query key as original — shares the cache).
+  // View counts — shares the same cache as the v1 /receivables page.
   const { data: viewCounts } = useQuery<ViewCounts | null>({
     queryKey: ["receivables", "views", "counts"],
     queryFn: async () => {
@@ -178,241 +146,225 @@ export default function ReceivablesPage2() {
     }
   };
 
-  return (
-    <div className="h-full bg-app-bg flex overflow-hidden" data-testid="receivables-page-v2">
+  // ── Center content ────────────────────────────────────────────────────────
 
-      {/* ── Left column ── */}
-      <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-x-auto overflow-y-hidden">
-
-        {/* ── Unified operational header shell ── */}
-        <div className="shrink-0 px-4 pt-5 pb-3">
-          <div className="bg-white rounded-md border border-slate-100 shadow-[0_1px_8px_rgba(0,0,0,0.05),0_1px_2px_rgba(0,0,0,0.03)] p-5">
-
-            {/* Section 1: Title + utility actions */}
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                {/* Icon badge */}
-                <div className="h-10 w-10 shrink-0 rounded-xl bg-violet-50 flex items-center justify-center">
-                  <Inbox className="h-5 w-5 text-violet-600" aria-hidden="true" />
-                </div>
-                <div>
-                  <h1 className="text-title text-slate-900">
-                    Invoices
-                  </h1>
-                  <p className="text-helper text-muted-foreground mt-0.5">
-                    Manage and track all your invoices.
-                  </p>
-                </div>
-              </div>
-
-              {/* Utility actions */}
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Search
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
-                    aria-hidden="true"
-                  />
-                  <Input
-                    placeholder="Search invoices…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 w-52 h-8 rounded-lg border-slate-200 bg-white text-sm"
-                    data-testid="input-search-invoices-v2"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-2 rounded-lg px-3.5"
-                  onClick={handleExport}
-                  disabled={isExporting}
-                >
-                  <Download className="h-4 w-4" />
-                  {isExporting ? "Exporting…" : "Export"}
-                </Button>
-                {/* Subtle divider before primary action */}
-                <div className="h-5 w-px bg-slate-200 mx-0.5" aria-hidden="true" />
-                <Link href="/invoices/new">
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="rounded-lg px-3.5"
-                    data-testid="button-new-invoice-v2"
-                  >
-                    New Invoice
-                  </Button>
-                </Link>
-              </div>
-            </div>
-
-            {/* Section 2: KPI row — 16px gap */}
-            <div className="mt-4">
-              <InvoiceKpiStrip2 />
-            </div>
-
-          </div>
-        </div>
-
-        {/* ── Filter row — on app background, between header shell and table ── */}
-        <div className="shrink-0 px-4 py-2">
-          <WorkspaceFilterBar
-            className="bg-transparent border-b-0 px-0 py-0 min-h-0"
-            data-testid="invoice-filter-bar-v2"
-          >
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "all"}
-              onClick={() => handleViewChange("all")}
-              count={viewCounts?.all}
-              data-testid="inv2-view-all"
-            >
-              All
-            </WorkspaceViewChip>
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "needs-follow-up"}
-              onClick={() => handleViewChange("needs-follow-up")}
-              count={viewCounts?.needsFollowUp}
-              data-testid="inv2-view-needs-follow-up"
-            >
-              Needs Follow-up
-            </WorkspaceViewChip>
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "overdue"}
-              onClick={() => handleViewChange("overdue")}
-              count={viewCounts?.overdue}
-              data-testid="inv2-view-overdue"
-            >
-              Overdue
-            </WorkspaceViewChip>
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "awaiting-payment"}
-              onClick={() => handleViewChange("awaiting-payment")}
-              count={viewCounts?.awaitingPayment}
-              data-testid="inv2-view-awaiting-payment"
-            >
-              Awaiting Payment
-            </WorkspaceViewChip>
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "promised-payment"}
-              onClick={() => handleViewChange("promised-payment")}
-              count={viewCounts?.promisedPayment}
-              data-testid="inv2-view-promised-payment"
-            >
-              Promised
-            </WorkspaceViewChip>
-            <WorkspaceViewChip
-              size="md"
-              active={activeView === "disputed"}
-              onClick={() => handleViewChange("disputed")}
-              count={viewCounts?.disputed}
-              data-testid="inv2-view-disputed"
-            >
-              Disputed
-            </WorkspaceViewChip>
-
-            <WorkspaceFilterBarSeparator />
-
-            <DateRangeButton
-              size="md"
-              value={dateRange}
-              onChange={setDateRange}
+  const centerContent = (
+    <>
+      <OperationalWorkspaceHeader
+        icon={Inbox}
+        iconColor="text-violet-600"
+        iconBg="bg-violet-50"
+        title="Invoices"
+        subtitle="Manage and track all your invoices."
+        search={
+          <div className="relative">
+            <Search
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400"
+              aria-hidden="true"
             />
-
-            <WorkspaceViewMoreDropdown
-              size="md"
-              label="Filters"
-              activeInDropdown={secondaryActive || statusFilter !== "all"}
+            <Input
+              placeholder="Search invoices…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 w-52 h-8 rounded-lg border-slate-200 bg-white text-sm"
+              data-testid="input-search-invoices-v2"
+            />
+          </div>
+        }
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-2 rounded-lg px-3.5"
+            onClick={handleExport}
+            disabled={isExporting}
+          >
+            <Download className="h-4 w-4" />
+            {isExporting ? "Exporting…" : "Export"}
+          </Button>
+        }
+        primaryAction={
+          <Link href="/invoices/new">
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-lg px-3.5"
+              data-testid="button-new-invoice-v2"
             >
-              <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground px-2 py-1">
-                Status
-              </DropdownMenuLabel>
-              {INVOICE_STATUS_FILTERS.map((f) => (
-                <WorkspaceViewDropdownItem
-                  key={f}
-                  active={statusFilter === f}
-                  onClick={() => setStatusFilter(f)}
-                >
-                  {filterLabel(f)}
-                </WorkspaceViewDropdownItem>
-              ))}
+              New Invoice
+            </Button>
+          </Link>
+        }
+        kpis={<InvoiceKpiStrip2 />}
+      />
 
-              <DropdownMenuSeparator />
+      {/* Filter row — on app background, between header shell and table */}
+      <div className="shrink-0 px-4 py-2">
+        <WorkspaceFilterBar
+          className="bg-transparent border-b-0 px-0 py-0 min-h-0"
+          data-testid="invoice-filter-bar-v2"
+        >
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "all"}
+            onClick={() => handleViewChange("all")}
+            count={viewCounts?.all}
+            data-testid="inv2-view-all"
+          >
+            All
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "needs-follow-up"}
+            onClick={() => handleViewChange("needs-follow-up")}
+            count={viewCounts?.needsFollowUp}
+            data-testid="inv2-view-needs-follow-up"
+          >
+            Needs Follow-up
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "overdue"}
+            onClick={() => handleViewChange("overdue")}
+            count={viewCounts?.overdue}
+            data-testid="inv2-view-overdue"
+          >
+            Overdue
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "awaiting-payment"}
+            onClick={() => handleViewChange("awaiting-payment")}
+            count={viewCounts?.awaitingPayment}
+            data-testid="inv2-view-awaiting-payment"
+          >
+            Awaiting Payment
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "promised-payment"}
+            onClick={() => handleViewChange("promised-payment")}
+            count={viewCounts?.promisedPayment}
+            data-testid="inv2-view-promised-payment"
+          >
+            Promised
+          </WorkspaceViewChip>
+          <WorkspaceViewChip
+            size="md"
+            active={activeView === "disputed"}
+            onClick={() => handleViewChange("disputed")}
+            count={viewCounts?.disputed}
+            data-testid="inv2-view-disputed"
+          >
+            Disputed
+          </WorkspaceViewChip>
 
-              <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground px-2 py-1">
-                Views
-              </DropdownMenuLabel>
-              <WorkspaceViewDropdownItem
-                active={activeView === "no-recent-contact"}
-                onClick={() => handleViewChange("no-recent-contact")}
-                count={viewCounts?.noRecentContact}
-              >
-                No Recent Contact
-              </WorkspaceViewDropdownItem>
-              <WorkspaceViewDropdownItem
-                active={activeView === "sent-this-week"}
-                onClick={() => handleViewChange("sent-this-week")}
-                count={viewCounts?.sentThisWeek}
-              >
-                Sent This Week
-              </WorkspaceViewDropdownItem>
-              <WorkspaceViewDropdownItem
-                active={activeView === "high-balance"}
-                onClick={() => handleViewChange("high-balance")}
-                count={viewCounts?.highBalance}
-              >
-                High Balance
-              </WorkspaceViewDropdownItem>
-              <WorkspaceViewDropdownItem
-                active={activeView === "drafts"}
-                onClick={() => handleViewChange("drafts")}
-                count={viewCounts?.drafts}
-              >
-                Drafts
-              </WorkspaceViewDropdownItem>
-              <WorkspaceViewDropdownItem
-                active={activeView === "paid"}
-                onClick={() => handleViewChange("paid")}
-                count={viewCounts?.paid}
-              >
-                Paid
-              </WorkspaceViewDropdownItem>
-            </WorkspaceViewMoreDropdown>
-          </WorkspaceFilterBar>
-        </div>
+          <WorkspaceFilterBarSeparator />
 
-        {/* ── Table content ── */}
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <InvoicesWorkspaceTab2
-            activeView={activeView}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            statusFilter={statusFilter}
-            onStatusFilterChange={setStatusFilter}
-            dateRange={dateRange}
-            onRailContextChange={handleRailContextChange}
+          <DateRangeButton
+            size="md"
+            value={dateRange}
+            onChange={setDateRange}
           />
-        </div>
+
+          <WorkspaceViewMoreDropdown
+            size="md"
+            label="Filters"
+            activeInDropdown={secondaryActive || statusFilter !== "all"}
+          >
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground px-2 py-1">
+              Status
+            </DropdownMenuLabel>
+            {INVOICE_STATUS_FILTERS.map((f) => (
+              <WorkspaceViewDropdownItem
+                key={f}
+                active={statusFilter === f}
+                onClick={() => setStatusFilter(f)}
+              >
+                {filterLabel(f)}
+              </WorkspaceViewDropdownItem>
+            ))}
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuLabel className="text-[11px] uppercase tracking-wide text-muted-foreground px-2 py-1">
+              Views
+            </DropdownMenuLabel>
+            <WorkspaceViewDropdownItem
+              active={activeView === "no-recent-contact"}
+              onClick={() => handleViewChange("no-recent-contact")}
+              count={viewCounts?.noRecentContact}
+            >
+              No Recent Contact
+            </WorkspaceViewDropdownItem>
+            <WorkspaceViewDropdownItem
+              active={activeView === "sent-this-week"}
+              onClick={() => handleViewChange("sent-this-week")}
+              count={viewCounts?.sentThisWeek}
+            >
+              Sent This Week
+            </WorkspaceViewDropdownItem>
+            <WorkspaceViewDropdownItem
+              active={activeView === "high-balance"}
+              onClick={() => handleViewChange("high-balance")}
+              count={viewCounts?.highBalance}
+            >
+              High Balance
+            </WorkspaceViewDropdownItem>
+            <WorkspaceViewDropdownItem
+              active={activeView === "drafts"}
+              onClick={() => handleViewChange("drafts")}
+              count={viewCounts?.drafts}
+            >
+              Drafts
+            </WorkspaceViewDropdownItem>
+            <WorkspaceViewDropdownItem
+              active={activeView === "paid"}
+              onClick={() => handleViewChange("paid")}
+              count={viewCounts?.paid}
+            >
+              Paid
+            </WorkspaceViewDropdownItem>
+          </WorkspaceViewMoreDropdown>
+        </WorkspaceFilterBar>
       </div>
 
-      {/* ── Right rail — untouched, identical to ReceivablesPage ── */}
-      <WorkspaceRightRail
-        expanded={railExpanded}
-        collapsedWidth={0}
-        expandedWidth={380}
-        className={cn(
+      {/* Table content */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <InvoicesWorkspaceTab2
+          activeView={activeView}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          statusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
+          dateRange={dateRange}
+          onRailContextChange={handleRailContextChange}
+        />
+      </div>
+    </>
+  );
+
+  return (
+    <div className="h-full bg-app-bg overflow-hidden" data-testid="receivables-page-v2">
+      <OperationalWorkspace
+        center={centerContent}
+        centerClassName="overflow-x-auto overflow-y-hidden"
+        rightRailExpanded={railExpanded}
+        rightRail={
+          selectedContext
+            ? <InvoiceRailBody context={selectedContext} activeView={activeView} />
+            : <></>
+        }
+        rightCollapsedWidth={0}
+        rightExpandedWidth={380}
+        rightRailClassName={cn(
           railExpanded && "border-l border-border shadow-[-8px_0_18px_rgba(15,23,42,0.06)]",
         )}
-        data-testid="invoice-workspace-rail-v2"
-      >
-        {selectedContext && (
-          <InvoiceRailBody context={selectedContext} activeView={activeView} />
-        )}
-      </WorkspaceRightRail>
+        showRailDivider={false}
+        rightRailTestId="invoice-workspace-rail-v2"
+        data-testid="invoices-v2-workspace"
+      />
     </div>
   );
 }

@@ -85,6 +85,9 @@ export interface DetailHeaderItem {
   editNode?: ReactNode;
   /** Hide in read mode when true. Edit mode with editNode always shows. */
   hidden?: boolean;
+  /** When true, renders value in a block container without text truncation.
+   *  Use for multi-line ReactNode values (e.g. service address with two lines). */
+  wrapValue?: boolean;
 }
 
 /** Structured descriptor for a CTA button in the actions cluster. */
@@ -230,6 +233,9 @@ export interface CanonicalDetailHeaderProps {
   // ── Title ────────────────────────────────────────────────────────
   /** Primary title string (shown in <h1> or as titleEdit textarea fallback). */
   title: string;
+  /** When set, wraps the <h1> title in a wouter <Link>. Used by Job Detail
+   *  to navigate to the client page (replaces the body-row clientName link). */
+  titleHref?: string;
   /** Small-caps entity badge rendered above title ("LEAD", "QUOTE"). */
   entityLabel?: string;
   /** Renders a back-arrow button. */
@@ -276,10 +282,18 @@ export interface CanonicalDetailHeaderProps {
   // ── Typed alert (replaces headerAlert ReactNode) ──────────────────
   alert?: AlertDescriptor;
 
+  // ── Metadata chips ────────────────────────────────────────────────
+  /** Optional chip/badge row rendered below the title/subtitle block.
+   *  Use for lightweight categorical metadata (e.g. Type, Priority).
+   *  Accepts any ReactNode — typically an array of <Chip> elements.
+   *  Reusable across Jobs, Leads, Quotes, Invoices. */
+  metadataChips?: ReactNode;
+
   // ── Meta items ───────────────────────────────────────────────────
   items: DetailHeaderItem[];
-  /** Number of columns for the metadata grid. Defaults to 2. Pass 3 for entities with 5+ items. */
-  itemsColumns?: 2 | 3;
+  /** Number of columns for the metadata grid. Defaults to 2. Pass 3 for entities with
+   *  5+ items, or 4 for a full-width segmented operational strip (e.g. Job Detail). */
+  itemsColumns?: 2 | 3 | 4;
 
   // ── Description ──────────────────────────────────────────────────
   /** Read-mode description text. */
@@ -301,6 +315,11 @@ export interface CanonicalDetailHeaderProps {
    *  Used by Job Detail to achieve the two-surface nested layout.
    *  Default false — all other callers (Invoice, Lead) use the flat layout. */
   innerCard?: boolean;
+  /** When true, always renders the description section even when `description`
+   *  is null/empty and `descriptionEdit` is undefined. Shows the placeholder text.
+   *  Use instead of `innerCard` when the flat layout is preferred but the
+   *  Scope of Work section should always be structurally visible. */
+  alwaysShowDescription?: boolean;
 }
 
 // ── Alert tone → CSS class map ─────────────────────────────────────────
@@ -501,6 +520,7 @@ export function CanonicalDetailHeader({
   isEditing = false,
   surface = "contained",
   title,
+  titleHref,
   entityLabel,
   onBack,
   subtitle,
@@ -519,6 +539,7 @@ export function CanonicalDetailHeader({
   overflowActions,
   workflow,
   alert,
+  metadataChips,
   items,
   itemsColumns = 2,
   description,
@@ -526,6 +547,7 @@ export function CanonicalDetailHeader({
   descriptionEdit,
   editControls,
   innerCard = false,
+  alwaysShowDescription = false,
 }: CanonicalDetailHeaderProps) {
   // Visible meta items (filter hidden in read mode; always show editNode in edit mode)
   const visibleItems = items.filter(
@@ -538,9 +560,9 @@ export function CanonicalDetailHeader({
 
   const hasDescription = description != null && description.trim().length > 0;
 
-  // Description section: show when content exists, edit mode is active, OR
-  // innerCard=true (scope-of-work is always structurally visible inside the inset card).
-  const showDescription = hasDescription || descriptionEdit !== undefined || innerCard;
+  // Description section: show when content exists, edit mode is active,
+  // innerCard=true, OR alwaysShowDescription=true.
+  const showDescription = hasDescription || descriptionEdit !== undefined || innerCard || alwaysShowDescription;
 
   // Render description content area (CDH owns all chrome)
   let descriptionContent: ReactNode;
@@ -653,7 +675,7 @@ export function CanonicalDetailHeader({
         <div
           className={cn(
             "flex-1 min-w-0 grid gap-x-6 gap-y-3",
-            itemsColumns === 3 ? "grid-cols-3" : "grid-cols-2",
+            itemsColumns === 4 ? "grid-cols-4" : itemsColumns === 3 ? "grid-cols-3" : "grid-cols-2",
             hasClientBlock && "border-l border-card-border pl-6",
           )}
           data-testid={`${testId}-items`}
@@ -669,9 +691,9 @@ export function CanonicalDetailHeader({
                 <span className="text-label uppercase text-text-muted">
                   {it.label}
                 </span>
-                <span className="mt-1 text-row font-medium text-text-primary truncate leading-tight">
+                <div className={cn("mt-1 text-row font-medium text-text-primary leading-tight min-w-0", !it.wrapValue && "truncate")}>
                   {renderEdit ? it.editNode : it.value}
-                </span>
+                </div>
               </div>
             );
           })}
@@ -764,6 +786,15 @@ export function CanonicalDetailHeader({
                     className="w-full max-w-[520px] text-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
                     data-testid={`${testId}-title-input`}
                   />
+                ) : titleHref ? (
+                  <Link href={titleHref}>
+                    <h1
+                      className="m-0 text-title font-semibold leading-tight text-text-primary hover:text-brand transition-colors cursor-pointer break-words min-w-0"
+                      data-testid={`${testId}-title`}
+                    >
+                      {title}
+                    </h1>
+                  </Link>
                 ) : (
                   <h1
                     className="m-0 text-title font-semibold leading-tight text-text-primary break-words min-w-0"
@@ -796,6 +827,11 @@ export function CanonicalDetailHeader({
                 </div>
               )}
             </div>
+            {metadataChips && (
+              <div className="flex items-center gap-1.5 flex-wrap mt-2" data-testid={`${testId}-metadata-chips`}>
+                {metadataChips}
+              </div>
+            )}
           </div>
 
           {/* RIGHT: actions cluster + workflow */}

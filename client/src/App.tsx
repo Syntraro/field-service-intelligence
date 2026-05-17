@@ -32,8 +32,7 @@ import { useDispatchStream } from "@/hooks/useDispatchStream";
 import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
 import { useTheme } from "@/hooks/useTheme";
 import ProtectedRoute from "@/components/ProtectedRoute";
-import Jobs from "@/pages/Jobs";
-import JobsPage from "@/pages/JobsPage";
+import JobsWorkspacePage from "@/pages/JobsWorkspacePage";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
@@ -339,7 +338,7 @@ function Router() {
       </Route>
       <Route path="/jobs">
         <ProtectedRoute requireAdmin>
-          <JobsPage />
+          <JobsWorkspacePage />
         </ProtectedRoute>
       </Route>
       <Route path="/jobs/:id">

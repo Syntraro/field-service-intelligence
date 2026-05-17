@@ -28,7 +28,7 @@ export function QuoteTimelineCard({ notes, loading }: QuoteTimelineCardProps) {
           <div key={note.id} className="flex flex-col gap-0.5">
             <p className="text-helper text-foreground line-clamp-2">{note.noteText}</p>
             {note.createdAt && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-helper text-muted-foreground">
                 {format(new Date(note.createdAt), "MMM d, yyyy")}
               </p>
             )}

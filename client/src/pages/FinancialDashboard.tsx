@@ -604,7 +604,6 @@ export default function FinancialDashboard() {
                 invoicesNotSentCount={data?.needsAttention.invoicesNotSentCount ?? 0}
                 isLoading={workflowQuery.isLoading || isLoading}
                 onOpenActionModal={openActionModal}
-                order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice", "invoices_not_sent"]}
               />
             ),
             pipeline_snapshot: (
@@ -1163,35 +1162,6 @@ interface CapacityResponseDto {
   offRosterAssignments?: OffRosterAssignmentDto[];
 }
 
-// SVG ring indicator — schedule utilization (booked / schedulable workday).
-function UtilizationRing({ pct }: { pct: number }) {
-  const radius = 12;
-  const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference - (pct / 100) * circumference;
-  return (
-    <div className="flex flex-col items-center shrink-0">
-      <div className="relative w-8 h-8">
-        <svg width="32" height="32" viewBox="0 0 32 32" className="absolute inset-0" aria-hidden>
-          <circle cx="16" cy="16" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="3" />
-          <circle
-            cx="16" cy="16" r={radius}
-            fill="none" stroke="#76B054" strokeWidth="3"
-            strokeDasharray={`${circumference} ${circumference}`}
-            strokeDashoffset={dashOffset}
-            strokeLinecap="round"
-            transform="rotate(-90 16 16)"
-          />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-[8px] font-semibold text-foreground tabular-nums leading-none">
-            {pct}%
-          </span>
-        </div>
-      </div>
-      <span className="text-[9px] text-muted-foreground mt-0.5 leading-none">utilized</span>
-    </div>
-  );
-}
 
 function TodaysScheduleCard({
   onOpenVisit,
@@ -1351,6 +1321,39 @@ function TodaysScheduleCard({
       return (a.name ?? "").localeCompare(b.name ?? "");
     });
   }, [activeTechs, openOnly, nowMs]);
+
+  // Split visibleTechs into two groups:
+  //   scheduledTechs — have at least one BOOKED or TASK block after filtering/clamping.
+  //     Each gets its own card showing ALL their blocks (booked + open slots interleaved).
+  //   openGroupTechs — on-shift techs with NO booked/task work; collapsed into a single
+  //     "Open technicians" card that lists each tech with their clickable open time slots.
+  //     Off-shift techs are excluded from both groups (appear only when they have assigned
+  //     visits). In openOnly mode all blocks are open-kind so every tech with visible
+  //     slots gets an individual card instead.
+  const scheduledTechs = useMemo(() => {
+    if (openOnly) {
+      // Open-only mode: all remaining blocks are open-kind; show each tech with
+      // visible slots as its own card (the filter already keeps only open blocks).
+      return visibleTechs.filter((t) => t.scheduleBlocks.length > 0);
+    }
+    // Normal mode: individual card for techs with at least one booked visit or task.
+    // Their open slots between jobs are also rendered inside the same card.
+    return visibleTechs.filter((t) =>
+      t.scheduleBlocks.some((b) => b.kind === "booked" || b.kind === "task"),
+    );
+  }, [visibleTechs, openOnly]);
+
+  const openGroupTechs = useMemo(() => {
+    if (openOnly) return []; // individual cards cover all open-slot techs in this mode
+    // All in-scope techs with no booked/task work → grouped card.
+    // Intentionally no state filter: the original pre-redesign column layout
+    // showed ALL idle techs (including state:"off_today") in the Available group.
+    // Their scheduleBlocks still contains open slots when present (used for
+    // clickable time ranges). state:"off_today" techs show "No open slots".
+    return visibleTechs.filter(
+      (t) => !t.scheduleBlocks.some((b) => b.kind === "booked" || b.kind === "task"),
+    );
+  }, [visibleTechs, openOnly]);
 
   const scopeLabel = useMemo(() => {
     if (isAllTeam) return "All team";
@@ -1525,17 +1528,16 @@ function TodaysScheduleCard({
     const isOffShift = tech.state === "off_today";
     const hasBooked = bookedBlocks.length > 0;
     const statusLabel = isOffShift ? "Off shift" : hasBooked ? "Working" : "Available";
-    const displayBlocks = openOnly
-      ? tech.scheduleBlocks.filter((b) => b.kind === "open")
-      : tech.scheduleBlocks;
+    // visibleTechs already applied the openOnly filter and clamped past open slots.
+    const displayBlocks = tech.scheduleBlocks;
     return (
       <div
         key={tech.technicianId}
-        className="flex-none w-[220px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
+        className="flex-1 min-w-[250px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
         data-testid={`schedule-tech-card-${tech.technicianId}`}
       >
-        {/* Header: name (left) | status + booked-hours row (left, below name) | utilization ring (right) */}
-        <div className="px-3 pt-3 pb-2.5 shrink-0">
+        {/* Header: name + status/hours (left) | utilization % text (right) */}
+        <div className="bg-white border-b border-border/40 px-3 pt-2.5 pb-2 shrink-0">
           <div className="flex items-start gap-2">
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-semibold text-foreground truncate leading-tight">
@@ -1558,34 +1560,59 @@ function TodaysScheduleCard({
                 </span>
               </div>
             </div>
-            <UtilizationRing pct={utilizationPct} />
+            {/* Utilization as readable text — large % on top, small label below */}
+            <div className="shrink-0 text-right">
+              <div className="text-[15px] font-semibold text-foreground tabular-nums leading-none">
+                {utilizationPct}%
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5 leading-none">
+                utilized
+              </div>
+            </div>
           </div>
         </div>
-        {/* Schedule blocks */}
-        <div className="border-t border-border/50 flex-1 overflow-y-auto min-h-0">
+        {/* Schedule blocks — grows naturally with content; no internal scroll for
+            normal schedules. The outer widget uses heightPreset:"auto" so the card
+            height is driven by content, not a fixed container. */}
+        <div className="bg-white">
           {displayBlocks.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full py-5 px-3 text-center">
+            <div className="flex flex-col items-center justify-center py-6 px-3 text-center">
               <CalendarIcon className="h-4 w-4 text-muted-foreground/30 mb-1.5" aria-hidden />
               <span className="text-[11px] text-muted-foreground">No scheduled work</span>
             </div>
           ) : (
-            <div className="py-0.5">
-              {displayBlocks.map((block, bIdx, bArr) => {
+            <div className="p-2 flex flex-col gap-1.5">
+              {displayBlocks.map((block, bIdx) => {
                 const isOpen = block.kind === "open";
                 const isTimeOff = block.kind === "time_off";
                 const isTask = block.kind === "task";
+                const isBooked = block.kind === "booked";
                 const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
                 const isCompleted = !isOpen && block.visitStatus === "completed";
                 const isMuted = isPastOpen || isCompleted;
-                const isLastBlock = bIdx === bArr.length - 1;
                 const timeRange = formatTimeRange(block.startISO, block.endISO);
-                const nameLabel = isTimeOff
+                const durationMins = block.durationMinutes ?? 0;
+                const durationLabel = durationMins > 0 ? formatDurationLabel(durationMins) : null;
+                // For booked visits: title = client/company name, description = job summary.
+                // For other kinds: use a simple label.
+                const clientName = isBooked ? (block.title ?? "Visit") : null;
+                const jobDesc = isBooked ? (block.description ?? null) : null;
+                const simpleLabel = isTimeOff
                   ? `Time off${block.reason ? ` · ${block.reason}` : ""}`
                   : isTask
                     ? (block.title ?? "Task")
                     : isOpen
                       ? "Open Slot"
-                      : (block.title ?? "Visit");
+                      : null;
+                const timeColor = isMuted
+                  ? "text-muted-foreground"
+                  : isTimeOff
+                    ? "text-amber-700"
+                    : isTask
+                      ? "text-indigo-700"
+                      : isOpen
+                        ? "text-emerald-600"
+                        : "text-slate-500";
                 return (
                   <button
                     key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? block.timeOffId ?? block.taskId ?? "open"}-${bIdx}`}
@@ -1595,13 +1622,14 @@ function TodaysScheduleCard({
                     }
                     disabled={isTimeOff || isTask}
                     className={cn(
-                      "w-full text-left px-3 py-1.5 transition-colors",
+                      "w-full text-left p-2 rounded-md border transition-colors",
                       isTimeOff
-                        ? "bg-amber-50/60 cursor-default"
+                        ? "bg-amber-50 border-amber-200/70 cursor-default"
                         : isTask
-                          ? "bg-indigo-50/60 cursor-default"
-                          : "hover:bg-white/60",
-                      !isLastBlock && "border-b border-border/40",
+                          ? "bg-indigo-50 border-indigo-200/70 cursor-default"
+                          : isOpen
+                            ? "bg-emerald-50 border-emerald-300 border-dashed hover:bg-emerald-100"
+                            : "bg-white border-border hover:bg-slate-50",
                       (isPastOpen || isCompleted) && "opacity-60",
                     )}
                     data-testid={
@@ -1612,47 +1640,66 @@ function TodaysScheduleCard({
                           : `schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`
                     }
                   >
-                    <div
-                      className={cn(
-                        "text-[11px] leading-tight tabular-nums font-medium",
-                        isMuted
-                          ? "text-muted-foreground"
-                          : isTimeOff
-                            ? "text-amber-700"
-                            : isTask
-                              ? "text-indigo-700"
-                              : isOpen
-                                ? "text-emerald-600"
-                                : "text-slate-500",
-                      )}
-                    >
-                      {timeRange}
-                    </div>
-                    <div
-                      className={cn(
-                        "text-[12px] truncate font-medium mt-0.5",
-                        isMuted
-                          ? "text-muted-foreground line-through"
-                          : isTimeOff
-                            ? "text-amber-800"
-                            : isTask
-                              ? "text-indigo-800"
-                              : isOpen
-                                ? "text-emerald-700"
-                                : "text-foreground",
-                      )}
-                    >
-                      {nameLabel}
-                    </div>
+                    {isBooked ? (
+                      <>
+                        {/* Row 1: time range (left) + duration (right) */}
+                        <div className="flex items-baseline justify-between gap-1">
+                          <span className={cn("text-[12px] tabular-nums font-medium leading-tight", timeColor)}>
+                            {timeRange}
+                          </span>
+                          {durationLabel && (
+                            <span className="text-[11px] text-muted-foreground tabular-nums shrink-0 leading-tight">
+                              {durationLabel}
+                            </span>
+                          )}
+                        </div>
+                        {/* Row 2: client name · job description inline, truncated */}
+                        {clientName && (
+                          <div className={cn(
+                            "text-[13px] font-medium truncate mt-1 leading-snug",
+                            isMuted ? "text-muted-foreground line-through" : "text-foreground",
+                          )}>
+                            {clientName}
+                            {jobDesc && (
+                              <span className="font-normal text-muted-foreground"> · {jobDesc}</span>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {/* Non-booked blocks (open, time_off, task): compact 2-line layout */}
+                        <div className={cn("text-[12px] tabular-nums font-medium leading-tight", timeColor)}>
+                          {timeRange}
+                          {durationLabel && (
+                            <span className="font-normal text-muted-foreground ml-1.5">{durationLabel}</span>
+                          )}
+                        </div>
+                        {simpleLabel && (
+                          <div className={cn(
+                            "text-[13px] font-medium truncate mt-1 leading-snug",
+                            isMuted
+                              ? "text-muted-foreground line-through"
+                              : isTimeOff
+                                ? "text-amber-800"
+                                : isTask
+                                  ? "text-indigo-800"
+                                  : "text-emerald-700",
+                          )}>
+                            {simpleLabel}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </button>
                 );
               })}
             </div>
           )}
         </div>
-        {/* Bottom metrics: Jobs | Revenue | Drive time. Revenue and drive time are
-            not available in the capacity endpoint; shown as "—" per spec. */}
-        <div className="border-t border-border/50 grid grid-cols-3 px-2 py-2 gap-1 shrink-0">
+        {/* Bottom metrics: Jobs | Revenue | Drive. Revenue and drive not in
+            capacity endpoint — shown as "—". Thin strip, one row per metric. */}
+        <div className="border-t border-border/50 bg-inset-surface/60 flex items-center divide-x divide-border/50 shrink-0">
           {(
             [
               { label: "Jobs", value: String(bookedBlocks.length) },
@@ -1660,11 +1707,9 @@ function TodaysScheduleCard({
               { label: "Drive", value: "—" },
             ] as const
           ).map(({ label, value }) => (
-            <div key={label} className="flex flex-col items-center">
-              <span className="text-[11px] font-semibold text-foreground tabular-nums">{value}</span>
-              <span className="text-[9px] text-muted-foreground uppercase tracking-wide leading-tight mt-0.5">
-                {label}
-              </span>
+            <div key={label} className="flex-1 flex items-baseline justify-center gap-1 py-1 px-1">
+              <span className="text-[12px] font-medium text-foreground tabular-nums">{value}</span>
+              <span className="text-[9px] text-muted-foreground uppercase tracking-wide">{label}</span>
             </div>
           ))}
         </div>
@@ -1673,7 +1718,7 @@ function TodaysScheduleCard({
   };
 
   return (
-    <CardShell className="flex flex-col h-full">
+    <CardShell className="flex flex-col">
       {/* Single header — Open filter + Team filter. Display-mode toggle removed
           since the new horizontal-card layout is the only mode. */}
       <div
@@ -1715,10 +1760,7 @@ function TodaysScheduleCard({
       {/* Horizontal per-tech card layout. Each schedulable technician gets
           one inset sub-card. overflow-x-auto handles teams > 5; each card's
           schedule-blocks section scrolls internally. */}
-      <div
-        className="flex-1 flex flex-col min-h-0"
-        data-testid="schedule-body-scroll"
-      >
+      <div data-testid="schedule-body-scroll">
         {capacityQuery.isLoading ? (
           <div className="p-4 space-y-2">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
@@ -1742,23 +1784,91 @@ function TodaysScheduleCard({
               </button>
             </div>
           </div>
-        ) : visibleTechs.length === 0 ? (
+        ) : scheduledTechs.length === 0 && openGroupTechs.length === 0 && offRosterRows.length === 0 ? (
           <div className="p-4">
-            <EmptyState message="No technicians in the selected scope." />
+            <EmptyState message={
+              visibleTechs.length === 0
+                ? "No technicians in the selected scope."
+                : "No scheduled work today."
+            } />
           </div>
         ) : (
           <div
-            className="flex gap-3 px-3 py-3 overflow-x-auto flex-1"
+            className="flex gap-3 px-3 py-3 overflow-x-auto w-full"
             data-testid="schedule-tech-cards"
           >
-            {visibleTechs.map((tech) => renderTechCard(tech))}
+            {/* Individual cards: technicians with at least one scheduled block */}
+            {scheduledTechs.map((tech) => renderTechCard(tech))}
+
+            {/* Grouped card: on-shift technicians with no booked/task work.
+                Shows each tech with their clickable open time slots. */}
+            {openGroupTechs.length > 0 && (
+              <div
+                className="flex-1 min-w-[250px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
+                data-testid="schedule-open-group-card"
+              >
+                <div className="bg-white border-b border-border/40 px-3 pt-2.5 pb-2 shrink-0">
+                  <div className="text-[13px] font-semibold text-foreground leading-tight">
+                    Open
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {openGroupTechs.length} technician{openGroupTechs.length !== 1 ? "s" : ""} · no booked work
+                  </div>
+                </div>
+                <div className="bg-white">
+                  {openGroupTechs.map((t, tIdx) => {
+                    const techOpenBlocks = t.scheduleBlocks.filter(
+                      (b) => b.kind === "open",
+                    );
+                    return (
+                      <div
+                        key={t.technicianId}
+                        className={cn("px-2 py-2", tIdx > 0 && "border-t border-border/30")}
+                      >
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" aria-hidden />
+                          <span className="text-[12px] font-medium text-foreground truncate">
+                            {t.name}
+                          </span>
+                        </div>
+                        {techOpenBlocks.length > 0 ? (
+                          <div className="flex flex-col gap-1 pl-3">
+                            {techOpenBlocks.map((block, bIdx) => (
+                              <button
+                                key={`og-${t.technicianId}-${block.startISO}-${bIdx}`}
+                                type="button"
+                                onClick={() => handleBlockClick(t, block)}
+                                className="w-full text-left px-2 py-1 rounded border border-emerald-300 border-dashed bg-emerald-50 hover:bg-emerald-100 transition-colors"
+                                data-testid={`schedule-open-group-slot-${t.technicianId}-${bIdx}`}
+                              >
+                                <span className="text-[11px] tabular-nums font-medium text-emerald-700">
+                                  {formatTimeRange(block.startISO, block.endISO)}
+                                </span>
+                                {block.durationMinutes > 0 && (
+                                  <span className="text-[11px] text-muted-foreground ml-1.5">
+                                    {formatDurationLabel(block.durationMinutes)}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="pl-3 text-[11px] text-muted-foreground">No open slots</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Unassigned visits card: visits/tasks assigned to non-schedulable techs */}
             {offRosterRows.length > 0 && (
               <div
-                key="unassigned-visits"
-                className="flex-none w-[220px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
+                className="flex-1 min-w-[250px] flex flex-col bg-inset-surface border border-border rounded-md overflow-hidden"
                 data-testid="schedule-unassigned-card"
               >
-                <div className="px-3 pt-3 pb-2.5 shrink-0">
+                <div className="bg-white border-b border-border/40 px-3 pt-2.5 pb-2 shrink-0">
                   <div className="text-[13px] font-medium text-muted-foreground truncate leading-tight italic">
                     Unassigned
                   </div>
@@ -1766,13 +1876,12 @@ function TodaysScheduleCard({
                     {offRosterRows.length} visit{offRosterRows.length !== 1 ? "s" : ""}
                   </div>
                 </div>
-                <div className="border-t border-border/50 flex-1 overflow-y-auto min-h-0">
-                  <div className="py-0.5">
-                    {offRosterRows.map((row, bIdx, bArr) => {
+                <div className="bg-white">
+                  <div className="p-2 flex flex-col gap-1.5">
+                    {offRosterRows.map((row, bIdx) => {
                       const isTaskRow = !!row.taskId && !row.visitId;
                       const timeRange = formatTimeRange(row.scheduledStart, row.scheduledEnd);
                       const nameLabel = isTaskRow ? (row.title ?? "Task") : (row.title ?? "Visit");
-                      const isLastBlock = bIdx === bArr.length - 1;
                       const rowKey = isTaskRow
                         ? `unassigned-task-${row.taskId}`
                         : `unassigned-${row.visitId}`;
@@ -1783,9 +1892,10 @@ function TodaysScheduleCard({
                           onClick={() => !isTaskRow ? handleOffRosterClick(row) : undefined}
                           disabled={isTaskRow}
                           className={cn(
-                            "w-full text-left px-3 py-1.5 transition-colors",
-                            isTaskRow ? "bg-indigo-50/60 cursor-default" : "hover:bg-white/60",
-                            !isLastBlock && "border-b border-border/40",
+                            "w-full text-left p-2 rounded-md border transition-colors",
+                            isTaskRow
+                              ? "bg-indigo-50 border-indigo-200/70 cursor-default"
+                              : "bg-white border-border hover:bg-slate-50",
                           )}
                           data-testid={
                             isTaskRow
@@ -1793,23 +1903,21 @@ function TodaysScheduleCard({
                               : `schedule-unassigned-row-${row.visitId}`
                           }
                         >
-                          <div
-                            className={cn(
-                              "text-[11px] leading-tight tabular-nums font-medium",
+                          <div className="flex items-baseline justify-between gap-1">
+                            <span className={cn(
+                              "text-[12px] tabular-nums font-medium leading-tight",
                               isTaskRow ? "text-indigo-700" : "text-slate-500",
-                            )}
-                          >
-                            {timeRange}
+                            )}>
+                              {timeRange}
+                            </span>
                           </div>
-                          <div
-                            className={cn(
-                              "text-[12px] truncate font-medium mt-0.5",
-                              isTaskRow ? "text-indigo-800" : "text-foreground",
-                            )}
-                          >
+                          <div className={cn(
+                            "text-[13px] truncate font-medium mt-1 leading-snug",
+                            isTaskRow ? "text-indigo-800" : "text-foreground",
+                          )}>
                             {nameLabel}
-                            {row.technicianName && (
-                              <span className="text-[10px] text-muted-foreground ml-1">
+                            {!isTaskRow && row.technicianName && (
+                              <span className="text-[11px] text-muted-foreground font-normal ml-1">
                                 · {row.technicianName}
                               </span>
                             )}

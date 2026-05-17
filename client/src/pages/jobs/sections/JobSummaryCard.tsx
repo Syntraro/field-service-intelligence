@@ -1,9 +1,6 @@
 import { format } from "date-fns";
 import { WorkspaceSectionCard } from "@/components/workspace/WorkspaceSectionCard";
-import { getJobStatusMeta } from "@/lib/statusBadges";
-import { StatusChip } from "@/components/ui/chip";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
-import { isJobOverdue } from "@shared/schema";
 
 interface JobSummaryCardProps {
   job: JobHeaderDetail | undefined;
@@ -31,23 +28,7 @@ export function JobSummaryCard({ job, loading }: JobSummaryCardProps) {
     >
       {job && (
         <div className="space-y-1.5">
-          <Row label="Job #" value={`#${job.jobNumber}`} />
           <Row label="Type" value={job.jobType} />
-          <Row
-            label="Status"
-            value={
-              (() => {
-                const meta = getJobStatusMeta({ ...job, _overdue: isJobOverdue(job) });
-                return <StatusChip tone={meta.tone}>{meta.label}</StatusChip>;
-              })()
-            }
-          />
-          {job.priority && job.priority !== "normal" && (
-            <Row label="Priority" value={<span className="capitalize">{job.priority}</span>} />
-          )}
-          {job.locationDisplayName && (
-            <Row label="Client" value={job.locationDisplayName} />
-          )}
           {job.locationName && (
             <Row label="Location" value={job.locationName} />
           )}
@@ -55,12 +36,6 @@ export function JobSummaryCard({ job, loading }: JobSummaryCardProps) {
             <Row
               label="Address"
               value={[job.locationAddress, job.locationCity].filter(Boolean).join(", ")}
-            />
-          )}
-          {job.scheduledStart && (
-            <Row
-              label="Scheduled"
-              value={format(new Date(job.scheduledStart), "MMM d, yyyy")}
             />
           )}
           {job.createdAt && (

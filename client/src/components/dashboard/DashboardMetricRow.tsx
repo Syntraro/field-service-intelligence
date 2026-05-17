@@ -17,17 +17,19 @@
  *   border:      border-b border-card-border (when !isLast)
  *
  * Tone semantics:
- *   default — label/count text-foreground, hover:bg-primary/5
- *   danger  — label/count text-destructive, row bg-destructive/[0.05] hover:bg-destructive/10
- *             icon color unchanged (caller decides icon color for danger rows)
- *   muted   — label/count/icon text-muted-foreground, icon opacity reduced,
- *             button disabled, cursor-default, no hover bg
+ *   default  — label/count text-foreground, hover:bg-primary/5
+ *   danger   — label/count text-destructive, row bg-destructive/[0.05] hover:bg-destructive/10
+ *              icon color unchanged (caller decides icon color for danger rows)
+ *   positive — count text-emerald-700, label text-foreground, neutral hover;
+ *              compact count badge bg-emerald-50 (caller provides emerald icon color)
+ *   muted    — label/count/icon text-muted-foreground, icon opacity reduced,
+ *              button disabled, cursor-default, no hover bg
  *
  * Density semantics:
  *   default — px-4 py-2, gap-3, h-3.5 w-3.5 icon, font-semibold label, font-bold count
  *             layout: (icon + label + description) | (count + chevron)
- *   compact — px-3 py-1.5, gap-2, h-3 w-3 icon, font-medium label, font-semibold count
- *             layout: icon | label (flex-1) | count (flat)
+ *   compact — px-4 py-2, gap-3, h-3.5 w-3.5 icon, font-medium label, font-semibold count
+ *             layout: icon | label (flex-1) | count badge [chevron]
  */
 
 import { ChevronRight } from "lucide-react";
@@ -35,7 +37,7 @@ import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type DashboardMetricRowTone = "default" | "danger" | "muted";
+export type DashboardMetricRowTone = "default" | "danger" | "positive" | "muted";
 export type DashboardMetricRowDensity = "default" | "compact";
 
 export interface DashboardMetricRowProps {
@@ -71,11 +73,11 @@ const DENSITY_CONFIG = {
     countWeight:  "font-bold",
   },
   compact: {
-    padding:     "px-3 py-1.5",
-    outerGap:    "gap-2",
+    padding:     "px-4 py-2",
+    outerGap:    "gap-3",
     innerGap:    "gap-2",
-    trailingGap: "gap-1",
-    iconSize:    "h-3 w-3",
+    trailingGap: "gap-1.5",
+    iconSize:    "h-3.5 w-3.5",
     labelWeight: "font-medium",
     countWeight: "font-semibold",
   },
@@ -97,8 +99,9 @@ export function DashboardMetricRow({
   testId,
 }: DashboardMetricRowProps) {
   const d = DENSITY_CONFIG[density];
-  const isMuted  = tone === "muted";
-  const isDanger = tone === "danger";
+  const isMuted    = tone === "muted";
+  const isDanger   = tone === "danger";
+  const isPositive = tone === "positive";
 
   // Icon class — muted overrides the caller-provided iconColor.
   const iconClass = cn(
@@ -110,8 +113,18 @@ export function DashboardMetricRow({
   // Label color — renderer-owned per tone.
   const labelColor = isDanger ? "text-destructive" : isMuted ? "text-muted-foreground" : "text-foreground";
 
-  // Count color — same tone mapping as label.
-  const countColor = isDanger ? "text-destructive" : isMuted ? "text-muted-foreground" : "text-foreground";
+  // Count color — positive gets emerald; danger gets destructive; muted gets muted.
+  const countColor = isDanger ? "text-destructive"
+    : isPositive ? "text-emerald-700 dark:text-emerald-400"
+    : isMuted ? "text-muted-foreground"
+    : "text-foreground";
+
+  // Soft badge background for the compact-density count chip.
+  const countBadgeBg = isDanger
+    ? "bg-destructive/10"
+    : isPositive
+      ? "bg-emerald-50 dark:bg-emerald-950/30"
+      : "bg-muted/50";
 
   // Row background — renderer-owned per tone.
   const rowBg = isDanger
@@ -162,15 +175,28 @@ export function DashboardMetricRow({
           </div>
         </>
       ) : (
-        // Compact layout: icon | label (flex-1) | count
+        // Compact layout: icon | label (flex-1) | count badge [chevron]
         <>
           <Icon className={iconClass} />
           <span className={cn("flex-1 text-row truncate", d.labelWeight, labelColor)}>
             {label}
           </span>
-          <span className={cn("text-row tabular-nums shrink-0", d.countWeight, countColor)}>
-            {count}
-          </span>
+          <div className={cn("flex items-center shrink-0", d.trailingGap)}>
+            <span className={cn(
+              "inline-flex items-center justify-center tabular-nums",
+              "h-5 min-w-[1.375rem] rounded px-1.5 leading-none",
+              "text-xs",
+              d.countWeight,
+              countBadgeBg,
+              countColor,
+              isMuted && "opacity-60",
+            )}>
+              {count}
+            </span>
+            {showChevron && (
+              <ChevronRight className="h-3 w-3 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+            )}
+          </div>
         </>
       )}
     </button>

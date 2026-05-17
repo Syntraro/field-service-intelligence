@@ -10,6 +10,13 @@ interface OperationalWorkspaceProps {
   // ── Center pane ────────────────────────────────────────────────────────────
   /** Domain-provided center content. Compose WorkspaceCenterPane here. */
   center: ReactNode;
+  /**
+   * Additional class(es) appended to the center pane wrapper. Primarily used
+   * to override overflow behaviour — e.g. "overflow-x-auto overflow-y-hidden"
+   * for workspaces that need horizontal scroll in the header area.
+   * Defaults to "overflow-hidden" when omitted.
+   */
+  centerClassName?: string;
   // ── Right rail ─────────────────────────────────────────────────────────────
   rightRailExpanded: boolean;
   /**
@@ -22,6 +29,14 @@ interface OperationalWorkspaceProps {
   rightExpandedWidth?: number;
   /** Forwarded to WorkspaceRightRail — use to override the canonical bg-card default. */
   rightRailClassName?: string;
+  /** Forwarded to WorkspaceRightRail as data-testid. */
+  rightRailTestId?: string;
+  /**
+   * Whether to render a divide-x separator between the center pane and the rail.
+   * Defaults to true. Set to false when the rail provides its own conditional border
+   * (e.g. collapsedWidth=0 workspaces where a permanent divider is never desired).
+   */
+  showRailDivider?: boolean;
   "data-testid"?: string;
 }
 
@@ -38,11 +53,14 @@ interface OperationalWorkspaceProps {
  */
 export function OperationalWorkspace({
   center,
+  centerClassName,
   rightRailExpanded,
   rightRail,
   rightCollapsedWidth = RIGHT_RAIL_COLLAPSED_W,
   rightExpandedWidth = RIGHT_RAIL_EXPANDED_W,
   rightRailClassName,
+  rightRailTestId,
+  showRailDivider = true,
   "data-testid": testId,
 }: OperationalWorkspaceProps) {
   const hasRail = rightRail != null;
@@ -50,12 +68,12 @@ export function OperationalWorkspace({
     <div
       className={cn(
         "flex h-full min-h-0",
-        hasRail && "divide-x divide-slate-100",
+        hasRail && showRailDivider && "divide-x divide-slate-100",
       )}
       data-testid={testId ?? "operational-workspace"}
     >
       {/* Center pane — fills available width */}
-      <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+      <div className={cn("flex-1 min-w-0 min-h-0 flex flex-col", centerClassName ?? "overflow-hidden")}>
         {center}
       </div>
 
@@ -65,6 +83,7 @@ export function OperationalWorkspace({
           collapsedWidth={rightCollapsedWidth}
           expandedWidth={rightExpandedWidth}
           className={rightRailClassName}
+          data-testid={rightRailTestId}
         >
           {rightRail}
         </WorkspaceRightRail>
