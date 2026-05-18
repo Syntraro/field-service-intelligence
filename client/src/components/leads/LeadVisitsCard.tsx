@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScheduleLeadVisitModal } from "./ScheduleLeadVisitModal";
+import { leadKeys } from "@/lib/queryKeys/leads";
 
 interface LeadVisitRow {
   id: string;
@@ -93,7 +94,7 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
   const { data: visits = [], isLoading } = useQuery<LeadVisitRow[]>({
-    queryKey: ["/api/leads", leadId, "visits"],
+    queryKey: leadKeys.visits(leadId),
     queryFn: async () => {
       const res = await fetch(`/api/leads/${leadId}/visits`, {
         credentials: "include",
@@ -124,7 +125,7 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
         method: "POST",
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });
+      queryClient.invalidateQueries({ queryKey: leadKeys.visits(leadId) });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       toast({ title: "Visit cancelled" });
     },
@@ -143,7 +144,7 @@ export function LeadVisitsCard({ leadId, leadLocationId }: Props) {
         method: "DELETE",
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });
+      queryClient.invalidateQueries({ queryKey: leadKeys.visits(leadId) });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       toast({ title: "Visit removed" });
     },

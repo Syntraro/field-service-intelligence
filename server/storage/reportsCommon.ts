@@ -22,6 +22,7 @@
 
 import { and, asc, desc, eq, gte, lt, ne, sql, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "../db";
+import { activeJobFilter } from "./jobFilters";
 import {
   invoices,
   payments,
@@ -568,13 +569,7 @@ export async function getJobStatusBreakdownShared(
       count: sql<number>`COUNT(*)::int`,
     })
     .from(jobs)
-    .where(
-      and(
-        eq(jobs.companyId, companyId),
-        // Soft-deleted rows are not active jobs — exclude them.
-        isNull(jobs.deletedAt),
-      ),
-    )
+    .where(and(eq(jobs.companyId, companyId), activeJobFilter()))
     .groupBy(jobs.status);
 
   const totals: Record<JobStatusKey, number> = {
@@ -614,6 +609,10 @@ export async function getAvgJobValueTrendShared(
   // contribution per day. `invoiceCount` continues to expose the
   // count-of-invoices that day (separate from the AVG denominator)
   // as informational metadata.
+  // 2026-05-18 audit fix: exclude voided and draft invoices. Voided
+  // invoices retain their issueDate and were previously included,
+  // distorting the average. Draft invoices with issueDate set are
+  // also excluded — only issued/sent/paid invoices represent real job value.
   const rows = await db
     .select({
       date: sql<string>`to_char(${invoices.issueDate}::date, 'YYYY-MM-DD')`,
@@ -625,6 +624,8 @@ export async function getAvgJobValueTrendShared(
       and(
         eq(invoices.companyId, companyId),
         isNotNull(invoices.jobId),
+        ne(invoices.status, "voided"),
+        ne(invoices.status, "draft"),
         gte(sql`${invoices.issueDate}::timestamp`, current.from),
         lt(sql`${invoices.issueDate}::timestamp`, current.to),
       ),
@@ -1717,7 +1718,9 @@ export const sharedQueries = {
    *  so the two surfaces cannot disagree on the definition.
    *
    *  2026-05-03 audit fix: previously `AVG(total)` (per-invoice average)
-   *  which inflated the denominator on multi-invoice jobs. */
+   *  which inflated the denominator on multi-invoice jobs.
+   *  2026-05-18 audit fix: exclude voided and draft invoices so the KPI
+   *  reflects only issued/sent/paid invoice value. */
   avgJobInvoiceValue: (companyId: string) => async (w: Window): Promise<number> => {
     const rows = await db
       .select({
@@ -1728,6 +1731,8 @@ export const sharedQueries = {
         and(
           eq(invoices.companyId, companyId),
           isNotNull(invoices.jobId),
+          ne(invoices.status, "voided"),
+          ne(invoices.status, "draft"),
           gte(sql`${invoices.issueDate}::timestamp`, w.from),
           lt(sql`${invoices.issueDate}::timestamp`, w.to),
         ),

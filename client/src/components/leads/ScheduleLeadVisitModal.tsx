@@ -36,6 +36,7 @@ import {
   FormRow,
   FormHelperText,
 } from "@/components/ui/form-field";
+import { leadKeys } from "@/lib/queryKeys/leads";
 
 interface Props {
   leadId: string;
@@ -120,7 +121,7 @@ export function ScheduleLeadVisitModal({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads", leadId, "visits"] });
+      queryClient.invalidateQueries({ queryKey: leadKeys.visits(leadId) });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/lead-visits"] });
       toast({ title: "Visit scheduled" });

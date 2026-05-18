@@ -19,10 +19,9 @@ export function invalidateJob(qc: QueryClient, jobId: string): void {
 }
 
 /**
- * Bust the URL-pattern financial sub-resource keys for a job.
- * Use in addition to invalidateJob() after any mutation that changes
- * parts, expenses, or time entries — these keys are NOT caught by
- * the semantic ["jobs"] family prefix.
+ * Bust the canonical sub-resource keys for parts, expenses, and time entries.
+ * Use in addition to invalidateJob() after mutations that affect these resources.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
  */
 export function invalidateJobSubresources(
   qc: QueryClient,
@@ -31,6 +30,9 @@ export function invalidateJobSubresources(
   qc.invalidateQueries({ queryKey: jobKeys.parts(jobId) });
   qc.invalidateQueries({ queryKey: jobKeys.expenses(jobId) });
   qc.invalidateQueries({ queryKey: jobKeys.timeEntries(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.timeSummary(jobId) });
+  // Bridge: covers legacy URL-pattern consumers still using ["/api/jobs", id, sub].
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
 }
 
 /**
@@ -52,6 +54,7 @@ export function invalidateJobLifecycle(
 /**
  * Bust only the expense sub-resource plus job detail.
  * Use in addExpenseMutation and any other expense-only mutation.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
  */
 export function invalidateJobExpense(
   qc: QueryClient,
@@ -60,4 +63,71 @@ export function invalidateJobExpense(
   qc.invalidateQueries({ queryKey: jobKeys.expenses(jobId) });
   qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
   qc.invalidateQueries({ queryKey: jobKeys.all() });
+  // Bridge: covers legacy ["/api/jobs", id, "expenses"] consumers.
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
+}
+
+/**
+ * Bust only the parts sub-resource plus job detail and root.
+ * Use in parts add/edit/delete mutations.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
+ */
+export function invalidateJobParts(
+  qc: QueryClient,
+  jobId: string,
+): void {
+  qc.invalidateQueries({ queryKey: jobKeys.parts(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.root() });
+  // Bridge: covers legacy ["/api/jobs", id, "parts"] consumers.
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
+}
+
+/**
+ * Bust the time entries and time summary sub-resources plus job detail and root.
+ * Use in time entry add/edit/delete mutations.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
+ */
+export function invalidateJobTimeEntries(
+  qc: QueryClient,
+  jobId: string,
+): void {
+  qc.invalidateQueries({ queryKey: jobKeys.timeEntries(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.timeSummary(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.root() });
+  // Bridge: covers legacy ["/api/jobs", id, "time-entries"] and "time-summary" consumers.
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
+}
+
+/**
+ * Bust the equipment sub-resource plus job detail and root.
+ * Use in equipment add/remove mutations for job-owned equipment.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
+ */
+export function invalidateJobEquipment(
+  qc: QueryClient,
+  jobId: string,
+): void {
+  qc.invalidateQueries({ queryKey: jobKeys.equipment(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.root() });
+  // Bridge: covers legacy ["/api/jobs", id, "equipment"] consumers.
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
+}
+
+/**
+ * Bust the notes sub-resource plus job detail and root.
+ * Use in note add/edit/delete mutations for job-owned notes.
+ * urlFamily() bridge covers legacy URL-pattern consumers until full migration.
+ */
+export function invalidateJobNotes(
+  qc: QueryClient,
+  jobId: string,
+): void {
+  qc.invalidateQueries({ queryKey: jobKeys.notes(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.root() });
+  // Bridge: covers legacy ["/api/jobs", id, "notes"] consumers.
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
 }

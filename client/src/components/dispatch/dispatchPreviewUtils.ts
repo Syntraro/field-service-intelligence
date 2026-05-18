@@ -3,6 +3,8 @@
  * Pure helpers — no side effects, no external dependencies.
  */
 import type { DispatchVisit, DispatchLeadVisit, Technician, VisitStatus } from "./dispatchPreviewTypes";
+import type { TechnicianLiveState } from "@/hooks/useTechnicians";
+import type { ChipTone } from "@/lib/chipVariants";
 
 // Hours displayed on the timeline (5 AM – 10 PM default, 0–24 in expanded mode)
 // Item 3: Extended from 6–20 to 5–22 for early/late scheduling support
@@ -209,6 +211,19 @@ export function priorityIndicator(priority: DispatchVisit["priority"]): string |
 }
 
 export { formatDuration } from "@/lib/formatters";
+
+/** Maps a technician live-state to the canonical chip tone for dispatch surfaces. */
+export function liveStateTone(state: TechnicianLiveState | undefined): ChipTone {
+  if (!state) return "neutral";
+  switch (state.activityStatus) {
+    case "paused":   return "warning";
+    case "on_site":  return "success";
+    case "en_route": return "warning";
+    case "idle":
+    default:
+      return state.attendanceStatus === "clocked_in" ? "success" : "neutral";
+  }
+}
 
 /**
  * Canonical day-key for dispatch bucketing.

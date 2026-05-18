@@ -93,6 +93,8 @@ import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
+import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 import { AddProductModal } from "@/components/PartsBillingCard";
@@ -301,7 +303,7 @@ export function EditVisitModal({
 
   // Job-level equipment fallback — used when visit.equipmentIds is null (legacy visits pre-fix)
   const { data: jobEquipmentFallback } = useQuery<{ equipmentId: string }[]>({
-    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryKey: jobKeys.equipment(jobId),
     queryFn: async () => { const r = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" }); if (!r.ok) return []; const d = await r.json(); return Array.isArray(d) ? d : d.items || d.data || []; },
     enabled: open && !!jobId && !!visit && (visit as any).equipmentIds == null,
   });
@@ -342,7 +344,7 @@ export function EditVisitModal({
   // ── Invalidation ──
   const invalidateVisitQueries = () => { queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] }); queryClient.invalidateQueries({ queryKey: ["visits"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); };
   const invalidateJobParts = () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] }); };
-  const invalidateEquipment = () => { queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] }); queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] }); };
+  const invalidateEquipment = () => { queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] }); invalidateJobEquipment(queryClient, jobId); };
 
   // ── Mutations ──
   //

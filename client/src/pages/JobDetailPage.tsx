@@ -162,7 +162,13 @@ import { resolveServiceLocationName } from "@/lib/serviceAddress";
 // PERMISSION HELPERS - Role-based action availability
 // ============================================================================
 import { MANAGER_ROLES } from "@/lib/roles";
-import { invalidateJobExpense } from "@/lib/queryInvalidation";
+import { jobKeys } from "@/lib/queryKeys/jobs";
+import {
+  invalidateJob,
+  invalidateJobExpense,
+  invalidateJobParts,
+  invalidateJobTimeEntries,
+} from "@/lib/queryInvalidation";
 
 // Phase 4 Step A7: Use canonical JobHeaderDetail type for main job data.
 // The canonical getJobHeader now correctly joins customerCompanies,
@@ -444,7 +450,7 @@ function LineItemsTable({
       itemDescription?: string | null;
     })[]
   >({
-    queryKey: ["/api/jobs", jobId, "parts"],
+    queryKey: jobKeys.parts(jobId),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
       if (!res.ok) return [];
@@ -580,7 +586,7 @@ function LineItemsTable({
           method: "POST",
           body: JSON.stringify(draftToJobPartPayload(draft)),
         });
-        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
       },
       updateLine: async (serverId, draft) => {
@@ -588,12 +594,12 @@ function LineItemsTable({
           method: "PUT",
           body: JSON.stringify(draftToJobPartPayload(draft)),
         });
-        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
       },
       deleteLine: async (serverId) => {
         await apiRequest(`/api/jobs/${jobId}/parts/${serverId}`, { method: "DELETE" });
-        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
       },
       reorderLines: async (orderedServerIds) => {
@@ -606,7 +612,7 @@ function LineItemsTable({
           method: "PATCH",
           body: JSON.stringify({ parts: reorderPayload }),
         });
-        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
       },
       bulkAddLines: async (drafts) => {
@@ -616,7 +622,7 @@ function LineItemsTable({
             body: JSON.stringify(draftToJobPartPayload(draft)),
           });
         }
-        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
       },
       hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
@@ -686,7 +692,7 @@ function LineItemsTable({
               });
             }
           }
-          await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+          await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
           return { ok: true, failures: 0, skipped: plan.skipped };
         } catch (err) {
@@ -868,7 +874,7 @@ export default function JobDetailPage() {
     receiptUrl?: string | null;
   }
   const { data: expensesRaw = [] } = useQuery<JobExpenseRow[]>({
-    queryKey: ["/api/jobs", jobId, "expenses"],
+    queryKey: jobKeys.expenses(jobId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/expenses`, { credentials: "include" });
       if (!res.ok) return [];
@@ -945,7 +951,7 @@ export default function JobDetailPage() {
   // surfaces only Driving + On-site cost (computed below from each
   // entry's `costRateSnapshot`), so neither query is mounted anymore.
   const { data: jobTimeEntries = [] } = useQuery<TimeEntryDisplay[]>({
-    queryKey: ["/api/jobs", jobId, "time-entries"],
+    queryKey: jobKeys.timeEntries(jobId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/time-entries`, { credentials: "include" });
       if (!res.ok) return [];
@@ -1368,9 +1374,9 @@ export default function JobDetailPage() {
     onSuccess: (invoice) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      invalidateJob(queryClient, jobId ?? "");
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "billable-preview"] });
+      queryClient.invalidateQueries({ queryKey: jobKeys.billablePreview(jobId ?? "") });
       toast({
         title: "Invoice Created",
         description: invoice.invoiceNumber

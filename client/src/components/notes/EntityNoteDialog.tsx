@@ -59,6 +59,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Paperclip, X, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
 import {
   resolveFileAccessUrl,
   SUPPORTED_MIME_TYPES,
@@ -157,7 +158,7 @@ function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
   }
   return {
     basePath: `/api/jobs/${entityId}/notes`,
-    readQueryKey: ["/api/jobs", entityId, "notes"] as const,
+    readQueryKey: jobKeys.notes(entityId),
   };
 }
 

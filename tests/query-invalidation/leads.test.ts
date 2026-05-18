@@ -3,7 +3,7 @@
  *
  * Verifies that:
  *   - invalidateLead busts both the family prefix and the explicit detail key
- *   - invalidateLeadVisits busts the URL-pattern visits key
+ *   - invalidateLeadVisits busts the canonical visits key
  *   - the two helpers are independent (visits key NOT in invalidateLead)
  */
 import { describe, it, expect } from "vitest";
@@ -29,7 +29,7 @@ describe("invalidateLead", () => {
   it("busts the family prefix and explicit detail key", () => {
     const qc = makeQc();
     invalidateLead(qc as any, LEAD_ID);
-    expect(qc.calls).toContainEqual(leadKeys.all());
+    expect(qc.calls).toContainEqual(leadKeys.root());
     expect(qc.calls).toContainEqual(leadKeys.detail(LEAD_ID));
   });
 
@@ -41,7 +41,7 @@ describe("invalidateLead", () => {
 });
 
 describe("invalidateLeadVisits", () => {
-  it("busts the URL-pattern visits key", () => {
+  it("busts the canonical visits key", () => {
     const qc = makeQc();
     invalidateLeadVisits(qc as any, LEAD_ID);
     expect(qc.calls).toContainEqual(leadKeys.visits(LEAD_ID));
@@ -50,7 +50,7 @@ describe("invalidateLeadVisits", () => {
   it("does not redundantly bust the lead family or detail", () => {
     const qc = makeQc();
     invalidateLeadVisits(qc as any, LEAD_ID);
-    expect(qc.calls).not.toContainEqual(leadKeys.all());
+    expect(qc.calls).not.toContainEqual(leadKeys.root());
     expect(qc.calls).not.toContainEqual(leadKeys.detail(LEAD_ID));
   });
 });

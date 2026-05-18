@@ -1063,6 +1063,7 @@ export default function PayrollPage() {
           onLocationClick={(locationId) => setLocation(`/clients/${locationId}`)}
           onRequestDelete={(id, label) => setDeleteTarget({ id, label })}
           invalidateQueryKeys={[[QK_DAY], [QK_WEEKLY], [QK_WEEK_ENTRIES]]}
+          sessionMinutes={dayData?.totalMinutes}
         />
       )}
 

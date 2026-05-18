@@ -10,6 +10,10 @@ export {
   invalidateJobSubresources,
   invalidateJobLifecycle,
   invalidateJobExpense,
+  invalidateJobParts,
+  invalidateJobTimeEntries,
+  invalidateJobEquipment,
+  invalidateJobNotes,
 } from "./jobs";
 
 export {
@@ -19,7 +23,7 @@ export {
 
 export { invalidateQuote, invalidateQuoteList } from "./quotes";
 
-export { invalidateLead, invalidateLeadVisits } from "./leads";
+export { invalidateLead, invalidateLeadList, invalidateLeadVisits } from "./leads";
 
 export {
   invalidateClientLocation,

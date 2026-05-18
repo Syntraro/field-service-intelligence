@@ -21,6 +21,7 @@ import { format, parseISO } from "date-fns";
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import type { JobVisit } from "@shared/schema";
 
@@ -122,7 +123,7 @@ export function useEditVisitForm({ open, jobId, visitId, locationId }: UseEditVi
 
   // Fallback: inherit equipment from job when visit.equipmentIds is null (legacy rows).
   const { data: jobEquipmentFallback } = useQuery<{ equipmentId: string }[]>({
-    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryKey: jobKeys.equipment(jobId),
     queryFn: async () => {
       const r = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" });
       if (!r.ok) return [];

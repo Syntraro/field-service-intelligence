@@ -105,6 +105,7 @@ import {
 } from "@/hooks/useFileUpload";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
 import { ACTIVITY_FEED_QUERY_KEY } from "@/components/activity-feed/useActivityFeed";
 import type { ClientNote } from "@shared/schema";
 
@@ -271,7 +272,7 @@ function resolveEntityOwnedReadEndpoint(
   }
   return {
     url: `/api/jobs/${entityId}/notes`,
-    queryKey: ["/api/jobs", entityId, "notes"] as const,
+    queryKey: jobKeys.notes(entityId),
   };
 }
 

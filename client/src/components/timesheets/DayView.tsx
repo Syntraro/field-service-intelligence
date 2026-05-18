@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { formatDurationHm } from "@/lib/timeDuration";
 import { DaySummaryCard, type DayTeamMember } from "./DaySummaryCard";
 import { TimelineRail } from "./TimelineRail";
 import {
@@ -75,6 +76,13 @@ export interface DayViewProps {
   onRequestDelete: (entryId: string, label: string) => void;
   /** Query keys the parent expects to invalidate after mutations. */
   invalidateQueryKeys: ReadonlyArray<readonly unknown[]>;
+  /**
+   * Total clocked-in minutes from work_sessions for this day
+   * (returned by /api/admin/timesheets/day as `totalMinutes`).
+   * Used to compute unallocated session time: max(0, sessionMinutes - entriesTotal).
+   * Undefined when the day has not been fetched yet.
+   */
+  sessionMinutes?: number;
 }
 
 interface JobGroup {
@@ -172,6 +180,7 @@ export function DayView({
   onLocationClick,
   onRequestDelete,
   invalidateQueryKeys,
+  sessionMinutes,
 }: DayViewProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -217,6 +226,24 @@ export function DayView({
     () => entries.reduce((sum, e) => sum + (e.durationMinutes ?? 0), 0),
     [entries],
   );
+  // Unallocated clocked-in time: session minutes that have no corresponding
+  // time_entry. Mirrors the same calculation in buildWeekStackViewModel so
+  // Day View and Week View agree on General Time totals.
+  const unallocatedMinutes = useMemo(() => {
+    if (sessionMinutes == null || sessionMinutes <= 0) return 0;
+    return Math.max(0, sessionMinutes - dailyTotalMinutes);
+  }, [sessionMinutes, dailyTotalMinutes]);
+
+  // Augmented totals passed to DaySummaryCard — include unallocated session time.
+  const augmentedTotalMinutes = dailyTotalMinutes + unallocatedMinutes;
+  const augmentedCategoryTotals = useMemo(
+    () =>
+      unallocatedMinutes > 0
+        ? { ...totalsByCategory, general: totalsByCategory.general + unallocatedMinutes }
+        : totalsByCategory,
+    [totalsByCategory, unallocatedMinutes],
+  );
+
   const groups = useMemo(() => groupEntries(entries), [entries]);
   const railEntries = useMemo(
     () =>
@@ -553,9 +580,9 @@ export function DayView({
         date={date}
         members={members}
         selectedMemberId={selectedMemberId}
-        totalMinutes={dailyTotalMinutes}
+        totalMinutes={augmentedTotalMinutes}
         hasRunning={hasRunning}
-        categoryTotals={totalsByCategory}
+        categoryTotals={augmentedCategoryTotals}
         formatMemberName={formatMemberName}
         onSelectMember={onSelectMember}
       />
@@ -610,6 +637,28 @@ export function DayView({
                     onLocationClick={onLocationClick}
                   />
                 ))}
+
+                {/* Unallocated session time — clocked-in minutes with no
+                    corresponding time_entry. Matches buildWeekStackViewModel
+                    logic so Day View and Week View agree on General totals. */}
+                {unallocatedMinutes > 0 && (
+                  <div
+                    data-testid="day-unallocated-block"
+                    className="overflow-hidden rounded-md border border-slate-200 border-l-2 border-l-emerald-400 bg-emerald-50/30"
+                  >
+                    <div className="flex items-center gap-3 px-3 py-2 text-row">
+                      <span className="text-helper font-medium text-muted-foreground">
+                        General Time
+                      </span>
+                      <span className="text-helper italic text-muted-foreground">
+                        Unallocated
+                      </span>
+                      <span className="ml-auto shrink-0 font-mono text-row font-semibold tabular-nums">
+                        {formatDurationHm(unallocatedMinutes)}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
               </div>
             </div>

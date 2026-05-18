@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
 import { EquipmentTypeCombobox } from "@/components/EquipmentTypeCombobox";
 import type { LocationEquipment } from "@shared/schema";
 
@@ -134,7 +135,7 @@ export function AddEquipmentDialog({
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
     if (jobId) {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
+      invalidateJobEquipment(queryClient, jobId);
     }
   }, [locationId, jobId]);
 

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb, index, check, unique } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb, index, check, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -7929,4 +7929,463 @@ export const teamMemberSkills = pgTable("team_member_skills", {
   companyUserIdx: index("team_member_skills_company_user_idx").on(table.companyId, table.userId),
   skillIdIdx: index("team_member_skills_skill_id_idx").on(table.skillId),
 }));
+
+// =============================================================================
+// TECHNICIAN SHIFT MANAGEMENT — Phase 1 (2026-05-18)
+// =============================================================================
+//
+// Single canonical availability source for all technician scheduling.
+// Replaces the ad-hoc time-off check in scheduling.ts.
+//
+// Row semantics:
+//   One-off shift   recurrence_rule IS NULL  AND recurrence_parent_id IS NULL
+//   Recurring base  recurrence_rule IS NOT NULL AND recurrence_parent_id IS NULL
+//   Exception row   recurrence_parent_id IS NOT NULL (edit/cancel of one occurrence)
+//
+// The self-referential FK on technician_shifts (recurrence_parent_id → id)
+// is expressed as a raw varchar here — Drizzle does not support self-
+// referential .references() on the same table. The actual FK constraint
+// with ON DELETE CASCADE is in the companion migration SQL.
+//
+// See migrations/2026_05_18_shift_enums.sql,
+//     migrations/2026_05_18_technician_shift_templates.sql,
+//     migrations/2026_05_18_technician_shifts.sql.
+
+/** Top-level classification for every shift row. */
+export const shiftTypeEnum = pgEnum("shift_type", ["normal", "on_call", "unavailable"]);
+
+/** Reason code for unavailable shifts only. */
+export const shiftSubtypeEnum = pgEnum("shift_subtype", [
+  "vacation",
+  "sick",
+  "personal",
+  "training",
+  "holiday",
+  "scheduled_off",
+  "other",
+]);
+
+// ─── technician_shift_templates ─────────────────────────────────────────────
+
+export const technicianShiftTemplates = pgTable(
+  "technician_shift_templates",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    shiftType: shiftTypeEnum("shift_type").notNull(),
+    shiftSubtype: shiftSubtypeEnum("shift_subtype"),
+    label: text("label"),
+    color: text("color"),
+    /** Wall-clock start time "HH:MM". Both or neither must be set. */
+    timeOfDayStart: text("time_of_day_start"),
+    /** Wall-clock end time "HH:MM". Both or neither must be set. */
+    timeOfDayEnd: text("time_of_day_end"),
+    recurrenceRule: text("recurrence_rule"),
+    isActive: boolean("is_active").notNull().default(true),
+    /** Nullable: system-created templates may have no user author. */
+    createdByUserId: varchar("created_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (table) => ({
+    companyIdx: index("idx_shift_templates_company").on(table.companyId),
+  }),
+);
+
+export type TechnicianShiftTemplate = typeof technicianShiftTemplates.$inferSelect;
+export type InsertTechnicianShiftTemplate = typeof technicianShiftTemplates.$inferInsert;
+
+// ─── technician_shifts ──────────────────────────────────────────────────────
+
+export const technicianShifts = pgTable(
+  "technician_shifts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    technicianUserId: varchar("technician_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Optional reference to the template used to create this shift. */
+    templateId: varchar("template_id").references(() => technicianShiftTemplates.id),
+    shiftType: shiftTypeEnum("shift_type").notNull(),
+    shiftSubtype: shiftSubtypeEnum("shift_subtype"),
+    label: text("label"),
+    color: text("color"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    allDay: boolean("all_day").notNull().default(false),
+    /** Wall-clock start time "HH:MM". Paired with timeOfDayEnd. */
+    timeOfDayStart: text("time_of_day_start"),
+    /** Wall-clock end time "HH:MM". Paired with timeOfDayStart. */
+    timeOfDayEnd: text("time_of_day_end"),
+    recurrenceRule: text("recurrence_rule"),
+    recurrenceEndDate: date("recurrence_end_date"),
+    /**
+     * Self-referential FK: exception rows reference the recurring base shift.
+     * Expressed as raw varchar — Drizzle does not support self-referential
+     * .references() on the same table. The FK with ON DELETE CASCADE is in
+     * the companion migration SQL.
+     */
+    recurrenceParentId: varchar("recurrence_parent_id"),
+    /** Calendar date (YYYY-MM-DD in company tz) of the overridden occurrence. */
+    occurrenceDate: date("occurrence_date"),
+    isCancelled: boolean("is_cancelled").notNull().default(false),
+    note: text("note"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (table) => ({
+    rangeIdx: index("idx_tech_shifts_range").on(
+      table.companyId,
+      table.technicianUserId,
+      table.startsAt,
+      table.endsAt,
+    ),
+    exceptionsIdx: index("idx_tech_shifts_exceptions").on(
+      table.recurrenceParentId,
+      table.occurrenceDate,
+    ),
+    oncallIdx: index("idx_tech_shifts_oncall").on(
+      table.companyId,
+      table.startsAt,
+      table.endsAt,
+    ),
+    unavailableIdx: index("idx_tech_shifts_unavailable").on(
+      table.companyId,
+      table.technicianUserId,
+      table.startsAt,
+      table.endsAt,
+    ),
+  }),
+);
+
+export type TechnicianShift = typeof technicianShifts.$inferSelect;
+export type InsertTechnicianShift = typeof technicianShifts.$inferInsert;
+
+// ─── Zod schemas for the shift-management API ────────────────────────────────
+
+const SHIFT_TYPES = ["normal", "on_call", "unavailable"] as const;
+const SHIFT_SUBTYPES = [
+  "vacation", "sick", "personal", "training",
+  "holiday", "scheduled_off", "other",
+] as const;
+
+const timeOfDaySchema = z
+  .string()
+  .regex(/^\d{2}:\d{2}$/, "Must be HH:MM format");
+
+export const insertShiftTemplateSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    shiftType: z.enum(SHIFT_TYPES),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    recurrenceRule: z.string().max(500).nullable().optional(),
+    isActive: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.shiftType === "unavailable" && !val.shiftSubtype) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "shiftSubtype is required when shiftType is 'unavailable'",
+        path: ["shiftSubtype"],
+      });
+    }
+    if (val.shiftType !== "unavailable" && val.shiftSubtype) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "shiftSubtype must be null when shiftType is not 'unavailable'",
+        path: ["shiftSubtype"],
+      });
+    }
+    const hasStart = !!val.timeOfDayStart;
+    const hasEnd = !!val.timeOfDayEnd;
+    if (hasStart !== hasEnd) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "timeOfDayStart and timeOfDayEnd must both be set or both be null",
+        path: ["timeOfDayEnd"],
+      });
+    }
+  });
+
+export const updateShiftTemplateSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    shiftType: z.enum(SHIFT_TYPES).optional(),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    recurrenceRule: z.string().max(500).nullable().optional(),
+    isActive: z.boolean().optional(),
+  })
+  .strict();
+
+export const insertShiftSchema = z
+  .object({
+    technicianUserId: z.string().uuid(),
+    templateId: z.string().uuid().nullable().optional(),
+    shiftType: z.enum(SHIFT_TYPES),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+    startsAt: z.string().datetime({ offset: true }),
+    endsAt: z.string().datetime({ offset: true }),
+    allDay: z.boolean().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    recurrenceRule: z.string().max(500).nullable().optional(),
+    recurrenceEndDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
+      .nullable()
+      .optional(),
+    note: z.string().max(1000).nullable().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (Date.parse(val.endsAt) <= Date.parse(val.startsAt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "endsAt must be strictly after startsAt",
+        path: ["endsAt"],
+      });
+    }
+    if (val.shiftType === "unavailable" && !val.shiftSubtype) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "shiftSubtype is required when shiftType is 'unavailable'",
+        path: ["shiftSubtype"],
+      });
+    }
+    if (val.shiftType !== "unavailable" && val.shiftSubtype) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "shiftSubtype must be null when shiftType is not 'unavailable'",
+        path: ["shiftSubtype"],
+      });
+    }
+    const hasStart = !!val.timeOfDayStart;
+    const hasEnd = !!val.timeOfDayEnd;
+    if (hasStart !== hasEnd) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "timeOfDayStart and timeOfDayEnd must both be set or both be null",
+        path: ["timeOfDayEnd"],
+      });
+    }
+    if (val.allDay && val.timeOfDayStart) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "timeOfDayStart must be null when allDay is true",
+        path: ["timeOfDayStart"],
+      });
+    }
+  });
+
+export const updateShiftSchema = z
+  .object({
+    shiftType: z.enum(SHIFT_TYPES).optional(),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+    startsAt: z.string().datetime({ offset: true }).optional(),
+    endsAt: z.string().datetime({ offset: true }).optional(),
+    allDay: z.boolean().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    recurrenceRule: z.string().max(500).nullable().optional(),
+    recurrenceEndDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
+      .nullable()
+      .optional(),
+    note: z.string().max(1000).nullable().optional(),
+  })
+  .strict();
+
+export const insertShiftExceptionSchema = z
+  .object({
+    occurrenceDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
+    isCancelled: z.boolean().optional(),
+    startsAt: z.string().datetime({ offset: true }).optional(),
+    endsAt: z.string().datetime({ offset: true }).optional(),
+    allDay: z.boolean().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    note: z.string().max(1000).nullable().optional(),
+    shiftType: z.enum(SHIFT_TYPES).optional(),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.startsAt && val.endsAt && Date.parse(val.endsAt) <= Date.parse(val.startsAt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "endsAt must be strictly after startsAt",
+        path: ["endsAt"],
+      });
+    }
+  });
+
+export const updateShiftExceptionSchema = z
+  .object({
+    occurrenceDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD")
+      .optional(),
+    isCancelled: z.boolean().optional(),
+    startsAt: z.string().datetime({ offset: true }).optional(),
+    endsAt: z.string().datetime({ offset: true }).optional(),
+    allDay: z.boolean().optional(),
+    timeOfDayStart: timeOfDaySchema.nullable().optional(),
+    timeOfDayEnd: timeOfDaySchema.nullable().optional(),
+    note: z.string().max(1000).nullable().optional(),
+    shiftType: z.enum(SHIFT_TYPES).optional(),
+    shiftSubtype: z.enum(SHIFT_SUBTYPES).nullable().optional(),
+    label: z.string().max(100).nullable().optional(),
+    color: z.string().max(20).nullable().optional(),
+  })
+  .strict();
+
+export const availabilityQuerySchema = z
+  .object({
+    start: z.string().datetime({ offset: true }),
+    end: z.string().datetime({ offset: true }),
+    technicianUserIds: z.string().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (Date.parse(val.end) <= Date.parse(val.start)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "end must be strictly after start",
+        path: ["end"],
+      });
+    }
+  });
+
+export const validateAssignmentSchema = z
+  .object({
+    technicianUserId: z.string().uuid(),
+    proposedStart: z.string().datetime({ offset: true }),
+    proposedEnd: z.string().datetime({ offset: true }),
+    ignoreUnavailable: z.boolean().optional(),
+    excludeShiftId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (Date.parse(val.proposedEnd) <= Date.parse(val.proposedStart)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "proposedEnd must be strictly after proposedStart",
+        path: ["proposedEnd"],
+      });
+    }
+  });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-05-18 RALPH: Flat-Rate Service Templates
+//
+// A service_template is a single customer-facing line item with a flat_rate_price.
+// Internally it is composed of service_template_components referencing catalog
+// items (services/products) for cost estimation and operational guidance only.
+// Components are NEVER exposed on invoices or synced to QBO.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const serviceTemplates = pgTable("service_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+
+  name: text("name").notNull(),
+  internalName: text("internal_name"),
+  description: text("description"),
+  internalNotes: text("internal_notes"),
+  category: text("category"),
+  subcategory: text("subcategory"),
+
+  flatRatePrice: numeric("flat_rate_price", { precision: 12, scale: 2 }).notNull().default("0"),
+  estimatedDurationMinutes: integer("estimated_duration_minutes"),
+  requiredSkillTags: text("required_skill_tags").array().notNull().default(sql`'{}'::text[]`),
+  teamSizeRequired: integer("team_size_required").notNull().default(1),
+
+  isActive: boolean("is_active").notNull().default(true),
+  usageCount: integer("usage_count").notNull().default(0),
+
+  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`NOW()`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  lookupIdx: index("idx_svc_templates_lookup")
+    .on(table.companyId, table.isActive, table.usageCount),
+}));
+
+export const serviceTemplateComponents = pgTable("service_template_components", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  templateId: varchar("template_id").notNull().references(() => serviceTemplates.id, { onDelete: "cascade" }),
+  itemId: varchar("item_id").notNull().references(() => items.id, { onDelete: "restrict" }),
+
+  quantity: numeric("quantity", { precision: 12, scale: 2 }).notNull().default("1"),
+  unitCostSnapshot: numeric("unit_cost_snapshot", { precision: 12, scale: 2 }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  notes: text("notes"),
+
+  createdAt: timestamp("created_at").notNull().default(sql`NOW()`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  lookupIdx: index("idx_svc_template_components_lookup")
+    .on(table.companyId, table.templateId, table.sortOrder),
+}));
+
+export const insertServiceTemplateSchema = createInsertSchema(serviceTemplates).omit({
+  id: true,
+  companyId: true,
+  userId: true,
+  usageCount: true,
+  deletedAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertServiceTemplateComponentSchema = createInsertSchema(serviceTemplateComponents).omit({
+  id: true,
+  companyId: true,
+  templateId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ServiceTemplate = typeof serviceTemplates.$inferSelect;
+export type InsertServiceTemplate = z.infer<typeof insertServiceTemplateSchema>;
+export type ServiceTemplateComponent = typeof serviceTemplateComponents.$inferSelect;
+export type InsertServiceTemplateComponent = z.infer<typeof insertServiceTemplateComponentSchema>;
+
+export interface ServiceTemplateWithComponents extends ServiceTemplate {
+  components: (ServiceTemplateComponent & {
+    itemName: string | null;
+    itemType: string | null;
+  })[];
+}
 

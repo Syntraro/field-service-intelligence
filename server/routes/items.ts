@@ -43,6 +43,15 @@ const bulkDeleteItemsSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(500),
 }).strict();
 
+const bulkUpdateItemsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+  operation: z.enum(["adjust_price_pct", "set_markup_pct", "set_active", "set_category"]),
+  pctDelta: z.number().optional(),
+  markupPct: z.number().min(0).optional(),
+  isActive: z.boolean().optional(),
+  category: z.string().max(100).nullable().optional(),
+}).strict();
+
 // Convert numeric fields to strings for DB storage
 function toDbNumericString(value: string | number | null | undefined): string | null | undefined {
   if (value === null) return null;
@@ -175,6 +184,35 @@ router.post("/bulk-delete", requireRole(MANAGER_ROLES), requirePermission("prici
   }
 
   res.json({ deletedCount });
+}));
+
+// POST /api/items/bulk-update — batch patch for Price Book workspace (Phase 4).
+// Replaces N parallel client-side PUTs for archive, activate, category, and pricing operations.
+router.post("/bulk-update", requireRole(MANAGER_ROLES), requirePermission("pricing.edit"), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
+
+  const validated = validateSchema(bulkUpdateItemsSchema, req.body);
+
+  if (validated.operation === "adjust_price_pct" && validated.pctDelta === undefined) {
+    throw createError(400, "pctDelta is required for adjust_price_pct");
+  }
+  if (validated.operation === "set_markup_pct" && validated.markupPct === undefined) {
+    throw createError(400, "markupPct is required for set_markup_pct");
+  }
+  if (validated.operation === "set_active" && validated.isActive === undefined) {
+    throw createError(400, "isActive is required for set_active");
+  }
+
+  const result = await storage.bulkPatchItems(companyId, validated.ids, {
+    operation: validated.operation,
+    pctDelta: validated.pctDelta,
+    markupPct: validated.markupPct,
+    isActive: validated.isActive,
+    category: validated.category,
+  });
+
+  res.json(result);
 }));
 
 export default router;

@@ -13,12 +13,11 @@ import { validateSchema } from "../utils/validationHelpers";
 import { schedulingRepository, DEFAULT_CALENDAR_START_HOUR, DEFAULT_CALENDAR_END_HOUR, getDaySummary } from "../storage/scheduling";
 import { jobRepository } from "../storage/jobs"; // Needed for notification client name lookup
 import { jobVisitsRepository } from "../storage/jobVisits";
-// 2026-05-07 RALPH (technician time off): preflight check on the
-// reschedule path. Returns the overlapping rows when an assignment
-// + time range conflicts with a tech's time off. Wrapped in
-// try/catch downstream so a missing migration doesn't break
-// scheduling.
-import { technicianTimeOffRepository } from "../storage/technicianTimeOff";
+// 2026-05-18 Phase 1: replaced inline time-off conflict check with
+// canonical Availability Engine (availabilityEngine.validateAssignmentAgainstAvailability).
+// technicianTimeOffRepository is no longer called from this file.
+import { availabilityEngine } from "../services/availabilityEngine";
+import { entitlementService } from "../services/entitlementService";
 import { companyRepository } from "../storage/company";
 import { teamRepository } from "../storage/team";
 // 2026-01-30: Removed validateSchedule import - conflict checking removed for performance
@@ -784,85 +783,95 @@ router.patch(
           ? null
           : data.assignedTechnicianIds;
 
-    // 2026-05-07 RALPH (technician time off): preflight conflict
-    // check. We compute the EFFECTIVE crew + time range that the
-    // reschedule will produce, then ask the time-off repository
-    // whether any of those (tech, range) pairs overlap an existing
-    // time-off row. If there's a conflict AND the client did NOT
-    // pass `overrideTimeOffConflict: true`, return 409 with a
-    // discriminated `TIME_OFF_CONFLICT` code so the client can
-    // surface a confirm dialog and retry with override=true.
+    // 2026-05-18 Phase 1: Availability Engine preflight conflict check.
+    // When technician_shift_management is enabled, delegate to the
+    // canonical engine; otherwise fall through (no conflict check).
+    // Response shape (409 TIME_OFF_CONFLICT) is preserved for backward
+    // compatibility with the existing client confirm-dialog flow.
     //
-    // Wrapped in try/catch so a missing `technician_time_off`
-    // table (migration not yet applied) cannot break scheduling —
-    // matches the same defensive pattern in capacity.ts.
+    // Wrapped in try/catch so transient engine failures never block
+    // scheduling — same defensive pattern as the legacy check.
     if (data.overrideTimeOffConflict !== true) {
       try {
-        const existingVisit = await jobVisitsRepository.getJobVisit(
+        const shiftFeature = await entitlementService.getEntitlement(
           companyId,
-          visitId,
+          "technician_shift_management",
         );
-        if (existingVisit) {
-          // Effective crew: explicit input wins; otherwise inherit
-          // from the persisted visit row.
-          const effectiveCrew: string[] =
-            rescheduleCrewInput === undefined
-              ? Array.isArray(existingVisit.assignedTechnicianIds)
-                ? existingVisit.assignedTechnicianIds
-                : []
-              : rescheduleCrewInput === null
-                ? []
-                : rescheduleCrewInput;
-          // Effective time range: explicit computed values win;
-          // otherwise inherit from the persisted visit row.
-          const effectiveStart =
-            computedStartAt ??
-            (existingVisit.scheduledStart instanceof Date
-              ? existingVisit.scheduledStart
-              : existingVisit.scheduledStart
-                ? new Date(existingVisit.scheduledStart)
-                : null);
-          const effectiveEnd =
-            computedEndAt ??
-            (existingVisit.scheduledEnd instanceof Date
-              ? existingVisit.scheduledEnd
-              : existingVisit.scheduledEnd
-                ? new Date(existingVisit.scheduledEnd)
-                : null);
-          if (
-            effectiveCrew.length > 0 &&
-            effectiveStart instanceof Date &&
-            effectiveEnd instanceof Date &&
-            effectiveEnd > effectiveStart
-          ) {
-            const overlapping =
-              await technicianTimeOffRepository.listOverlapping(companyId, {
-                windowStart: effectiveStart,
-                windowEnd: effectiveEnd,
-              });
-            const conflicts = overlapping.filter((row) =>
-              effectiveCrew.includes(row.technicianUserId),
-            );
-            if (conflicts.length > 0) {
-              return res.status(409).json({
-                error:
-                  "Cannot assign visit to technician on time off without override.",
-                code: "TIME_OFF_CONFLICT",
-                conflicts: conflicts.map((c) => ({
-                  id: c.id,
-                  technicianUserId: c.technicianUserId,
-                  reason: c.reason,
-                  startsAt:
-                    c.startsAt instanceof Date
-                      ? c.startsAt.toISOString()
-                      : String(c.startsAt),
-                  endsAt:
-                    c.endsAt instanceof Date
-                      ? c.endsAt.toISOString()
-                      : String(c.endsAt),
-                  allDay: c.allDay,
-                })),
-              });
+        if (shiftFeature?.enabled) {
+          const existingVisit = await jobVisitsRepository.getJobVisit(
+            companyId,
+            visitId,
+          );
+          if (existingVisit) {
+            const effectiveCrew: string[] =
+              rescheduleCrewInput === undefined
+                ? Array.isArray(existingVisit.assignedTechnicianIds)
+                  ? existingVisit.assignedTechnicianIds
+                  : []
+                : rescheduleCrewInput === null
+                  ? []
+                  : rescheduleCrewInput;
+            const effectiveStart =
+              computedStartAt ??
+              (existingVisit.scheduledStart instanceof Date
+                ? existingVisit.scheduledStart
+                : existingVisit.scheduledStart
+                  ? new Date(existingVisit.scheduledStart)
+                  : null);
+            const effectiveEnd =
+              computedEndAt ??
+              (existingVisit.scheduledEnd instanceof Date
+                ? existingVisit.scheduledEnd
+                : existingVisit.scheduledEnd
+                  ? new Date(existingVisit.scheduledEnd)
+                  : null);
+            if (
+              effectiveCrew.length > 0 &&
+              effectiveStart instanceof Date &&
+              effectiveEnd instanceof Date &&
+              effectiveEnd > effectiveStart
+            ) {
+              const timezone = await companyRepository.getCompanyTimezone(companyId);
+              const allConflicts: Array<{
+                id: string;
+                technicianUserId: string;
+                reason: string;
+                startsAt: string;
+                endsAt: string;
+                allDay: boolean;
+              }> = [];
+              for (const techId of effectiveCrew) {
+                const validation = await availabilityEngine.validateAssignmentAgainstAvailability(
+                  companyId,
+                  techId,
+                  effectiveStart,
+                  effectiveEnd,
+                  timezone,
+                  {},
+                );
+                const unavailableConflict = validation.warnings.find(
+                  (w) => w.code === "UNAVAILABLE_CONFLICT",
+                );
+                if (unavailableConflict?.conflictingShift) {
+                  const s = unavailableConflict.conflictingShift;
+                  allConflicts.push({
+                    id: s.id,
+                    technicianUserId: s.technicianUserId,
+                    reason: s.shiftSubtype ?? "unavailable",
+                    startsAt: s.startsAt.toISOString(),
+                    endsAt: s.endsAt.toISOString(),
+                    allDay: s.allDay,
+                  });
+                }
+              }
+              if (allConflicts.length > 0) {
+                return res.status(409).json({
+                  error:
+                    "Cannot assign visit to technician on time off without override.",
+                  code: "TIME_OFF_CONFLICT",
+                  conflicts: allConflicts,
+                });
+              }
             }
           }
         }
@@ -870,7 +879,7 @@ router.patch(
         const msg = err instanceof Error ? err.message : String(err);
         // eslint-disable-next-line no-console
         console.warn(
-          `[reschedule] time-off preflight failed; proceeding without conflict check. ${msg}`,
+          `[reschedule] availability preflight failed; proceeding without conflict check. ${msg}`,
         );
       }
     }

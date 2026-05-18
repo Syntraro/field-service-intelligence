@@ -19,6 +19,7 @@ import { clientRepository } from "./clients";
 import { jobRepository } from "./jobs";
 import { invoiceRepository } from "./invoices";
 import { itemRepository } from "./items";
+import type { BulkItemPatch } from "./items";
 import { teamRepository } from "./team";
 import { templateRepository } from "./templates";
 import { maintenanceRepository } from "./maintenance";
@@ -169,6 +170,7 @@ export interface IStorage {
   updateItem: typeof itemRepository.updateItem;
   deleteItem: typeof itemRepository.deleteItem;
   restoreItem: typeof itemRepository.restoreItem;
+  bulkPatchItems: (companyId: string, ids: string[], patch: BulkItemPatch) => Promise<{ updatedCount: number }>;
 
   // 2026-04-08: Removed legacy `parts` operations from the storage façade.
   // PartRepository was a duplicate wrapper around the same `items` table; all
@@ -376,6 +378,7 @@ export const storage: IStorage = {
   updateItem: itemRepository.updateItem.bind(itemRepository),
   deleteItem: itemRepository.deleteItem.bind(itemRepository),
   restoreItem: itemRepository.restoreItem.bind(itemRepository),
+  bulkPatchItems: itemRepository.bulkPatchItems.bind(itemRepository),
 
   // 2026-04-08: Legacy parts operations removed from storage façade.
   // PartRepository was a duplicate of ItemRepository on the same `items` table.

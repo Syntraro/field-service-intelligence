@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { jobKeys } from "@/lib/queryKeys/jobs";
 import { useLocation } from "wouter";
 import {
   X, ExternalLink,
@@ -85,7 +86,7 @@ export function InvoiceParticularsPanel({ invoiceId, onClose }: InvoiceParticula
   // job detail page are immediately visible when returning to the invoice list.
   // throwOnError: false — a notes fetch failure must not crash the invoice card.
   const { data: rawJobNotes = [] } = useQuery<ParticularsJobNote[]>({
-    queryKey: ["jobs", jobId, "notes"],
+    queryKey: jobKeys.notes(jobId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load job notes (HTTP ${res.status})`);

@@ -1,17 +1,21 @@
 /**
  * Canonical query key definitions for job-related queries.
  *
- * Pattern B (semantic) is the primary pattern for jobs.
- * Legacy Pattern A (URL-string) keys for sub-resources are included here
- * so all consumers have a single place to import from.
+ * All sub-resources are Pattern B (semantic): ["jobs", "detail", id, sub].
+ * The ["jobs"] root prefix matches the entire job cache hierarchy.
+ *
+ * urlFamily() is a temporary bridge that prefix-matches all legacy
+ * URL-pattern keys (["/api/jobs", ...]) until consumer migrations finish.
  *
  * Use these constants — never inline string literals for job queries.
  */
 
-/** Family prefix. invalidateQueries({ queryKey: jobKeys.all() }) busts
+/** Family prefix. invalidateQueries({ queryKey: jobKeys.root() }) busts
  *  every ["jobs", ...] cache entry. */
 export const jobKeys = {
   /** ["jobs"] — prefix for all semantic job keys */
+  root: () => ["jobs"] as const,
+  /** @deprecated Use root(). Kept for backward compat with existing callers. */
   all: () => ["jobs"] as const,
 
   /** ["jobs", "feed", ...params] — paginated/filtered job list */
@@ -46,32 +50,61 @@ export const jobKeys = {
       readyToInvoiceOnly ?? null,
     ] as const,
 
+  /** ["jobs", "picker"] — job picker/search dropdown */
+  picker: () => ["jobs", "picker"] as const,
+
+  /** ["jobs", "search", params] — job search results */
+  search: (params: Record<string, unknown>) =>
+    ["jobs", "search", params] as const,
+
+  /** ["jobs", "list", locationId, scope] — jobs scoped to a location */
+  listForLocation: (locationId: string, scope?: string | null) =>
+    ["jobs", "list", locationId, scope ?? null] as const,
+
   /** ["jobs", "detail", id] — single job header/detail */
   detail: (id: string) => ["jobs", "detail", id] as const,
 
-  /** ["jobs", id, "billable-preview"] — billable line preview before invoice creation */
-  billablePreview: (id: string) => ["jobs", id, "billable-preview"] as const,
+  // ── Sub-resources under detail (canonical Pattern B) ──────────────────────
 
-  // ── Legacy URL-pattern sub-resource keys (Pattern A) ──
-  // These are keyed under "/api/jobs" so family invalidation via
-  // jobKeys.all() ("jobs") does NOT automatically catch them.
-  // Use invalidateJobSubresources() to bust them together.
+  /** ["jobs", "detail", id, "parts"] — job line items / parts */
+  parts: (id: string) => ["jobs", "detail", id, "parts"] as const,
 
-  /** ["/api/jobs", id, "parts"] — job line items / parts */
-  parts: (id: string) => ["/api/jobs", id, "parts"] as const,
+  /** ["jobs", "detail", id, "expenses"] — job expense rows */
+  expenses: (id: string) => ["jobs", "detail", id, "expenses"] as const,
 
-  /** ["/api/jobs", id, "expenses"] — job expense rows */
-  expenses: (id: string) => ["/api/jobs", id, "expenses"] as const,
+  /** ["jobs", "detail", id, "timeEntries"] — labour time entries */
+  timeEntries: (id: string) => ["jobs", "detail", id, "timeEntries"] as const,
 
-  /** ["/api/jobs", id, "time-entries"] — labour time entries */
-  timeEntries: (id: string) => ["/api/jobs", id, "time-entries"] as const,
+  /** ["jobs", "detail", id, "timeSummary"] — aggregated time summary */
+  timeSummary: (id: string) => ["jobs", "detail", id, "timeSummary"] as const,
 
-  /** ["/api/jobs", id, "notes"] — job notes */
-  notes: (id: string) => ["/api/jobs", id, "notes"] as const,
+  /** ["jobs", "detail", id, "notes"] — job notes (canonical Pattern B) */
+  notes: (id: string) => ["jobs", "detail", id, "notes"] as const,
 
-  /** ["/api/jobs", id, "equipment"] — equipment associated with job */
-  equipment: (id: string) => ["/api/jobs", id, "equipment"] as const,
+  /** ["jobs", "detail", id, "equipment"] — equipment associated with job */
+  equipment: (id: string) => ["jobs", "detail", id, "equipment"] as const,
 
-  /** ["/api/jobs"] — URL-pattern family prefix; prefix-matches all sub-resource keys above */
+  /** ["jobs", "detail", id, "billablePreview"] — billable line preview before invoice creation */
+  billablePreview: (id: string) =>
+    ["jobs", "detail", id, "billablePreview"] as const,
+
+  /** ["jobs", "detail", id, "requiredSkills"] — skills required for this job */
+  requiredSkills: (id: string) =>
+    ["jobs", "detail", id, "requiredSkills"] as const,
+
+  /** ["jobs", "detail", id, "statusEvents"] — job status change history */
+  statusEvents: (id: string) =>
+    ["jobs", "detail", id, "statusEvents"] as const,
+
+  /** ["jobs", "detail", id, "scheduleHistory"] — job scheduling history */
+  scheduleHistory: (id: string) =>
+    ["jobs", "detail", id, "scheduleHistory"] as const,
+
+  /** ["jobs", "detail", id, "assignmentRecs", date] — assignment recommendations */
+  assignmentRecs: (id: string, date?: string | null) =>
+    ["jobs", "detail", id, "assignmentRecs", date ?? null] as const,
+
+  /** ["/api/jobs"] — URL-pattern family prefix; prefix-matches legacy sub-resource keys.
+   *  Include in helpers until all URL-pattern consumers are migrated to Pattern B. */
   urlFamily: () => ["/api/jobs"] as const,
 };

@@ -50,6 +50,7 @@ import { LeadSummaryCard } from "@/components/leads/LeadSummaryCard";
 import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
 import { fmtDate } from "@/components/leads/shared/leadFormatters";
 import { invalidateLead } from "@/lib/queryInvalidation";
+import { leadKeys } from "@/lib/queryKeys/leads";
 
 // ── Types ──
 
@@ -150,7 +151,7 @@ export default function LeadDetailPage() {
     status: "scheduled" | "in_progress" | "completed" | "cancelled";
   }
   const { data: leadVisits = [] } = useQuery<LeadVisitRow[]>({
-    queryKey: ["/api/leads", leadId, "visits"],
+    queryKey: leadKeys.visits(leadId),
     enabled: !!leadId,
     queryFn: async () => {
       const res = await fetch(`/api/leads/${leadId}/visits`, {

@@ -44,10 +44,10 @@ All mutation invalidation helpers live in `client/src/lib/queryInvalidation/`.
 
 | Module | Helpers |
 |---|---|
-| `queryInvalidation/jobs.ts` | `invalidateJob`, `invalidateJobSubresources`, `invalidateJobLifecycle`, `invalidateJobExpense` |
+| `queryInvalidation/jobs.ts` | `invalidateJob`, `invalidateJobSubresources`, `invalidateJobLifecycle`, `invalidateJobExpense`, `invalidateJobParts`, `invalidateJobTimeEntries`, `invalidateJobEquipment`, `invalidateJobNotes` |
 | `queryInvalidation/invoices.ts` | `invalidateInvoice`, `invalidateInvoiceFinancials` |
 | `queryInvalidation/quotes.ts` | `invalidateQuote`, `invalidateQuoteList` |
-| `queryInvalidation/leads.ts` | `invalidateLead`, `invalidateLeadVisits` |
+| `queryInvalidation/leads.ts` | `invalidateLead`, `invalidateLeadList`, `invalidateLeadVisits` |
 | `queryInvalidation/clients.ts` | `invalidateClientLocation`, `invalidateClientContacts`, `invalidateLocationEquipment` |
 | `queryInvalidation/servicePlans.ts` | `invalidateServicePlans` |
 | `queryInvalidation/dashboard.ts` | `invalidateDashboard` |
@@ -79,7 +79,10 @@ onSuccess: () => {
 | Status change (close, reopen, undo-close) | `invalidateJobLifecycle(qc, jobId)` |
 | Field update (header, description, assignment) | `invalidateJob(qc, jobId)` |
 | Expense add/edit/delete | `invalidateJobExpense(qc, jobId)` |
-| Parts / line items (handled by `useJobsFeed` refetch + `["jobs"]` invalidation) | Parts mutations already call both; keep existing pattern |
+| Parts / line items add/edit/delete | `invalidateJobParts(qc, jobId)` |
+| Time entry add/edit/delete | `invalidateJobTimeEntries(qc, jobId)` |
+| Equipment add/remove | `invalidateJobEquipment(qc, jobId)` |
+| Note add/edit/delete | `invalidateJobNotes(qc, jobId)` |
 
 ### Invoice mutations
 
@@ -108,6 +111,7 @@ onSuccess: () => {
 | Mutation type | Helper |
 |---|---|
 | Status change, header update, archive, hard delete | `invalidateLead(qc, leadId)` |
+| Create lead (no detail yet), delete lead | `invalidateLeadList(qc)` |
 | Add/cancel lead visit | `invalidateLead(qc, leadId)` + `invalidateLeadVisits(qc, leadId)` |
 
 ### Dashboard
@@ -145,13 +149,18 @@ Similarly, dashboard has `["dashboard"]` (semantic) AND `["/api/dashboard/capaci
    update the corresponding invalidation helper in `queryInvalidation/`.
 
 ```ts
-// Example: adding "job notes" sub-resource key
-// In queryKeys/jobs.ts:
-notes: (id: string) => ["/api/jobs", id, "notes"] as const,
+// Example: adding a new sub-resource key for jobs
+// In queryKeys/jobs.ts — use Pattern B (semantic) under jobKeys.detail:
+newSub: (id: string) => ["jobs", "detail", id, "newSub"] as const,
 
-// In queryInvalidation/jobs.ts — add to invalidateJobLifecycle if it should
-// refresh on status change; or add a new targeted helper if it's only needed
-// in specific mutations.
+// In queryInvalidation/jobs.ts — add a targeted helper:
+export function invalidateJobNewSub(qc, jobId) {
+  qc.invalidateQueries({ queryKey: jobKeys.newSub(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.detail(jobId) });
+  qc.invalidateQueries({ queryKey: jobKeys.root() });
+  // urlFamily() bridge if un-migrated URL-pattern consumers exist:
+  qc.invalidateQueries({ queryKey: jobKeys.urlFamily() });
+}
 ```
 
 ---
@@ -194,12 +203,31 @@ and delete the bridge bust calls in `queryInvalidation/quotes.ts`.
 
 ---
 
+## Job sub-resource migration status (as of 2026-05-18)
+
+| Sub-resource | Factory key shape | Canonical? | Helpers |
+|---|---|---|---|
+| `equipment` | `["jobs", "detail", id, "equipment"]` | ✅ Pattern B | `invalidateJobEquipment` |
+| `notes` | `["jobs", "detail", id, "notes"]` | ✅ Pattern B | `invalidateJobNotes` |
+| `parts` | `["jobs", "detail", id, "parts"]` | ✅ Pattern B | `invalidateJobParts` |
+| `expenses` | `["jobs", "detail", id, "expenses"]` | ✅ Pattern B | `invalidateJobExpense` |
+| `timeEntries` | `["jobs", "detail", id, "timeEntries"]` | ✅ Pattern B | `invalidateJobTimeEntries` |
+| `timeSummary` | `["jobs", "detail", id, "timeSummary"]` | ✅ Pattern B | `invalidateJobTimeEntries` (co-busted) |
+| `billablePreview` | `["jobs", "detail", id, "billablePreview"]` | ✅ Pattern B | bust via `invalidateJob` root |
+| `requiredSkills` | `["jobs", "detail", id, "requiredSkills"]` | ✅ Pattern B | bust via `invalidateJob` root |
+| `statusEvents` | `["jobs", "detail", id, "statusEvents"]` | ✅ Pattern B | bust via `invalidateJob` root |
+| `scheduleHistory` | `["jobs", "detail", id, "scheduleHistory"]` | ✅ Pattern B | bust via `invalidateJob` root |
+| `assignmentRecs` | `["jobs", "detail", id, "assignmentRecs", date]` | ✅ Pattern B | bust via `invalidateJob` root |
+
+The `urlFamily()` bridge (`["/api/jobs"]`) is included in all helpers until all call-site consumers are migrated away from inline URL-pattern strings. Once `JobDetailPage.tsx`, `EditVisitModal.tsx`, `TimeEntryModal.tsx`, and `QuickAddJobDialog.tsx` are migrated, remove `urlFamily()` from all helpers.
+
+---
+
 ## Known open items (do not fix without the associated audit task)
 
 | Item | Status |
 |---|---|
 | `["/api/pm/templates"]` vs `["/api/recurring-templates"]` possible duplication | Needs investigation (F-13) |
 | `receivablesKeys` in `client/src/lib/receivablesQueryKeys.ts` | Not migrated into `queryKeys/invoices.ts` call sites — still imported directly where receivables surface uses it |
-| Notes queries for non-invoice entities (jobs, clients, leads) | Not yet under factory keys; `EntityNoteDialog` invalidation not audited |
-| Lead visit mutations | `invalidateLeadVisits` helper exists; no mutations currently exist in `LeadDetailPage.tsx` — wire up when visit mutations are added |
 | Quote notes key retirement | `QuoteActionsRail.tsx` `["quote", id, "notes"]` and `EntityNotesPanel.tsx` `["/api/quotes", id, "notes"]` — deferred; covered by bridge helper prefix matching |
+| Job consumer call-site migration | `JobDetailPage.tsx`, `EditVisitModal.tsx`, `TimeEntryModal.tsx`, `QuickAddJobDialog.tsx` still use inline URL-pattern strings — covered by `urlFamily()` bridge; migrate as Phase 3F+ |

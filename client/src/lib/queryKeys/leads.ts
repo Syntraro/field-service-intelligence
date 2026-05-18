@@ -1,23 +1,26 @@
 /**
  * Canonical query key definitions for lead-related queries.
  *
- * Leads use Pattern B for the detail query and Pattern A for the
- * visits sub-resource. Family invalidation via leadKeys.all()
- * does NOT catch the URL-pattern visits key — use
- * invalidateLeadVisits() explicitly when mutations affect visits.
+ * All keys use Pattern B (semantic arrays). The ["leads"] root prefix
+ * matches the entire leads cache hierarchy including visits and notes.
+ *
+ * Use these constants — never inline string literals for lead queries.
  */
 
 export const leadKeys = {
-  /** ["leads"] — semantic family prefix */
-  all: () => ["leads"] as const,
+  /** ["leads"] — prefix for all semantic lead keys */
+  root: () => ["leads"] as const,
+
+  /** ["leads", "list", filter] — lead list with optional filter */
+  list: (filter?: Record<string, unknown>) =>
+    ["leads", "list", filter ?? null] as const,
 
   /** ["leads", "detail", id] — single lead detail */
   detail: (id: string) => ["leads", "detail", id] as const,
 
-  /**
-   * ["/api/leads", id, "visits"] — lead visit list (Pattern A / URL-pattern).
-   * NOT caught by leadKeys.all() prefix-matching; must be invalidated separately
-   * when a mutation creates, cancels, or reschedules a lead visit.
-   */
-  visits: (id: string) => ["/api/leads", id, "visits"] as const,
+  /** ["leads", "detail", id, "notes"] — notes for a lead */
+  notes: (id: string) => ["leads", "detail", id, "notes"] as const,
+
+  /** ["leads", "detail", id, "visits"] — pre-sales visits for a lead */
+  visits: (id: string) => ["leads", "detail", id, "visits"] as const,
 };

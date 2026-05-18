@@ -19,6 +19,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Trash2, Loader2, Wrench, Info, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
+import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
 // 2026-05-08: real-error surfacing for the equipment-link flows. The
 // helper translates ApiError into a user-facing toast description and
 // special-cases JOB_INVOICED_LOCKED. Lives in its own module so the
@@ -222,7 +224,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 
   const { data: jobEquipment = [], isLoading: jobEquipmentLoading } = useQuery<JobEquipmentWithDetails[]>({
-    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryKey: jobKeys.equipment(jobId),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch job equipment");
@@ -255,7 +257,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
+      invalidateJobEquipment(queryClient, jobId);
       handleAddDialogChange(false);
       setSelectedEquipmentId("");
       setNotes("");
@@ -280,7 +282,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
+      invalidateJobEquipment(queryClient, jobId);
       toast({
         title: "Equipment Removed",
         description: "The equipment has been unlinked from this job.",

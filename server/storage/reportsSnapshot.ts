@@ -102,7 +102,7 @@ async function getCurrentARBuckets(companyId: string): Promise<ARBucket[]> {
   return [
     { key: "current", label: "Current AR", amount: round2(totals.current.total), invoiceCount: totals.current.count },
     { key: "d30", label: "1–30 days overdue", amount: round2(totals.d30.total), invoiceCount: totals.d30.count },
-    { key: "d60_plus", label: "30+ days overdue", amount: round2(totals.d60_plus.total), invoiceCount: totals.d60_plus.count },
+    { key: "d60_plus", label: "60+ days overdue", amount: round2(totals.d60_plus.total), invoiceCount: totals.d60_plus.count },
     { key: "total_overdue", label: "Total overdue", amount: totalOverdueAmount, invoiceCount: totalOverdueCount },
   ];
 }

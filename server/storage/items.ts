@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, or, ilike, sql, isNull } from "drizzle-orm";
+import { eq, and, or, ilike, sql, isNull, inArray } from "drizzle-orm";
 import { items } from "@shared/schema";
 import type { InsertItem, Item } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -323,6 +323,79 @@ export class ItemRepository extends BaseRepository {
 
     return rows[0] ?? null;
   }
+
+  /**
+   * Batch patch items — single-round-trip for set_active and set_category;
+   * fetch-then-update loop for pricing operations (adjust_price_pct, set_markup_pct).
+   * Used by POST /api/items/bulk-update (Price Book Phase 4).
+   */
+  async bulkPatchItems(
+    companyId: string,
+    ids: string[],
+    patch: BulkItemPatch,
+  ): Promise<{ updatedCount: number }> {
+    if (ids.length === 0) return { updatedCount: 0 };
+
+    if (patch.operation === "set_active") {
+      await db
+        .update(items)
+        .set({ isActive: patch.isActive!, updatedAt: new Date() })
+        .where(and(eq(items.companyId, companyId), inArray(items.id, ids)));
+      return { updatedCount: ids.length };
+    }
+
+    if (patch.operation === "set_category") {
+      await db
+        .update(items)
+        .set({ category: patch.category ?? null, updatedAt: new Date() })
+        .where(and(eq(items.companyId, companyId), inArray(items.id, ids)));
+      return { updatedCount: ids.length };
+    }
+
+    // Pricing operations: fetch current values, compute per row, update individually
+    const existing = await db
+      .select()
+      .from(items)
+      .where(and(eq(items.companyId, companyId), inArray(items.id, ids)));
+
+    let count = 0;
+    for (const item of existing) {
+      if (patch.operation === "adjust_price_pct") {
+        const currentPrice = parseFloat(item.unitPrice || "0");
+        if (currentPrice <= 0) continue;
+        const newPrice = Math.max(0, currentPrice * (1 + (patch.pctDelta ?? 0) / 100));
+        await db
+          .update(items)
+          .set({ unitPrice: newPrice.toFixed(2), updatedAt: new Date() })
+          .where(and(eq(items.id, item.id), eq(items.companyId, companyId)));
+        count++;
+      } else if (patch.operation === "set_markup_pct") {
+        const cost = parseFloat(item.cost || "0");
+        if (cost <= 0) continue;
+        const markup = patch.markupPct ?? 0;
+        const newPrice = cost * (1 + markup / 100);
+        await db
+          .update(items)
+          .set({
+            unitPrice: newPrice.toFixed(2),
+            markupPercent: String(markup),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(items.id, item.id), eq(items.companyId, companyId)));
+        count++;
+      }
+    }
+
+    return { updatedCount: count };
+  }
+}
+
+export interface BulkItemPatch {
+  operation: "adjust_price_pct" | "set_markup_pct" | "set_active" | "set_category";
+  pctDelta?: number;
+  markupPct?: number;
+  isActive?: boolean;
+  category?: string | null;
 }
 
 export const itemRepository = new ItemRepository();

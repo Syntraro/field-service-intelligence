@@ -4,6 +4,81 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-18: Technician Shift Management Phase 1 — Backend Foundation
+
+Introduced the canonical Availability Engine and shift management infrastructure.
+
+**Architecture decisions:**
+- `technician_shifts` is the single canonical availability source going forward
+- Recurring shifts stored as one base row + dynamic RRULE expansion — no pre-generated occurrence rows
+- Exception rows created only when users edit/cancel specific recurring occurrences
+- Repositories are CRUD-only; all business logic in `availabilityEngine.ts`
+- The inline time-off conflict check in `scheduling.ts` is replaced by the engine (same 409 shape)
+- Engine is feature-gated: only runs when `technician_shift_management` is enabled; fail-safe catch ensures no regressions
+
+**Files created:**
+- `migrations/2026_05_18_shift_enums.sql`
+- `migrations/2026_05_18_technician_shift_templates.sql`
+- `migrations/2026_05_18_technician_shifts.sql`
+- `migrations/2026_05_18_shift_management_feature_catalog.sql`
+- `server/lib/rruleExpansion.ts`
+- `server/storage/technicianShiftTemplates.ts`
+- `server/storage/technicianShifts.ts`
+- `server/services/availabilityEngine.ts`
+- `server/routes/technicianShifts.ts`
+- `tests/rrule-expansion.test.ts`
+- `tests/availability-engine.test.ts`
+- `tests/shift-management-routes.test.ts`
+- `tests/scheduling-availability-integration.test.ts`
+
+**Files modified:**
+- `shared/schema.ts` — added pgEnum import, appended shift enums, tables, and Zod schemas
+- `server/routes/scheduling.ts` — replaced legacy conflict check with Availability Engine call
+- `server/routes/index.ts` — mounted `/api/shift-management` router
+- `CHANGELOG.md` — documented all changes
+
+---
+
+## 2026-05-18: Price Book Workspace — Phase 4: Operational Pricing Visibility + Batch Pricing Operations
+
+### What changed
+
+**KPI strip**: `PriceBookKpiStrip` added to the workspace header (5 KPIs: Active Items, Unsynced QBO, QBO Errors, Active Bundles, Avg Margin %). Computed from the existing cached queries — zero new API surface.
+
+**Batch endpoint** (`POST /api/items/bulk-update`): Single endpoint for 4 operations. `set_active` / `set_category` issue a single DB UPDATE. Pricing operations (`adjust_price_pct`, `set_markup_pct`) fetch current values server-side, compute new prices, then update per row. Replaces the previous N parallel client-side PUTs for archive and category operations.
+
+**Warning system**: Purely client-side. `getItemWarningCount()` computes a count per row (Negative Margin, No Price, No Cost, No Category, QBO Error). Table shows an amber triangle indicator; rail shows a named list in an amber alert block. No backend warning state stored.
+
+**Operational filters**: QBO filter (All / Unsynced / Errors) and Pricing Issues filter (All / Negative Margin / Zero Price / Zero Cost / No Category) — client-side passes composing with existing category, status, and search filters.
+
+**Pricing dialog** (`PriceBookPricingAdjustDialog`): Modal with increase %, decrease %, or set markup % operation. Posts to `POST /api/items/bulk-update`.
+
+### Preserved invariants
+
+- All QBO sync fields are read-only in all new UI surfaces. No QBO fields touched by bulk-update.
+- No schema changes. No migration files.
+- Bundle expansion, pricebook group semantics, and line-item insertion paths untouched.
+- `POST /api/items/bulk-update` only modifies `unitPrice`, `markupPercent`, `isActive`, `category`, `updatedAt`.
+
+---
+
+## 2026-05-18: Price Book Workspace — Phase 3: Bundles Rail + Bundle Management Canonicalization
+
+### What changed
+
+Added right-rail inline editing for the Bundles view, extending the Phase 2 right-rail pattern.
+
+**`PriceBookBundleRail`**: Self-contained inline bundle editor. Local `Map<itemId, ChildEntry>` draft state initialized from `group.children`. Resets on `group.id` change. Item search uses the same `useItemSearch` pattern as `PricebookGroupModal`. Computed pricing from draft children. Save calls `PATCH /api/pricebook-groups/:id` with full children array.
+
+**`PriceBookBundlesTab` changes**: Selection props added; action buttons column removed (edit/delete moved to rail). Create modal retained. Added cost + margin columns computed from DTO children.
+
+### Preserved invariants
+
+- Bundle expansion on job/quote/invoice insertion: untouched.
+- No schema changes. No QBO sync involved (bundles are internal-only).
+
+---
+
 ## 2026-05-17: Team Schedule Phase 3 — Effective Schedule API + Visual Calendar Grid
 
 ### Scope

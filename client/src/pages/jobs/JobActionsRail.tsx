@@ -14,6 +14,7 @@ import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobLifecycleActions } from "@/hooks/useJobLifecycleActions";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys/jobs";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { EntityNoteDialog } from "@/components/notes/EntityNoteDialog";
 import { JobLatestNotesCard, type JobNote } from "./sections/JobLatestNotesCard";
@@ -85,9 +86,8 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
     enabled: !!jobId,
   });
 
-  // Canonical query key matches EntityNoteDialog's invalidation key
   const { data: notes = [], isLoading: notesLoading } = useQuery<JobNote[]>({
-    queryKey: ["/api/jobs", jobId, "notes"],
+    queryKey: jobKeys.notes(jobId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load job notes");
@@ -98,7 +98,7 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
   });
 
   const { data: equipment = [], isLoading: equipmentLoading } = useQuery<RailEquipmentItem[]>({
-    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryKey: jobKeys.equipment(jobId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch job equipment");

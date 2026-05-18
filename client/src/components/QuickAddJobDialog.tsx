@@ -26,6 +26,7 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
 import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { useToast } from "@/hooks/use-toast";
 import { format, parseISO } from "date-fns";
@@ -1831,7 +1832,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           });
         }
         // Invalidate job equipment cache
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "equipment"] });
+        invalidateJobEquipment(queryClient, job.id);
       }
 
       // 2026-04-26 polish v6: Persist selected services as job_part rows.

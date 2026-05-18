@@ -154,6 +154,95 @@ timeRouter.post(
   })
 );
 
+/**
+ * POST /api/time/manager/clock-in
+ * Clock in a technician on their behalf (manager/dispatcher only).
+ * Writes only to work_sessions — does not create time_entries.
+ */
+timeRouter.post(
+  "/manager/clock-in",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const schema = z.object({ technicianId: z.string().uuid() });
+    const { technicianId } = validateSchema(schema, req.body);
+
+    const tz = await companyRepository.getCompanyTimezone(req.companyId!);
+    const at = new Date();
+    const workDate = at.toLocaleDateString("en-CA", { timeZone: tz });
+
+    const session = await timeTrackingRepository.clockIn(
+      req.companyId!,
+      technicianId,
+      { at, source: "web", workDateOverride: workDate, actingUserId: req.user!.id }
+    );
+
+    emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
+
+    const [tech] = await db.select({ email: users.email }).from(users).where(eq(users.id, technicianId)).limit(1);
+    const techName = tech?.email ?? "Technician";
+    const actorName = req.user?.email ?? "Manager";
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "timesheet.clocked_in",
+      entityType: "technician",
+      entityId: technicianId,
+      summary: `${techName} clocked in (by ${actorName})`,
+      meta: {
+        technicianName: techName,
+        actorId: req.user!.id,
+        sessionId: session.id,
+        at: at.toISOString(),
+        source: "manager",
+        managerInitiated: true,
+      },
+    });
+
+    res.status(201).json(session);
+  })
+);
+
+/**
+ * POST /api/time/manager/clock-out
+ * Clock out a technician on their behalf (manager/dispatcher only).
+ * Closes the open work_session — does not merge or touch time_entries.
+ */
+timeRouter.post(
+  "/manager/clock-out",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const schema = z.object({ technicianId: z.string().uuid() });
+    const { technicianId } = validateSchema(schema, req.body);
+
+    const session = await timeTrackingRepository.clockOut(
+      req.companyId!,
+      technicianId,
+      { actingUserId: req.user!.id }
+    );
+
+    emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
+
+    const [tech] = await db.select({ email: users.email }).from(users).where(eq(users.id, technicianId)).limit(1);
+    const techName = tech?.email ?? "Technician";
+    const actorName = req.user?.email ?? "Manager";
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "timesheet.clocked_out",
+      entityType: "technician",
+      entityId: technicianId,
+      summary: `${techName} clocked out (by ${actorName})`,
+      meta: {
+        technicianName: techName,
+        actorId: req.user!.id,
+        sessionId: session.id,
+        source: "manager",
+        managerInitiated: true,
+      },
+    });
+
+    res.json(session);
+  })
+);
+
 // ============================================================================
 // TIME ENTRIES - Start/Stop/Create
 // ============================================================================

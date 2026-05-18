@@ -15,6 +15,9 @@ export interface Part {
   trackInventory?: boolean | null; // Inventory tracking toggle (future use)
   qboItemId?: string | null;
   qboSyncToken?: string | null;
+  qboSyncStatus?: string | null;
+  qboSyncError?: string | null;
+  qboLastSyncedAt?: string | null;
   updatedAt?: string | null;
 }
 
