@@ -1,25 +1,23 @@
 /**
- * DispatchUnscheduledPanel — right panel showing visits waiting to be dispatched.
- * Cards are draggable sources for drag-and-drop scheduling.
- * Collapsible — collapses to a slim vertical tab to maximize timeline width.
- * Search and scroll state are preserved across collapse/expand cycles.
+ * DispatchUnscheduledPanel — right rail showing visits waiting to be dispatched,
+ * grouped into operational staging sections (Urgent / Today / On Hold / Less Urgent).
  *
- * 2026-03-30: Optional selection mode props for DAY-VIEW-ONLY Focus workflow.
- * Selection (selectedVisitIdsForFocus) is separate from Focus (focusedVisitIds).
- * "Add to Focus" commits selection into focus. All props optional for week view safety.
+ * Cards are draggable sources; bucket sections are droppable targets.
+ * Dropping onto a section updates dispatchQueueBucket via the parent handleDragEnd.
+ * Dropping onto the calendar schedules the visit exactly as before.
  *
- * 2026-05-09: Panel open/collapsed state persisted to localStorage under
- * STORAGE_KEY. Width animated via RAIL_WIDTH_TRANSITION (300ms ease-in-out)
- * — same primitive as the detail right rail on Job/Client pages. Both the
- * collapsed affordance and the open content stay mounted at all times; opacity
- * transitions handle show/hide so droppable registration is never torn down.
+ * Collapse state: panel open/collapsed persisted to localStorage.
+ * Section collapse state: per-bucket, persisted to localStorage.
  */
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import { Input } from "@/components/ui/input";
-import { Search, Inbox, PanelRightClose, PanelRightOpen, CheckSquare, X, Plus, Filter } from "lucide-react";
+import { Search, Inbox, PanelRightClose, PanelRightOpen, Filter, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RAIL_WIDTH_TRANSITION } from "@/components/detail-rail/DetailRightRail";
-import type { DispatchVisit } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchQueueBucket } from "./dispatchPreviewTypes";
+import { DISPATCH_QUEUE_BUCKET_VALUES, QUEUE_BUCKET_LABELS } from "./dispatchPreviewTypes";
+import type { DispatchDropData } from "./dispatchDndTypes";
 import DispatchUnscheduledCard from "./DispatchUnscheduledCard";
 
 /** Known job type values for filtering */
@@ -34,36 +32,97 @@ const JOB_TYPE_OPTIONS = [
 
 type UnscheduledPanelState = "open" | "collapsed";
 
-const STORAGE_KEY = "syntraro:dispatch-unscheduled-panel-state";
+const PANEL_STORAGE_KEY = "syntraro:dispatch-unscheduled-panel-state";
+const SECTIONS_STORAGE_KEY = "syntraro:dispatch-queue-sections-collapsed";
 
 type Props = {
   visits: DispatchVisit[];
   savingIds: Set<string>;
   selectedVisitId?: string | null;
   onSelectVisit?: (visit: DispatchVisit) => void;
-  /** DAY-VIEW-ONLY: selection/focus props — all optional, defaults preserve current behavior */
-  isSelectionMode?: boolean;
-  selectedVisitIdsForFocus?: Set<string>;
-  focusedVisitIds?: Set<string>;
-  onToggleSelectionMode?: () => void;
-  onExitSelectionMode?: () => void;
-  onToggleSelectVisit?: (visitId: string) => void;
-  onClearSelection?: () => void;
-  onAddToFocus?: () => void;
 };
+
+// ── Droppable bucket section ──────────────────────────────────────────────────
+
+type SectionProps = {
+  bucket: DispatchQueueBucket;
+  visits: DispatchVisit[];
+  savingIds: Set<string>;
+  selectedVisitId?: string | null;
+  onSelectVisit?: (visit: DispatchVisit) => void;
+  collapsed: boolean;
+  onToggleCollapse: (bucket: DispatchQueueBucket) => void;
+};
+
+function BucketSection({
+  bucket, visits, savingIds, selectedVisitId, onSelectVisit, collapsed, onToggleCollapse,
+}: SectionProps) {
+  const dropData: DispatchDropData = { queueBucket: bucket };
+  const { setNodeRef, isOver } = useDroppable({
+    id: `queue-bucket-${bucket}`,
+    data: dropData,
+  });
+
+  const label = QUEUE_BUCKET_LABELS[bucket];
+
+  return (
+    <div ref={setNodeRef} className={cn("rounded-md", isOver && "ring-2 ring-blue-400 ring-inset bg-blue-50/50")}>
+      {/* Section header */}
+      <button
+        type="button"
+        onClick={() => onToggleCollapse(bucket)}
+        className="flex w-full items-center gap-1.5 px-2 py-1 hover:bg-slate-100 rounded-t-md transition-colors"
+      >
+        {collapsed
+          ? <ChevronRight className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+          : <ChevronDown className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+        }
+        <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide flex-1 text-left">{label}</span>
+        {visits.length > 0 && (
+          <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600 leading-none">
+            {visits.length}
+          </span>
+        )}
+      </button>
+
+      {/* Cards — always mounted for droppable registration stability */}
+      <div
+        className={cn(
+          "transition-all duration-200 overflow-hidden",
+          collapsed ? "max-h-0 opacity-0 pointer-events-none" : "max-h-[2000px] opacity-100",
+        )}
+      >
+        <div className="px-2 pb-2 space-y-1">
+          {visits.length > 0 ? (
+            visits.map(v => (
+              <DispatchUnscheduledCard
+                key={v.id}
+                visit={v}
+                isSaving={savingIds.has(v.id)}
+                isSelected={selectedVisitId === v.id}
+                onSelect={onSelectVisit}
+              />
+            ))
+          ) : (
+            <p className="py-1.5 text-center text-xs text-muted-foreground">Empty</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function DispatchUnscheduledPanel({
   visits, savingIds, selectedVisitId, onSelectVisit,
-  isSelectionMode, selectedVisitIdsForFocus, focusedVisitIds,
-  onToggleSelectionMode, onExitSelectionMode,
-  onToggleSelectVisit, onClearSelection, onAddToFocus,
 }: Props) {
   const [search, setSearch] = useState("");
   const [jobTypeFilter, setJobTypeFilter] = useState("all");
   const [panelState, setPanelState] = useState<UnscheduledPanelState>(() => {
     if (typeof window === "undefined") return "open";
     try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
+      const saved = window.localStorage.getItem(PANEL_STORAGE_KEY);
       return saved === "collapsed" || saved === "open" ? saved : "open";
     } catch {
       return "open";
@@ -71,6 +130,21 @@ export default function DispatchUnscheduledPanel({
   });
   const [filterOpen, setFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
+
+  // Per-section collapse state
+  const [collapsedSections, setCollapsedSections] = useState<Set<DispatchQueueBucket>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const saved = window.localStorage.getItem(SECTIONS_STORAGE_KEY);
+      if (!saved) return new Set();
+      const arr = JSON.parse(saved) as string[];
+      return new Set(arr.filter((v): v is DispatchQueueBucket =>
+        (DISPATCH_QUEUE_BUCKET_VALUES as readonly string[]).includes(v)
+      ));
+    } catch {
+      return new Set();
+    }
+  });
 
   const collapsed = panelState === "collapsed";
 
@@ -101,41 +175,50 @@ export default function DispatchUnscheduledPanel({
     return result;
   }, [visits, search, jobTypeFilter]);
 
+  // Group filtered visits by bucket
+  const byBucket = useMemo(() => {
+    const map = new Map<DispatchQueueBucket, DispatchVisit[]>();
+    for (const b of DISPATCH_QUEUE_BUCKET_VALUES) map.set(b, []);
+    for (const v of filtered) {
+      const bucket = v.dispatchQueueBucket;
+      map.get(bucket)!.push(v);
+    }
+    return map;
+  }, [filtered]);
+
   const toggleCollapse = useCallback(() => {
     setPanelState((current) => {
       const next = current === "collapsed" ? "open" : "collapsed";
-      // Close the filter dropdown when collapsing so it doesn't linger hidden
       if (next === "collapsed") setFilterOpen(false);
       try {
-        window.localStorage.setItem(STORAGE_KEY, next);
-      } catch {
-        // ignore localStorage failures (private browsing, storage quota)
-      }
+        window.localStorage.setItem(PANEL_STORAGE_KEY, next);
+      } catch { /* ignore */ }
       return next;
     });
   }, []);
 
-  // Selection mode helpers
-  const selectionEnabled = !!onToggleSelectionMode;
-  const selectionCount = selectedVisitIdsForFocus?.size ?? 0;
+  const toggleSectionCollapse = useCallback((bucket: DispatchQueueBucket) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      next.has(bucket) ? next.delete(bucket) : next.add(bucket);
+      try {
+        window.localStorage.setItem(SECTIONS_STORAGE_KEY, JSON.stringify(Array.from(next)));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
-  // Select all filtered items
-  const handleSelectAllFiltered = useCallback(() => {
-    if (!onToggleSelectVisit) return;
-    const allSelected = filtered.every(v => selectedVisitIdsForFocus?.has(v.id));
-    for (const v of filtered) {
-      if (allSelected) {
-        if (selectedVisitIdsForFocus?.has(v.id)) onToggleSelectVisit(v.id);
-      } else {
-        if (!selectedVisitIdsForFocus?.has(v.id)) onToggleSelectVisit(v.id);
-      }
-    }
-  }, [filtered, selectedVisitIdsForFocus, onToggleSelectVisit]);
+  const collapseAll = useCallback(() => {
+    const all = new Set<DispatchQueueBucket>(DISPATCH_QUEUE_BUCKET_VALUES);
+    setCollapsedSections(all);
+    try {
+      window.localStorage.setItem(SECTIONS_STORAGE_KEY, JSON.stringify(Array.from(all)));
+    } catch { /* ignore */ }
+  }, []);
 
   return (
     // Single wrapper — both content areas stay mounted so draggable/droppable
-    // registrations are never torn down. Width animates via RAIL_WIDTH_TRANSITION;
-    // overflow-hidden clips content during the 300ms width transition.
+    // registrations are never torn down.
     <div
       className={cn(
         "relative flex-shrink-0 h-full border-l bg-slate-50 overflow-hidden",
@@ -143,9 +226,7 @@ export default function DispatchUnscheduledPanel({
         collapsed ? "w-9" : "w-72"
       )}
     >
-      {/* ── Collapsed affordance ─────────────────────────────────────────
-          Always mounted. Fades in when panel collapses, fades out when open.
-          aria-hidden removes it from the accessibility tree when invisible. */}
+      {/* ── Collapsed affordance ─────────────────────────────────────── */}
       <div
         aria-hidden={!collapsed}
         className={cn(
@@ -175,9 +256,7 @@ export default function DispatchUnscheduledPanel({
         </span>
       </div>
 
-      {/* ── Open panel content ───────────────────────────────────────────
-          Always mounted. Fades in when panel opens, fades out when collapsed.
-          aria-hidden removes it from the accessibility tree when invisible. */}
+      {/* ── Open panel content ─────────────────────────────────────────── */}
       <div
         aria-hidden={collapsed}
         className={cn(
@@ -189,19 +268,23 @@ export default function DispatchUnscheduledPanel({
         {/* Header */}
         <div className="flex-shrink-0 border-b bg-white px-3 py-2.5">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-foreground">Unscheduled</h2>
-            <div className="flex items-center gap-1.5">
-              {selectionEnabled && !isSelectionMode && (
-                <button
-                  onClick={onToggleSelectionMode}
-                  className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors"
-                  title="Enter focus selection mode"
-                  tabIndex={collapsed ? -1 : 0}
-                >
-                  <CheckSquare className="h-3.5 w-3.5" />
-                  Focus
-                </button>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-foreground">Unscheduled</h2>
+              {visits.length > 0 && (
+                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500 leading-none">
+                  {visits.length}
+                </span>
               )}
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={collapseAll}
+                className="flex h-6 items-center rounded px-1.5 text-[10px] font-medium text-muted-foreground hover:bg-slate-100 hover:text-foreground transition-colors"
+                title="Collapse all sections"
+                tabIndex={collapsed ? -1 : 0}
+              >
+                Collapse all
+              </button>
               <button
                 onClick={toggleCollapse}
                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-slate-100 text-muted-foreground hover:text-foreground transition-colors"
@@ -212,52 +295,6 @@ export default function DispatchUnscheduledPanel({
               </button>
             </div>
           </div>
-
-          {/* Selection mode header — Focus mode controls */}
-          {isSelectionMode && (
-            <div className="mt-2 py-2 px-2.5 rounded-md bg-blue-50 border border-blue-200">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-blue-800">
-                  {selectionCount > 0 ? `${selectionCount} selected` : "Select items to focus"}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  {filtered.length > 0 && (
-                    <button
-                      onClick={handleSelectAllFiltered}
-                      className="text-xs text-blue-600 hover:text-blue-800 px-1 font-medium"
-                    >
-                      {filtered.every(v => selectedVisitIdsForFocus?.has(v.id)) ? "Deselect all" : "Select all"}
-                    </button>
-                  )}
-                  {selectionCount > 0 && (
-                    <button
-                      onClick={onClearSelection}
-                      className="text-xs text-slate-500 hover:text-slate-700 px-1 font-medium"
-                    >
-                      Clear
-                    </button>
-                  )}
-                  <button
-                    onClick={onExitSelectionMode}
-                    className="flex h-5 w-5 items-center justify-center rounded hover:bg-blue-100 text-blue-600 transition-colors"
-                    title="Exit focus mode"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              {/* Add to Focus button — only when items are selected */}
-              {selectionCount > 0 && onAddToFocus && (
-                <button
-                  onClick={onAddToFocus}
-                  className="mt-2 w-full flex items-center justify-center gap-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-1.5 transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add to Focus
-                </button>
-              )}
-            </div>
-          )}
 
           <div className="flex items-center gap-1.5 mt-2">
             <div className="relative flex-1">
@@ -308,27 +345,26 @@ export default function DispatchUnscheduledPanel({
           </div>
         </div>
 
-        {/* Cards */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-          {filtered.length > 0 ? (
-            filtered.map(v => (
-              <DispatchUnscheduledCard
-                key={v.id}
-                visit={v}
-                isSaving={savingIds.has(v.id)}
-                isSelected={selectedVisitId === v.id}
-                onSelect={onSelectVisit}
-                isSelectionMode={isSelectionMode}
-                isChecked={selectedVisitIdsForFocus?.has(v.id) ?? false}
-                isFocused={focusedVisitIds?.has(v.id) ?? false}
-                onToggleSelect={onToggleSelectVisit}
-              />
-            ))
-          ) : (
+        {/* Bucket sections */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
               <Inbox className="h-8 w-8 mb-2 text-slate-300" />
               <p className="text-sm">{search ? "No matching visits" : "All visits scheduled"}</p>
             </div>
+          ) : (
+            DISPATCH_QUEUE_BUCKET_VALUES.map(bucket => (
+              <BucketSection
+                key={bucket}
+                bucket={bucket}
+                visits={byBucket.get(bucket) ?? []}
+                savingIds={savingIds}
+                selectedVisitId={selectedVisitId}
+                onSelectVisit={onSelectVisit}
+                collapsed={collapsedSections.has(bucket)}
+                onToggleCollapse={toggleSectionCollapse}
+              />
+            ))
           )}
         </div>
       </div>

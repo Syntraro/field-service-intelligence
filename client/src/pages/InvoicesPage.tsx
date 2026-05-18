@@ -29,13 +29,13 @@ import {
   filterLabel,
 } from "@/lib/invoiceWorkspaceConfig";
 import {
-  InvoicesWorkspaceTab2,
+  InvoicesWorkspaceTab,
   type InvoiceView,
   type InvoiceStatusFilter,
   type InvoiceDateRange,
   type SelectedReceivablesContext,
-} from "./receivables2/InvoicesWorkspaceTab2";
-import { InvoiceKpiStrip } from "./receivables2/InvoiceKpiStrip";
+} from "./invoices-workspace/InvoicesWorkspaceTab";
+import { InvoiceKpiStrip } from "./invoices-workspace/InvoiceKpiStrip";
 import { InvoiceRailBody } from "./receivables/InvoiceRailBody";
 
 // ── ViewCounts ────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ export default function InvoicesPage() {
     queryKey: ["receivables", "views", "counts"],
     queryFn: async () => {
       const res = await fetch("/api/receivables/views/counts", { credentials: "include" });
-      if (!res.ok) return null;
+      if (!res.ok) throw new Error(`Failed to load invoice counts: ${res.status}`);
       return res.json();
     },
     staleTime: 30_000,
@@ -345,7 +345,7 @@ export default function InvoicesPage() {
 
       {/* Table — flex-col parent so WorkspaceCenterPane's flex-1 resolves correctly */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <InvoicesWorkspaceTab2
+        <InvoicesWorkspaceTab
           activeView={activeView}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}

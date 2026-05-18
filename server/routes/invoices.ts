@@ -115,11 +115,6 @@ const createInvoiceFromJobSchema = z.object({
   selection: invoiceSelectionSchema.optional(),
 }).strict();
 
-const refreshInvoiceFromJobSchema = z.object({
-  overrideQboLock: z.boolean().optional(),
-  overrideReason: z.string().min(10).max(500).optional(),
-  selection: invoiceSelectionSchema.optional(),
-}).strict();
 
 const updateInvoiceSchema = z.object({
   // 2026-03-18: Uses canonical invoiceStatusEnum from shared/schema.ts (was hardcoded, missing awaiting_payment)
@@ -170,7 +165,7 @@ const updateInvoiceSchema = z.object({
 /**
  * Middleware: Invoice must be in an editable status (not paid/voided)
  * Phase 11: Removed hard-lock on "sent" status - billing edits are now allowed with warning
- * Use for: adding/removing lines, refresh from job, billing edits
+ * Use for: adding/removing lines, billing edits
  *
  * Real locks that remain:
  * - QBO-synced invoices require override + reason (handled by checkQboBillingLock)
@@ -320,8 +315,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
 // `jobIds` are used only for: (a) validation, (b) primary-pointer
 // (`invoices.jobId = jobIds[0]`), (c) optional lifecycle markInvoiced.
 // Pre-existing routes (`POST /api/invoices`, `POST /from-job/:jobId`,
-// `POST /:id/refresh-from-job`) are unchanged and continue to serve
-// every existing caller.
+// `POST /api/invoices`, `POST /from-job/:jobId`) are unchanged and continue
+// to serve every existing caller.
 const atomicLineSchema = canonicalLineItemInput.extend({
   /** Optional cross-reference back to the source `job_parts.id` row when
    *  the line was hydrated from a job's billable items on the client. */
@@ -1299,7 +1294,6 @@ router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireEditableSt
   res.json({ ...updated, _qboWarning: warning });
 }));
 
-// POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job (draft only, with QBO lock check)
 // POST /api/invoices/:id/apply-tax - Apply tax group / standalone rate / remove tax
 // Reuses canonical batchApplyLineTax() + tax snapshot — does NOT mutate company settings
 //
@@ -1362,49 +1356,6 @@ router.post("/:id/apply-tax", requireRole(MANAGER_ROLES), requireEditableStatus(
   res.json(updated);
 }));
 
-router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  // Phase 8: body now supports an optional `selection` alongside the
-  // existing QBO override fields. Zod runs in non-strict mode here for
-  // the legacy callers that POST with an empty body (undefined content).
-  const parsed = req.body ? refreshInvoiceFromJobSchema.safeParse(req.body) : { success: true as const, data: {} };
-  if (!parsed.success) throw createError(400, parsed.error.issues.map(i => i.message).join("; "));
-  const validated: { overrideQboLock?: boolean; overrideReason?: string; selection?: { partIds?: string[]; timeEntryIds?: string[] } } =
-    parsed.success ? (parsed.data as any) : {};
-  const overrideQboLock = validated.overrideQboLock === true;
-  const overrideReason = validated.overrideReason;
-
-  // Phase 10A: Check QBO billing lock
-  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
-  if (!invoice) throw createError(404, "Invoice not found");
-
-  // Validate override if provided
-  if (overrideQboLock) {
-    requireQboOverrideReason(overrideQboLock, overrideReason);
-  }
-
-  // Check lock (throws 409 if locked without override)
-  checkQboLineItemLock(invoice, 'refresh', { overrideQboLock, overrideReason });
-
-  // Refresh the invoice from job — forward optional selection so the
-  // user can pick which remaining labor/parts to add.
-  const result = await storage.refreshInvoiceFromJob(
-    req.companyId!,
-    req.params.id,
-    undefined,
-    validated.selection,
-  );
-
-  // If this was a QBO-synced invoice with override, mark as out-of-sync
-  let warning: string | undefined;
-  if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
-    const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
-    await storage.updateInvoice(req.companyId!, req.params.id, undefined, outOfSyncUpdate);
-    logQboLockOverride(req.companyId!, req.params.id, req.user?.id ?? 'unknown', 'refresh_from_job', overrideReason, invoice.qboInvoiceId);
-    warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
-  }
-
-  res.json({ ...result, _qboWarning: warning });
-}));
 
 /**
  * POST /api/invoices/from-job/:jobId - Create a new invoice from a job.
@@ -1819,7 +1770,9 @@ router.get(
           : [];
         pushIf(c, roles, "location");
       }
-    } catch { /* best-effort */ }
+    } catch (err) {
+      console.warn("[invoices/contacts] location contact resolution failed for invoice", invoice.id, err);
+    }
 
     if (customerCompanyId) {
       try {
@@ -1837,7 +1790,9 @@ router.get(
           );
           pushIf(p, roles, "company");
         }
-      } catch { /* best-effort */ }
+      } catch (err) {
+        console.warn("[invoices/contacts] company directory resolution failed for company", customerCompanyId, err);
+      }
     }
 
     res.json({ contacts });

@@ -30,9 +30,12 @@ export interface DispatchDragData {
 /** Data attached to a lane drop zone (day view) or cell/column drop zone (week/month view).
  *  Day view lanes always provide technicianId.
  *  Week calendar columns and Month day cells provide dayKey; technicianId is optional
- *  (calendar/month drops preserve the drag source's tech assignment). */
+ *  (calendar/month drops preserve the drag source's tech assignment).
+ *  Right-rail bucket sections provide queueBucket only. */
 export interface DispatchDropData {
   technicianId?: string;
   /** Present for week/month view cells — "yyyy-MM-dd" format */
   dayKey?: string;
+  /** Present when dropping into a right-rail staging bucket section */
+  queueBucket?: "urgent" | "today" | "on_hold" | "less_urgent";
 }

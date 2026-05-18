@@ -53,6 +53,7 @@ import {
   type WeekStackEntry,
 } from "@/components/timesheets/stack/buildWeekStackViewModel";
 import { CompactTimeEntryCard } from "@/components/timesheets/CompactTimeEntryCard";
+import { TimeEntryModal } from "@/components/time";
 import type { TechnicianWeeklySummary } from "@shared/schema";
 
 interface WeekStackUser {
@@ -95,6 +96,7 @@ export default function WeekStackPage() {
     return new URLSearchParams(window.location.search).get("tech") ?? "";
   });
   const [calOpen, setCalOpen] = useState(false);
+  const [addEntryOpen, setAddEntryOpen] = useState(false);
 
   const weekEnd = useMemo(
     () => format(addDays(parseISO(weekStart), 6), "yyyy-MM-dd"),
@@ -195,11 +197,17 @@ export default function WeekStackPage() {
     setLocation(`/timesheets?view=day&tech=${techId}&date=${date}`);
   };
 
-  // Global Add Entry — opens canonical Day View with today as the seeded
-  // date; user picks the actual day inside that flow.
+  // Default date for the create modal: today when today falls inside the
+  // selected week; otherwise the week's Monday so the date field is never
+  // surprising when reviewing a past/future week.
+  const addEntryDefaultDate = useMemo(() => {
+    const today = format(new Date(), "yyyy-MM-dd");
+    return today >= weekStart && today <= weekEnd ? today : weekStart;
+  }, [weekStart, weekEnd]);
+
   const handleAddEntryGlobal = () => {
     if (!techId) return;
-    setLocation(`/timesheets?view=day&tech=${techId}`);
+    setAddEntryOpen(true);
   };
 
   const handleExportCsv = async () => {
@@ -465,6 +473,15 @@ export default function WeekStackPage() {
       <p className="text-helper text-muted-foreground italic">
         Read-only weekly review. Click a day header or any entry to edit in the canonical Day View.
       </p>
+
+      <TimeEntryModal
+        open={addEntryOpen}
+        onOpenChange={setAddEntryOpen}
+        mode="create"
+        lockedTechnicianId={techId || null}
+        defaultDate={addEntryDefaultDate}
+        extraInvalidateKeys={[[QK_WEEK], [QK_WEEKLY]]}
+      />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import { QuoteActionsCard } from "./sections/QuoteActionsCard";
 import { QuoteActivityCard } from "./sections/QuoteActivityCard";
 import { InvoiceContactsCard, type ContactPerson } from "@/pages/receivables/sections/InvoiceContactsCard";
 import type { Quote, QuoteLine, QuoteNote, QuoteStatus } from "@shared/schema";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
   // ── Shared rail-root fetches ───────────────────────────────────────────────
 
   const { data: details, isLoading: detailsLoading } = useQuery<QuoteDetails>({
-    queryKey: ["quote", quoteId, "details"],
+    queryKey: quoteKeys.detail(quoteId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/quotes/${quoteId}/details`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load quote details");

@@ -4,6 +4,7 @@
  */
 
 import { apiRequest } from "@/lib/queryClient";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 import { FileCheck } from "lucide-react";
 import type { QuoteTemplate } from "@shared/schema";
 import { ApplyTemplateModalBase } from "./shared/ApplyTemplateModalBase";
@@ -31,11 +32,10 @@ export function ApplyQuoteTemplateModal({ open, onOpenChange, quoteId, quoteNumb
         })
       }
       invalidateKeys={[
-        ["/api/quotes", quoteId],
-        ["/api/quotes", quoteId, "details"],
-        ["/api/quotes", quoteId, "lines"],
-        ["/api/quotes"],
-        ["/api/quotes/list"],
+        [...quoteKeys.root()],                    // ["quotes"] — busts all canonical
+        [...quoteKeys.legacy.detailBroad(quoteId)], // ["quote", quoteId] — busts old detail
+        [...quoteKeys.legacy.all()],              // ["/api/quotes"]
+        [...quoteKeys.legacy.list()],             // ["/api/quotes/list"]
       ]}
       renderTemplateExtra={(t) => (
         <>

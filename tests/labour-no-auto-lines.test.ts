@@ -413,7 +413,6 @@ describe("Source pins — labour decoupling, tax selector, Canadian spelling", (
   const invoicesRoute = read("server/routes/invoices.ts");
   const taxStorage = read("server/storage/tax.ts");
   const taxRoute = read("server/routes/tax.ts");
-  const compositionDialog = read("client/src/components/InvoiceCompositionDialog.tsx");
   const invoiceDetailPage = read("client/src/pages/InvoiceDetailPage.tsx");
   const taxBillingRulesPage = read("client/src/pages/TaxBillingRulesPage.tsx");
   const compensationTab = read("client/src/components/team-hub/CompensationTab.tsx");
@@ -445,15 +444,6 @@ describe("Source pins — labour decoupling, tax selector, Canadian spelling", (
     expect(previewService).not.toMatch(/timeBillingRulesRepository\./);
     expect(previewService).toMatch(/const laborLines: JobBillablePreviewLine\[\] = \[\];/);
     expect(previewService).toMatch(/Tracked labour never auto-creates invoice/);
-  });
-
-  it("InvoiceCompositionDialog no longer renders a Labor selection section", () => {
-    // Section markup gone.
-    expect(compositionDialog).not.toMatch(/data-testid="section-labor"/);
-    expect(compositionDialog).not.toMatch(/data-testid="button-toggle-all-labor"/);
-    expect(compositionDialog).not.toMatch(/laborSelected/);
-    // The dialog body explains the new contract.
-    expect(compositionDialog).toMatch(/Tracked labour is operational only/);
   });
 
   // ── Issue 1: tax selector + system wrapper ────────────────────────

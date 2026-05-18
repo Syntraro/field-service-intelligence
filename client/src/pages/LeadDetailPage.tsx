@@ -49,6 +49,7 @@ import { LeadVisitsCard } from "@/components/leads/LeadVisitsCard";
 import { LeadSummaryCard } from "@/components/leads/LeadSummaryCard";
 import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
 import { fmtDate } from "@/components/leads/shared/leadFormatters";
+import { invalidateLead } from "@/lib/queryInvalidation";
 
 // ── Types ──
 
@@ -196,7 +197,7 @@ export default function LeadDetailPage() {
   // ── Mutations ──
   const statusMutation = useMutation({
     mutationFn: (status: string) => apiRequest(`/api/leads/${leadId}`, { method: "PATCH", body: JSON.stringify({ status }) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["leads"] }); toast({ title: "Lead updated" }); },
+    onSuccess: () => { invalidateLead(queryClient, leadId); toast({ title: "Lead updated" }); },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
@@ -204,7 +205,7 @@ export default function LeadDetailPage() {
     mutationFn: ({ title, description }: { title: string; description: string }) =>
       apiRequest(`/api/leads/${leadId}`, { method: "PATCH", body: JSON.stringify({ title, description }) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["leads"] });
+      invalidateLead(queryClient, leadId);
       setEditingHeader(false);
       setHeaderError(null);
       toast({ title: "Lead updated" });
@@ -214,13 +215,13 @@ export default function LeadDetailPage() {
 
   const archiveMutation = useMutation({
     mutationFn: () => apiRequest(`/api/leads/${leadId}`, { method: "DELETE" }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["leads"] }); toast({ title: "Lead archived" }); setLocation("/leads"); },
+    onSuccess: () => { invalidateLead(queryClient, leadId); toast({ title: "Lead archived" }); setLocation("/leads"); },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
   const hardDeleteMutation = useMutation({
     mutationFn: () => apiRequest(`/api/leads/${leadId}/hard`, { method: "DELETE" }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["leads"] }); toast({ title: "Lead permanently deleted" }); setLocation("/leads"); },
+    onSuccess: () => { invalidateLead(queryClient, leadId); toast({ title: "Lead permanently deleted" }); setLocation("/leads"); },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 

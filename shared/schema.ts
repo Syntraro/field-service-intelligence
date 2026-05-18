@@ -1066,9 +1066,9 @@ export const maintenanceRecords = pgTable("maintenance_records", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
   // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
-  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "cascade" }),
   // Canonical reference to service location
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   dueDate: date("due_date").notNull(), // FIXED: Changed from text() to date()
   completedAt: timestamp("completed_at"), // FIXED: Changed from text() to timestamp()
 });
@@ -1786,9 +1786,9 @@ export const clientNotes = pgTable("client_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
-  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "cascade" }),
   // Nullable: NULL = company-wide note, non-NULL = location-specific note
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "cascade" }),
   // Customer-company-level notes: set when note belongs to a customer company (not a specific location)
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1979,7 +1979,7 @@ export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Always links to a Location (client) where work is performed
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if invoices exist
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   // Parent company reference (for easier querying when billing parent)
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   // Invoice details
@@ -3509,7 +3509,7 @@ export type RecurringJobPhase = typeof recurringJobPhases.$inferSelect;
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if jobs exist
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   // Job identification
   jobNumber: integer("job_number").notNull(),
   // 2026-04-12 (Option A): jobs no longer own technician assignment.
@@ -4143,6 +4143,11 @@ export const jobVisits = pgTable("job_visits", {
   completedAt: timestamp("completed_at"),
   isFollowUpNeeded: boolean("is_follow_up_needed").notNull().default(false),
 
+  // Dispatch staging bucket — dispatcher-only, never exposed to technicians.
+  // Allowed values: urgent | today | on_hold | less_urgent
+  // NULL is normalised to 'today' at the application layer.
+  dispatchQueueBucket: text("dispatch_queue_bucket"),
+
   // Soft delete + optimistic locking
   isActive: boolean("is_active").notNull().default(true),
   version: integer("version").notNull().default(0),
@@ -4759,7 +4764,7 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Location where work will be performed
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   // Parent company reference (for easier querying when billing parent)
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   // Quote details
@@ -6096,7 +6101,7 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Optional client/location linkage
   clientId: varchar("client_id").references(() => customerCompanies.id, { onDelete: "set null" }),
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "set null" }),
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "cascade" }),
   // Job template details
   title: text("title").notNull(),
   description: text("description"),
@@ -6700,7 +6705,7 @@ export type LeadSourceType = typeof leadSourceTypeEnum[number];
 export const leads = pgTable("leads", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
   // Immutable after creation — the technician who originated the opportunity
@@ -7675,6 +7680,69 @@ export type TechnicianTimeOffUpdateInput = z.infer<
   typeof updateTechnicianTimeOffSchema
 >;
 
+// ────────────────────────────────────────────────────────────────────
+// Technician Schedule Overrides (2026-05-17 Phase 2 Team Schedule)
+// ────────────────────────────────────────────────────────────────────
+// Date-specific Working / Not Working overrides per technician.
+// Sits between time-off (highest priority) and weekly working_hours
+// (lowest) in the effective-schedule precedence stack.
+//
+// override_date is DATE (not timestamptz) — calendar-day semantic.
+// Only one active override per (company_id, technician_user_id,
+// override_date) is allowed; enforced by partial unique index.
+// Archived rows are exempt, preserving the full history.
+//
+// See migrations/2026_05_17_technician_schedule_overrides.sql.
+export const technicianScheduleOverrides = pgTable(
+  "technician_schedule_overrides",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    technicianUserId: varchar("technician_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    overrideDate: date("override_date").notNull(),
+    isWorking: boolean("is_working").notNull(),
+    note: text("note"),
+    createdByUserId: varchar("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (table) => ({
+    tenantTechDateIdx: index("idx_tech_schedule_overrides_tenant_tech_date").on(
+      table.companyId,
+      table.technicianUserId,
+      table.overrideDate,
+    ),
+  }),
+);
+
+export type TechnicianScheduleOverrideRow =
+  typeof technicianScheduleOverrides.$inferSelect;
+export type InsertTechnicianScheduleOverride =
+  typeof technicianScheduleOverrides.$inferInsert;
+
+/** Zod schema for POST /api/team/:userId/schedule/overrides body. */
+export const insertTechnicianScheduleOverrideSchema = z
+  .object({
+    overrideDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "overrideDate must be YYYY-MM-DD"),
+    isWorking: z.boolean(),
+    note: z.string().max(500).optional().nullable(),
+  })
+  .strict();
+
+export type TechnicianScheduleOverrideInsertInput = z.infer<
+  typeof insertTechnicianScheduleOverrideSchema
+>;
+
 // ============================================================================
 // RECEIVABLES NOTES (2026-05-13 Phase 2A)
 // ============================================================================
@@ -7779,6 +7847,8 @@ export const teamSkills = pgTable("team_skills", {
   name: text("name").notNull(),
   category: text("category"),
   description: text("description"),
+  requiresCertification: boolean("requires_certification").notNull().default(false),
+  hasExpiryTracking: boolean("has_expiry_tracking").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -7835,7 +7905,7 @@ export const jobTemplateRequiredSkills = pgTable("job_template_required_skills",
   companyTemplateIdx: index("job_template_required_skills_company_template_idx").on(table.companyId, table.templateId),
 }));
 
-/** Per-member skill assignment (links a user to a library skill with level + cert details). */
+/** Per-member skill assignment (links a user to a library skill with cert details). */
 export const teamMemberSkills = pgTable("team_member_skills", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id")
@@ -7847,7 +7917,6 @@ export const teamMemberSkills = pgTable("team_member_skills", {
   skillId: varchar("skill_id")
     .notNull()
     .references(() => teamSkills.id, { onDelete: "cascade" }),
-  level: text("level").notNull().default("basic"),
   certificationName: text("certification_name"),
   certificationExpiresAt: timestamp("certification_expires_at"),
   notes: text("notes"),

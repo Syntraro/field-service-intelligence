@@ -1,11 +1,6 @@
 /**
  * CreateQuotePage — full-page quote creation flow (`/quotes/new`).
  *
- * Reuses the canonical QuoteSummaryCard + QuoteDescriptionCard in draft
- * mode plus the same DetailPageShell + LineItemsCard primitives the
- * saved Quote Detail page renders, so the create page and the detail
- * page share one visual source.
- *
  * Submit contract:
  *   POST /api/quotes {
  *     locationId, title?, notesCustomer?, issueDate, expiryDate,
@@ -55,8 +50,8 @@ import {
 } from "lucide-react";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { invalidateQuoteList } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
-import { useActivityStore } from "@/lib/activityStore";
 import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
@@ -198,7 +193,6 @@ export default function CreateQuotePage() {
   const [, setLocationRoute] = useLocation();
   const search = useSearch();
   const { toast } = useToast();
-  const { logActivity } = useActivityStore();
 
   // ── Lead pre-seed (?leadId=…) ──────────────────────────────────────
   // When the URL carries a leadId, fetch the lead and prefill location
@@ -527,15 +521,8 @@ export default function CreateQuotePage() {
       return quote;
     },
     onSuccess: (quote) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
-      logActivity({
-        type: "created",
-        entityType: "quote",
-        entityId: quote.id,
-        label: `Created Quote #${quote.quoteNumber}`,
-        meta: title || undefined,
-      });
+      invalidateQuoteList(queryClient);
+
       const templateMsg = selectedTemplateId ? " with template" : "";
       toast({
         title: "Quote created",
@@ -736,14 +723,6 @@ export default function CreateQuotePage() {
 
   return (
     <>
-      {/* 2026-05-08 (create-page rail canonicalization): canonical flex
-          shell mirrors the saved Quote detail page exactly. Replaces the
-          legacy `<DetailPageShell rightRail={...} leftColumn={...}>`
-          mount + stacked-cards aside. The page now scrolls at the
-          App-level `<main>` (no inner overflow-y-auto), and the rail
-          rides up the right side. Save + Cancel relocated from the
-          prior right-rail Actions stacked-card to an inline action row
-          at the bottom of the left column. */}
       <div
         className="flex h-full flex-col lg:flex-row bg-app-bg"
         data-testid="create-quote-page"

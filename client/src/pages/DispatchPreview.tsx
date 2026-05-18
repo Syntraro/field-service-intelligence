@@ -6,7 +6,7 @@
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
-import { AlertCircle, Loader2, X as XIcon } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 // 2026-05-05 Phase 3: wouter navigation for the lead-visits strip
 // click-through. Other dispatch click handlers route via internal
 // modal state, so this is the only place the page leaves the route.
@@ -19,7 +19,6 @@ import {
   pointerWithin,
   useSensor,
   useSensors,
-  useDraggable,
   type DragStartEvent,
   type DragEndEvent,
   type DragMoveEvent,
@@ -77,49 +76,6 @@ import { useToast } from "@/hooks/use-toast";
 
 // Local pxToSnappedMinutes and computeDropTime removed — unified into
 // dispatchPlacementResolver.ts resolvePlacement() (shared by drag + click modes)
-
-/** Focus card — draggable dark-blue card in the Focus bar. Click opens EditVisitModal. */
-function FocusCard({ visit, onRemove, onOpen }: {
-  visit: DispatchVisit;
-  onRemove: (id: string) => void;
-  onOpen: (visit: DispatchVisit) => void;
-}) {
-  const dragData: DispatchDragData = {
-    type: "unscheduled-visit",
-    visitId: visit.visitId ?? undefined,
-    jobId: visit.jobId,
-    jobNumber: visit.jobNumber,
-    technicianId: null,
-    durationMinutes: visit.durationMinutes,
-    version: visit.version,
-    isMultiTech: false,
-    originalStart: null,
-  };
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `focus-${visit.id}`,
-    data: dragData,
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      onClick={() => onOpen(visit)}
-      className={`relative rounded border border-blue-200 bg-blue-50 px-2 py-1 cursor-grab active:cursor-grabbing hover:bg-blue-100 transition-colors ${isDragging ? "opacity-40" : ""}`}
-    >
-      {/* Remove X button */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onRemove(visit.id); }}
-        className="absolute top-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full hover:bg-blue-200 text-slate-400 hover:text-slate-600 transition-colors"
-        title="Remove from focus"
-      >
-        <XIcon className="h-2.5 w-2.5" />
-      </button>
-      <p className="text-[13px] font-semibold text-slate-900 truncate pr-4 leading-snug">{visit.customerName}</p>
-      <p className="text-[13px] font-normal text-slate-600 truncate leading-snug">{visit.summary}</p>
-    </div>
-  );
-}
 
 /**
  * 2026-04-30: localStorage key for the last-selected Dispatch view.
@@ -269,65 +225,6 @@ export default function DispatchPreview() {
     action: () => void;
   } | null>(null);
 
-  // ── 2026-03-30: DAY-VIEW-ONLY Focus/selection mode ──
-  // Selection = temporary multi-select in the unscheduled panel (checkbox ticks).
-  // Focus = committed working set shown in the Focus bar (populated via "Add to Focus").
-  // Both are UI-only ephemeral state — not persisted, not shared with week view.
-  const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [selectedVisitIdsForFocus, setSelectedVisitIdsForFocus] = useState<Set<string>>(new Set());
-  const [focusedVisitIds, setFocusedVisitIds] = useState<Set<string>>(new Set());
-
-  const handleToggleSelectionMode = useCallback(() => {
-    setIsSelectionMode(prev => {
-      if (prev) { setSelectedVisitIdsForFocus(new Set()); } // exiting clears selection
-      return !prev;
-    });
-  }, []);
-  const handleExitSelectionMode = useCallback(() => {
-    setIsSelectionMode(false);
-    setSelectedVisitIdsForFocus(new Set());
-  }, []);
-  // Toggle selection (checkbox) — does NOT touch focusedVisitIds
-  const handleToggleSelectVisit = useCallback((visitId: string) => {
-    setSelectedVisitIdsForFocus(prev => {
-      const next = new Set(prev);
-      next.has(visitId) ? next.delete(visitId) : next.add(visitId);
-      return next;
-    });
-  }, []);
-  const handleClearSelection = useCallback(() => {
-    setSelectedVisitIdsForFocus(new Set());
-  }, []);
-  // "Add to Focus" — move selected into focus, clear selection, auto-exit selection mode
-  const handleAddToFocus = useCallback(() => {
-    setFocusedVisitIds(prev => {
-      const next = new Set(prev);
-      selectedVisitIdsForFocus.forEach(id => next.add(id));
-      return next;
-    });
-    setSelectedVisitIdsForFocus(new Set());
-    setIsSelectionMode(false); // Auto-exit so unscheduled panel returns to normal drag behavior
-  }, [selectedVisitIdsForFocus]);
-  // Remove single item from focus
-  const handleRemoveFromFocus = useCallback((visitId: string) => {
-    setFocusedVisitIds(prev => {
-      const next = new Set(prev);
-      next.delete(visitId);
-      return next;
-    });
-  }, []);
-  const handleClearFocus = useCallback(() => {
-    setFocusedVisitIds(new Set());
-  }, []);
-
-  // Reset selection mode when switching away from day view
-  useEffect(() => {
-    if (activeView !== "day") {
-      setIsSelectionMode(false);
-      setSelectedVisitIdsForFocus(new Set());
-      // Keep focusedVisitIds — focus persists until explicitly cleared
-    }
-  }, [activeView]);
 
   // Use active view's data for shared state
   // (technicians already computed above with isWorking enrichment)
@@ -509,7 +406,7 @@ export default function DispatchPreview() {
   // 2026-04-21 Phase 1: updateVisitCrew, updateVisitStatus removed from this
   // destructure — dispatch board no longer performs those quick-actions. Crew
   // and status changes go through EditVisitModal (canonical visit editor).
-  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, savingIds } =
+  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateQueueBucket, savingIds } =
     useDispatchPreviewMutations();
 
   // ── Timeline scroll ref (for computing drop positions) ──
@@ -940,6 +837,21 @@ export default function DispatchPreview() {
     if (!over || !dragData) return;
 
     const dropData = over.data.current as DispatchDropData | undefined;
+
+    // ── Right-rail bucket drop ─────────────────────────────────────────────
+    // Dropping onto a staging section: update bucket only (if unscheduled) or
+    // unschedule + set bucket (if currently scheduled).
+    if (dropData?.queueBucket) {
+      const bucket = dropData.queueBucket;
+      if (dragData.type === "unscheduled-visit" && dragData.visitId) {
+        updateQueueBucket({ visitId: dragData.visitId, dispatchQueueBucket: bucket });
+      } else if (dragData.type === "scheduled-visit" && dragData.visitId) {
+        unscheduleVisit({ visitId: dragData.visitId, jobId: dragData.jobId });
+        updateQueueBucket({ visitId: dragData.visitId, dispatchQueueBucket: bucket });
+      }
+      return;
+    }
+
     // Day view requires technicianId; week calendar drops provide dayKey only
     if (!dropData?.technicianId && !dropData?.dayKey) return;
     // 2026-03-26: Unassigned lane is now a valid drop target — dropping here
@@ -1717,39 +1629,6 @@ export default function DispatchPreview() {
           onToggleRoutes={() => setShowRoutes(prev => !prev)}
         />
 
-        {/* Focus bar — DAY VIEW ONLY, card grid of focused items */}
-        {activeView === "day" && focusedVisitIds.size > 0 && (() => {
-          const focusedItems = unscheduledVisits.filter(v => focusedVisitIds.has(v.id));
-          // Opportunistic cleanup: remove stale IDs that no longer appear in unscheduled data
-          if (focusedItems.length < focusedVisitIds.size) {
-            const validIds = new Set(focusedItems.map(v => v.id));
-            queueMicrotask(() => setFocusedVisitIds(validIds));
-          }
-          if (focusedItems.length === 0) return null;
-          return (
-            <div className="border-b bg-slate-100 px-3 py-1.5 flex-shrink-0">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-semibold text-slate-800">Focus ({focusedItems.length})</span>
-                <button
-                  onClick={handleClearFocus}
-                  className="text-[11px] text-slate-500 hover:text-slate-800 transition-colors px-1 font-medium"
-                >
-                  Clear all
-                </button>
-              </div>
-              <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-1.5 max-h-[82px] overflow-y-auto">
-                {focusedItems.map(v => (
-                  <FocusCard
-                    key={v.id}
-                    visit={v}
-                    onRemove={handleRemoveFromFocus}
-                    onOpen={handleSelectVisit}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })()}
 
         {/* Lead visits strip — overflow surface for unassigned / unscheduled
             pre-sales visits only. Assigned + scheduled lead visits are placed
@@ -1815,14 +1694,6 @@ export default function DispatchPreview() {
                 savingIds={savingIds}
                 selectedVisitId={selectedVisitId}
                 onSelectVisit={handleSelectVisit}
-                isSelectionMode={isSelectionMode}
-                selectedVisitIdsForFocus={selectedVisitIdsForFocus}
-                focusedVisitIds={focusedVisitIds}
-                onToggleSelectionMode={handleToggleSelectionMode}
-                onExitSelectionMode={handleExitSelectionMode}
-                onToggleSelectVisit={handleToggleSelectVisit}
-                onClearSelection={handleClearSelection}
-                onAddToFocus={handleAddToFocus}
               />
               {showMap && (
                 <div className="flex h-full flex-shrink-0 flex-col border-l bg-white" style={{ width: "clamp(700px, 40vw, 50%)" }}>

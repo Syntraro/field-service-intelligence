@@ -8,11 +8,19 @@
  */
 import type { CalendarEventDto, UnscheduledJobDto, CalendarTechnicianDto } from "@shared/types/scheduling";
 import type { TeamMember } from "@/hooks/useTechnicians";
-import type { DispatchVisit, DispatchTask, Technician, VisitStatus } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, Technician, VisitStatus, DispatchQueueBucket } from "./dispatchPreviewTypes";
+import { DISPATCH_QUEUE_BUCKET_VALUES } from "./dispatchPreviewTypes";
 // Phase 1 Map Convergence: shared color palette.
 // 2026-04-20 Phase 3: use resolveTechnicianColor so dispatch, team hub, profile
 // page and selectors agree without depending on roster order.
 import { resolveTechnicianColor } from "@shared/colors";
+
+function normalizeQueueBucket(raw: string | null | undefined): DispatchQueueBucket {
+  if (raw && (DISPATCH_QUEUE_BUCKET_VALUES as readonly string[]).includes(raw)) {
+    return raw as DispatchQueueBucket;
+  }
+  return "today";
+}
 
 // 2026-03-18: Removed "open" (not a real visit status), added "on_hold" and "cancelled"
 const VALID_VISIT_STATUSES = new Set<VisitStatus>([
@@ -77,6 +85,7 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     lat: event.lat ?? null,
     lng: event.lng ?? null,
     equipmentIds: (event as any).equipmentIds ?? null,
+    dispatchQueueBucket: "today",
   };
 }
 
@@ -101,6 +110,7 @@ function buildBacklogCard(
   job: UnscheduledJobDto,
   visitId: string | null,
   visitNumber: number,
+  bucket: DispatchQueueBucket,
 ): DispatchVisit {
   return {
     // Card identity must be unique per card — the visit id when we have
@@ -134,16 +144,20 @@ function buildBacklogCard(
     locationPostalCode: job.locationPostalCode,
     lat: job.lat ?? null,
     lng: job.lng ?? null,
+    dispatchQueueBucket: bucket,
   };
 }
 
 /** Map one UnscheduledJobDto → zero-or-more DispatchVisit cards (one per visit). */
 export function mapUnscheduledToDispatchVisits(job: UnscheduledJobDto): DispatchVisit[] {
   const ids = Array.isArray(job.visitIds) ? job.visitIds : [];
+  const buckets = Array.isArray(job.visitBuckets) ? job.visitBuckets : [];
   if (ids.length === 0) {
-    return [buildBacklogCard(job, null, 0)];
+    return [buildBacklogCard(job, null, 0, normalizeQueueBucket(buckets[0]))];
   }
-  return ids.map((visitId, idx) => buildBacklogCard(job, visitId, idx + 1));
+  return ids.map((visitId, idx) =>
+    buildBacklogCard(job, visitId, idx + 1, normalizeQueueBucket(buckets[idx]))
+  );
 }
 
 /** Map raw task API response to DispatchTask */

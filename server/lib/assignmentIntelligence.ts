@@ -12,10 +12,9 @@
  *
  * Skill score per member:
  *   Each required skill contributes proportionally:
- *     - Full match (has skill, active, meets minimum level):  100 pts
- *     - Partial match (has skill but level insufficient):      50 pts
- *     - Expired certification on a required skill:            25 pts (still has skill)
- *     - Missing skill:                                          0 pts
+ *     - Full match (has skill, active, cert valid or no cert required):  100 pts
+ *     - Partial match (has skill but certification is expired):           25 pts
+ *     - Missing skill:                                                     0 pts
  *   Average across all required skills (= 100 if no requirements).
  *
  * Availability score:
@@ -31,21 +30,6 @@
  */
 
 import type { SkillLevel } from "@shared/schema";
-import { SKILL_LEVELS } from "@shared/schema";
-
-// ── Level ranking ───────────────────────────────────────────────────────────
-
-const LEVEL_RANK: Record<SkillLevel, number> = {
-  basic: 0,
-  intermediate: 1,
-  advanced: 2,
-  certified: 3,
-};
-
-function meetsLevel(memberLevel: SkillLevel, minimumLevel: SkillLevel | null): boolean {
-  if (!minimumLevel) return true;
-  return LEVEL_RANK[memberLevel] >= LEVEL_RANK[minimumLevel];
-}
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
@@ -58,7 +42,6 @@ export interface JobRequirement {
 
 export interface CandidateMemberSkill {
   skillId: string;
-  level: SkillLevel;
   isActive: boolean;
   certificationExpiresAt: Date | null;
   certificationName: string | null;
@@ -92,7 +75,7 @@ export interface SkillMatchDetail {
   skillId: string;
   skillName: string;
   minimumLevel: SkillLevel | null;
-  memberLevel: SkillLevel | null;
+  memberLevel: null;
   levelMet: boolean;
   isRequired: boolean;
   expiryStatus: ExpiryStatus | null;
@@ -105,7 +88,7 @@ export interface AssignmentRecommendation {
   role: string;
   matchScore: number;             // 0-100, rounded
   skillMatchCount: number;        // skills that fully meet requirements
-  skillPartialCount: number;      // skills present but level insufficient or expired
+  skillPartialCount: number;      // skills present but certification expired
   totalRequiredSkills: number;
   skillMatchDetails: SkillMatchDetail[];
   isAvailable: boolean;
@@ -126,10 +109,6 @@ function getExpiryStatus(expiresAt: Date | null): ExpiryStatus | null {
   const soon = new Date(now.getTime() + EXPIRY_SOON_DAYS * 86_400_000);
   if (expiresAt <= soon) return "expiring_soon";
   return "valid";
-}
-
-function levelLabel(level: SkillLevel): string {
-  return level.charAt(0).toUpperCase() + level.slice(1);
 }
 
 function formatDateCompact(d: Date): string {
@@ -192,13 +171,9 @@ function scoreMember(
     let levelMet = false;
     let expiryStatus: ExpiryStatus | null = null;
     let certificationName: string | null = null;
-    const memberLevel: SkillLevel | null = memberSkill?.level ?? null;
-
     if (memberSkill) {
       expiryStatus = getExpiryStatus(memberSkill.certificationExpiresAt);
       certificationName = memberSkill.certificationName;
-
-      const levelOk = meetsLevel(memberSkill.level, req.minimumLevel);
 
       if (expiryStatus === "expired") {
         // Has skill but cert is expired — partial credit
@@ -208,17 +183,6 @@ function scoreMember(
         if (req.required) {
           warnings.push(
             `${req.skillName}: certification has expired${certificationName ? ` (${certificationName})` : ""}`,
-          );
-        }
-      } else if (!levelOk) {
-        // Has skill but level too low
-        pointsForSkill = 50;
-        levelMet = false;
-        skillPartialCount++;
-        if (req.required) {
-          warnings.push(
-            `${req.skillName}: has ${levelLabel(memberSkill.level)} level` +
-              (req.minimumLevel ? ` — ${levelLabel(req.minimumLevel)} required` : ""),
           );
         }
       } else {
@@ -246,7 +210,7 @@ function scoreMember(
       skillId: req.skillId,
       skillName: req.skillName,
       minimumLevel: req.minimumLevel,
-      memberLevel,
+      memberLevel: null,
       levelMet,
       isRequired: req.required,
       expiryStatus,
@@ -326,6 +290,3 @@ function scoreMember(
   };
 }
 
-// ── Re-export level utilities (used by routes) ─────────────────────────────
-
-export { SKILL_LEVELS, LEVEL_RANK, meetsLevel };

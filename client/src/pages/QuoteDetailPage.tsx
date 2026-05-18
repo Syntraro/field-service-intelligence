@@ -17,11 +17,6 @@ import {
   // 2026-05-08 RALPH (rail migration): icons for the canonical rail tabs.
   DollarSign, StickyNote, Tag, Activity as ActivityIcon,
 } from "lucide-react";
-// 2026-05-08 RALPH (rail migration): canonical right-rail primitive +
-// transition class. Mirrors Job Detail / Invoice Detail / Lead Detail.
-// The prior <DetailPageShell rightRail> stacked-cards layout is replaced
-// with the icon-strip + expandable-panel rail flush to the page's right
-// edge. <DetailPageShell> itself is preserved for any other consumer.
 import {
   DetailRightRail,
   RAIL_HEADER_ACTION_CLASS,
@@ -111,6 +106,8 @@ import {
   useLineItemsDrafts,
   type LineItemsAdapter,
 } from "@/components/line-items";
+import { invalidateQuote, invalidateQuoteList } from "@/lib/queryInvalidation";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 
 interface QuoteDetails {
   quote: Quote;
@@ -241,7 +238,7 @@ export default function QuoteDetailPage() {
   // backend preview + overrides.
 
   const { data: details, isLoading } = useQuery<QuoteDetails>({
-    queryKey: ["quote", quoteId, "details"],
+    queryKey: quoteKeys.detail(quoteId ?? ""),
     queryFn: async () => {
       const res = await fetch(`/api/quotes/${quoteId}/details`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch quote details");
@@ -257,9 +254,7 @@ export default function QuoteDetailPage() {
   const approveMutation = useMutation({
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}/approve`, { method: "POST" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       setShowApproveConfirm(false);
       toast({ title: "Quote approved" });
     },
@@ -271,9 +266,7 @@ export default function QuoteDetailPage() {
   const declineMutation = useMutation({
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}/decline`, { method: "POST" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       setShowDeclineConfirm(false);
       toast({ title: "Quote declined" });
     },
@@ -285,8 +278,7 @@ export default function QuoteDetailPage() {
   const deleteMutation = useMutation({
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}`, { method: "DELETE" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuoteList(queryClient);
       setShowDeleteConfirm(false);
       toast({ title: "Quote deleted" });
       setLocation("/quotes");
@@ -303,8 +295,7 @@ export default function QuoteDetailPage() {
         body: JSON.stringify({ title, notesCustomer: notesCustomer.trim() || null }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId, "details"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      invalidateQuote(queryClient, quoteId);
       setEditingHeader(false);
       setHeaderError(null);
       toast({ title: "Quote updated" });
@@ -333,7 +324,7 @@ export default function QuoteDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      invalidateQuote(queryClient, quoteId);
     },
     onError: (error: Error) => {
       toast({ title: "Failed to add line item", description: error.message, variant: "destructive" });
@@ -344,7 +335,7 @@ export default function QuoteDetailPage() {
     mutationFn: (lineId: string) =>
       apiRequest(`/api/quotes/${quoteId}/lines/${lineId}`, { method: "DELETE" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      invalidateQuote(queryClient, quoteId);
       // 2026-04-29 (Phase 2): demoted to silent success — canonical card
       // surfaces the save UX. Errors still toast via onError.
     },
@@ -364,7 +355,7 @@ export default function QuoteDetailPage() {
         body: JSON.stringify(draftToQuoteLinePayload(draft)),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      invalidateQuote(queryClient, quoteId);
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update line item", description: error.message, variant: "destructive" });
@@ -378,10 +369,7 @@ export default function QuoteDetailPage() {
         body: JSON.stringify({ jobType: "service_call" }),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
-      // Phase 4 Step C5: canonical family key
+      invalidateQuote(queryClient, quoteId);
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setShowConvertToJobConfirm(false);
       toast({ title: "Quote converted", description: data.message });
@@ -416,8 +404,7 @@ export default function QuoteDetailPage() {
         body: JSON.stringify({ salesOwnerUserId: userId }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Quote owner updated" });
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
@@ -431,8 +418,7 @@ export default function QuoteDetailPage() {
         body: JSON.stringify({ assessmentStatus: needed ? "required" : null }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
@@ -448,8 +434,7 @@ export default function QuoteDetailPage() {
         }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       setShowScheduleAssessment(false);
       setAssessmentDate("");
       setAssessmentAssignee("");
@@ -463,8 +448,7 @@ export default function QuoteDetailPage() {
     mutationFn: () =>
       apiRequest(`/api/quotes/${quoteId}/assessment/complete`, { method: "POST" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Assessment completed" });
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
@@ -475,8 +459,7 @@ export default function QuoteDetailPage() {
     mutationFn: () =>
       apiRequest(`/api/quotes/${quoteId}/assessment`, { method: "DELETE" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Assessment cancelled" });
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
@@ -750,12 +733,6 @@ export default function QuoteDetailPage() {
 
   return (
     <>
-      {/* 2026-05-08 RALPH (rail migration): outer container is now a
-          page-level flex shell that mirrors Job Detail / Invoice Detail.
-          The prior <DetailPageShell rightRail={...}> stacked-cards
-          aside is replaced by a sibling <aside> hosting the canonical
-          <DetailRightRail> primitive. <DetailPageShell> stays alive for
-          any other consumer. */}
       <div
         className="flex h-full flex-col lg:flex-row bg-app-bg"
         data-testid="quote-detail-page"
@@ -931,9 +908,7 @@ export default function QuoteDetailPage() {
               : "Send Quote"
         }
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-          queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-          queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+          invalidateQuote(queryClient, quoteId);
           toast({ title: "Quote sent" });
         }}
       />

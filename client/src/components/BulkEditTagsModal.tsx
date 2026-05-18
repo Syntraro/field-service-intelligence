@@ -148,6 +148,9 @@ export default function BulkEditTagsModal({
       setAddTagIds((prev) => new Set(prev).add(newTag.id));
       setSearch("");
     },
+    onError: (err: Error) => {
+      toast({ title: "Failed to create tag", description: err.message, variant: "destructive" });
+    },
   });
 
   // Bulk apply mutation — uses entity-specific endpoint and body field

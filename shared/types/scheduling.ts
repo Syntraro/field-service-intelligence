@@ -201,6 +201,9 @@ export interface UnscheduledJobDto {
    *  consumers that need a single id for a legacy singular UI path should
    *  use `visitIds[0]` explicitly and plan to migrate to a visit chooser. */
   visitIds: string[];
+  /** Dispatch queue buckets parallel to visitIds. visitBuckets[i] is the
+   *  bucket for visitIds[i]. null entries normalise to 'today' in the mapper. */
+  visitBuckets: (string | null)[];
 }
 
 // ============================================================================

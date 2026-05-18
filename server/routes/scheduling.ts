@@ -1,6 +1,8 @@
 import express, { Response } from "express";
 import { z } from "zod";
-import { sql } from "drizzle-orm";
+import { sql, eq, and } from "drizzle-orm";
+import { db } from "../db";
+import { jobVisits } from "@shared/schema";
 import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
 import { requireRole } from "../auth/requireRole";
 import { requireFeature } from "../auth/requireFeature";
@@ -290,6 +292,12 @@ const rescheduleVisitSchema = z.object({
 
 const unscheduleVisitSchema = z.object({
   version: z.number().int(),
+});
+
+const DISPATCH_QUEUE_BUCKET_VALUES = ["urgent", "today", "on_hold", "less_urgent"] as const;
+
+const queueBucketSchema = z.object({
+  dispatchQueueBucket: z.enum(DISPATCH_QUEUE_BUCKET_VALUES),
 });
 
 // ============================================================================
@@ -632,6 +640,8 @@ router.get(
       // singular `activeVisitId` field was removed in Phase 2 once all
       // frontend consumers migrated.
       visitIds: Array.isArray((job as any).visitIds) ? (job as any).visitIds : [],
+      // Parallel to visitIds — dispatch staging bucket per visit.
+      visitBuckets: Array.isArray((job as any).visitBuckets) ? (job as any).visitBuckets : [],
     }));
 
     res.json(transformedJobs);
@@ -1025,6 +1035,38 @@ router.post(
       version: result.visitVersion ?? result.version,
       status: result.status,
     });
+  })
+);
+
+// ============================================================================
+// PATCH /api/calendar/visit/:visitId/queue-bucket
+// Update dispatch staging bucket for an unscheduled visit.
+// Allowed values: urgent | today | on_hold | less_urgent
+// This is NOT a lifecycle status — it is a dispatcher-only field.
+// ============================================================================
+
+router.patch(
+  "/visit/:visitId/queue-bucket",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { visitId } = validateSchema(visitIdParamSchema, req.params);
+    const { dispatchQueueBucket } = validateSchema(queueBucketSchema, req.body);
+
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!visit) throw createError(404, "Visit not found or access denied");
+
+    await db
+      .update(jobVisits)
+      .set({ dispatchQueueBucket })
+      .where(
+        and(
+          eq(jobVisits.id, visitId),
+          eq(jobVisits.companyId, companyId),
+        )
+      );
+
+    res.json({ visitId, dispatchQueueBucket });
   })
 );
 

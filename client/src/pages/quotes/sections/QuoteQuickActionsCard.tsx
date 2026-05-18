@@ -9,6 +9,7 @@ import { WorkspaceSectionCard } from "@/components/workspace/WorkspaceSectionCar
 import { ConfirmModal } from "@/components/ui/modal";
 import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import { apiRequest, getCSRFToken } from "@/lib/queryClient";
+import { invalidateQuote } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import type { Quote } from "@shared/schema";
 
@@ -31,16 +32,10 @@ export function QuoteQuickActionsCard({ quote, loading }: QuoteQuickActionsCardP
 
   const quoteId = quote?.id;
 
-  function invalidateQuote() {
-    queryClient.invalidateQueries({ queryKey: ["quote", quoteId, "details"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
-    queryClient.invalidateQueries({ queryKey: ["quotes", "views", "counts"] });
-  }
-
   const approveMutation = useMutation({
     mutationFn: () => apiRequest<Quote>(`/api/quotes/${quoteId}/approve`, { method: "POST" }),
     onSuccess: () => {
-      invalidateQuote();
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Quote approved" });
       setApproveOpen(false);
     },
@@ -52,7 +47,7 @@ export function QuoteQuickActionsCard({ quote, loading }: QuoteQuickActionsCardP
   const declineMutation = useMutation({
     mutationFn: () => apiRequest<Quote>(`/api/quotes/${quoteId}/decline`, { method: "POST" }),
     onSuccess: () => {
-      invalidateQuote();
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Quote declined" });
       setDeclineOpen(false);
     },
@@ -67,7 +62,7 @@ export function QuoteQuickActionsCard({ quote, loading }: QuoteQuickActionsCardP
         method: "POST",
       }),
     onSuccess: (data) => {
-      invalidateQuote();
+      invalidateQuote(queryClient, quoteId);
       toast({ title: "Quote converted to job" });
       setConvertOpen(false);
       setLocation(`/jobs/${data.job.id}`);
@@ -204,7 +199,7 @@ export function QuoteQuickActionsCard({ quote, loading }: QuoteQuickActionsCardP
           entityId={quoteId}
           isOpen={sendOpen}
           onClose={() => setSendOpen(false)}
-          onSuccess={() => invalidateQuote()}
+          onSuccess={() => invalidateQuote(queryClient, quoteId)}
         />
       )}
 

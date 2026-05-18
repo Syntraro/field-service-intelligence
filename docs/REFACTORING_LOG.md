@@ -4,6 +4,99 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-17: Team Schedule Phase 3 — Effective Schedule API + Visual Calendar Grid
+
+### Scope
+- `server/lib/dayBoundaries.ts` (new)
+- `server/storage/technicianSchedule.ts` (additive — `computeEffectiveScheduleRange`)
+- `server/routes/team.ts` (additive — `GET /:userId/schedule/effective`)
+- `client/src/components/team-hub/ScheduleCalendarGrid.tsx` (new)
+- `client/src/components/team-hub/SchedulesTab.tsx` (DateOverridesSection → ScheduleCalendarGrid)
+- `tests/effective-schedule.test.ts` (new — 12 tests)
+
+### What Changed
+
+Adds the effective schedule API and replaces the temporary DateOverridesSection CRUD form with a 6-week visual calendar grid.
+
+**Key architectural decisions:**
+- `computeEffectiveScheduleRange` (batch version) pre-fetches all time-off and overrides for the entire date range in exactly 2 DB queries, then applies 4-layer precedence in memory. Avoids the N+1 pattern of calling `computeEffectiveDayState` per day.
+- DST-safe day boundaries via noon-UTC anchoring in `dayBoundaries.ts`. End-of-day is start of the *next* calendar day, not start + 24h. This correctly handles 23h spring-forward and 25h fall-back days. Resolves the known DST limitation of `getStartOfNextDayInTimezone` in `capacity.ts` (that function is unchanged for backwards compatibility).
+- The GET route fetches company settings (timezone), company business hours, and technician working hours in a single `Promise.all` before calling the range function — no sequential queries.
+- The calendar grid invalidates `["/api/team/schedule/effective", memberId]` (prefix match, `exact: false`) after every override create or delete, so stale data cannot persist across mutations.
+- `DateOverridesSection.tsx` is kept on disk — the override API routes it calls are still the mutation surface for the grid's popover actions.
+
+### What Was NOT Changed
+
+- `capacity.ts` — untouched.
+- `technician_time_off` — no modifications; time-off cells in the grid are read-only.
+- `working_hours` — no modifications.
+- Dispatch board — no integration.
+- Tech Hub / tech-app — untouched.
+
+---
+
+## 2026-05-17: Team Schedule Phase 2 — Date-Specific Override Infrastructure
+
+### Scope
+- `migrations/2026_05_17_technician_schedule_overrides.sql` (new)
+- `shared/schema.ts` (additive)
+- `server/storage/technicianSchedule.ts` (new)
+- `server/routes/team.ts` (additive)
+- `client/src/components/team-hub/DateOverridesSection.tsx` (new)
+- `client/src/components/team-hub/SchedulesTab.tsx` (additive)
+
+### What Changed
+
+New `technician_schedule_overrides` table adds calendar-date-specific Working / Not Working flags per technician. Sits between `technician_time_off` (highest priority) and `working_hours` (weekly default) in the three-layer effective schedule stack.
+
+**Key architectural decisions:**
+- `override_date` is `DATE` not `TIMESTAMPTZ` — calendar-day semantic avoids timezone ambiguity. Comparison with other DATE columns is direct.
+- Partial unique index `WHERE archived_at IS NULL` on `(company_id, technician_user_id, override_date)` allows unlimited history (archived rows) but only one live override per date.
+- `upsertOverride` does a transactional find-then-update/insert: application-layer prevention of duplicates + DB-level index as safety net.
+- `computeEffectiveDayState` is internal-only (not exposed as a route). Phase 3 will call it per day for the calendar grid endpoint.
+
+### What Was NOT Changed
+
+- `capacity.ts` — unchanged; time-off integration stays as-is.
+- `technician_time_off` — no modifications; the override layer reads it via `technicianTimeOffRepository.listOverlapping`.
+- `working_hours` — no modifications.
+- Dispatch board — no integration in this phase.
+- Tech Hub / tech-app — untouched.
+
+---
+
+## 2026-05-17: Team Schedule Phase 1 — Weekly Schedule Editor Simplification
+
+### Scope
+- `client/src/components/team-hub/SchedulesTab.tsx`
+- `client/src/components/team-hub/WeeklyScheduleGrid.tsx` (new)
+- `client/src/lib/weeklyScheduleUtils.ts` (new)
+
+### What Changed
+
+The existing Schedule tab rendered a full weekly hours editor with `<input type="time">` start/end fields and a "Copy Mon → weekdays" button. Phase 1 replaces this with a Working / Not Working toggle grid.
+
+**Extraction:** `WeeklyScheduleGrid` is a focused presentational component that renders the 7-day grid. It takes `hours`, `disabled`, and `onChange(dayOfWeek, isWorking)` — no time fields exposed.
+
+**Logic extraction:** `weeklyScheduleUtils.ts` contains pure functions (`initWeeklyHours`, `toggleDayWorking`) that are unit-testable without React or DOM. The key invariant is in `toggleDayWorking`: toggling OFF preserves `startTime`/`endTime` in state (hidden but forwarded to the API); toggling ON with no times injects `WORKING_DAY_DEFAULTS` to satisfy the server validation constraint (`isWorking=true` requires non-null start + end).
+
+### Why
+
+- Time inputs are out of scope for Phase 1 (Working / Not Working only per spec)
+- Keeps time data intact for Phase 2 date overrides and future schedule editing
+- Server-side `workingHourEntrySchema` refine requires valid times when `isWorking=true` — defaults bridge the gap without loosening validation
+
+### What Was NOT Changed
+
+- `PUT /api/team/:userId/working-hours` — no route changes
+- `server/schemas.ts` `workingHourEntrySchema` — validation unchanged
+- `shared/schema.ts` `working_hours` table — no schema changes
+- `users.useCustomSchedule` behavior — unchanged
+- Time Off section — untouched
+- `isSchedulable` / Show on calendar toggle — untouched
+
+---
+
 ## 2026-05-17: Leads right rail canonical compliance fixes
 
 ### Scope

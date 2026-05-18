@@ -153,7 +153,7 @@ export function QuoteHeaderCard({
   const declinedAt = safeFormatDate(quote.declinedAt);
 
   const canShowApproveDecline = isSent && !isExpired;
-  const canShowConvert = isApproved;
+  const canShowConvert = isApproved && !quote.convertedToJobId;
 
   const statusMeta = getQuoteStatusMeta(quote.status);
 

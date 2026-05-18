@@ -68,7 +68,6 @@ import { StatusChip } from "@/components/ui/chip";
 // flag is honored) and writes through /api/jobs/:jobId/notes
 // (entityType="invoice" + writeEntityId=jobId).
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
-import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
 import { InvoiceActivityPanel } from "@/components/invoice/InvoiceActivityPanel";
 import { InvoicePricingHistoryPanel } from "@/components/invoice/InvoicePricingHistoryPanel";
 import { Input } from "@/components/ui/input";
@@ -193,6 +192,7 @@ import {
   type StructuredAddress,
   type ReferenceFieldDTO,
 } from "@/components/invoice/invoiceMetaCommon";
+import { invalidateInvoiceFinancials } from "@/lib/queryInvalidation";
 
 
 // Extended invoice type with derived fields from API
@@ -769,10 +769,7 @@ export default function InvoiceDetailPage() {
 
   const jobId = details?.job?.id;
 
-  // 2026-04-18 Phase 8: composition dialog state for "Choose Items to Add…"
-  const [showCompositionDialog, setShowCompositionDialog] = useState(false);
-
-  const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: string }>({
+const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: string }>({
     queryKey: ["/api/company-settings"],
     staleTime: 5 * 60 * 1000,
   });
@@ -849,44 +846,6 @@ export default function InvoiceDetailPage() {
     },
   });
 
-  const refreshFromJobMutation = useMutation({
-    mutationFn: async (overrideReason?: string) => {
-      const body = overrideReason
-        ? JSON.stringify({ overrideQboLock: true, overrideReason })
-        : undefined;
-      return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST", body });
-    },
-    onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
-      // Refresh from job can change line items/totals — invalidate invoices list + dashboard
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
-      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
-      qboOverride.closeModal();
-      setQboOverridePending(false);
-      if (response?._qboWarning) {
-        toast({
-          title: "Invoice refreshed with warning",
-          description: response._qboWarning,
-        });
-      } else {
-        toast({ title: "Invoice refreshed from job" });
-      }
-    },
-    onError: (error: Error) => {
-      setQboOverridePending(false);
-      // Check if this is a QBO lock error (409)
-      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
-        qboOverride.requestOverride("refresh invoice from job", (reason) => {
-          setQboOverridePending(true);
-          refreshFromJobMutation.mutate(reason);
-        });
-      } else {
-        toast({ title: "Failed to refresh invoice", variant: "destructive" });
-      }
-    },
-  });
-
   const createPaymentMutation = useMutation({
     mutationFn: (data: { amount: string; method: string; reference?: string; notes?: string }) =>
       apiRequest(`/api/invoices/${invoiceId}/payments`, { method: "POST", body: JSON.stringify(data) }),
@@ -903,16 +862,16 @@ export default function InvoiceDetailPage() {
       setPaymentNotes("");
       toast({ title: "Payment recorded successfully" });
     },
-    onError: () => toast({ title: "Failed to record payment", variant: "destructive" }),
+    onError: (err: Error) => toast({ title: "Failed to record payment", description: err.message, variant: "destructive" }),
   });
 
   const reorderLinesMutation = useMutation({
     mutationFn: (orderData: { id: string; lineNumber: number }[]) =>
       apiRequest(`/api/invoices/${invoiceId}/lines/reorder`, { method: "PATCH", body: JSON.stringify(orderData) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
+      invalidateInvoiceFinancials(queryClient, invoiceId);
     },
-    onError: () => toast({ title: "Failed to reorder items", variant: "destructive" }),
+    onError: (err: Error) => toast({ title: "Failed to reorder items", description: err.message, variant: "destructive" }),
   });
 
   // Line item CRUD mutations
@@ -1038,9 +997,7 @@ export default function InvoiceDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
-      queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
+      invalidateInvoiceFinancials(queryClient, invoiceId);
       toast({ title: "Payment terms updated" });
     },
     onError: (error: Error) => {
@@ -1057,8 +1014,7 @@ export default function InvoiceDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      invalidateInvoiceFinancials(queryClient, invoiceId);
       toast({ title: "Invoice number updated" });
     },
     onError: (error: Error) => {
@@ -2745,28 +2701,6 @@ export default function InvoiceDetailPage() {
         isPending={qboOverridePending}
       />
 
-      {/* 2026-04-18 Phase 8: composition dialog for "Choose Items to Add…"
-          variant of the refresh-from-job action. Only relevant for draft
-          invoices linked to a job; the header menu item is hidden
-          otherwise (see `onChooseItemsFromJob={jobId ? ... : undefined}`). */}
-      {jobId && details?.job && (
-        <InvoiceCompositionDialog
-          mode="refresh"
-          open={showCompositionDialog}
-          onOpenChange={setShowCompositionDialog}
-          jobId={jobId}
-          jobNumber={details.job.jobNumber}
-          jobSummary={details.job.summary ?? ""}
-          locationDisplayName={details.location?.companyName || details.location?.location || "Unknown"}
-          invoiceId={invoiceId!}
-          onRefreshed={() => {
-            queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
-            queryClient.invalidateQueries({ queryKey: ["invoices"] });
-            queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
-            queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
-          }}
-        />
-      )}
     </>
   );
 }

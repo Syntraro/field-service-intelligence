@@ -29,6 +29,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { Invoice } from "@shared/schema";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
+import {
+  invalidateJobLifecycle,
+  invalidateDashboard,
+} from "@/lib/queryInvalidation";
 
 export interface JobLifecycleActions {
   openCloseJobDialog: () => void;
@@ -85,9 +89,8 @@ export function useJobLifecycleActions({
       return response as { job: any };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      if (job) invalidateJobLifecycle(queryClient, job.id);
+      invalidateDashboard(queryClient);
       toast({ title: "Undo Successful", description: "Job close has been undone." });
     },
     onError: (error: Error) => {
@@ -108,15 +111,14 @@ export function useJobLifecycleActions({
       return { ...(response as { job: any; invoice: any | null }), mode };
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (job) invalidateJobLifecycle(queryClient, job.id);
       queryClient.invalidateQueries({ queryKey: ["visits"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      invalidateDashboard(queryClient);
       setShowCloseJobDialog(false);
       setUncompletedVisitsGuardrail(null);
 
       if (data.invoice) {
-        queryClient.invalidateQueries({ queryKey: ["invoices"] });
+        queryClient.invalidateQueries({ queryKey: ["invoices"] }); // invoices family: new invoice created
         toast({ title: "Job Closed", description: "Job closed and invoice created." });
         setLocation(`/invoices/${data.invoice.id}`);
       } else {
@@ -159,25 +161,25 @@ export function useJobLifecycleActions({
         /version|expected version|optimistic/i.test(error.message);
       if (isVersionConflict) {
         toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing…" });
-        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        if (job) invalidateJobLifecycle(queryClient, job.id);
         queryClient.invalidateQueries({ queryKey: ["invoices"] });
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        invalidateDashboard(queryClient);
         queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
         queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
         queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
         return;
       }
       if (/Cannot close job in status 'invoiced'/i.test(error.message)) {
-        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        if (job) invalidateJobLifecycle(queryClient, job.id);
         queryClient.invalidateQueries({ queryKey: ["invoices"] });
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        invalidateDashboard(queryClient);
         setCloseJobError({
           title: "Already Invoiced",
           body: "This job is already invoiced. The page will refresh with the latest status.",
         });
         return;
       }
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (job) invalidateJobLifecycle(queryClient, job.id);
       const isFriendly = error.message && !error.message.includes("is not a function") && !error.message.includes("Internal Server");
       toast({
         title: "Error",
@@ -197,11 +199,11 @@ export function useJobLifecycleActions({
       return response as { job: any };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (job) invalidateJobLifecycle(queryClient, job.id);
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      invalidateDashboard(queryClient);
       toast({ title: "Job Reopened", description: "Job has been reopened and is ready for scheduling." });
     },
     onError: (error: Error) => {

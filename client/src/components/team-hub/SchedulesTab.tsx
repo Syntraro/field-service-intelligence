@@ -2,6 +2,10 @@
 // Phase 3 (2026-04-20): default-hours inheritance fix + unsaved-change guard.
 // Phase 4 (2026-04-20): selection lifted to TeamHubPage; uses shared
 // useUnsavedChanges hook for consistent dirty protection.
+// 2026-05-17 Phase 1 Team Schedule: replaced time-input editor with
+// WeeklyScheduleGrid (Working / Not Working toggles only). startTime/endTime
+// preserved in state and forwarded to the API unchanged; defaults injected via
+// toggleDayWorking when enabling a day that has no stored times.
 //
 // The canonical schedule model is INHERITANCE (server/routes/team.ts:320-366,
 // server/storage/capacity.ts:417):
@@ -20,10 +24,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { DAYS_OF_WEEK_FULL } from "@/lib/schedulingConstants";
 import { resolveTechnicianColor } from "@shared/colors";
-import { Copy, Save, Search, Info, AlertCircle, AlertTriangle } from "lucide-react";
+import { DAYS_OF_WEEK_FULL } from "@/lib/schedulingConstants";
+import { Save, Search, Info, AlertCircle, AlertTriangle } from "lucide-react";
 import type { TeamMemberDetail, TeamTechnicianRow } from "./types";
+import { WeeklyScheduleGrid } from "./WeeklyScheduleGrid";
+import { ScheduleCalendarGrid } from "./ScheduleCalendarGrid";
+import { toggleDayWorking } from "@/lib/weeklyScheduleUtils";
 
 type WorkingHoursState = Array<{
   dayOfWeek: number;
@@ -31,6 +38,10 @@ type WorkingHoursState = Array<{
   endTime: string | null;
   isWorking: boolean;
 }>;
+
+// WorkingHoursState is structurally identical to WeeklyHoursRow from
+// weeklyScheduleUtils — kept local so the server-response hydration
+// (member.workingHours) doesn't need an explicit cast.
 
 interface CompanyBusinessHoursResponse {
   hours: Array<{
@@ -204,23 +215,9 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
     },
   });
 
-  const setDay = (dayOfWeek: number, field: "startTime" | "endTime" | "isWorking", value: any) => {
-    setHours((prev) => prev.map((h) => (h.dayOfWeek === dayOfWeek ? { ...h, [field]: value } : h)));
+  const handleDayToggle = (dayOfWeek: number, isWorking: boolean) => {
+    setHours((prev) => toggleDayWorking(prev, dayOfWeek, isWorking));
     dirty.markDirty();
-  };
-
-  const copyMondayToWeekdays = () => {
-    const mon = hours.find((h) => h.dayOfWeek === 1);
-    if (!mon) return;
-    setHours((prev) =>
-      prev.map((h) =>
-        h.dayOfWeek >= 1 && h.dayOfWeek <= 5
-          ? { ...h, startTime: mon.startTime, endTime: mon.endTime, isWorking: mon.isWorking }
-          : h
-      )
-    );
-    dirty.markDirty();
-    toast({ title: "Copied Monday → weekdays" });
   };
 
   const onToggleUseCustom = (checked: boolean) => {
@@ -379,83 +376,32 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
             </Card>
 
             <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <div>
-                  <CardTitle className="text-base">Weekly hours</CardTitle>
-                  {!useCustom && companyHoursConfigured && (
-                    <p className="text-helper text-muted-foreground mt-1 flex items-center gap-1">
-                      <Info className="h-3 w-3" />
-                      Inheriting company default hours — enable "Use custom schedule" to override.
-                    </p>
-                  )}
-                  {!useCustom && !companyHoursConfigured && (
-                    <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                      <AlertTriangle className="h-3 w-3" />
-                      Company business hours are not set. Configure them under Settings → Business
-                      Hours so new team members have a default schedule.
-                    </p>
-                  )}
-                </div>
-                {useCustom && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={copyMondayToWeekdays}
-                    data-testid="button-sched-copy-mon"
-                  >
-                    <Copy className="h-4 w-4 mr-2" />
-                    Copy Mon → weekdays
-                  </Button>
+              <CardHeader>
+                <CardTitle className="text-base">Weekly Schedule</CardTitle>
+                <p className="text-helper text-muted-foreground mt-1">
+                  Set which days this team member is normally scheduled to work.
+                </p>
+                {!useCustom && companyHoursConfigured && (
+                  <p className="text-helper text-muted-foreground mt-1 flex items-center gap-1">
+                    <Info className="h-3 w-3" />
+                    Inheriting company default hours — enable "Use custom schedule" to override.
+                  </p>
+                )}
+                {!useCustom && !companyHoursConfigured && (
+                  <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" />
+                    Company business hours are not set. Configure them under Settings → Business
+                    Hours so new team members have a default schedule.
+                  </p>
                 )}
               </CardHeader>
-              <CardContent className="space-y-1">
-                {DAYS_OF_WEEK_FULL.map((day) => {
-                  const h =
-                    hours.find((x) => x.dayOfWeek === day.value) ?? {
-                      dayOfWeek: day.value,
-                      startTime: null,
-                      endTime: null,
-                      isWorking: false,
-                    };
-                  return (
-                    <div
-                      key={day.value}
-                      className="flex items-center gap-4 py-2 border-b last:border-0"
-                    >
-                      <div className="w-24 text-sm font-medium">{day.label}</div>
-                      <Switch
-                        checked={h.isWorking}
-                        onCheckedChange={(checked) => setDay(day.value, "isWorking", checked)}
-                        disabled={!useCustom}
-                        data-testid={`switch-sched-day-${day.value}`}
-                      />
-                      {h.isWorking ? (
-                        <div className="flex items-center gap-2 flex-1">
-                          <Input
-                            type="time"
-                            value={h.startTime ?? ""}
-                            onChange={(e) => setDay(day.value, "startTime", e.target.value)}
-                            disabled={!useCustom}
-                            className="w-32"
-                            data-testid={`input-sched-start-${day.value}`}
-                          />
-                          <span className="text-muted-foreground text-sm">to</span>
-                          <Input
-                            type="time"
-                            value={h.endTime ?? ""}
-                            onChange={(e) => setDay(day.value, "endTime", e.target.value)}
-                            disabled={!useCustom}
-                            className="w-32"
-                            data-testid={`input-sched-end-${day.value}`}
-                          />
-                        </div>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">Off</span>
-                      )}
-                    </div>
-                  );
-                })}
-                <div className="flex items-center justify-end gap-2 pt-4">
+              <CardContent className="pt-0">
+                <WeeklyScheduleGrid
+                  hours={hours}
+                  disabled={!useCustom}
+                  onChange={handleDayToggle}
+                />
+                <div className="flex items-center justify-end gap-2 pt-4 border-t mt-2">
                   {dirty.isDirty && useCustom && (
                     <span className="text-helper text-muted-foreground">Unsaved changes</span>
                   )}
@@ -470,6 +416,21 @@ export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList 
                 </div>
               </CardContent>
             </Card>
+
+            {/* Effective schedule calendar — Phase 3. Shows the 6-week
+                rolling grid with per-day override interactions. Only
+                rendered when using a custom schedule so overrides have
+                an effect. */}
+            {useCustom && displayedId && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Effective Schedule</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <ScheduleCalendarGrid selectedMemberId={displayedId} />
+                </CardContent>
+              </Card>
+            )}
           </>
         )}
       </div>

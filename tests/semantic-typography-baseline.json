@@ -2,7 +2,7 @@
   "generatedAt": "2026-05-08",
   "description": "Frozen baseline of (a) legacy typography-ramp + arbitrary text-[Npx], and (b) deprecated component-specific aliases per Phase S1 (Simplified Semantic Typography). tests/semantic-typography-guard.test.ts fails when any file's count increases for any of the three families or a new file introduces them. Decreases (migrations) are allowed; re-run scripts/scan-typography-baseline.mjs after a sweep to lower the floor.",
   "totalLegacy": 2660,
-  "totalArbitrary": 702,
+  "totalArbitrary": 701,
   "totalDeprecated": 80,
   "files": {
     "client/src/App.tsx": {
@@ -553,11 +553,6 @@
     "client/src/components/jobs/JobScheduleFields.tsx": {
       "legacy": 5,
       "arbitrary": 0,
-      "deprecated": 0
-    },
-    "client/src/components/layout/DetailPageShell.tsx": {
-      "legacy": 0,
-      "arbitrary": 1,
       "deprecated": 0
     },
     "client/src/components/leads/LeadDetailsRail.tsx": {

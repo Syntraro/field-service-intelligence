@@ -69,7 +69,7 @@ export default function QuotesPage() {
     queryKey: ["quotes", "views", "counts"],
     queryFn: async () => {
       const res = await fetch("/api/quotes/views/counts", { credentials: "include" });
-      if (!res.ok) return null;
+      if (!res.ok) throw new Error(`Failed to load quote counts: ${res.status}`);
       return res.json();
     },
     staleTime: 30_000,

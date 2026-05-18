@@ -46,6 +46,11 @@ import {
   type MetricsPeriod,
 } from "../storage/teamMetrics";
 import { computeEfficiencyScore } from "../lib/efficiencyScore";
+import {
+  technicianScheduleOverrideRepository,
+  computeEffectiveScheduleRange,
+} from "../storage/technicianSchedule";
+import { insertTechnicianScheduleOverrideSchema } from "@shared/schema";
 
 const router = Router();
 
@@ -445,6 +450,8 @@ const createSkillSchema = z.object({
   name: z.string().min(1).max(100),
   category: z.string().max(100).nullable().optional(),
   description: z.string().max(500).nullable().optional(),
+  requiresCertification: z.boolean().optional(),
+  hasExpiryTracking: z.boolean().optional(),
 });
 
 // POST /api/team/skills — Create a new skill in the company library.
@@ -464,6 +471,8 @@ const updateSkillSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   category: z.string().max(100).nullable().optional(),
   description: z.string().max(500).nullable().optional(),
+  requiresCertification: z.boolean().optional(),
+  hasExpiryTracking: z.boolean().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -530,9 +539,9 @@ router.get(
   }),
 );
 
-// GET /api/team/technicians/skill-match — Phase 5: filter schedulable techs by skill + level.
-// ?skillId=<uuid>&minimumLevel=basic|intermediate|advanced|certified
-// Returns only active, schedulable members who have the skill at or above the minimum level.
+// GET /api/team/technicians/skill-match — filter schedulable techs by skill.
+// ?skillId=<uuid>
+// Returns active, schedulable members who have the skill assigned.
 // Static route under /technicians/* — already before /:userId.
 router.get(
   "/technicians/skill-match",
@@ -540,17 +549,8 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const skillId = req.query.skillId as string | undefined;
     if (!skillId) throw createError(400, "skillId query parameter is required");
-    const minimumLevel = req.query.minimumLevel as string | undefined;
-    const validLevels = ["basic", "intermediate", "advanced", "certified"] as const;
-    if (minimumLevel && !validLevels.includes(minimumLevel as typeof validLevels[number])) {
-      throw createError(400, "Invalid minimumLevel");
-    }
     const { getTechniciansBySkill } = await import("../storage/assignmentCandidates");
-    const techs = await getTechniciansBySkill(
-      req.companyId!,
-      skillId,
-      minimumLevel as typeof validLevels[number] | undefined,
-    );
+    const techs = await getTechniciansBySkill(req.companyId!, skillId);
     res.json(techs);
   }),
 );
@@ -1001,6 +1001,145 @@ router.put(
 
     res.json(workingHours);
   })
+);
+
+// ========================================
+// SCHEDULE OVERRIDES (2026-05-17 Phase 2)
+// ========================================
+// Date-specific Working / Not Working overrides. Sits between time-off
+// (layer 1) and weekly working_hours (layer 3) in the effective-schedule
+// precedence stack.
+
+// GET /api/team/:userId/schedule/overrides?start=YYYY-MM-DD&end=YYYY-MM-DD
+router.get(
+  "/:userId/schedule/overrides",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+
+    const member = await storage.getTeamMember(req.companyId!, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const { start, end } = req.query as { start?: string; end?: string };
+    if (!start || !end) throw createError(400, "Query params start and end (YYYY-MM-DD) are required");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      throw createError(400, "start and end must be YYYY-MM-DD");
+    }
+    if (end < start) throw createError(400, "end must be >= start");
+
+    const overrides = await technicianScheduleOverrideRepository.listOverridesForRange(
+      req.companyId!,
+      userId,
+      start,
+      end,
+    );
+    res.json({ overrides });
+  }),
+);
+
+// POST /api/team/:userId/schedule/overrides
+// Upsert: creates or updates the active override for the given date.
+router.post(
+  "/:userId/schedule/overrides",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+
+    const member = await storage.getTeamMember(req.companyId!, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const input = validateSchema(insertTechnicianScheduleOverrideSchema, req.body);
+
+    const override = await technicianScheduleOverrideRepository.upsertOverride(
+      req.companyId!,
+      {
+        technicianUserId: userId,
+        overrideDate: input.overrideDate,
+        isWorking: input.isWorking,
+        note: input.note ?? null,
+        createdByUserId: req.user!.id,
+      },
+    );
+
+    res.status(200).json({ override });
+  }),
+);
+
+// DELETE /api/team/:userId/schedule/overrides/:overrideId
+router.delete(
+  "/:userId/schedule/overrides/:overrideId",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId, overrideId } = req.params;
+
+    const member = await storage.getTeamMember(req.companyId!, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const existing = await technicianScheduleOverrideRepository.findById(
+      req.companyId!,
+      overrideId,
+    );
+    if (!existing) throw createError(404, "Override not found");
+    // Verify override belongs to the requested technician (cross-user guard)
+    if (existing.technicianUserId !== userId) throw createError(404, "Override not found");
+
+    await technicianScheduleOverrideRepository.archiveOverride(req.companyId!, overrideId);
+    res.status(204).send();
+  }),
+);
+
+// GET /api/team/:userId/schedule/effective?start=YYYY-MM-DD&end=YYYY-MM-DD
+// Returns the effective working state for every date in the range, applying
+// the 4-layer precedence: time_off → date_override → weekly_default → company_default.
+// Used by the Phase 3 calendar grid in the Team Hub Schedule tab.
+router.get(
+  "/:userId/schedule/effective",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const { start, end } = req.query as { start?: string; end?: string };
+    if (!start || !end) throw createError(400, "Query params start and end (YYYY-MM-DD) are required");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      throw createError(400, "start and end must be YYYY-MM-DD");
+    }
+    if (end < start) throw createError(400, "end must be >= start");
+
+    const [companySettings, companyHours, workingHours] = await Promise.all([
+      storage.getCompanySettings(companyId),
+      storage.getCompanyBusinessHours(companyId),
+      storage.getWorkingHours(userId),
+    ]);
+
+    const timezone = companySettings?.timezone ?? "America/Toronto";
+    const companyDefaultHours = companyHours.map((ch) => ({
+      dayOfWeek: ch.dayOfWeek,
+      isOpen: ch.isOpen,
+    }));
+
+    const days = await computeEffectiveScheduleRange(
+      companyId,
+      userId,
+      start,
+      end,
+      timezone,
+      {
+        weeklyHours: workingHours.map((h) => ({ dayOfWeek: h.dayOfWeek, isWorking: h.isWorking })),
+        useCustomSchedule: member.useCustomSchedule ?? false,
+        companyDefaultHours,
+      },
+    );
+
+    res.json({ days });
+  }),
 );
 
 // PUT /api/team/:userId/permissions - Set permission overrides
@@ -1535,7 +1674,6 @@ router.get(
 
 const assignSkillSchema = z.object({
   skillId: z.string().uuid(),
-  level: z.enum(["basic", "intermediate", "advanced", "certified"]),
   certificationName: z.string().max(200).nullable().optional(),
   certificationExpiresAt: certificationExpiresAtSchema,
   notes: z.string().max(1000).nullable().optional(),
@@ -1559,7 +1697,6 @@ router.post(
 );
 
 const updateMemberSkillSchema = z.object({
-  level: z.enum(["basic", "intermediate", "advanced", "certified"]).optional(),
   certificationName: z.string().max(200).nullable().optional(),
   certificationExpiresAt: certificationExpiresAtSchema,
   notes: z.string().max(1000).nullable().optional(),

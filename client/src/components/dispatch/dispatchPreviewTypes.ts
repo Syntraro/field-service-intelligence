@@ -3,6 +3,19 @@
  * Standalone — no dependency on legacy calendar types.
  */
 
+/** Dispatch staging bucket — dispatcher-only organisational grouping.
+ *  Not a lifecycle status. NULL in DB normalises to "today" in the mapper. */
+export type DispatchQueueBucket = "urgent" | "today" | "on_hold" | "less_urgent";
+
+export const DISPATCH_QUEUE_BUCKET_VALUES = ["urgent", "today", "on_hold", "less_urgent"] as const;
+
+export const QUEUE_BUCKET_LABELS: Record<DispatchQueueBucket, string> = {
+  urgent: "Urgent",
+  today: "Today",
+  on_hold: "On Hold",
+  less_urgent: "Less Urgent",
+};
+
 /**
  * 2026-03-17: Normalized visit status union.
  * - Removed "open" (not a real visit status; visits start as "scheduled")
@@ -92,6 +105,8 @@ export type DispatchVisit = {
   lng?: string | null;
   /** Equipment IDs from job_visits.equipment_ids — propagated from job-level equipment */
   equipmentIds?: string[] | null;
+  /** Dispatch staging bucket. Always normalised — never null in the UI layer. */
+  dispatchQueueBucket: DispatchQueueBucket;
 };
 
 /**

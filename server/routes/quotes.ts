@@ -264,11 +264,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   if (leadId) {
     const lead = await leadRepository.getLead(companyId, leadId);
     if (!lead) throw createError(400, "Lead not found");
-    if (lead.status === "quoted" || lead.status === "won") {
-      throw createError(400, `Lead is already '${lead.status}' — one lead can only produce one quote`);
-    }
-    if (lead.convertedQuoteId) {
-      throw createError(400, "Lead already has a linked quote — revise the existing quote instead of creating a new one");
+    if (lead.status === "quoted" || lead.status === "won" || lead.convertedQuoteId) {
+      throw createError(409, "This lead has already been converted to a quote.", "LEAD_ALREADY_CONVERTED");
     }
   }
 
@@ -1113,6 +1110,15 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
   }
 
   const { quote, lines, location } = quoteDetails;
+
+  // Hard guard: reject double-conversion. Handles the edge case where a prior
+  // conversion created the job but failed before flipping quote.status.
+  if (quote.status === "converted" || quote.convertedToJobId) {
+    return res.status(409).json({
+      code: "QUOTE_ALREADY_CONVERTED",
+      message: "This quote has already been converted to a job.",
+    });
+  }
 
   // Only approved quotes can be converted
   if (!isQuoteApproved(quote.status)) {

@@ -96,7 +96,6 @@ export async function loadCandidates(
     .select({
       userId: teamMemberSkills.userId,
       skillId: teamMemberSkills.skillId,
-      level: teamMemberSkills.level,
       isActive: teamMemberSkills.isActive,
       certificationExpiresAt: teamMemberSkills.certificationExpiresAt,
       certificationName: teamMemberSkills.certificationName,
@@ -265,7 +264,6 @@ export async function loadCandidates(
       isActive: m.isActive,
       skills: rawSkills.map((s) => ({
         skillId: s.skillId,
-        level: s.level as import("@shared/schema").SkillLevel,
         isActive: s.isActive,
         certificationExpiresAt: s.certificationExpiresAt,
         certificationName: s.certificationName,
@@ -288,27 +286,23 @@ export interface SkillFilteredTechnician {
   userId: string;
   name: string;
   role: string;
-  level: import("@shared/schema").SkillLevel;
   certificationName: string | null;
   certificationExpiresAt: Date | null;
   expiryStatus: "valid" | "expiring_soon" | "expired" | null;
 }
 
 /**
- * Returns schedulable, active members who have the requested skill
- * at or above the minimum level. Useful for dispatch-board filtering.
+ * Returns schedulable, active members who have the requested skill assigned.
  */
 export async function getTechniciansBySkill(
   companyId: string,
   skillId: string,
-  minimumLevel?: import("@shared/schema").SkillLevel | null,
 ): Promise<SkillFilteredTechnician[]> {
   const rows = await db
     .select({
       userId: users.id,
       name: sql<string>`COALESCE(${users.fullName}, ${users.firstName}, ${users.email})`,
       role: users.role,
-      level: teamMemberSkills.level,
       certificationName: teamMemberSkills.certificationName,
       certificationExpiresAt: teamMemberSkills.certificationExpiresAt,
     })
@@ -326,24 +320,14 @@ export async function getTechniciansBySkill(
     )
     .orderBy(sql`COALESCE(${users.fullName}, ${users.firstName}, ${users.email})`);
 
-  // Level filtering (application-side for clarity)
-  const LEVEL_RANK = { basic: 0, intermediate: 1, advanced: 2, certified: 3 } as const;
-  const minRank = minimumLevel ? LEVEL_RANK[minimumLevel] : 0;
-
   const now = new Date();
   const soonThreshold = new Date(now.getTime() + 30 * 86_400_000);
 
-  return rows
-    .filter((r) => LEVEL_RANK[r.level as keyof typeof LEVEL_RANK] >= minRank)
-    .map((r) => {
-      const exp = r.certificationExpiresAt;
-      const expiryStatus = !exp ? null : exp < now ? "expired" : exp <= soonThreshold ? "expiring_soon" : "valid";
-      return {
-        ...r,
-        level: r.level as import("@shared/schema").SkillLevel,
-        expiryStatus,
-      };
-    });
+  return rows.map((r) => {
+    const exp = r.certificationExpiresAt;
+    const expiryStatus = !exp ? null : exp < now ? "expired" : exp <= soonThreshold ? "expiring_soon" : "valid";
+    return { ...r, expiryStatus };
+  });
 }
 
 // ── Team skill analytics (Phase 6) ─────────────────────────────────────────
@@ -406,7 +390,6 @@ export async function getSkillAnalytics(companyId: string): Promise<SkillAnalyti
       skillId: teamMemberSkills.skillId,
       skillName: teamSkills.name,
       skillCategory: teamSkills.category,
-      level: teamMemberSkills.level,
       certificationName: teamMemberSkills.certificationName,
       certificationExpiresAt: teamMemberSkills.certificationExpiresAt,
     })
@@ -448,14 +431,14 @@ export async function getSkillAnalytics(companyId: string): Promise<SkillAnalyti
     })
     .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
 
-  // Skill coverage: count members per skill
-  const coverageMap: Record<string, { skillName: string; category: string | null; members: Set<string>; certified: number }> = {};
+  // Skill coverage: count members per skill; certifiedCount = members with certification docs
+  const coverageMap: Record<string, { skillName: string; category: string | null; members: Set<string>; withCert: Set<string> }> = {};
   for (const row of assignmentRows) {
     if (!coverageMap[row.skillId]) {
-      coverageMap[row.skillId] = { skillName: row.skillName, category: row.skillCategory, members: new Set(), certified: 0 };
+      coverageMap[row.skillId] = { skillName: row.skillName, category: row.skillCategory, members: new Set(), withCert: new Set() };
     }
     coverageMap[row.skillId]!.members.add(row.userId);
-    if (row.level === "certified") coverageMap[row.skillId]!.certified++;
+    if (row.certificationName) coverageMap[row.skillId]!.withCert.add(row.userId);
   }
 
   const skillCoverage = Object.entries(coverageMap).map(([skillId, c]) => ({
@@ -463,7 +446,7 @@ export async function getSkillAnalytics(companyId: string): Promise<SkillAnalyti
     skillName: c.skillName,
     category: c.category,
     memberCount: c.members.size,
-    certifiedCount: c.certified,
+    certifiedCount: c.withCert.size,
   })).sort((a, b) => b.memberCount - a.memberCount);
 
   return {

@@ -139,7 +139,7 @@ router.get(
     const companyId = req.companyId!;
 
     const visit = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
-    if (!visit) {
+    if (!visit || visit.jobId !== req.params.jobId) {
       throw createError(404, "Visit not found");
     }
 
@@ -161,6 +161,11 @@ router.patch(
 
     const { version, ...data } = req.body;
     const validated = validateSchema(updateVisitSchema, data);
+
+    const preflight = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
+    if (!preflight || preflight.jobId !== req.params.jobId) {
+      throw createError(404, "Visit not found");
+    }
 
     try {
       const updated = await jobVisitsRepository.updateJobVisit(
@@ -203,7 +208,7 @@ router.delete(
     const jobId = req.params.jobId;
 
     const visit = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
-    if (!visit) {
+    if (!visit || visit.jobId !== req.params.jobId) {
       throw createError(404, "Visit not found");
     }
 
@@ -296,7 +301,7 @@ router.post(
     }
 
     const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!existing) throw createError(404, "Visit not found");
+    if (!existing || existing.jobId !== jobId) throw createError(404, "Visit not found");
 
     // Delegate to the orchestrator. The route does not own transition logic.
     try {
@@ -394,6 +399,11 @@ router.post(
       req.body
     );
 
+    const preflightComplete = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!preflightComplete || preflightComplete.jobId !== jobId) {
+      throw createError(404, "Visit not found");
+    }
+
     // 2026-03-18: Delegate entirely to the lifecycle orchestrator
     const result = await lifecycle.completeVisit({
       type: "COMPLETE_VISIT",
@@ -463,6 +473,11 @@ router.post(
     const userId = req.user?.id || "unknown";
     const userRole = req.user?.role || "unknown";
 
+    const preflightReopen = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!preflightReopen || preflightReopen.jobId !== jobId) {
+      throw createError(404, "Visit not found");
+    }
+
     const result = await lifecycle.reopenVisit({
       type: "REOPEN_VISIT",
       companyId,
@@ -509,9 +524,9 @@ router.post(
     const companyId = req.companyId!;
     const { jobId, visitId } = req.params;
 
-    // Verify visit exists and belongs to company
+    // Verify visit exists and belongs to this job
     const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) throw createError(404, "Visit not found");
+    if (!visit || visit.jobId !== jobId) throw createError(404, "Visit not found");
 
     // Log tech.arrived milestone event
     const ctx = getQueryCtx(req);
@@ -541,9 +556,9 @@ router.post(
     const companyId = req.companyId!;
     const { jobId, visitId } = req.params;
 
-    // Verify visit exists and belongs to company
+    // Verify visit exists and belongs to this job
     const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) throw createError(404, "Visit not found");
+    if (!visit || visit.jobId !== jobId) throw createError(404, "Visit not found");
 
     // Log tech.departed milestone event
     const ctx = getQueryCtx(req);
@@ -577,11 +592,11 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const userId = req.user!.id;
-    const { visitId } = req.params;
+    const { jobId, visitId } = req.params;
     const { reason } = validateSchema(archiveVisitSchema, req.body || {});
 
     const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) throw createError(404, "Visit not found");
+    if (!visit || visit.jobId !== jobId) throw createError(404, "Visit not found");
 
     if (visit.archivedAt) {
       throw createError(409, "Visit is already archived");

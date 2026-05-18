@@ -1,1 +1,0 @@
-// Pending invitations table

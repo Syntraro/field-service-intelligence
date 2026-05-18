@@ -1,17 +1,12 @@
-/**
- * MemberSkillsTab — Phase 3 full implementation.
- *
- * Replaces the Phase 1–2 placeholder.
- * Manages company skill library and per-member skill assignments.
- */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -71,7 +66,6 @@ import {
   Trash2,
   ShieldCheck,
   AlertTriangle,
-  Clock,
   CheckCircle,
   XCircle,
   Eye,
@@ -79,21 +73,9 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
-import type {
-  TeamSkillLibraryItem,
-  TeamMemberSkill,
-  SkillLevel,
-} from "./types";
-import { SKILL_LEVELS, SKILL_LEVEL_LABELS } from "./types";
+import type { TeamSkillLibraryItem, TeamMemberSkill } from "./types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-const LEVEL_TONE: Record<SkillLevel, string> = {
-  basic: "bg-slate-100 text-slate-700",
-  intermediate: "bg-blue-50 text-blue-700",
-  advanced: "bg-purple-50 text-purple-700",
-  certified: "bg-green-50 text-green-700",
-};
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -104,7 +86,13 @@ function fmtDate(iso: string | null | undefined): string {
   }
 }
 
-function ExpiryBadge({ status, date }: { status: TeamMemberSkill["expiryStatus"]; date: string | null }) {
+function ExpiryBadge({
+  status,
+  date,
+}: {
+  status: TeamMemberSkill["expiryStatus"];
+  date: string | null;
+}) {
   if (!date) return <span className="text-muted-foreground">—</span>;
   const d = fmtDate(date);
   if (status === "expired") {
@@ -138,18 +126,18 @@ function ExpiryBadge({ status, date }: { status: TeamMemberSkill["expiryStatus"]
 function SkillKpiStrip({ skills }: { skills: TeamMemberSkill[] }) {
   const total = skills.length;
   const active = skills.filter((s) => s.isActive).length;
-  const certified = skills.filter((s) => s.level === "certified" && s.isActive).length;
-  const expiringSoon = skills.filter(
+  const withCert = skills.filter((s) => s.isActive && s.certificationName).length;
+  const attention = skills.filter(
     (s) => s.isActive && (s.expiryStatus === "expiring_soon" || s.expiryStatus === "expired"),
   ).length;
   const inactive = skills.filter((s) => !s.isActive).length;
 
   const stats = [
-    { label: "Total", value: total, icon: Wrench },
-    { label: "Active", value: active, icon: CheckCircle },
-    { label: "Certified", value: certified, icon: ShieldCheck },
-    { label: "Attention needed", value: expiringSoon, icon: AlertTriangle },
-    { label: "Inactive", value: inactive, icon: EyeOff },
+    { label: "Total", value: total },
+    { label: "Active", value: active },
+    { label: "With certification", value: withCert },
+    { label: "Attention needed", value: attention },
+    { label: "Inactive", value: inactive },
   ];
 
   return (
@@ -166,49 +154,34 @@ function SkillKpiStrip({ skills }: { skills: TeamMemberSkill[] }) {
   );
 }
 
-// ── Create & Assign modal ─────────────────────────────────────────────────
+// ── Create Skill / License modal (global library creation only) ───────────
 
 interface CreateSkillModalProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  userId: string;
 }
 
-function CreateSkillModal({ open, onOpenChange, userId }: CreateSkillModalProps) {
+function CreateSkillModal({ open, onOpenChange }: CreateSkillModalProps) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [description, setDescription] = useState("");
-  const [level, setLevel] = useState<SkillLevel>("basic");
-  const [certName, setCertName] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [notes, setNotes] = useState("");
+  const [requiresCertification, setRequiresCertification] = useState(false);
+  const [hasExpiryTracking, setHasExpiryTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      // Step 1: create skill in library
-      const skill = await apiRequest<TeamSkillLibraryItem>("/api/team/skills", {
+    mutationFn: () =>
+      apiRequest<TeamSkillLibraryItem>("/api/team/skills", {
         method: "POST",
         body: JSON.stringify({
           name: name.trim(),
           category: category.trim() || null,
           description: description.trim() || null,
+          requiresCertification,
+          hasExpiryTracking,
         }),
-      });
-      // Step 2: assign to member
-      await apiRequest(`/api/team/${userId}/skills`, {
-        method: "POST",
-        body: JSON.stringify({
-          skillId: skill.id,
-          level,
-          certificationName: certName.trim() || null,
-          certificationExpiresAt: expiresAt || null,
-          notes: notes.trim() || null,
-        }),
-      });
-    },
+      }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}/skills`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/skills"] });
       onOpenChange(false);
       resetForm();
@@ -218,76 +191,79 @@ function CreateSkillModal({ open, onOpenChange, userId }: CreateSkillModalProps)
 
   function resetForm() {
     setName(""); setCategory(""); setDescription("");
-    setLevel("basic"); setCertName(""); setExpiresAt(""); setNotes("");
+    setRequiresCertification(false); setHasExpiryTracking(false);
     setError(null);
   }
 
   return (
-    <ModalShell open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetForm(); }} className="sm:max-w-lg">
+    <ModalShell
+      open={open}
+      onOpenChange={(v) => { onOpenChange(v); if (!v) resetForm(); }}
+      className="sm:max-w-md"
+    >
       <ModalHeader>
-        <ModalTitle>Create Skill</ModalTitle>
+        <ModalTitle>Create Skill / License</ModalTitle>
         <ModalDescription>
-          Add a new skill to the company library and assign it to this member.
+          Add a new entry to the company Skills & Licenses library.
         </ModalDescription>
       </ModalHeader>
       <ModalBody className="space-y-4">
-        <div className="border-b pb-3 mb-1">
-          <p className="text-helper text-muted-foreground font-medium uppercase tracking-wide mb-3">Skill details</p>
-          <div className="space-y-3">
-            <FormField>
-              <FormLabel>Skill name</FormLabel>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Refrigerant Handling"
-                autoFocus
-              />
-            </FormField>
-            <FormRow className="grid-cols-2">
-              <FormField>
-                <FormLabel>Category</FormLabel>
-                <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. HVAC, Electrical" />
-              </FormField>
-              <FormField>
-                <FormLabel>Proficiency level</FormLabel>
-                <Select value={level} onValueChange={(v) => setLevel(v as SkillLevel)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {SKILL_LEVELS.map((l) => (
-                      <SelectItem key={l} value={l}>{SKILL_LEVEL_LABELS[l]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FormField>
-            </FormRow>
-            <FormField>
-              <FormLabel srOnly>Description</FormLabel>
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Description (optional)"
-                rows={2}
-              />
-            </FormField>
+        <FormField>
+          <FormLabel>Skill / License name</FormLabel>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. G2 Gas Licence, Refrigerant Handling"
+            autoFocus
+          />
+        </FormField>
+        <FormField>
+          <FormLabel srOnly>Category</FormLabel>
+          <Input
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="Category (optional)"
+          />
+        </FormField>
+        <FormField>
+          <FormLabel srOnly>Description</FormLabel>
+          <Textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description (optional)"
+            rows={2}
+          />
+        </FormField>
+        <div className="space-y-3 pt-1 border-t">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label htmlFor="toggle-requires-cert" className="text-sm font-medium">
+                Requires certification
+              </Label>
+              <p className="text-helper text-muted-foreground">
+                Members must hold a certification to qualify.
+              </p>
+            </div>
+            <Switch
+              id="toggle-requires-cert"
+              checked={requiresCertification}
+              onCheckedChange={setRequiresCertification}
+            />
           </div>
-        </div>
-        <div>
-          <p className="text-helper text-muted-foreground font-medium uppercase tracking-wide mb-3">Certification (optional)</p>
-          <div className="space-y-3">
-            <FormRow className="grid-cols-2">
-              <FormField>
-                <FormLabel srOnly>Certification name</FormLabel>
-                <Input value={certName} onChange={(e) => setCertName(e.target.value)} placeholder="Certification name" />
-              </FormField>
-              <FormField>
-                <FormLabel srOnly>Expiry date</FormLabel>
-                <Input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
-              </FormField>
-            </FormRow>
-            <FormField>
-              <FormLabel srOnly>Notes</FormLabel>
-              <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" rows={2} />
-            </FormField>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label htmlFor="toggle-expiry" className="text-sm font-medium">
+                Has expiry tracking
+              </Label>
+              <p className="text-helper text-muted-foreground">
+                Certifications for this skill have expiry dates.
+              </p>
+            </div>
+            <Switch
+              id="toggle-expiry"
+              checked={hasExpiryTracking}
+              onCheckedChange={setHasExpiryTracking}
+            />
           </div>
         </div>
         {error && <FormErrorText>{error}</FormErrorText>}
@@ -298,7 +274,7 @@ function CreateSkillModal({ open, onOpenChange, userId }: CreateSkillModalProps)
           onClick={() => createMutation.mutate()}
           disabled={!name.trim() || createMutation.isPending}
         >
-          {createMutation.isPending ? "Creating…" : "Create & Assign"}
+          {createMutation.isPending ? "Creating…" : "Create Skill"}
         </ModalPrimaryAction>
       </ModalFooter>
     </ModalShell>
@@ -319,7 +295,6 @@ function AssignExistingModal({
   open, onOpenChange, userId, library, assignedSkillIds,
 }: AssignExistingModalProps) {
   const [skillId, setSkillId] = useState("");
-  const [level, setLevel] = useState<SkillLevel>("basic");
   const [certName, setCertName] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [notes, setNotes] = useState("");
@@ -333,7 +308,6 @@ function AssignExistingModal({
         method: "POST",
         body: JSON.stringify({
           skillId,
-          level,
           certificationName: certName.trim() || null,
           certificationExpiresAt: expiresAt || null,
           notes: notes.trim() || null,
@@ -348,22 +322,26 @@ function AssignExistingModal({
   });
 
   function resetForm() {
-    setSkillId(""); setLevel("basic"); setCertName(""); setExpiresAt(""); setNotes("");
+    setSkillId(""); setCertName(""); setExpiresAt(""); setNotes("");
     setError(null);
   }
 
   return (
-    <ModalShell open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) resetForm(); }} className="sm:max-w-md">
+    <ModalShell
+      open={open}
+      onOpenChange={(v) => { onOpenChange(v); if (!v) resetForm(); }}
+      className="sm:max-w-md"
+    >
       <ModalHeader>
-        <ModalTitle>Assign Existing Skill</ModalTitle>
-        <ModalDescription>Select a skill from the company library to assign.</ModalDescription>
+        <ModalTitle>Assign Existing Skill / License</ModalTitle>
+        <ModalDescription>Select from the company library to assign to this member.</ModalDescription>
       </ModalHeader>
       <ModalBody className="space-y-3">
         <FormField>
-          <FormLabel>Skill</FormLabel>
+          <FormLabel>Skill / License</FormLabel>
           <Select value={skillId} onValueChange={setSkillId}>
             <SelectTrigger>
-              <SelectValue placeholder={available.length === 0 ? "No available skills" : "Select a skill"} />
+              <SelectValue placeholder={available.length === 0 ? "No available skills" : "Select a skill or license"} />
             </SelectTrigger>
             <SelectContent>
               {available.map((s) => (
@@ -374,37 +352,39 @@ function AssignExistingModal({
               ))}
               {available.length === 0 && (
                 <div className="px-3 py-2 text-helper text-muted-foreground">
-                  All active library skills are already assigned.
+                  All active library entries are already assigned.
                 </div>
               )}
             </SelectContent>
           </Select>
-          <FormHelperText>Only active, unassigned skills are shown.</FormHelperText>
-        </FormField>
-        <FormField>
-          <FormLabel>Proficiency level</FormLabel>
-          <Select value={level} onValueChange={(v) => setLevel(v as SkillLevel)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {SKILL_LEVELS.map((l) => (
-                <SelectItem key={l} value={l}>{SKILL_LEVEL_LABELS[l]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <FormHelperText>Only active, unassigned entries are shown.</FormHelperText>
         </FormField>
         <FormRow className="grid-cols-2">
           <FormField>
-            <FormLabel srOnly>Certification name</FormLabel>
-            <Input value={certName} onChange={(e) => setCertName(e.target.value)} placeholder="Certification name" />
+            <FormLabel srOnly>Certification name / number</FormLabel>
+            <Input
+              value={certName}
+              onChange={(e) => setCertName(e.target.value)}
+              placeholder="Certification name / number"
+            />
           </FormField>
           <FormField>
             <FormLabel srOnly>Expiry date</FormLabel>
-            <Input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+            <Input
+              type="date"
+              value={expiresAt}
+              onChange={(e) => setExpiresAt(e.target.value)}
+            />
           </FormField>
         </FormRow>
         <FormField>
           <FormLabel srOnly>Notes</FormLabel>
-          <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" rows={2} />
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes (optional)"
+            rows={2}
+          />
         </FormField>
         {error && <FormErrorText>{error}</FormErrorText>}
       </ModalBody>
@@ -414,7 +394,7 @@ function AssignExistingModal({
           onClick={() => assignMutation.mutate()}
           disabled={!skillId || assignMutation.isPending}
         >
-          {assignMutation.isPending ? "Assigning…" : "Assign Skill"}
+          {assignMutation.isPending ? "Assigning…" : "Assign"}
         </ModalPrimaryAction>
       </ModalFooter>
     </ModalShell>
@@ -423,15 +403,14 @@ function AssignExistingModal({
 
 // ── Edit assignment modal ─────────────────────────────────────────────────
 
-interface EditMemberSkillModalProps {
+interface EditAssignmentModalProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   skill: TeamMemberSkill | null;
   userId: string;
 }
 
-function EditMemberSkillModal({ open, onOpenChange, skill, userId }: EditMemberSkillModalProps) {
-  const [level, setLevel] = useState<SkillLevel>(skill?.level ?? "basic");
+function EditAssignmentModal({ open, onOpenChange, skill, userId }: EditAssignmentModalProps) {
   const [certName, setCertName] = useState(skill?.certificationName ?? "");
   const [expiresAt, setExpiresAt] = useState(
     skill?.certificationExpiresAt ? skill.certificationExpiresAt.slice(0, 10) : "",
@@ -444,7 +423,6 @@ function EditMemberSkillModal({ open, onOpenChange, skill, userId }: EditMemberS
       apiRequest(`/api/team/${userId}/skills/${skill!.id}`, {
         method: "PATCH",
         body: JSON.stringify({
-          level,
           certificationName: certName.trim() || null,
           certificationExpiresAt: expiresAt || null,
           notes: notes.trim() || null,
@@ -462,40 +440,45 @@ function EditMemberSkillModal({ open, onOpenChange, skill, userId }: EditMemberS
   return (
     <ModalShell open={open} onOpenChange={onOpenChange} className="sm:max-w-md">
       <ModalHeader>
-        <ModalTitle>Edit Skill Assignment</ModalTitle>
+        <ModalTitle>Edit Assignment</ModalTitle>
         <ModalDescription>{skill.name}</ModalDescription>
       </ModalHeader>
       <ModalBody className="space-y-3">
-        <FormField>
-          <FormLabel>Proficiency level</FormLabel>
-          <Select value={level} onValueChange={(v) => setLevel(v as SkillLevel)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {SKILL_LEVELS.map((l) => (
-                <SelectItem key={l} value={l}>{SKILL_LEVEL_LABELS[l]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FormField>
         <FormRow className="grid-cols-2">
           <FormField>
-            <FormLabel srOnly>Certification name</FormLabel>
-            <Input value={certName} onChange={(e) => setCertName(e.target.value)} placeholder="Certification name" />
+            <FormLabel srOnly>Certification name / number</FormLabel>
+            <Input
+              value={certName}
+              onChange={(e) => setCertName(e.target.value)}
+              placeholder="Certification name / number"
+            />
           </FormField>
           <FormField>
             <FormLabel srOnly>Expiry date</FormLabel>
-            <Input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+            <Input
+              type="date"
+              value={expiresAt}
+              onChange={(e) => setExpiresAt(e.target.value)}
+            />
           </FormField>
         </FormRow>
         <FormField>
           <FormLabel srOnly>Notes</FormLabel>
-          <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" rows={2} />
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes"
+            rows={2}
+          />
         </FormField>
         {error && <FormErrorText>{error}</FormErrorText>}
       </ModalBody>
       <ModalFooter>
         <ModalSecondaryAction onClick={() => onOpenChange(false)}>Cancel</ModalSecondaryAction>
-        <ModalPrimaryAction onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
+        <ModalPrimaryAction
+          onClick={() => updateMutation.mutate()}
+          disabled={updateMutation.isPending}
+        >
           {updateMutation.isPending ? "Saving…" : "Save Changes"}
         </ModalPrimaryAction>
       </ModalFooter>
@@ -503,22 +486,25 @@ function EditMemberSkillModal({ open, onOpenChange, skill, userId }: EditMemberS
   );
 }
 
-// ── Skill Library modal ───────────────────────────────────────────────────
+// ── Skills & Licenses Library modal ──────────────────────────────────────
 
-interface LibrarySkillEditState {
+interface LibraryEditState {
   id: string;
   name: string;
   category: string;
   description: string;
+  requiresCertification: boolean;
+  hasExpiryTracking: boolean;
+  isActive: boolean;
 }
 
-interface SkillLibraryModalProps {
+interface LibraryModalProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }
 
-function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
-  const [editSkill, setEditSkill] = useState<LibrarySkillEditState | null>(null);
+function LibraryModal({ open, onOpenChange }: LibraryModalProps) {
+  const [editItem, setEditItem] = useState<LibraryEditState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TeamSkillLibraryItem | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -529,19 +515,21 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: { id: string; name: string; category: string | null; description: string | null; isActive?: boolean }) =>
+    mutationFn: (data: Partial<TeamSkillLibraryItem> & { id: string }) =>
       apiRequest(`/api/team/skills/${data.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           name: data.name,
           category: data.category,
           description: data.description,
+          requiresCertification: data.requiresCertification,
+          hasExpiryTracking: data.hasExpiryTracking,
           ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
         }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/team/skills"] });
-      setEditSkill(null);
+      setEditItem(null);
       setEditError(null);
     },
     onError: (e: Error) => setEditError(e.message),
@@ -562,21 +550,23 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
     <>
       <ModalShell open={open} onOpenChange={onOpenChange} className="sm:max-w-2xl">
         <ModalHeader>
-          <ModalTitle>Skill Library</ModalTitle>
-          <ModalDescription>Manage the company-wide skill library. Skills here can be assigned to any team member.</ModalDescription>
+          <ModalTitle>Skills & Licenses Library</ModalTitle>
+          <ModalDescription>
+            Company-wide library. Items here can be assigned to any team member.
+          </ModalDescription>
         </ModalHeader>
         <ModalBody className="p-0">
           {isLoading ? (
             <div className="px-5 py-8 text-center text-helper text-muted-foreground">Loading…</div>
           ) : skills.length === 0 ? (
             <div className="px-5 py-8 text-center text-helper text-muted-foreground">
-              No skills in the library yet. Create a skill from the Skills tab.
+              No entries in the library yet. Use "Create Skill" to add the first one.
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Skill</TableHead>
+                  <TableHead>Skill / License</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead className="text-right">Assigned</TableHead>
                   <TableHead>Status</TableHead>
@@ -586,7 +576,21 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
               <TableBody>
                 {skills.map((s) => (
                   <TableRow key={s.id}>
-                    <TableCell className="font-medium">{s.name}</TableCell>
+                    <TableCell>
+                      <div className="font-medium">{s.name}</div>
+                      <div className="flex gap-1 mt-0.5">
+                        {s.requiresCertification && (
+                          <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded px-1">
+                            Cert required
+                          </span>
+                        )}
+                        {s.hasExpiryTracking && (
+                          <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 rounded px-1">
+                            Expiry tracked
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">{s.category ?? "—"}</TableCell>
                     <TableCell className="text-right">{s.memberCount}</TableCell>
                     <TableCell>
@@ -606,20 +610,42 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() =>
-                            setEditSkill({ id: s.id, name: s.name, category: s.category ?? "", description: s.description ?? "" })
+                            setEditItem({
+                              id: s.id,
+                              name: s.name,
+                              category: s.category ?? "",
+                              description: s.description ?? "",
+                              requiresCertification: s.requiresCertification,
+                              hasExpiryTracking: s.hasExpiryTracking,
+                              isActive: s.isActive,
+                            })
                           }>
                             <Pencil className="h-4 w-4 mr-2" /> Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => updateMutation.mutate({ id: s.id, name: s.name, category: s.category, description: s.description, isActive: !s.isActive })}
+                            onClick={() =>
+                              updateMutation.mutate({
+                                id: s.id,
+                                name: s.name,
+                                category: s.category,
+                                description: s.description,
+                                requiresCertification: s.requiresCertification,
+                                hasExpiryTracking: s.hasExpiryTracking,
+                                isActive: !s.isActive,
+                              })
+                            }
                           >
-                            {s.isActive ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
-                            {s.isActive ? "Deactivate" : "Activate"}
+                            {s.isActive
+                              ? <><EyeOff className="h-4 w-4 mr-2" /> Deactivate</>
+                              : <><Eye className="h-4 w-4 mr-2" /> Activate</>}
                           </DropdownMenuItem>
                           {s.memberCount === 0 && (
                             <>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem className="text-destructive" onClick={() => setDeleteTarget(s)}>
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={() => setDeleteTarget(s)}
+                              >
                                 <Trash2 className="h-4 w-4 mr-2" /> Delete
                               </DropdownMenuItem>
                             </>
@@ -638,32 +664,101 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
         </ModalFooter>
       </ModalShell>
 
-      {/* Edit library skill modal */}
-      {editSkill && (
-        <ModalShell open={!!editSkill} onOpenChange={(v) => { if (!v) { setEditSkill(null); setEditError(null); } }} className="sm:max-w-md">
+      {/* Edit library item */}
+      {editItem && (
+        <ModalShell
+          open={!!editItem}
+          onOpenChange={(v) => { if (!v) { setEditItem(null); setEditError(null); } }}
+          className="sm:max-w-md"
+        >
           <ModalHeader>
-            <ModalTitle>Edit Skill</ModalTitle>
+            <ModalTitle>Edit Skill / License</ModalTitle>
           </ModalHeader>
-          <ModalBody className="space-y-3">
+          <ModalBody className="space-y-4">
             <FormField>
-              <FormLabel>Skill name</FormLabel>
-              <Input value={editSkill.name} onChange={(e) => setEditSkill({ ...editSkill, name: e.target.value })} />
+              <FormLabel>Skill / License name</FormLabel>
+              <Input
+                value={editItem.name}
+                onChange={(e) => setEditItem({ ...editItem, name: e.target.value })}
+              />
             </FormField>
             <FormField>
               <FormLabel srOnly>Category</FormLabel>
-              <Input value={editSkill.category} onChange={(e) => setEditSkill({ ...editSkill, category: e.target.value })} placeholder="Category (optional)" />
+              <Input
+                value={editItem.category}
+                onChange={(e) => setEditItem({ ...editItem, category: e.target.value })}
+                placeholder="Category (optional)"
+              />
             </FormField>
             <FormField>
               <FormLabel srOnly>Description</FormLabel>
-              <Textarea value={editSkill.description} onChange={(e) => setEditSkill({ ...editSkill, description: e.target.value })} placeholder="Description (optional)" rows={2} />
+              <Textarea
+                value={editItem.description}
+                onChange={(e) => setEditItem({ ...editItem, description: e.target.value })}
+                placeholder="Description (optional)"
+                rows={2}
+              />
             </FormField>
+            <div className="space-y-3 pt-1 border-t">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="edit-requires-cert" className="text-sm font-medium">
+                    Requires certification
+                  </Label>
+                </div>
+                <Switch
+                  id="edit-requires-cert"
+                  checked={editItem.requiresCertification}
+                  onCheckedChange={(v) => setEditItem({ ...editItem, requiresCertification: v })}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="edit-expiry" className="text-sm font-medium">
+                    Has expiry tracking
+                  </Label>
+                </div>
+                <Switch
+                  id="edit-expiry"
+                  checked={editItem.hasExpiryTracking}
+                  onCheckedChange={(v) => setEditItem({ ...editItem, hasExpiryTracking: v })}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="edit-active" className="text-sm font-medium">
+                    Active
+                  </Label>
+                  <p className="text-helper text-muted-foreground">
+                    Inactive entries cannot be assigned to new members.
+                  </p>
+                </div>
+                <Switch
+                  id="edit-active"
+                  checked={editItem.isActive}
+                  onCheckedChange={(v) => setEditItem({ ...editItem, isActive: v })}
+                />
+              </div>
+            </div>
             {editError && <FormErrorText>{editError}</FormErrorText>}
           </ModalBody>
           <ModalFooter>
-            <ModalSecondaryAction onClick={() => { setEditSkill(null); setEditError(null); }}>Cancel</ModalSecondaryAction>
+            <ModalSecondaryAction onClick={() => { setEditItem(null); setEditError(null); }}>
+              Cancel
+            </ModalSecondaryAction>
             <ModalPrimaryAction
-              onClick={() => updateMutation.mutate({ id: editSkill.id, name: editSkill.name.trim(), category: editSkill.category.trim() || null, description: editSkill.description.trim() || null })}
-              disabled={!editSkill.name.trim() || updateMutation.isPending}
+              onClick={() =>
+                updateMutation.mutate({
+                  id: editItem.id,
+                  name: editItem.name.trim(),
+                  category: editItem.category.trim() || null,
+                  description: editItem.description.trim() || null,
+                  requiresCertification: editItem.requiresCertification,
+                  hasExpiryTracking: editItem.hasExpiryTracking,
+                  isActive: editItem.isActive,
+                })
+              }
+              disabled={!editItem.name.trim() || updateMutation.isPending}
             >
               {updateMutation.isPending ? "Saving…" : "Save"}
             </ModalPrimaryAction>
@@ -672,12 +767,15 @@ function SkillLibraryModal({ open, onOpenChange }: SkillLibraryModalProps) {
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(v) => { if (!v) { setDeleteTarget(null); setDeleteError(null); } }}>
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(v) => { if (!v) { setDeleteTarget(null); setDeleteError(null); } }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete "{deleteTarget?.name}"?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove the skill from the company library. This action cannot be undone.
+              This will permanently remove the entry from the library. This action cannot be undone.
               {deleteError && <span className="block mt-2 text-destructive">{deleteError}</span>}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -724,7 +822,8 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
         method: "PATCH",
         body: JSON.stringify({ isActive }),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [`/api/team/${selectedMemberId}/skills`] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${selectedMemberId}/skills`] }),
   });
 
   const removeMutation = useMutation({
@@ -739,7 +838,6 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
   });
 
   const assignedSkillIds = memberSkills.map((s) => s.skillId);
-
   const isEmpty = !skillsLoading && memberSkills.length === 0;
 
   return (
@@ -747,9 +845,9 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold text-foreground">Skills</h3>
+          <h3 className="text-base font-semibold text-foreground">Skills & Licenses</h3>
           <p className="text-helper text-muted-foreground mt-0.5">
-            Manage skills for this team member. Skills help with job assignment and team capability planning.
+            Manage skills and licenses for this team member. Used for job assignment, compliance tracking, and workforce planning.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -768,23 +866,27 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
       {/* KPI strip */}
       {!isEmpty && <SkillKpiStrip skills={memberSkills} />}
 
-      {/* Skills table */}
+      {/* Table */}
       {skillsLoading ? (
         <Card className="shadow-none">
-          <CardContent className="py-8 text-center text-helper text-muted-foreground">Loading skills…</CardContent>
+          <CardContent className="py-8 text-center text-helper text-muted-foreground">
+            Loading…
+          </CardContent>
         </Card>
       ) : isEmpty ? (
         <Card className="border-dashed shadow-none">
           <CardContent className="py-12 flex flex-col items-center gap-3 text-center">
             <Wrench className="h-8 w-8 text-muted-foreground" />
             <div>
-              <p className="text-sm font-medium">No skills assigned</p>
+              <p className="text-sm font-medium">No skills or licenses assigned</p>
               <p className="text-helper text-muted-foreground mt-1 max-w-xs">
-                Track trade skills, certifications, and qualification levels. Create a new skill or assign one from the company library.
+                Track trade skills, licences, and certifications. Create a new entry or assign one from the company library.
               </p>
             </div>
             <div className="flex gap-2 mt-1">
-              <Button variant="outline" size="sm" onClick={() => setShowAssign(true)}>Assign Existing</Button>
+              <Button variant="outline" size="sm" onClick={() => setShowAssign(true)}>
+                Assign Existing
+              </Button>
               <Button size="sm" onClick={() => setShowCreate(true)}>
                 <Plus className="h-4 w-4 mr-1.5" /> Create Skill
               </Button>
@@ -796,11 +898,11 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Skill</TableHead>
-                <TableHead>Level</TableHead>
+                <TableHead>Skill / License</TableHead>
+                <TableHead>Category</TableHead>
                 <TableHead>Certification</TableHead>
                 <TableHead>Expires</TableHead>
-                <TableHead>Added</TableHead>
+                <TableHead>Assigned</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
@@ -810,12 +912,9 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
                 <TableRow key={s.id} className={cn(!s.isActive && "opacity-60")}>
                   <TableCell>
                     <div className="font-medium text-foreground">{s.name}</div>
-                    {s.category && <div className="text-helper text-muted-foreground">{s.category}</div>}
                   </TableCell>
-                  <TableCell>
-                    <span className={cn("inline-block rounded-full px-2 py-0.5 text-caption", LEVEL_TONE[s.level])}>
-                      {SKILL_LEVEL_LABELS[s.level]}
-                    </span>
+                  <TableCell className="text-muted-foreground">
+                    {s.category ?? "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {s.certificationName ?? "—"}
@@ -823,11 +922,17 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
                   <TableCell>
                     <ExpiryBadge status={s.expiryStatus} date={s.certificationExpiresAt} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{fmtDate(s.createdAt)}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {fmtDate(s.createdAt)}
+                  </TableCell>
                   <TableCell>
                     <Badge
                       variant="outline"
-                      className={cn(s.isActive ? "text-success border-success/30 bg-success/10" : "text-muted-foreground")}
+                      className={cn(
+                        s.isActive
+                          ? "text-success border-success/30 bg-success/10"
+                          : "text-muted-foreground",
+                      )}
                     >
                       {s.isActive ? "Active" : "Inactive"}
                     </Badge>
@@ -843,12 +948,20 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
                         <DropdownMenuItem onClick={() => setEditTarget(s)}>
                           <Pencil className="h-4 w-4 mr-2" /> Edit
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => deactivateMutation.mutate({ id: s.id, isActive: !s.isActive })}>
-                          {s.isActive ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
-                          {s.isActive ? "Deactivate" : "Activate"}
+                        <DropdownMenuItem
+                          onClick={() =>
+                            deactivateMutation.mutate({ id: s.id, isActive: !s.isActive })
+                          }
+                        >
+                          {s.isActive
+                            ? <><EyeOff className="h-4 w-4 mr-2" /> Deactivate</>
+                            : <><Eye className="h-4 w-4 mr-2" /> Activate</>}
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem className="text-destructive" onClick={() => setRemoveTarget(s)}>
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={() => setRemoveTarget(s)}
+                        >
                           <Trash2 className="h-4 w-4 mr-2" /> Remove from member
                         </DropdownMenuItem>
                       </DropdownMenuContent>
@@ -862,7 +975,7 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
       )}
 
       {/* Modals */}
-      <CreateSkillModal open={showCreate} onOpenChange={setShowCreate} userId={selectedMemberId} />
+      <CreateSkillModal open={showCreate} onOpenChange={setShowCreate} />
       <AssignExistingModal
         open={showAssign}
         onOpenChange={setShowAssign}
@@ -870,21 +983,24 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
         library={library}
         assignedSkillIds={assignedSkillIds}
       />
-      <EditMemberSkillModal
+      <EditAssignmentModal
         open={!!editTarget}
         onOpenChange={(v) => { if (!v) setEditTarget(null); }}
         skill={editTarget}
         userId={selectedMemberId}
       />
-      <SkillLibraryModal open={showLibrary} onOpenChange={setShowLibrary} />
+      <LibraryModal open={showLibrary} onOpenChange={setShowLibrary} />
 
       {/* Remove confirmation */}
-      <AlertDialog open={!!removeTarget} onOpenChange={(v) => { if (!v) { setRemoveTarget(null); setRemoveError(null); } }}>
+      <AlertDialog
+        open={!!removeTarget}
+        onOpenChange={(v) => { if (!v) { setRemoveTarget(null); setRemoveError(null); } }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove "{removeTarget?.name}"?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove the skill assignment from this member. The skill will remain in the company library.
+              This will remove the assignment from this member. The entry remains in the company library.
               {removeError && <span className="block mt-2 text-destructive">{removeError}</span>}
             </AlertDialogDescription>
           </AlertDialogHeader>

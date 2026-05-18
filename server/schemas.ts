@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  jobStatusEnum as jobStatusValues,
+  openSubStatusEnum as openSubStatusValues,
+  holdReasonEnum as holdReasonValues,
+  invoiceStatusEnum as invoiceStatusValues,
+} from "@shared/schema";
 
 export const moneyNumber = z.coerce.number().min(0).finite();
 export const optionalMoneyNumber = moneyNumber.nullable().optional();
@@ -28,47 +34,25 @@ export const optionalMoneyNumber = moneyNumber.nullable().optional();
 //
 // =============================================================================
 
-// Lifecycle-only status enum (4 values)
-export const jobStatusEnum = z.enum([
-  "open",       // Active job that can be worked on
-  "completed",  // Work finished (may need invoicing)
-  "invoiced",   // Invoice created (locked for billing)
-  "archived",   // Historical archive (includes canceled jobs)
-]);
+// Lifecycle-only status enum (4 values) — derived from shared/schema.ts canonical const tuple
+export const jobStatusEnum = z.enum(jobStatusValues);
 
-// Workflow sub-status (only valid when status = 'open')
+// Workflow sub-status (only valid when status = 'open') — derived from shared/schema.ts
 // 2026-03-18: needs_review removed — data migrated to on_hold, no live rows remain.
-export const openSubStatusEnum = z.enum([
-  "in_progress",   // Work actively being performed
-  "on_hold",       // Job is blocked (requires holdReason)
-  "on_route",      // Technician traveling to job site
-]);
+export const openSubStatusEnum = z.enum(openSubStatusValues);
 
-// Hold reason enum (when openSubStatus = 'on_hold')
+// Hold reason enum (when openSubStatus = 'on_hold') — derived from shared/schema.ts
 // Note: holdReason is REQUIRED when openSubStatus = 'on_hold'
-export const holdReasonEnum = z.enum([
-  "parts",      // Waiting for parts
-  "customer",   // Waiting for customer response/approval
-  "access",     // Cannot access location
-  "approval",   // Waiting for internal approval
-  "weather",    // Weather-related delay
-  "other",      // Other reason (see notes)
-]);
+export const holdReasonEnum = z.enum(holdReasonValues);
 
 // 2026-03-18: legacyJobStatusEnum REMOVED — no longer imported anywhere.
 // The jobs status update route now accepts only canonical values + two convenience
 // aliases ("in_progress", "on_hold"). See server/routes/jobs.ts statusUpdateSchema.
 
-// Invoice statuses - Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
+// Invoice statuses — derived from shared/schema.ts canonical const tuple.
+// Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
 // Note: "sent" is deprecated in favor of "awaiting_payment" but kept for backward compatibility
-export const invoiceStatusEnum = z.enum([
-  "draft",
-  "awaiting_payment", // Invoice has been sent, waiting for payment
-  "sent",             // LEGACY: Alias for awaiting_payment, kept for backward compatibility
-  "partial_paid",
-  "paid",
-  "voided"
-]);
+export const invoiceStatusEnum = z.enum(invoiceStatusValues);
 
 export type JobStatus = z.infer<typeof jobStatusEnum>;
 export type InvoiceStatus = z.infer<typeof invoiceStatusEnum>;

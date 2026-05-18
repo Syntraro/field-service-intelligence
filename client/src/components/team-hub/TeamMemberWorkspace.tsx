@@ -220,7 +220,7 @@ export function TeamMemberWorkspace({
           </TabsTrigger>
           <TabsTrigger value="skills" data-testid="tab-workspace-skills">
             <Wrench className="h-4 w-4 mr-1.5" />
-            Skills
+            Skills &amp; Licenses
           </TabsTrigger>
         </TabsList>
 

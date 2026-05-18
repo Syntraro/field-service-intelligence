@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Clock, ReceiptText, TrendingUp } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 
 // Quote statuses that represent an active, open pipeline.
 // Terminal statuses (declined, expired, converted) are excluded from pipeline metrics.
@@ -20,7 +21,7 @@ interface QuoteViewCountsPartial {
 /** Quote-specific KPI data → WorkspaceKpiStrip adapter for the Quotes workspace. */
 export function QuoteKpiStrip() {
   const { data: statsRows } = useQuery<QuoteStatRow[]>({
-    queryKey: ["quotes", "stats"],
+    queryKey: quoteKeys.stats(),
     queryFn: async () => {
       const res = await fetch("/api/quotes/stats", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch quote stats");
@@ -32,10 +33,10 @@ export function QuoteKpiStrip() {
 
   // Shares the cache already established by QuotesPage — no duplicate network request.
   const { data: viewCounts } = useQuery<QuoteViewCountsPartial | null>({
-    queryKey: ["quotes", "views", "counts"],
+    queryKey: quoteKeys.viewCounts(),
     queryFn: async () => {
       const res = await fetch("/api/quotes/views/counts", { credentials: "include" });
-      if (!res.ok) return null;
+      if (!res.ok) throw new Error(`Failed to load quote counts: ${res.status}`);
       return res.json();
     },
     staleTime: 30_000,

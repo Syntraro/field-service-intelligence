@@ -124,6 +124,7 @@ import { EquipmentDetailModal } from "@/components/EquipmentDetailModal";
 import LocPricingTab from "@/components/LocPricingTab";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 import { format } from "date-fns";
 import { formatCurrency } from "@/lib/formatters";
 import type {
@@ -469,12 +470,6 @@ export default function ClientDetailPage() {
   const scopePillCap = scopeBp === "desktop" ? 10 : scopeBp === "tablet" ? 6 : 3;
 
   // ── Right rail (utility rail) collapse + resize state ──
-  // Reuses the same localStorage keys as DetailPageShell so preferences
-  // carry over between this page and Job / Invoice / Quote detail pages.
-  // Implementation inlined here rather than forked into a new primitive
-  // to keep this pass surgical — the shared key contract is the canonical
-  // part that matters for UX. TODO: consolidate with DetailPageShell's
-  // inline copy in a follow-up extraction.
   const RAIL_DEFAULT_WIDTH = 400;
   const RAIL_MIN_WIDTH = 300;
   const RAIL_MAX_WIDTH_PX = 520;
@@ -722,7 +717,7 @@ export default function ClientDetailPage() {
 
   // Company-scoped quotes
   const { data: clientQuotes = [] } = useQuery<EnrichedQuote[]>({
-    queryKey: ["/api/quotes/list", { customerCompanyId: companyId }],
+    queryKey: quoteKeys.list({ customerCompanyId: companyId }),
     queryFn: async () => {
       const res = await fetch(`/api/quotes/list?customerCompanyId=${companyId}&limit=200`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch quotes");
@@ -2036,10 +2031,10 @@ export default function ClientDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-destructive" />
-              Delete {permDeleteTarget === "company" ? "Client" : "Location"} Permanently
+              Permanently delete this {permDeleteTarget === "company" ? "client" : "location"}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This action cannot be undone. Deleting this {permDeleteTarget === "company" ? "client" : "location"} will permanently remove all associated records.
+              This will immediately and permanently delete all jobs, visits, recurring maintenance templates, invoices, payments, quotes, leads, notes, and attached files.
             </AlertDialogDescription>
           </AlertDialogHeader>
 
@@ -2085,7 +2080,15 @@ export default function ClientDetailPage() {
                     onChange={e => setPermDeleteConfirmText(e.target.value)}
                     placeholder="DELETE"
                     autoFocus
+                    data-testid="perm-delete-confirm-input"
                   />
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    onClick={() => { setPermDeleteDialogOpen(false); openArchiveDialog(permDeleteTarget); }}
+                  >
+                    Archive instead to keep history
+                  </button>
                 </div>
               </>
             )}
@@ -2093,13 +2096,6 @@ export default function ClientDetailPage() {
 
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => { setPermDeleteDialogOpen(false); openArchiveDialog(permDeleteTarget); }}
-              disabled={executePermanentDelete.isPending}
-            >
-              Archive Instead
-            </Button>
             <AlertDialogAction
               onClick={() => executePermanentDelete.mutate()}
               disabled={
@@ -2109,8 +2105,9 @@ export default function ClientDetailPage() {
                 executePermanentDelete.isPending
               }
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="perm-delete-confirm-btn"
             >
-              {executePermanentDelete.isPending ? "Deleting…" : "Delete Permanently"}
+              {executePermanentDelete.isPending ? "Deleting…" : "Permanently Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

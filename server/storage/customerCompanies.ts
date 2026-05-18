@@ -5,7 +5,7 @@ import {
   leads, payments, paymentAllocations, maintenanceRecords, jobVisits, recurringJobSeries, clientFiles, locationPMPlans,
   paymentDisputes, noteAttachments, jobNotes, jobNoteAttachments, invoiceNotes, invoiceNoteAttachments,
   quoteNotes, quoteNoteAttachments, leadNotes, leadNoteAttachments, locationEquipment, equipmentOcrScans, files,
-  fileCleanupQueue,
+  fileCleanupQueue, recurringJobTemplates, contractFiles,
 } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { queueFileCleanupInTx, type FileCleanupEntry } from "../services/fileCleanupService";
@@ -1345,6 +1345,20 @@ export class CustomerCompanyRepository extends BaseRepository {
       scanRows.forEach((r: any) => fileIdSet.add(r.fileId));
     }
 
+    // 8. Recurring job template contract files
+    const templateRows = await (tx as any)
+      .select({ id: recurringJobTemplates.id })
+      .from(recurringJobTemplates)
+      .where(and(eq(recurringJobTemplates.companyId, companyId), eq(recurringJobTemplates.locationId, locationId)));
+    const templateIds: string[] = templateRows.map((r: any) => r.id);
+    if (templateIds.length > 0) {
+      const cfRows = await (tx as any)
+        .select({ fileId: contractFiles.fileId })
+        .from(contractFiles)
+        .where(and(eq(contractFiles.companyId, companyId), inArray(contractFiles.contractId, templateIds)));
+      cfRows.forEach((r: any) => fileIdSet.add(r.fileId));
+    }
+
     if (fileIdSet.size === 0) return [];
 
     // Resolve file metadata for queued entries.
@@ -1513,10 +1527,16 @@ export class CustomerCompanyRepository extends BaseRepository {
       )
     );
 
+    // ── Recurring job templates — CASCADE: contract_files, pm_billing_events,
+    //   recurring_job_series (→ recurring_job_phases) ──────────────────────────
+    // Files were already queued in collectLocationFileRefs (section 8).
+    await (tx as any).delete(recurringJobTemplates).where(
+      and(eq(recurringJobTemplates.companyId, companyId), eq(recurringJobTemplates.locationId, locationId))
+    );
+
     // ── Location — CASCADE: location_tag_assignments, contact_assignments,
     //   client_files, location_pm_plans, location_pm_part_templates,
-    //   location_equipment (→ equipment_ocr_scans, equipment_catalog_items),
-    //   recurring_job_series (→ recurring_job_phases) ──────────────────────────
+    //   location_equipment (→ equipment_ocr_scans, equipment_catalog_items) ────
     await (tx as any).delete(clients).where(
       and(eq(clients.id, locationId), eq(clients.companyId, companyId))
     );

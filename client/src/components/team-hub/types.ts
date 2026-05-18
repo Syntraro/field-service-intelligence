@@ -144,26 +144,18 @@ export interface MemberPerformanceResponse {
   leadConversion: LeadConversionMetrics;
 }
 
-// ── Phase 3: Skills ────────────────────────────────────────────────────────
-
-export const SKILL_LEVELS = ["basic", "intermediate", "advanced", "certified"] as const;
-export type SkillLevel = typeof SKILL_LEVELS[number];
-
-export const SKILL_LEVEL_LABELS: Record<SkillLevel, string> = {
-  basic: "Basic",
-  intermediate: "Intermediate",
-  advanced: "Advanced",
-  certified: "Certified",
-};
+// ── Phase 3: Skills & Licenses ────────────────────────────────────────────
 
 export type ExpiryStatus = "valid" | "expiring_soon" | "expired";
 
-/** One entry in the company-wide skill library. */
+/** One entry in the company-wide Skills & Licenses library. */
 export interface TeamSkillLibraryItem {
   id: string;
   name: string;
   category: string | null;
   description: string | null;
+  requiresCertification: boolean;
+  hasExpiryTracking: boolean;
   isActive: boolean;
   memberCount: number;
   createdAt: string;
@@ -226,13 +218,12 @@ export interface PmForecast {
   next30Days: PmWindowForecast;
 }
 
-/** A skill assigned to a specific team member. */
+/** A skill/license assigned to a specific team member. */
 export interface TeamMemberSkill {
   id: string;
   skillId: string;
   name: string;
   category: string | null;
-  level: SkillLevel;
   certificationName: string | null;
   certificationExpiresAt: string | null;
   notes: string | null;

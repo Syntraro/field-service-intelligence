@@ -146,48 +146,6 @@ describe("InvoiceDetailPage mark-as-paid (createPayment) invalidation", () => {
   });
 });
 
-// ── InvoiceDetailPage — refresh-from-job ─────────────────────────────────────
-
-describe("InvoiceDetailPage refresh-from-job invalidation", () => {
-  it("refreshFromJobMutation onSuccess invalidates receivablesKeys.invoicesRoot()", () => {
-    const block = (() => {
-      const start = invoiceDetailPage.indexOf("refreshFromJobMutation = useMutation");
-      const end   = invoiceDetailPage.indexOf("onError", start);
-      return invoiceDetailPage.slice(start, end);
-    })();
-    expect(block).toMatch(/receivablesKeys\.invoicesRoot\(\)/);
-  });
-
-  it("refreshFromJobMutation onSuccess invalidates receivablesKeys.viewsCounts()", () => {
-    const block = (() => {
-      const start = invoiceDetailPage.indexOf("refreshFromJobMutation = useMutation");
-      const end   = invoiceDetailPage.indexOf("onError", start);
-      return invoiceDetailPage.slice(start, end);
-    })();
-    expect(block).toMatch(/receivablesKeys\.viewsCounts\(\)/);
-  });
-});
-
-// ── InvoiceDetailPage — InvoiceCompositionDialog onRefreshed ─────────────────
-
-describe("InvoiceDetailPage InvoiceCompositionDialog onRefreshed invalidation", () => {
-  it("onRefreshed invalidates receivablesKeys.invoicesRoot()", () => {
-    const block = (() => {
-      const start = invoiceDetailPage.indexOf("onRefreshed={() => {");
-      return invoiceDetailPage.slice(start, start + 300);
-    })();
-    expect(block).toMatch(/receivablesKeys\.invoicesRoot\(\)/);
-  });
-
-  it("onRefreshed invalidates receivablesKeys.viewsCounts()", () => {
-    const block = (() => {
-      const start = invoiceDetailPage.indexOf("onRefreshed={() => {");
-      return invoiceDetailPage.slice(start, start + 500);
-    })();
-    expect(block).toMatch(/receivablesKeys\.viewsCounts\(\)/);
-  });
-});
-
 // ── InvoiceDetailPage — handleToggleSent ─────────────────────────────────────
 
 describe("InvoiceDetailPage handleToggleSent invalidation", () => {

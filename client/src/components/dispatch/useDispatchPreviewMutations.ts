@@ -20,6 +20,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { isCalendarRecentlyInvalidated } from "@/lib/dispatchInvalidationSync";
 import { useToast } from "@/hooks/use-toast";
 import type { CalendarRangeResponseDto, CalendarEventDto, UnscheduledJobDto } from "@shared/types/scheduling";
+import type { DispatchQueueBucket } from "./dispatchPreviewTypes";
 
 import { isApiError } from "@/lib/queryClient";
 
@@ -461,6 +462,7 @@ function optimisticUnschedule(
       lat: eventData.lat ?? null,
       lng: eventData.lng ?? null,
       visitIds: [eventData.visitId ?? visitId],
+      visitBuckets: [null], // null normalises to 'today' in the mapper
     };
 
     qc.setQueriesData<UnscheduledJobDto[]>(
@@ -1286,6 +1288,42 @@ export function useDispatchPreviewMutations() {
     }
   }, [backgroundInvalidate, toast]);
 
+  /** Update dispatch staging bucket for an unscheduled visit.
+   *  PATCH /api/calendar/visit/:visitId/queue-bucket */
+  const updateQueueBucket = useCallback(async (params: {
+    visitId: string;
+    dispatchQueueBucket: DispatchQueueBucket;
+  }) => {
+    const { visitId, dispatchQueueBucket } = params;
+
+    // Optimistic: patch bucket in unscheduled cache immediately
+    queryClient.setQueriesData<UnscheduledJobDto[]>(
+      { queryKey: ["/api/calendar/unscheduled"] },
+      (old) => {
+        if (!old) return old;
+        return old.map((job) => {
+          const idx = Array.isArray(job.visitIds) ? job.visitIds.indexOf(visitId) : -1;
+          if (idx === -1) return job;
+          const visitBuckets = Array.isArray(job.visitBuckets) ? [...job.visitBuckets] : job.visitIds.map(() => null);
+          visitBuckets[idx] = dispatchQueueBucket;
+          return { ...job, visitBuckets };
+        });
+      },
+    );
+
+    try {
+      await apiRequest(`/api/calendar/visit/${visitId}/queue-bucket`, {
+        method: "PATCH",
+        body: JSON.stringify({ dispatchQueueBucket }),
+      });
+      backgroundInvalidate({ calendarOnly: false });
+    } catch (err: any) {
+      // Roll back optimistic patch on failure
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      handleMutationError(err, "Queue bucket update failed");
+    }
+  }, [queryClient, backgroundInvalidate, handleMutationError]);
+
   return {
     scheduleVisit,
     rescheduleVisit,
@@ -1300,6 +1338,7 @@ export function useDispatchPreviewMutations() {
     reopenVisit,
     completeVisitWithOutcome,
     deleteVisit,
+    updateQueueBucket,
     savingIds,
     isSaving: savingIds.size > 0,
   };

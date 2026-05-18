@@ -86,6 +86,15 @@ export function formatDate(iso: string | null | undefined): string {
   });
 }
 
+/** Format duration in minutes to a compact display string. Returns `"-"` for null/undefined. */
+export function formatDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return "-";
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 /**
  * 2026-05-04 PR8 — Format an ISO timestamp as a calendar date + wall
  * clock. Default: en-CA, `MMM d, yyyy h:mm AM/PM`. Returns `"—"` on

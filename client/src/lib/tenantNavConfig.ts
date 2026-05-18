@@ -157,23 +157,6 @@ export function buildTenantNavItems(
     testId: "nav-reports",
   });
 
-  // Team — owner/admin/manager only (mirrors the requireAdmin route gate)
-  if (userRole !== "dispatcher") {
-    items.push({
-      title: "Team",
-      icon: Users,
-      href: "/team",
-      isActive:
-        location === "/team" ||
-        location.startsWith("/team/") ||
-        location === "/settings/team" ||
-        location.startsWith("/settings/team/"),
-      testId: "nav-team",
-      isDivider: true,
-      hoverText: "Team management, performance, and scheduling",
-    });
-  }
-
   if (userRole === "platform_admin") {
     items.push({
       title: "Support Console",
@@ -181,6 +164,7 @@ export function buildTenantNavItems(
       href: "/support-console",
       isActive: location === "/support-console",
       testId: "nav-support-console",
+      isDivider: true,
     });
   }
 

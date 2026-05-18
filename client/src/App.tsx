@@ -1,4 +1,5 @@
 import { Switch, Route, useLocation, Link, Redirect, useSearch } from "wouter";
+import { AppErrorBoundary } from "@/components/error/AppErrorBoundary";
 import { Suspense, lazy } from "react";
 
 // ─── AUDIT INSTRUMENTATION (TEMPORARY) ──────────────────────────────────────
@@ -175,7 +176,6 @@ import PortalPaymentMethods from "@/pages/portal/PortalPaymentMethods";
 import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
 import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
-import { ActivityProvider } from "@/lib/activityStore";
 // QuickCreateDrawer removed — creation flows use direct modals / dedicated pages
 // SettingsShell no longer wraps routes — kept in codebase but unused (2026-04-04)
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -1436,18 +1436,18 @@ function AppContent() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ActivityProvider>
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
           <TooltipProvider>
             <Toaster />
             <SessionExpiredDialog />
             <PwaUpdatePrompt />
             <AppContent />
           </TooltipProvider>
-        </ActivityProvider>
-      </AuthProvider>
-    </QueryClientProvider>
+        </AuthProvider>
+      </QueryClientProvider>
+    </AppErrorBoundary>
   );
 }
 

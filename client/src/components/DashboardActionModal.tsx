@@ -71,6 +71,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 import { useToast } from "@/hooks/use-toast";
 // 2026-05-06 modal canonicalization: confirm dialogs route through the
 // canonical Modal primitives so typography + spacing + button rhythm
@@ -1699,7 +1700,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
             if (primaryQuoteSource) primaryQuoteQuery.refetch();
             if (secondaryQuoteSource) secondaryQuoteQuery.refetch();
             queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-            queryClient.invalidateQueries({ queryKey: ["quotes"] });
+            queryClient.invalidateQueries({ queryKey: quoteKeys.root() });
             toast({ title: "Quote sent" });
           }}
         />

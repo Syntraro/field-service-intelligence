@@ -41,15 +41,17 @@ export function JobQuickActionsCard({
             <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span className="text-row font-medium">Complete Job</span>
           </button>
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-left hover:bg-accent transition-colors"
-            onClick={onScheduleVisit}
-            data-testid="action-schedule-visit"
-          >
-            <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="text-row font-medium">Schedule Visit</span>
-          </button>
+          {job.status === "open" && (
+            <button
+              type="button"
+              className="w-full flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-left hover:bg-accent transition-colors"
+              onClick={onScheduleVisit}
+              data-testid="action-schedule-visit"
+            >
+              <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="text-row font-medium">Schedule Visit</span>
+            </button>
+          )}
           <button
             type="button"
             className="w-full flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-left hover:bg-accent transition-colors"

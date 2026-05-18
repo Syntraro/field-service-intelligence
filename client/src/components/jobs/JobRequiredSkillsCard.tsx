@@ -38,8 +38,16 @@ import { FormField, FormLabel, FormErrorText } from "@/components/ui/form-field"
 import { Label } from "@/components/ui/label";
 import { Wrench, Plus, MoreHorizontal, Trash2, Pencil, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SKILL_LEVELS, SKILL_LEVEL_LABELS } from "@/components/team-hub/types";
-import type { SkillLevel, TeamSkillLibraryItem } from "@/components/team-hub/types";
+import type { TeamSkillLibraryItem } from "@/components/team-hub/types";
+import type { SkillLevel } from "@shared/schema";
+import { SKILL_LEVELS } from "@shared/schema";
+
+const SKILL_LEVEL_LABELS: Record<SkillLevel, string> = {
+  basic: "Basic",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+  certified: "Certified",
+};
 
 // ── Server-facing shapes ──────────────────────────────────────────────────
 

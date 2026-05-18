@@ -201,8 +201,12 @@ export function TechnicianTimeOffModal({
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/capacity"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard", "workflow"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/technician-time-off"] });
+      // Invalidate the Team Hub effective schedule grid so time-off blocks
+      // appear immediately without requiring a manual refresh.
       queryClient.invalidateQueries({
-        queryKey: ["/api/technician-time-off"],
+        queryKey: ["/api/team/schedule/effective"],
+        exact: false,
       });
       onCreated?.(data.entry);
       onOpenChange(false);

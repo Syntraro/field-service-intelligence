@@ -59,7 +59,6 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Paperclip, X, FileText, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useActivityStore } from "@/lib/activityStore";
 import {
   resolveFileAccessUrl,
   SUPPORTED_MIME_TYPES,
@@ -306,7 +305,6 @@ export function EntityNoteDialog({
   extraInvalidationKey,
 }: EntityNoteDialogProps) {
   const { toast } = useToast();
-  const { logActivity } = useActivityStore();
   const { upload, progress } = useFileUpload();
 
   const endpoints = resolveEndpoints(entityType, entityId);
@@ -439,13 +437,6 @@ export function EntityNoteDialog({
           body: JSON.stringify({ noteText: trimmed }),
         });
         targetNoteId = created.id;
-        logActivity({
-          type: "created",
-          entityType: activityEntity,
-          entityId: entityId,
-          label: "Added Note",
-          meta: trimmed.slice(0, 60) || undefined,
-        });
       } else {
         targetNoteId = note!.id;
         if (trimmed !== note!.noteText) {
@@ -453,13 +444,7 @@ export function EntityNoteDialog({
             method: "PATCH",
             body: JSON.stringify({ noteText: trimmed }),
           });
-          logActivity({
-            type: "updated",
-            entityType: activityEntity,
-            entityId: entityId,
-            label: "Edited Note",
-            meta: trimmed.slice(0, 60) || undefined,
-          });
+
         }
       }
 

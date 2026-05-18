@@ -28,7 +28,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { useToast } from "@/hooks/use-toast";
-import { useActivityStore } from "@/lib/activityStore";
 import { format, parseISO } from "date-fns";
 // 2026-05-06 Phase 1 modal canonicalization (partial): standalone-mode
 // wrapper migrated from raw Dialog primitives to canonical ModalShell +
@@ -1117,7 +1116,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   // the existing legacy heights — no regression.
   const isCompact = embedded || compact;
   const { toast } = useToast();
-  const { logActivity } = useActivityStore();
   // Tenant default scheduling buffer (minutes) — applied at scheduledEnd
   // computation in createJobWithSchedule. Work duration is unaffected.
   const defaultBufferMinutes = useDefaultSchedulingBuffer();
@@ -1896,14 +1894,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/capacity"] });
       queryClient.invalidateQueries({ queryKey: ["/api/clients"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"], exact: false });
-
-      logActivity({
-        type: "created",
-        entityType: "job",
-        entityId: job?.id || "",
-        label: `Created Job${job?.jobNumber ? ` #${job.jobNumber}` : ""}`,
-        meta: selectedLocation?.companyName || formData.summary || undefined,
-      });
 
       toast({
         title: "Job Created",
@@ -3305,13 +3295,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         setFormData((prev) => ({ ...prev, locationId: primaryLocationId }));
         setSelectedLocationOption(optimisticLocation);
         setSelectedEquipmentIds([]);
-        logActivity({
-          type: "created",
-          entityType: "client",
-          entityId: customerCompanyId,
-          label: "Created Client",
-          meta: optimisticName,
-        });
         // Refresh search/list caches so subsequent typing surfaces the new entry.
         queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
         queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });

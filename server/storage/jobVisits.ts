@@ -615,6 +615,14 @@ export class JobVisitsRepository extends BaseRepository {
       throw this.notFoundError("Job");
     }
 
+    // Prevent visit creation on terminal jobs. User must reopen the job first.
+    if (job.status === "completed" || job.status === "invoiced" || job.status === "archived") {
+      const err = new Error("Visits can only be created on open jobs. Reopen the job first.");
+      (err as any).statusCode = 409;
+      (err as any).code = "JOB_NOT_OPEN";
+      throw err;
+    }
+
     // Part 2: Compute visitNumber if not provided. Caller-supplied values
     // are trusted and not auto-retried — only repository-computed numbers
     // participate in the race-recovery loop below.

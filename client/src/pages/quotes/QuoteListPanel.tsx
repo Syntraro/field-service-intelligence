@@ -10,6 +10,7 @@ import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { formatCurrency } from "@/lib/formatters";
 import type { Quote } from "@shared/schema";
 import type { QuoteView } from "@/lib/quoteWorkspaceConfig";
+import { quoteKeys } from "@/lib/queryKeys/quotes";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,7 +99,7 @@ export function QuoteListPanel({
     Error,
     EnrichedQuote[]
   >({
-    queryKey: ["/api/quotes/list"],
+    queryKey: quoteKeys.list(),
     queryFn: async () => {
       const res = await fetch("/api/quotes/list?offset=0&limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch quotes");

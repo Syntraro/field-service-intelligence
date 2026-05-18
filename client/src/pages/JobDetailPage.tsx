@@ -5,7 +5,6 @@ import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
-import { useActivityStore } from "@/lib/activityStore";
 import {
   Archive,
   ArrowLeft,
@@ -163,6 +162,7 @@ import { resolveServiceLocationName } from "@/lib/serviceAddress";
 // PERMISSION HELPERS - Role-based action availability
 // ============================================================================
 import { MANAGER_ROLES } from "@/lib/roles";
+import { invalidateJobExpense } from "@/lib/queryInvalidation";
 
 // Phase 4 Step A7: Use canonical JobHeaderDetail type for main job data.
 // The canonical getJobHeader now correctly joins customerCompanies,
@@ -758,7 +758,6 @@ export default function JobDetailPage() {
   const [, params] = useRoute("/jobs/:id");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const { logActivity } = useActivityStore();
 
   // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
   // 2026-04-26: ?section=visits deep-link removed alongside the inline
@@ -903,7 +902,7 @@ export default function JobDetailPage() {
         }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "expenses"] });
+      if (jobId) invalidateJobExpense(queryClient, jobId);
       setAddExpenseOpen(false);
       setExpenseDraft({ amount: "", category: "", date: format(new Date(), "yyyy-MM-dd"), notes: "" });
       toast({ title: "Expense added" });
@@ -1150,7 +1149,8 @@ export default function JobDetailPage() {
     queryKey: ["invoices", "byJob", jobId],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/by-job/${jobId}`, { credentials: "include" });
-      if (!res.ok) return null;
+      if (res.status === 404) return null; // no invoice linked yet — not an error
+      if (!res.ok) throw new Error(`Failed to load linked invoice: ${res.status}`);
       return res.json();
     },
     enabled: !!jobId,
@@ -1366,12 +1366,6 @@ export default function JobDetailPage() {
       );
     },
     onSuccess: (invoice) => {
-      logActivity({
-        type: "created",
-        entityType: "invoice",
-        entityId: invoice.id,
-        label: `Created Invoice${invoice.invoiceNumber ? ` #${invoice.invoiceNumber}` : ""}`,
-      });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });

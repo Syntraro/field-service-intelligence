@@ -114,7 +114,7 @@ Materialized "needs attention" queue with rule-based detection.
 
 - **Dashboard WorkflowStrip:** "Requires Invoicing", "Unassigned", "Unscheduled" counts now come from `/api/attention/summary` with fallback to existing workflow counts
 - **Dashboard Recent Activity:** Reads from `/api/activity?limit=20` instead of in-memory `ActivityStore`
-- **ActivityStore preserved:** Client-side `logActivity()` calls remain for immediate UI feedback; server events are the canonical source
+- **ActivityStore removed:** Client-side `activityStore.tsx` and all `logActivity()` calls deleted. Server events are the sole source for the activity feed drawer.
 
 ## How to Extend
 

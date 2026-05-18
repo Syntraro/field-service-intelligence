@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Users, Clock, Briefcase, TrendingUp, Star, Wrench, AlertTriangle, ShieldCheck, Activity, CalendarClock } from "lucide-react";
+import { Users, Clock, Briefcase, TrendingUp, Star, Wrench, AlertTriangle, ShieldCheck, CalendarClock } from "lucide-react";
 import { resolveTechnicianColor } from "@shared/colors";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { cn } from "@/lib/utils";
@@ -102,42 +102,6 @@ function KpiCard({ icon, label, value, sub }: KpiCardProps) {
             <p className="text-helper text-muted-foreground">{label}</p>
             <p className="text-xl font-semibold">{value}</p>
             {sub && <p className="text-helper text-muted-foreground">{sub}</p>}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function WorkforceCapacityCard({ forecast }: { forecast: TeamCapacityForecast }) {
-  const { today } = forecast;
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Activity className="h-4 w-4 text-muted-foreground" />
-          Workforce Capacity — Today
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div>
-            <p className="text-helper text-muted-foreground">Available</p>
-            <p className="text-xl font-semibold tabular-nums">{fmtHours(today.availableHours)}</p>
-          </div>
-          <div>
-            <p className="text-helper text-muted-foreground">Scheduled</p>
-            <p className="text-xl font-semibold tabular-nums">{fmtHours(today.scheduledHours)}</p>
-          </div>
-          <div>
-            <p className="text-helper text-muted-foreground">Open</p>
-            <p className="text-xl font-semibold tabular-nums">{fmtHours(today.openHours)}</p>
-          </div>
-          <div>
-            <p className="text-helper text-muted-foreground">Utilization</p>
-            <p className="text-xl font-semibold tabular-nums">
-              {today.utilizationPct !== null ? `${Math.round(today.utilizationPct)}%` : "—"}
-            </p>
           </div>
         </div>
       </CardContent>
@@ -377,13 +341,8 @@ export function TeamOverviewDashboard({ onSelectMember }: Props) {
         />
       </div>
 
-      {/* Workforce capacity + balance cards */}
-      {capacityForecast && (
-        <>
-          <WorkforceCapacityCard forecast={capacityForecast} />
-          <WorkforceBalanceCard forecast={capacityForecast} />
-        </>
-      )}
+      {/* Workforce balance */}
+      {capacityForecast && <WorkforceBalanceCard forecast={capacityForecast} />}
 
       {/* PM demand forecast */}
       {pmForecast && <PmForecastCard forecast={pmForecast} />}

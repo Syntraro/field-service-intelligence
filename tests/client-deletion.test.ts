@@ -3,12 +3,16 @@
  *
  * Validates:
  * - Hard delete allowed when no history exists
- * - Hard delete blocked when jobs exist
- * - Hard delete blocked when invoices exist
+ * - Hard delete blocked when jobs exist (light path only)
+ * - Hard delete blocked when invoices exist (light path only)
  * - Location hard delete works when safe
  * - Cannot delete only location of a company
  * - Soft delete hides clients from normal searches
  * - Historical records still resolve after soft delete
+ * - permanentDeleteLocation cascades through jobs/invoices/quotes/leads/templates
+ * - recurringJobTemplates are deleted (not orphaned) on location delete
+ * - contract files for templates are queued for cleanup
+ * - archive/soft-delete path preserves all child records
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -20,8 +24,11 @@ import {
   users,
   clientLocations,
   customerCompanies,
+  recurringJobTemplates,
+  fileCleanupQueue,
+  files,
 } from "@shared/schema";
-import { eq, sql, isNull } from "drizzle-orm";
+import { eq, sql, isNull, and } from "drizzle-orm";
 import { customerCompanyRepository } from "../server/storage/customerCompanies";
 import { universalSearch } from "../server/storage/search";
 import { v4 as uuidv4 } from "uuid";
@@ -300,5 +307,189 @@ describe("Soft Delete (Archive)", () => {
     const list = await customerCompanyRepository.listCustomerCompanies(companyId);
     const found = list.find(c => c.id === dirtyCompanyId);
     expect(found).toBeDefined();
+  });
+});
+
+// ── Cascade delete (full permanentDeleteLocation path) ────────────────────────
+
+describe("Permanent Delete Cascade", () => {
+  let cascadeCompanyId: string;
+  let cascadeLocationId: string;
+  let cascadeJobId: string;
+  let cascadeTemplateId: string;
+
+  beforeAll(async () => {
+    cascadeCompanyId = uuidv4();
+    cascadeLocationId = uuidv4();
+    cascadeJobId = uuidv4();
+    cascadeTemplateId = uuidv4();
+
+    await db.insert(customerCompanies).values({
+      id: cascadeCompanyId,
+      companyId,
+      name: TEST_PREFIX + "CascadeCo",
+      nameNormalized: TEST_PREFIX + "cascadeco",
+    });
+    await db.insert(clientLocations).values({
+      id: cascadeLocationId,
+      companyId,
+      userId,
+      parentCompanyId: cascadeCompanyId,
+      companyName: TEST_PREFIX + "CascadeCo",
+      location: "Cascade Site",
+      isPrimary: true,
+      inactive: false,
+      selectedMonths: [],
+    });
+    await db.insert(jobs).values({
+      id: cascadeJobId,
+      companyId,
+      userId,
+      locationId: cascadeLocationId,
+      clientId: cascadeLocationId,
+      summary: TEST_PREFIX + "cascade_job",
+      jobNumber: 99998,
+      status: "open",
+      jobType: "pm",
+      isActive: true,
+    });
+    await db.insert(recurringJobTemplates).values({
+      id: cascadeTemplateId,
+      companyId,
+      locationId: cascadeLocationId,
+      title: TEST_PREFIX + "cascade_template",
+      jobType: "maintenance",
+      priority: "medium",
+      isActive: true,
+      startDate: "2026-01-01",
+      recurrenceKind: "monthly",
+      interval: 1,
+    });
+  });
+
+  it("permanentDeleteLocation deletes location with active jobs without throwing", async () => {
+    const result = await customerCompanyRepository.permanentDeleteLocation(companyId, cascadeLocationId);
+    expect(result).toBeTruthy();
+  });
+
+  it("job attached to deleted location is gone", async () => {
+    const [remaining] = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(eq(jobs.id, cascadeJobId));
+    expect(remaining).toBeUndefined();
+  });
+
+  it("recurringJobTemplate is deleted, not orphaned with NULL locationId", async () => {
+    const [remaining] = await db
+      .select({ id: recurringJobTemplates.id, locationId: recurringJobTemplates.locationId })
+      .from(recurringJobTemplates)
+      .where(eq(recurringJobTemplates.id, cascadeTemplateId));
+    // Row must not exist at all — not exist with locationId = NULL
+    expect(remaining).toBeUndefined();
+  });
+
+  it("location row is gone after permanent delete", async () => {
+    const [remaining] = await db
+      .select({ id: clientLocations.id })
+      .from(clientLocations)
+      .where(eq(clientLocations.id, cascadeLocationId));
+    expect(remaining).toBeUndefined();
+  });
+});
+
+describe("Permanent Delete — Template File Cleanup Queue", () => {
+  let fileCompanyId: string;
+  let fileLocationId: string;
+  let fileTemplateId: string;
+  let fileId: string;
+
+  beforeAll(async () => {
+    fileCompanyId = uuidv4();
+    fileLocationId = uuidv4();
+    fileTemplateId = uuidv4();
+    fileId = uuidv4();
+
+    await db.insert(customerCompanies).values({
+      id: fileCompanyId,
+      companyId,
+      name: TEST_PREFIX + "FileCo",
+      nameNormalized: TEST_PREFIX + "fileco",
+    });
+    await db.insert(clientLocations).values({
+      id: fileLocationId,
+      companyId,
+      userId,
+      parentCompanyId: fileCompanyId,
+      companyName: TEST_PREFIX + "FileCo",
+      location: "File Site",
+      isPrimary: true,
+      inactive: false,
+      selectedMonths: [],
+    });
+    await db.insert(recurringJobTemplates).values({
+      id: fileTemplateId,
+      companyId,
+      locationId: fileLocationId,
+      title: TEST_PREFIX + "file_template",
+      jobType: "maintenance",
+      priority: "medium",
+      isActive: true,
+      startDate: "2026-01-01",
+      recurrenceKind: "monthly",
+      interval: 1,
+    });
+    // Insert a files row (simulates uploaded contract file)
+    await db.insert(files).values({
+      id: fileId,
+      companyId,
+      bucket: "test-bucket",
+      storageKey: "test/contract-file.pdf",
+      storageProvider: "r2",
+      originalName: "contract.pdf",
+      mimeType: "application/pdf",
+      size: 1024,
+    });
+    // Link the file to the template via contract_files
+    await db.execute(sql`
+      INSERT INTO contract_files (id, company_id, contract_id, file_id)
+      VALUES (${uuidv4()}, ${companyId}, ${fileTemplateId}, ${fileId})
+    `);
+  });
+
+  it("file_cleanup_queue contains contract file after location delete", async () => {
+    await customerCompanyRepository.permanentDeleteLocation(companyId, fileLocationId);
+
+    const [queueRow] = await db
+      .select({ fileId: fileCleanupQueue.fileId })
+      .from(fileCleanupQueue)
+      .where(and(eq(fileCleanupQueue.companyId, companyId), eq(fileCleanupQueue.fileId, fileId)));
+    expect(queueRow).toBeDefined();
+    expect(queueRow.fileId).toBe(fileId);
+  });
+});
+
+describe("Archive path preserves child records", () => {
+  it("softDeleteCustomerCompany preserves job records", async () => {
+    // dirtyCompanyId was restored above; job should still exist
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, dirtyJobId));
+    expect(job).toBeDefined();
+    expect(job.locationId).toBe(dirtyLocationId);
+  });
+
+  it("softDeleteCustomerCompany does not delete the location row", async () => {
+    const archived = await customerCompanyRepository.softDeleteCustomerCompany(
+      companyId, dirtyCompanyId
+    );
+    expect(archived).not.toBeNull();
+
+    const [loc] = await db
+      .select({ id: clientLocations.id })
+      .from(clientLocations)
+      .where(eq(clientLocations.id, dirtyLocationId));
+    expect(loc).toBeDefined();
   });
 });

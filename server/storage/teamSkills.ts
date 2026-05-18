@@ -13,10 +13,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { teamSkills, teamMemberSkills, SKILL_LEVELS } from "@shared/schema";
-import type { SkillLevel } from "@shared/schema";
-
-export type { SkillLevel };
+import { teamSkills, teamMemberSkills } from "@shared/schema";
 
 const EXPIRY_SOON_DAYS = 30;
 
@@ -27,6 +24,8 @@ export interface TeamSkillLibraryItem {
   name: string;
   category: string | null;
   description: string | null;
+  requiresCertification: boolean;
+  hasExpiryTracking: boolean;
   isActive: boolean;
   memberCount: number;
   createdAt: Date;
@@ -40,7 +39,6 @@ export interface TeamMemberSkillRow {
   skillId: string;
   name: string;
   category: string | null;
-  level: SkillLevel;
   certificationName: string | null;
   certificationExpiresAt: Date | null;
   notes: string | null;
@@ -78,6 +76,8 @@ export async function listCompanySkills(
       name: teamSkills.name,
       category: teamSkills.category,
       description: teamSkills.description,
+      requiresCertification: teamSkills.requiresCertification,
+      hasExpiryTracking: teamSkills.hasExpiryTracking,
       isActive: teamSkills.isActive,
       createdAt: teamSkills.createdAt,
       updatedAt: teamSkills.updatedAt,
@@ -118,6 +118,8 @@ export interface CreateSkillInput {
   name: string;
   category?: string | null;
   description?: string | null;
+  requiresCertification?: boolean;
+  hasExpiryTracking?: boolean;
 }
 
 /**
@@ -159,6 +161,8 @@ export async function createSkill(
       name: trimmedName,
       category: data.category ?? null,
       description: data.description ?? null,
+      requiresCertification: data.requiresCertification ?? false,
+      hasExpiryTracking: data.hasExpiryTracking ?? false,
       isActive: true,
       createdBy: createdBy ?? null,
     })
@@ -171,6 +175,8 @@ export interface UpdateSkillInput {
   name?: string;
   category?: string | null;
   description?: string | null;
+  requiresCertification?: boolean;
+  hasExpiryTracking?: boolean;
   isActive?: boolean;
 }
 
@@ -216,6 +222,8 @@ export async function updateSkill(
       ...(data.name !== undefined ? { name: data.name } : {}),
       ...(data.category !== undefined ? { category: data.category } : {}),
       ...(data.description !== undefined ? { description: data.description } : {}),
+      ...(data.requiresCertification !== undefined ? { requiresCertification: data.requiresCertification } : {}),
+      ...(data.hasExpiryTracking !== undefined ? { hasExpiryTracking: data.hasExpiryTracking } : {}),
       ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
       updatedAt: new Date(),
       updatedBy: updatedBy ?? null,
@@ -282,7 +290,6 @@ export async function listMemberSkills(
       skillId: teamMemberSkills.skillId,
       name: teamSkills.name,
       category: teamSkills.category,
-      level: teamMemberSkills.level,
       certificationName: teamMemberSkills.certificationName,
       certificationExpiresAt: teamMemberSkills.certificationExpiresAt,
       notes: teamMemberSkills.notes,
@@ -302,14 +309,12 @@ export async function listMemberSkills(
 
   return rows.map((r) => ({
     ...r,
-    level: r.level as SkillLevel,
     expiryStatus: computeExpiryStatus(r.certificationExpiresAt),
   }));
 }
 
 export interface AssignSkillInput {
   skillId: string;
-  level: SkillLevel;
   certificationName?: string | null;
   certificationExpiresAt?: string | null;
   notes?: string | null;
@@ -326,10 +331,6 @@ export async function assignSkill(
   data: AssignSkillInput,
   createdBy?: string,
 ): Promise<TeamMemberSkillRow> {
-  if (!SKILL_LEVELS.includes(data.level)) {
-    throw new Error(`Invalid skill level: ${data.level}`);
-  }
-
   // Verify skill belongs to same company.
   const [skill] = await db
     .select({ id: teamSkills.id, name: teamSkills.name, category: teamSkills.category })
@@ -364,7 +365,6 @@ export async function assignSkill(
     const [updated] = await db
       .update(teamMemberSkills)
       .set({
-        level: data.level,
         certificationName: data.certificationName ?? null,
         certificationExpiresAt: data.certificationExpiresAt
           ? new Date(data.certificationExpiresAt)
@@ -384,7 +384,6 @@ export async function assignSkill(
         companyId,
         userId,
         skillId: data.skillId,
-        level: data.level,
         certificationName: data.certificationName ?? null,
         certificationExpiresAt: data.certificationExpiresAt
           ? new Date(data.certificationExpiresAt)
@@ -402,7 +401,6 @@ export async function assignSkill(
     skillId: row.skillId,
     name: skill.name,
     category: skill.category,
-    level: row.level as SkillLevel,
     certificationName: row.certificationName,
     certificationExpiresAt: row.certificationExpiresAt,
     notes: row.notes,
@@ -414,28 +412,22 @@ export async function assignSkill(
 }
 
 export interface UpdateMemberSkillInput {
-  level?: SkillLevel;
   certificationName?: string | null;
   certificationExpiresAt?: string | null;
   notes?: string | null;
   isActive?: boolean;
 }
 
-/** Updates a member's skill assignment (level, cert details, active state). */
+/** Updates a member's skill assignment (cert details, active state). */
 export async function updateMemberSkill(
   companyId: string,
   memberSkillId: string,
   data: UpdateMemberSkillInput,
   updatedBy?: string,
 ): Promise<TeamMemberSkillRow> {
-  if (data.level !== undefined && !SKILL_LEVELS.includes(data.level)) {
-    throw new Error(`Invalid skill level: ${data.level}`);
-  }
-
   const [updated] = await db
     .update(teamMemberSkills)
     .set({
-      ...(data.level !== undefined ? { level: data.level } : {}),
       ...(data.certificationName !== undefined
         ? { certificationName: data.certificationName }
         : {}),
@@ -472,7 +464,6 @@ export async function updateMemberSkill(
     skillId: updated.skillId,
     name: skill?.name ?? "",
     category: skill?.category ?? null,
-    level: updated.level as SkillLevel,
     certificationName: updated.certificationName,
     certificationExpiresAt: updated.certificationExpiresAt,
     notes: updated.notes,

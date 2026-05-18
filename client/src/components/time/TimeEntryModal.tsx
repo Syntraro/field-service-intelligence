@@ -19,7 +19,6 @@ import { useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format } from "date-fns";
 import { Clock, Loader2, AlertTriangle, Lock, Trash2, LockKeyhole } from "lucide-react";
-import { useActivityStore } from "@/lib/activityStore";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/button";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
@@ -87,6 +86,8 @@ interface TimeEntryModalProps {
   extraInvalidateKeys?: string[][];
   /** When set, technician is pre-assigned and locked (e.g. payroll tech-specific context) */
   lockedTechnicianId?: string | null;
+  /** Create mode only — pre-selects the date field (yyyy-MM-dd). Defaults to today. */
+  defaultDate?: string;
 }
 
 export function TimeEntryModal({
@@ -99,9 +100,9 @@ export function TimeEntryModal({
   onSuccess,
   extraInvalidateKeys = [],
   lockedTechnicianId,
+  defaultDate,
 }: TimeEntryModalProps) {
   const { toast } = useToast();
-  const { logActivity } = useActivityStore();
   const { teamMembers: technicians, isLoading: techLoading } = useTechniciansDirectory();
   const isEdit = mode === "edit";
 
@@ -162,7 +163,7 @@ export function TimeEntryModal({
       setTechnicianId(lockedTechnicianId || assignedTechnicianIds[0] || "");
       setCostPerHour("");
       setCostManuallyEdited(false);
-      setStartDate(today);
+      setStartDate(defaultDate ?? today);
       setStartTime("08:00");
       setEndTime("09:00");
       setDurationHours(1);
@@ -172,7 +173,7 @@ export function TimeEntryModal({
     }
     setLastEditSource(null);
     setShowDeleteConfirm(false);
-  }, [open, isEdit, entry, assignedTechnicianIds, lockedTechnicianId]);
+  }, [open, isEdit, entry, assignedTechnicianIds, lockedTechnicianId, defaultDate]);
 
   // ── Load cost rate when technician changes or technicians load ──
   // Create mode: always use tech default. Edit mode: only fallback if snapshot is missing.
@@ -265,9 +266,6 @@ export function TimeEntryModal({
       }
     },
     onSuccess: () => {
-      if (!isEdit && jobId) {
-        logActivity({ type: "created", entityType: "job", entityId: jobId, label: "Added Labour Entry" });
-      }
       toast({
         title: isEdit ? "Time Entry Updated" : "Time Entry Added",
         description: isEdit && isLocked

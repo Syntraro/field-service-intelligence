@@ -562,6 +562,18 @@ export class SchedulingRepository extends BaseRepository {
         AND jv.status NOT IN (${sql.raw(TERMINAL_VISIT_STATUSES.map(s => `'${s}'`).join(','))})
     ), ARRAY[]::varchar[])`.as("visit_ids");
 
+    // Parallel to visitIdsSubquery — same WHERE conditions, same ORDER BY.
+    // visitBuckets[i] is the dispatch_queue_bucket for visitIds[i].
+    const visitBucketsSubquery = sql<(string | null)[]>`COALESCE((
+      SELECT ARRAY_AGG(jv.dispatch_queue_bucket ORDER BY jv.visit_number ASC)
+      FROM job_visits jv
+      WHERE jv.job_id = ${jobs.id}
+        AND jv.company_id = ${jobs.companyId}
+        AND jv.is_active = true
+        AND jv.archived_at IS NULL
+        AND jv.status NOT IN (${sql.raw(TERMINAL_VISIT_STATUSES.map(s => `'${s}'`).join(','))})
+    ), ARRAY[]::text[])`.as("visit_buckets");
+
     const jobRows = await db
       .select({
         id: jobs.id,
@@ -591,6 +603,7 @@ export class SchedulingRepository extends BaseRepository {
         lat: clientLocations.lat,
         lng: clientLocations.lng,
         visitIds: visitIdsSubquery,
+        visitBuckets: visitBucketsSubquery,
       })
       .from(jobs)
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
@@ -692,6 +705,8 @@ export class SchedulingRepository extends BaseRepository {
         // `activeVisitId` projection was removed in Phase 2 now that all
         // consumers read `visitIds`.
         visitIds: Array.isArray(job.visitIds) ? job.visitIds : [],
+        // Parallel to visitIds — dispatch staging bucket per visit (null = 'today' default).
+        visitBuckets: Array.isArray(job.visitBuckets) ? job.visitBuckets : [],
       };
     });
 
