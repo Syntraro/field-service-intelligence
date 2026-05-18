@@ -262,6 +262,7 @@ export function QuoteListPanel({
             : undefined
         }
         columns={quoteColumns}
+        cellPy="py-2.5"
         data-testid="quote-list-table"
       />
       <ListLoadMoreFooter

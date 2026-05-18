@@ -12,6 +12,16 @@ import {
 
 interface WorkspaceFilterBarProps {
   children: ReactNode;
+  /**
+   * "default" — built-in bg-inset-surface background, border-b, and padding.
+   *             Used when the filter bar is the topmost element of a scrolling
+   *             content area (e.g. ServicePlansWorkspaceTab).
+   * "flat"    — strips background, border, padding, and min-height.
+   *             Used when the bar sits between OperationalWorkspaceHeader and
+   *             WorkspaceCenterPane, inside a page-owned
+   *             <div className="shrink-0 px-4 py-2"> wrapper.
+   */
+  variant?: "default" | "flat";
   className?: string;
   "data-testid"?: string;
 }
@@ -23,14 +33,17 @@ interface WorkspaceFilterBarProps {
  */
 export function WorkspaceFilterBar({
   children,
+  variant = "default",
   className,
   "data-testid": testId,
 }: WorkspaceFilterBarProps) {
   return (
     <div
       className={cn(
-        "shrink-0 flex items-center gap-2 px-4 py-2.5 bg-inset-surface border-b border-card-border/60",
-        "overflow-x-auto scrollbar-none min-h-[48px]",
+        "shrink-0 flex items-center gap-2 overflow-x-auto scrollbar-none",
+        variant === "flat"
+          ? "bg-transparent border-b-0 px-0 py-0 min-h-0"
+          : "px-4 py-2.5 bg-inset-surface border-b border-card-border/60 min-h-[48px]",
         className,
       )}
       data-testid={testId ?? "workspace-filter-bar"}

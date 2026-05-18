@@ -5,7 +5,6 @@ import {
   FileText,
   ShieldAlert,
   Clock,
-  Building2,
   FileCheck,
   CalendarClock,
   Wrench,
@@ -98,25 +97,16 @@ export function buildTenantNavItems(
     hoverText: "Service Plans",
   });
 
-  // Group 3: Invoices → Invoices 2 (experimental) → Payments → Price Book
+  // Group 3: Invoices → Payments → Price Book
   items.push({
     title: "Invoices",
     icon: Inbox,
-    href: "/receivables",
+    href: "/invoices",
     isActive:
-      location === "/receivables" ||
-      location.startsWith("/receivables/") ||
       location === "/invoices" ||
       location.startsWith("/invoices/"),
-    testId: "nav-receivables",
+    testId: "nav-invoices",
     isDivider: true,
-  });
-  items.push({
-    title: "Invoices 2",
-    icon: Inbox,
-    href: "/invoices-v2",
-    isActive: location === "/invoices-v2" || location.startsWith("/invoices-v2/"),
-    testId: "nav-receivables-v2",
   });
   if (userRole !== "dispatcher") {
     items.push({
@@ -139,7 +129,7 @@ export function buildTenantNavItems(
     hoverText: "Catalogue of priced products and services",
   });
 
-  // Group 4: Clients → Suppliers
+  // Group 4: Clients
   items.push({
     title: "Clients",
     icon: Users,
@@ -147,14 +137,6 @@ export function buildTenantNavItems(
     isActive: location === "/clients" || location.startsWith("/clients/"),
     testId: "nav-clients",
     isDivider: true,
-  });
-  items.push({
-    title: "Suppliers",
-    icon: Building2,
-    href: "/suppliers",
-    isActive:
-      location === "/suppliers" || location.startsWith("/suppliers/"),
-    testId: "nav-suppliers",
   });
 
   // Group 5: Timesheets → Reports
@@ -174,6 +156,23 @@ export function buildTenantNavItems(
     isActive: location === "/reports" || location.startsWith("/reports/"),
     testId: "nav-reports",
   });
+
+  // Team — owner/admin/manager only (mirrors the requireAdmin route gate)
+  if (userRole !== "dispatcher") {
+    items.push({
+      title: "Team",
+      icon: Users,
+      href: "/team",
+      isActive:
+        location === "/team" ||
+        location.startsWith("/team/") ||
+        location === "/settings/team" ||
+        location.startsWith("/settings/team/"),
+      testId: "nav-team",
+      isDivider: true,
+      hoverText: "Team management, performance, and scheduling",
+    });
+  }
 
   if (userRole === "platform_admin") {
     items.push({

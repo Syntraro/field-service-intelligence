@@ -285,17 +285,3 @@ export function getLocationStatusMeta(loc: { inactive: boolean | null }): Status
     : { label: "Active", tone: "success" };
 }
 
-// ─── Supplier ───────────────────────────────────────────────────────────────
-
-/**
- * Supplier status metadata. Inactive is `danger` (red icon today)
- * because an inactive supplier signals a vendor problem rather than
- * just "this isn't currently used" — preserves the existing visual
- * choice in `SuppliersListPage.tsx`. Diverges from Locations/Clients
- * which use `neutral` for inactive; documented as intentional.
- */
-export function getSupplierStatusMeta(supplier: { isActive: boolean | null }): StatusMeta {
-  return supplier.isActive
-    ? { label: "Active", tone: "success" }
-    : { label: "Inactive", tone: "danger" };
-}

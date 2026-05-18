@@ -1961,4 +1961,115 @@ router.post(
   }),
 );
 
+// ── Job skill requirements (Phase 4 Skill-Aware Dispatch) ────────────────
+// Auth: MANAGER_ROLES (matches existing pattern for job write operations).
+// The recommendation endpoint is also gated at MANAGER_ROLES — same
+// audience who dispatches jobs.
+
+const addJobSkillSchema = z.object({
+  skillId: z.string().uuid(),
+  minimumLevel: z.enum(["basic", "intermediate", "advanced", "certified"]).nullable().optional(),
+  required: z.boolean().optional(),
+});
+
+const updateJobSkillSchema = z.object({
+  minimumLevel: z.enum(["basic", "intermediate", "advanced", "certified"]).nullable().optional(),
+  required: z.boolean().optional(),
+});
+
+// GET /api/jobs/:id/required-skills
+router.get(
+  "/:id/required-skills",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { listJobRequiredSkills } = await import("../storage/jobSkillRequirements");
+    const rows = await listJobRequiredSkills(companyId, req.params.id);
+    res.json(rows);
+  }),
+);
+
+// POST /api/jobs/:id/required-skills
+router.post(
+  "/:id/required-skills",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const body = validateSchema(addJobSkillSchema, req.body);
+    const { addJobSkillRequirement } = await import("../storage/jobSkillRequirements");
+    const row = await addJobSkillRequirement(companyId, req.params.id, body);
+    res.status(201).json(row);
+  }),
+);
+
+// PATCH /api/jobs/:id/required-skills/:requirementId
+router.patch(
+  "/:id/required-skills/:requirementId",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const body = validateSchema(updateJobSkillSchema, req.body);
+    const { updateJobSkillRequirement } = await import("../storage/jobSkillRequirements");
+    const row = await updateJobSkillRequirement(companyId, req.params.requirementId, body);
+    res.json(row);
+  }),
+);
+
+// DELETE /api/jobs/:id/required-skills/:requirementId
+router.delete(
+  "/:id/required-skills/:requirementId",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { removeJobSkillRequirement } = await import("../storage/jobSkillRequirements");
+    await removeJobSkillRequirement(companyId, req.params.requirementId);
+    res.status(204).end();
+  }),
+);
+
+// GET /api/jobs/:id/assignment-recommendations?date=YYYY-MM-DD
+// Returns ranked technician recommendations for this job.
+// ?date defaults to today. Only active, schedulable members are included.
+router.get(
+  "/:id/assignment-recommendations",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const jobId = req.params.id;
+
+    const rawDate = req.query.date as string | undefined;
+    const targetDate = rawDate ? new Date(rawDate) : new Date();
+    if (isNaN(targetDate.getTime())) throw createError(400, "Invalid date parameter");
+
+    const { listJobRequiredSkills } = await import("../storage/jobSkillRequirements");
+    const { loadCandidates } = await import("../storage/assignmentCandidates");
+    const { rankCandidates } = await import("../lib/assignmentIntelligence");
+
+    const [requirements, candidates] = await Promise.all([
+      listJobRequiredSkills(companyId, jobId),
+      loadCandidates(companyId, targetDate),
+    ]);
+
+    const reqInput = requirements.map((r) => ({
+      skillId: r.skillId,
+      skillName: r.skillName,
+      minimumLevel: r.minimumLevel,
+      required: r.required,
+    }));
+
+    const recommendations = rankCandidates(reqInput, candidates);
+    // Attach weekly hour fields from candidate data so the dispatch UI can display them
+    const candidateMap = new Map(candidates.map((c) => [c.userId, c]));
+    const enriched = recommendations.map((rec) => {
+      const c = candidateMap.get(rec.userId);
+      return {
+        ...rec,
+        workedHoursThisWeek: c?.workedHoursThisWeek ?? 0,
+        forecastedWeekHours: c?.forecastedWeekHours ?? 0,
+        targetWeeklyHours: c?.targetWeeklyHours ?? 40,
+      };
+    });
+    res.json({ jobId, date: targetDate.toISOString().slice(0, 10), recommendations: enriched });
+  }),
+);
+
 export default router;

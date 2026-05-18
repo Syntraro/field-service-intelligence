@@ -1,14 +1,13 @@
 /**
  * Phase 2C-1 through 2C-6 form-field canonicalization — source-pin tests (2026-05-08/09).
  *
- * 2C-1: QuickAddSupplierDialog, AddEquipmentDialog, QboOverrideModal
- * 2C-2: AddLocationDialog, EditLocationDialog (supplier address twin dialogs)
+ * 2C-1: AddEquipmentDialog, QboOverrideModal
  * 2C-3: CreateClientModal (client identity + service/billing address sections)
  * 2C-4: ProductServiceFormDialog (type/sku, name, pricing section, duration/category)
  * 2C-5: LocationFormModal (location name, site code, service address, switch cards)
  * 2C-6: CreateClientPage, CreateJobPage, CreateLeadPage, CreateTaskPage (tech-app pages)
  *
- * Locks the contract that all twelve targets use canonical form primitives
+ * Locks the contract that all nine targets use canonical form primitives
  * (FormField, FormLabel, FormRow, FormSection, FormHelperText, FormErrorText)
  * and no longer contain the raw drift patterns they shipped with.
  */
@@ -20,11 +19,8 @@ import { resolve } from "path";
 const ROOT = resolve(__dirname, "..");
 const p = (rel: string) => resolve(ROOT, rel);
 
-const supplierSrc = readFileSync(p("client/src/components/suppliers/QuickAddSupplierDialog.tsx"), "utf-8");
 const equipmentSrc = readFileSync(p("client/src/components/AddEquipmentDialog.tsx"), "utf-8");
 const qboSrc = readFileSync(p("client/src/components/invoice/QboOverrideModal.tsx"), "utf-8");
-const addLocationSrc = readFileSync(p("client/src/components/suppliers/AddLocationDialog.tsx"), "utf-8");
-const editLocationSrc = readFileSync(p("client/src/components/suppliers/EditLocationDialog.tsx"), "utf-8");
 const createClientSrc = readFileSync(p("client/src/components/CreateClientModal.tsx"), "utf-8");
 const psFormSrc = readFileSync(p("client/src/components/products-services/ProductServiceFormDialog.tsx"), "utf-8");
 const locationFormSrc = readFileSync(p("client/src/components/LocationFormModal.tsx"), "utf-8");
@@ -33,45 +29,7 @@ const techCreateJobSrc = readFileSync(p("client/src/tech-app/pages/CreateJobPage
 const techCreateLeadSrc = readFileSync(p("client/src/tech-app/pages/CreateLeadPage.tsx"), "utf-8");
 const techCreateTaskSrc = readFileSync(p("client/src/tech-app/pages/CreateTaskPage.tsx"), "utf-8");
 
-// ─── 1. QuickAddSupplierDialog ──────────────────────────────────────
-
-describe("QuickAddSupplierDialog — canonical form primitives", () => {
-  it("imports FormField, FormLabel, FormRow from form-field", () => {
-    expect(supplierSrc).toMatch(/import\s*\{[^}]*FormField[^}]*\}\s*from\s*["']@\/components\/ui\/form-field["']/);
-    expect(supplierSrc).toMatch(/FormLabel/);
-    expect(supplierSrc).toMatch(/FormRow/);
-  });
-
-  it("does NOT import Label from @/components/ui/label", () => {
-    expect(supplierSrc).not.toMatch(/import.*Label.*from\s*["']@\/components\/ui\/label["']/);
-  });
-
-  it("uses FormField wrappers (not bare <div> field containers)", () => {
-    expect(supplierSrc).toMatch(/<FormField>/);
-  });
-
-  it("uses FormRow for the email/phone two-column row", () => {
-    expect(supplierSrc).toMatch(/<FormRow\s+className="grid-cols-2">/);
-  });
-
-  it("uses FormLabel with srOnly for text inputs", () => {
-    expect(supplierSrc).toMatch(/<FormLabel\s[^>]*srOnly/);
-  });
-
-  it("does NOT use raw <Label> elements", () => {
-    expect(supplierSrc).not.toMatch(/<Label\s/);
-  });
-
-  it("does NOT use bare div field wrapper pattern (div>Label>Input)", () => {
-    expect(supplierSrc).not.toMatch(/<div>\s*\n\s*<Label/);
-  });
-
-  it("does NOT use the old grid row div pattern", () => {
-    expect(supplierSrc).not.toMatch(/className="grid grid-cols-2 gap-3"/);
-  });
-});
-
-// ─── 2. AddEquipmentDialog ──────────────────────────────────────────
+// ─── 1. AddEquipmentDialog ──────────────────────────────────────────
 
 describe("AddEquipmentDialog — canonical form primitives", () => {
   it("imports FormField, FormLabel, FormRow from form-field", () => {
@@ -155,94 +113,6 @@ describe("QboOverrideModal — canonical form primitives for reason field", () =
 
   it("helper text still carries the min-10-characters hint", () => {
     expect(qboSrc).toMatch(/Minimum 10 characters/);
-  });
-});
-
-// ─── Phase 2C-2: supplier address twin dialogs ──────────────────────
-
-// Shared assertions for both AddLocationDialog and EditLocationDialog so
-// the two files stay structurally aligned.
-function assertLocationDialogCanonical(src: string, label: string) {
-  describe(`${label} — canonical form primitives`, () => {
-    it("imports FormField, FormLabel, FormRow from form-field", () => {
-      expect(src).toMatch(/import\s*\{[^}]*FormField[^}]*\}\s*from\s*["']@\/components\/ui\/form-field["']/);
-      expect(src).toMatch(/FormLabel/);
-      expect(src).toMatch(/FormRow/);
-    });
-
-    it("keeps Label import for the checkbox/switch visible label", () => {
-      expect(src).toMatch(/import.*Label.*from\s*["']@\/components\/ui\/label["']/);
-    });
-
-    it("uses FormField wrappers for text inputs", () => {
-      expect(src).toMatch(/<FormField>/);
-    });
-
-    it("uses FormLabel with srOnly for text inputs", () => {
-      expect(src).toMatch(/<FormLabel\s[^>]*srOnly/);
-    });
-
-    it("uses FormRow for the 3-column city/province/postal row", () => {
-      expect(src).toMatch(/<FormRow\s+className="md:grid-cols-3">/);
-    });
-
-    it("uses FormRow for the 2-column contact/phone row", () => {
-      expect(src).toMatch(/<FormRow\s+className="md:grid-cols-2">/);
-    });
-
-    it("does NOT use bare div field wrapper pattern (div>Label>Input)", () => {
-      // The migrated fields should not have bare <div>\n<Label pattern
-      expect(src).not.toMatch(/<div>\s*\n\s*<Label\s+htmlFor/);
-    });
-
-    it("does NOT use the old 3-column grid div pattern", () => {
-      expect(src).not.toMatch(/className="grid md:grid-cols-3 gap-4"/);
-    });
-
-    it("does NOT use the old 2-column grid div pattern", () => {
-      expect(src).not.toMatch(/className="grid md:grid-cols-2 gap-4"/);
-    });
-
-    it("the name field placeholder communicates the required indicator", () => {
-      expect(src).toMatch(/placeholder="Location Name \*"/);
-    });
-
-    it("all address fields are present (name, address, address2, city, province, postalCode, country)", () => {
-      expect(src).toMatch(/htmlFor=["'][a-z-]*(?:location-name|edit-location-name)["']/);
-      expect(src).toMatch(/placeholder="Street address"/);
-      expect(src).toMatch(/placeholder="Suite, Unit, Floor \(optional\)"/);
-      expect(src).toMatch(/placeholder="City"/);
-      expect(src).toMatch(/placeholder="Province"/);
-      expect(src).toMatch(/placeholder="Postal Code"/);
-      expect(src).toMatch(/placeholder="Country"/);
-    });
-  });
-}
-
-assertLocationDialogCanonical(addLocationSrc, "AddLocationDialog");
-assertLocationDialogCanonical(editLocationSrc, "EditLocationDialog");
-
-describe("AddLocationDialog — isPrimary checkbox keeps visible Label", () => {
-  it("checkbox row still uses raw Label (not FormLabel)", () => {
-    expect(addLocationSrc).toMatch(/<Label\s+htmlFor="isPrimary"/);
-  });
-
-  it("does NOT render FormLabel on the isPrimary checkbox", () => {
-    expect(addLocationSrc).not.toMatch(/<FormLabel\s[^>]*htmlFor="isPrimary"/);
-  });
-});
-
-describe("EditLocationDialog — isActive switch keeps visible Label", () => {
-  it("switch row still uses raw Label (not FormLabel)", () => {
-    expect(editLocationSrc).toMatch(/<Label\s+htmlFor="edit-isActive"/);
-  });
-
-  it("does NOT render FormLabel on the isActive switch", () => {
-    expect(editLocationSrc).not.toMatch(/<FormLabel\s[^>]*htmlFor="edit-isActive"/);
-  });
-
-  it("switch row preserves justify-between layout for the Active toggle", () => {
-    expect(editLocationSrc).toMatch(/justify-between/);
   });
 });
 
@@ -728,16 +598,8 @@ describe("CreateTaskPage — field wrappers use FormField + FormLabel", () => {
     expect(techCreateTaskSrc).toMatch(/<FormLabel>Title \*<\/FormLabel>/);
   });
 
-  it("Supplier field uses FormField + FormLabel", () => {
-    expect(techCreateTaskSrc).toMatch(/<FormLabel>Supplier \*<\/FormLabel>/);
-  });
-
   it("Location field uses FormField + FormLabel", () => {
     expect(techCreateTaskSrc).toMatch(/<FormLabel>Location<\/FormLabel>/);
-  });
-
-  it("PO Number field uses FormField + FormLabel", () => {
-    expect(techCreateTaskSrc).toMatch(/<FormLabel>PO Number<\/FormLabel>/);
   });
 
   it("Notes field uses FormField + FormLabel", () => {

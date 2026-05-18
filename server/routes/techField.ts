@@ -1641,10 +1641,8 @@ router.post(
   }),
 );
 
-// 2026-04-10: tech task schema is DERIVED from the canonical createTaskSchema.
-// TECH_ALLOWED_TASK_TYPES narrows the type field to GENERAL + SUPPLIER_VISIT.
-// Supplier visit fields are optional — techs can provide supplierNameOther as
-// a freeform fallback; managers can provide supplierId/supplierLocationId.
+// Tech task schema — derived from canonical createTaskSchema.
+// TECH_ALLOWED_TASK_TYPES restricts type to GENERAL only.
 const techCreateTaskSchema = createTaskSchema
   .pick({
     title: true,
@@ -1656,11 +1654,6 @@ const techCreateTaskSchema = createTaskSchema
   })
   .extend({
     type: z.enum(TECH_ALLOWED_TASK_TYPES),
-    // Supplier visit fields — optional, only relevant when type = SUPPLIER_VISIT
-    supplierId: z.string().uuid().nullable().optional(),
-    supplierLocationId: z.string().uuid().nullable().optional(),
-    supplierNameOther: z.string().max(200).nullable().optional(),
-    poNumber: z.string().max(100).nullable().optional(),
   })
   .strict();
 
@@ -1698,27 +1691,6 @@ router.post(
       scheduledEndAt: endAt,
       allDay: data.allDay ?? false,
     });
-
-    // If SUPPLIER_VISIT, write the extension row with whatever supplier
-    // info the caller provided. Techs typically send supplierNameOther;
-    // managers may send supplierId + supplierLocationId.
-    if (data.type === "SUPPLIER_VISIT") {
-      const hasSvData = data.supplierId || data.supplierLocationId ||
-                        data.supplierNameOther || data.poNumber;
-      if (hasSvData) {
-        try {
-          await taskRepository.updateSupplierVisit(companyId, task.id, {
-            supplierId: data.supplierId ?? null,
-            supplierLocationId: data.supplierLocationId ?? null,
-            supplierNameOther: data.supplierNameOther ?? null,
-            poNumber: data.poNumber ?? null,
-          });
-        } catch (svErr: any) {
-          // Non-fatal: the task was created, supplier details can be added later
-          console.warn("[TECH_TASKS] supplier-visit details write failed:", svErr.message);
-        }
-      }
-    }
 
     emitDispatch(companyId, {
       scope: "calendar",

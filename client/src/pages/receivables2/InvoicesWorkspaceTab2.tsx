@@ -9,9 +9,9 @@ import {
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
-import type { SelectedReceivablesContext } from "@/pages/receivables/InvoicesWorkspaceTab";
+import type { SelectedReceivablesContext } from "@/pages/receivables/InvoiceRailBody";
 
-// Re-export types consumed by ReceivablesPage2.
+// Re-export types consumed by InvoicesPage.
 export type { InvoiceView, InvoiceStatusFilter, InvoiceDateRange, SelectedReceivablesContext };
 
 interface InvoicesWorkspaceTab2Props {
@@ -25,8 +25,8 @@ interface InvoicesWorkspaceTab2Props {
 }
 
 /**
- * Table-only workspace tab for Invoices 2.
- * Header shell (title, search, KPI, filters) is owned by ReceivablesPage2
+ * Table-only workspace tab for the canonical Invoices workspace.
+ * Header shell (title, search, KPI, filters) is owned by InvoicesPage
  * so all four sections can share one elevated card.
  */
 export function InvoicesWorkspaceTab2({

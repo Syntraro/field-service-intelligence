@@ -1,6 +1,6 @@
 /**
  * DispatchTaskBlock — clickable, draggable, resizable task block on the dispatch timeline.
- * Visually distinct from visits (dashed border, blue color scheme; truck icon for supplier visits).
+ * Visually distinct from visits (dashed border, blue color scheme).
  * Parity with DispatchVisitBlock: click, drag, resize all supported.
  * Backend: PATCH /api/tasks/:id accepts scheduledStartAt and scheduledEndAt.
  */
@@ -15,7 +15,7 @@ import {
 } from "./dispatchPreviewUtils";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
-import { Clock, ClipboardList, Truck, FileSearch } from "lucide-react";
+import { Clock, ClipboardList, FileSearch } from "lucide-react";
 
 type Props = {
   task: DispatchTask;
@@ -36,20 +36,13 @@ type Props = {
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   GENERAL: "Task",
-  SUPPLIER_VISIT: "Supplier Visit",
   QUOTE_ASSESSMENT: "Quote Assessment",
-  supplier_run: "Supplier Run",
   pickup: "Pickup",
   delivery: "Delivery",
   meeting: "Meeting",
   training: "Training",
   vehicle_maintenance: "Vehicle",
 };
-
-/** Returns true if this task type should show the Truck icon */
-function isSupplierType(type: string): boolean {
-  return type === "SUPPLIER_VISIT" || type === "supplier_run";
-}
 
 /** Returns true if this is a quote assessment task */
 function isQuoteAssessment(type: string): boolean {
@@ -213,9 +206,7 @@ function DispatchTaskBlockImpl({ task, isSaving, isSelected, hasConflict, onSele
             <div className="flex items-center gap-1 truncate">
               {isQuoteAssessment(task.type)
                 ? <FileSearch className="h-3 w-3 flex-shrink-0" />
-                : isSupplierType(task.type)
-                  ? <Truck className="h-3 w-3 flex-shrink-0" />
-                  : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
+                : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
               <span className="truncate text-[11px] font-semibold">{task.title}</span>
             </div>
             <div className="flex items-center gap-1.5 text-[10px] opacity-80">
@@ -229,9 +220,7 @@ function DispatchTaskBlockImpl({ task, isSaving, isSelected, hasConflict, onSele
           <div className="flex items-center gap-0.5 truncate">
             {isQuoteAssessment(task.type)
               ? <FileSearch className="h-3 w-3 flex-shrink-0" />
-              : isSupplierType(task.type)
-                ? <Truck className="h-3 w-3 flex-shrink-0" />
-                : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
+              : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
             <span className="truncate text-[10px] font-semibold">{task.title}</span>
           </div>
         )}

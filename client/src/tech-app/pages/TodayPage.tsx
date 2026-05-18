@@ -352,7 +352,6 @@ function TaskCard({ task, isTimerRunning, onTap }: {
   onTap: () => void;
 }) {
   const isOverdue = task.scheduledStartAt && new Date(task.scheduledStartAt) < new Date();
-  const isSupplier = task.type === "SUPPLIER_VISIT";
   const isCompleted = task.status === "completed" || task.status === "cancelled";
   // 2026-04-10 INTEGRITY: Use canonical timer state, not task.status
   const isInProgress = isTimerRunning;
@@ -367,13 +366,9 @@ function TaskCard({ task, isTimerRunning, onTap }: {
     >
       <div className="flex items-start gap-2">
         <div className={`h-7 w-7 rounded-md flex items-center justify-center shrink-0 mt-0.5 ${
-          isCompleted ? "bg-slate-100" :
-          isSupplier ? "bg-amber-50" : isInProgress ? "bg-emerald-100" : "bg-indigo-50"
+          isCompleted ? "bg-slate-100" : isInProgress ? "bg-emerald-100" : "bg-indigo-50"
         }`}>
-          {isSupplier
-            ? <Truck className={isCompleted ? "text-slate-400" : "text-amber-600"} style={{ width: 14, height: 14 }} />
-            : <CheckSquare className={isCompleted ? "text-slate-400" : isInProgress ? "text-emerald-600" : "text-indigo-600"} style={{ width: 14, height: 14 }} />
-          }
+          <CheckSquare className={isCompleted ? "text-slate-400" : isInProgress ? "text-emerald-600" : "text-indigo-600"} style={{ width: 14, height: 14 }} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -392,7 +387,7 @@ function TaskCard({ task, isTimerRunning, onTap }: {
             )}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-400">
-            <span>{isSupplier ? "Supplier Visit" : "Task"}</span>
+            <span>Task</span>
             {task.scheduledStartAt && (
               <>
                 <span>·</span>
@@ -1229,7 +1224,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
               </div>
               <div className="text-left">
                 <p className="text-sm font-semibold text-slate-800">Create Task</p>
-                <p className="text-xs text-slate-400">General task or supplier visit</p>
+                <p className="text-xs text-slate-400">Reminder, follow-up, or to-do</p>
               </div>
             </button>
           </div>

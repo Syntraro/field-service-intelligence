@@ -34,13 +34,9 @@ import { useTheme } from "@/hooks/useTheme";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import JobsWorkspacePage from "@/pages/JobsWorkspacePage";
 import JobDetailPage from "@/pages/JobDetailPage";
-import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
 import NewInvoicePage from "@/pages/NewInvoicePage";
-// 2026-05-13: Receivables workspace — unified financial operations center.
-// Replaces the top-level "Invoices" sidebar entry; /invoices/* routes preserved.
-import ReceivablesPage from "@/pages/ReceivablesPage";
-import ReceivablesPage2 from "@/pages/ReceivablesPage2";
+import InvoicesPage from "@/pages/InvoicesPage";
 import QuotesPage from "@/pages/QuotesPage";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
@@ -104,7 +100,7 @@ const InvoiceRemindersSettingsPage = lazy(() => import("@/pages/InvoiceReminders
 // 2026-05-05: tenant-level Invoice Display policy.
 const InvoiceDisplaySettingsPage = lazy(() => import("@/pages/InvoiceDisplaySettingsPage"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
-import Clients from "@/pages/Clients";
+import ClientsWorkspacePage from "@/pages/clients/ClientsWorkspacePage";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
 // 2026-04-20 Phase 2 Team Hub: TechnicianManagementPage import removed.
@@ -157,6 +153,9 @@ const StyleGuideTypographyPage = lazy(
   () => import("@/pages/StyleGuideTypographyPage"),
 );
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
+// Settings hub sub-pages (2026-05-17 redesign)
+import CompanyInformationPage from "@/pages/settings/CompanyInformationPage";
+import CompanyRegionalPage from "@/pages/settings/CompanyRegionalPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
 import SessionExpiredDialog from "@/components/SessionExpiredDialog";
@@ -210,10 +209,8 @@ import { makeCreateMenuItems } from "@/components/create/createMenuConfig";
 import { AppTopNav } from "@/components/AppTopNav";
 import { useLayoutPreference } from "@/hooks/useLayoutPreference";
 import { HelpPanel } from "@/components/help/HelpPanel";
-// 2026-04-26: TaskDialog import removed from App.tsx — the canonical
-// CreateNewDialog mount below owns Task creation now (Task / Supplier Visit
-// tabs both render embedded TaskDialog instances). TaskDialog is still
-// imported standalone by callers that own EDIT mode (e.g. TasksPanel).
+// TaskDialog is imported standalone by callers that own EDIT mode (e.g. TasksPanel).
+// CreateTaskModal owns creation.
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 // 2026-05-01 brand pivot — canonical product / company strings.
 import { BRAND } from "@shared/branding";
@@ -226,8 +223,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import FeedbackDialog from "@/components/FeedbackDialog";
-import SuppliersListPage from "@/pages/SuppliersListPage";
-import SupplierDetailPage from "@/pages/SupplierDetailPage";
 import Locations from "@/pages/Locations";
 import DispatchBoard from "@/pages/DispatchPreview";
 const ServicePlansPage = lazy(() => import("@/pages/ServicePlansPage"));
@@ -346,26 +341,12 @@ function Router() {
           <JobDetailPage />
         </ProtectedRoute>
       </Route>
-      {/* 2026-05-13: Receivables workspace — unified hub (Queue + Invoices +
-          Payments + Activity + Insights). MUST be registered before /invoices/*
-          so wouter's registration-order matching doesn't confuse it with the
-          invoice routes below. */}
-      <Route path="/receivables">
-        <ProtectedRoute requireAdmin>
-          <ReceivablesPage />
-        </ProtectedRoute>
-      </Route>
-      {/* Invoices 2 — experimental redesign workspace. Original /receivables is untouched. */}
-      <Route path="/invoices-v2">
-        <ProtectedRoute requireAdmin>
-          <ReceivablesPage2 />
-        </ProtectedRoute>
-      </Route>
-      {/* /invoices → redirect to /receivables so existing bookmarks land on
-          the new workspace. The sub-routes /invoices/new and /invoices/:id
-          are preserved in full — they are unaffected by the sidebar rename. */}
+      {/* /invoices MUST be registered before /invoices/new and /invoices/:id
+          so the exact-path match fires first. */}
       <Route path="/invoices">
-        <Redirect to="/receivables" />
+        <ProtectedRoute requireAdmin>
+          <InvoicesPage />
+        </ProtectedRoute>
       </Route>
       <Route path="/invoices/new">
         <ProtectedRoute requireAdmin>
@@ -587,7 +568,7 @@ function Router() {
           is now handled by canonical CreateClientModal opened from any surface. */}
       <Route path="/clients">
         <ProtectedRoute requireAdmin>
-          <Clients />
+          <ClientsWorkspacePage />
         </ProtectedRoute>
       </Route>
       {/* Timesheets — 2026-05-05 promotion: WeekStackPage is now the
@@ -612,6 +593,17 @@ function Router() {
       <Route path="/settings">
         <ProtectedRoute requireAdmin>
           <SettingsPage />
+        </ProtectedRoute>
+      </Route>
+      {/* Settings hub — Company child pages */}
+      <Route path="/settings/company/information">
+        <ProtectedRoute requireAdmin>
+          <CompanyInformationPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/company/regional">
+        <ProtectedRoute requireAdmin>
+          <CompanyRegionalPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/tags">
@@ -654,10 +646,10 @@ function Router() {
         <Redirect to="/team?tab=schedule" />
       </Route>
       <Route path="/team/compensation">
-        <Redirect to="/team?tab=compensation" />
+        <Redirect to="/team?tab=payroll" />
       </Route>
       <Route path="/team/access">
-        <Redirect to="/team?tab=access" />
+        <Redirect to="/team?tab=permissions" />
       </Route>
       <Route path="/settings/custom-fields">
         <ProtectedRoute requireAdmin>
@@ -736,8 +728,12 @@ function Router() {
           <TimeBillingRulesPage />
         </ProtectedRoute>
       </Route>
-      {/* Regional settings now embedded in Company section */}
+      {/* Regional settings — redirect legacy path to dedicated page */}
       <Route path="/settings/regional">
+        <Redirect to="/settings/company/regional" />
+      </Route>
+      {/* Category overview paths redirect to hub (no separate category pages) */}
+      <Route path="/settings/company">
         <Redirect to="/settings" />
       </Route>
       <Route path="/settings/business-hours">
@@ -801,16 +797,6 @@ function Router() {
       <Route path="/all-locations">
         <ProtectedRoute requireAdmin>
           <Locations />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/suppliers">
-        <ProtectedRoute requireAdmin>
-          <SuppliersListPage />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/suppliers/:id">
-        <ProtectedRoute requireAdmin>
-          <SupplierDetailPage />
         </ProtectedRoute>
       </Route>
       {/* /dispatch-preview route removed 2026-04-10: duplicate of /dispatch, zero navigation entries */}
@@ -1431,7 +1417,7 @@ function AppContent() {
         onOpenChange={(open) => { if (!open) setCreateNewOpen(false); }}
       />
       <CreateTaskModal
-        open={createNewOpen && (createNewTab === "task" || createNewTab === "supplier-visit")}
+        open={createNewOpen && createNewTab === "task"}
         onOpenChange={(open) => { if (!open) setCreateNewOpen(false); }}
       />
       <CreateMaintenancePlanDialog

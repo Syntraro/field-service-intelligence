@@ -30,15 +30,6 @@ const closeTaskSchema = z.object({
   userId: z.string().uuid(),
 }).strict();
 
-const updateSupplierVisitSchema = z.object({
-  supplierId: z.string().uuid().nullable().optional(),
-  supplierLocationId: z.string().uuid().nullable().optional(),
-  supplierNameOther: z.string().max(200).nullable().optional(),
-  poNumber: z.string().max(100).nullable().optional(),
-  reconciledByUserId: z.string().uuid().optional(),
-  reconcile: z.boolean().optional(),
-}).strict();
-
 // ========================================
 // ROUTES
 // ========================================
@@ -208,60 +199,6 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(task);
-}));
-
-/* GET SUPPLIER VISIT DETAILS */
-router.get("/:id/supplier-visit", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId!;
-  const taskId = req.params.id;
-
-  // Verify task belongs to company
-  const task = await service.getTask(companyId, taskId);
-  if (!task) {
-    throw createError(404, "Task not found");
-  }
-
-  // Get supplier visit details
-  const supplierVisit = await service.getSupplierVisitDetails(companyId, taskId);
-
-  res.json(supplierVisit || {});
-}));
-
-/* SUPPLIER VISIT UPDATE (OFFICE) */
-router.patch("/:id/supplier-visit", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId!;
-  const taskId = req.params.id;
-
-  if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + taskId + "/supplier-visit body:", JSON.stringify(req.body));
-  const validated = validateSchema(updateSupplierVisitSchema, req.body);
-
-  try {
-    const result = await service.updateSupplierVisit(companyId, taskId, validated);
-    if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + taskId + "/supplier-visit OK:", { taskId: result.taskId, supplierId: result.supplierId });
-    res.json(result);
-  } catch (error: any) {
-    // Re-throw known app errors (they already have statusCode)
-    if (error.statusCode || error.status) throw error;
-
-    // Convert DB constraint violations to 4xx
-    const msg = error?.message || "";
-    const detail = error?.detail || "";
-    if (msg.includes("violates foreign key constraint") || error?.code === "23503") {
-      const hint = detail.includes("supplier_id")
-        ? "The selected supplier does not exist."
-        : detail.includes("supplier_location_id")
-        ? "The selected supplier location does not exist."
-        : "A referenced record does not exist.";
-      throw createError(400, hint);
-    }
-    if (msg.includes("violates unique constraint") || error?.code === "23505") {
-      throw createError(409, "Supplier visit details already exist for this task.");
-    }
-
-    // Unknown DB error — log and return safe message
-    console.error("[TASKS] supplier-visit update failed:", { taskId, error: msg, code: error?.code, detail });
-    throw createError(500, "Failed to save supplier visit details. Please try again.");
-  }
 }));
 
 export default router;

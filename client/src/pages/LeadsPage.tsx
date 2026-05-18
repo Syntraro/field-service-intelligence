@@ -1,158 +1,51 @@
 /**
- * Leads list page — Pre-quote pipeline tracking.
+ * Leads workspace page — thin shell.
  *
- * Matches Jobs/Invoices/Quotes page hierarchy:
- * Header → Summary cards → Search/filters → Table
+ * Owns: URL ?view= sync, searchQuery, query, metrics/counts, KPI cards,
+ * workspace shell, header, filter bar.
+ * Delegates: columns, pagination, table/footer render → LeadListPanel.
  */
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useSearch, useLocation } from "wouter";
 import {
-  Search, FileText, Users, Briefcase, TrendingUp,
+  Search, FileText, TrendingUp, AlertCircle, XCircle, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-// 2026-05-08 chip Phase 2: status filter buttons → FilterChip.
-import { FilterChip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
-import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { PageHeader } from "@/components/layout/PageHeader";
-// 2026-05-09: state-block migration — EmptyState replaced by typed descriptors.
-// 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
-// See `client/src/components/lists/EntityListTable.tsx` for the rationale
-// and the per-kind sizing rules baked into the component.
-import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
-import { getLeadStatusMeta } from "@/lib/statusBadges";
-import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { apiRequest } from "@/lib/queryClient";
-// 2026-05-06: lead creation moved to /leads/new (full-page CreateLeadPage).
-// The button below navigates via wouter instead of opening a modal.
-import type { Lead } from "@shared/schema";
-
-interface EnrichedLead extends Lead {
-  locationDisplayName: string | null;
-  locationSiteName: string | null;
-  locationCity: string | null;
-}
-
-type LeadFilterStatus = "all" | "needs_action" | "quoted" | "won" | "lost";
-
-// 2026-05-03 Load more pattern: render in batches of 50 client-side. The
-// underlying `/api/leads` query fetches the full list per the existing
-// behavior; this only controls how many rows render at a time. Reset on
-// filter / search change.
-const LEADS_PAGE_SIZE = 50;
-
-// 2026-05-03 status consolidation: the inline `STATUS_BADGE` map was
-// migrated to `getLeadStatusMeta` in `lib/statusBadges.ts`. The status
-// cell now renders via the canonical `<StatusBadge>` component.
-
-// Column order (2026-05-09): Client · Title · Source · Priority · Status · Est. Value · Created
-// Client is the entity identity (company + location helper text).
-// Title is the flexible/truncating description column.
-// Module-scoped (stable identity across renders — no closures on render-state).
-const LEAD_COLUMNS: EntityListColumn<EnrichedLead>[] = [
-  {
-    id: "client",
-    header: "Client",
-    kind: "primary",
-    ratio: 1.4,
-    minWidthPx: 160,
-    cell: {
-      type: "entity-primary",
-      value: (lead) => lead.locationDisplayName || "Unknown Client",
-      secondary: (lead) => lead.locationSiteName || lead.locationCity || undefined,
-    },
-  },
-  {
-    id: "title",
-    header: "Title",
-    kind: "text",
-    ratio: 1.5,
-    cell: {
-      type: "entity-text",
-      value: (lead) => lead.title,
-    },
-  },
-  {
-    id: "source",
-    header: "Source",
-    kind: "text",
-    ratio: 0.7,
-    cell: {
-      type: "entity-text",
-      value: (lead) => lead.sourceType
-        ? lead.sourceType.charAt(0).toUpperCase() + lead.sourceType.slice(1)
-        : null,
-    },
-  },
-  {
-    id: "priority",
-    header: "Priority",
-    kind: "text",
-    ratio: 0.6,
-    cell: {
-      type: "entity-text",
-      value: (lead) => lead.priority
-        ? lead.priority.charAt(0).toUpperCase() + lead.priority.slice(1)
-        : null,
-    },
-  },
-  {
-    id: "status",
-    header: "Status",
-    kind: "status",
-    cell: {
-      type: "entity-status",
-      getStatusMeta: (lead) => getLeadStatusMeta(lead.status),
-    },
-  },
-  {
-    id: "estValue",
-    header: "Est. Value",
-    kind: "money",
-    cell: {
-      type: "entity-money",
-      value: (lead) => lead.estimatedValue,
-    },
-  },
-  {
-    id: "createdAt",
-    header: "Created",
-    kind: "date",
-    cell: {
-      type: "entity-date",
-      value: (lead) => lead.createdAt,
-    },
-  },
-];
-
-function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
-  label: string; value: string; note: string;
-  icon: React.ElementType; iconColor: string; iconBg: string;
-}) {
-  return (
-    <div className="bg-card rounded-md border border-card-border shadow-sm px-5 py-4">
-      <div className="flex items-center gap-3">
-        <div className={`p-1.5 rounded-md ${iconBg}`}>
-          <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
-        </div>
-        <div className="text-row font-medium text-slate-500">{label}</div>
-      </div>
-      <div className="text-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-row text-slate-500 mt-1">{note}</div>
-    </div>
-  );
-}
+import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
+import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
+import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
+import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
+import {
+  WorkspaceFilterBar,
+  WorkspaceViewChip,
+} from "@/components/workspace/WorkspaceFilterBar";
+import {
+  type EnrichedLead,
+  type LeadView,
+  VALID_LEAD_VIEWS,
+  readLeadViewFromSearch,
+  leadFilterLabel,
+} from "@/lib/leadWorkspaceConfig";
+import { LeadListPanel } from "./leads/LeadListPanel";
+import { LeadRailBody } from "./leads/LeadRailBody";
+import type { SelectedLeadContext } from "./leads/LeadActionsRail";
 
 export default function LeadsPage() {
+  const search = useSearch();
   const [, setLocation] = useLocation();
-  const [activeFilter, setActiveFilter] = useState<LeadFilterStatus>("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [visibleCount, setVisibleCount] = useState(LEADS_PAGE_SIZE);
 
-  // Reset slice on filter / search change so the user always sees the
-  // first page of the new result set.
-  useEffect(() => { setVisibleCount(LEADS_PAGE_SIZE); }, [activeFilter, searchQuery]);
+  // Active view is derived from URL; URL is the single source of truth.
+  const activeView = readLeadViewFromSearch(search);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedContext, setSelectedContext] = useState<SelectedLeadContext | null>(null);
+
+  const handleSelectionChange = useCallback((ctx: SelectedLeadContext | null) => {
+    setSelectedContext(ctx);
+  }, []);
 
   const { data: leadsResponse, isLoading, isError, refetch: refetchLeads } = useQuery<{ data: EnrichedLead[] }>({
     queryKey: ["leads"],
@@ -161,7 +54,7 @@ export default function LeadsPage() {
 
   const leads: EnrichedLead[] = leadsResponse?.data ?? [];
 
-  // Summary metrics
+  // Summary metrics — drives both KPI cards and chip counts.
   const metrics = useMemo(() => {
     let needsAction = 0, quoted = 0, won = 0, lost = 0;
     for (const l of leads) {
@@ -173,12 +66,13 @@ export default function LeadsPage() {
     return { needsAction, quoted, won, lost, total: leads.length };
   }, [leads]);
 
+  // Client-side filtering. needs_action is composite (new | contacted).
   const filteredLeads = useMemo(() => {
     let result = leads;
-    if (activeFilter === "needs_action") result = result.filter(l => l.status === "new" || l.status === "contacted");
-    else if (activeFilter === "quoted") result = result.filter(l => l.status === "quoted");
-    else if (activeFilter === "won") result = result.filter(l => l.status === "won");
-    else if (activeFilter === "lost") result = result.filter(l => l.status === "lost");
+    if (activeView === "needs_action") result = result.filter(l => l.status === "new" || l.status === "contacted");
+    else if (activeView === "quoted") result = result.filter(l => l.status === "quoted");
+    else if (activeView === "won") result = result.filter(l => l.status === "won");
+    else if (activeView === "lost") result = result.filter(l => l.status === "lost");
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -188,7 +82,7 @@ export default function LeadsPage() {
       );
     }
     return result;
-  }, [leads, activeFilter, searchQuery]);
+  }, [leads, activeView, searchQuery]);
 
   const statusCounts = useMemo(() => ({
     all: leads.length,
@@ -198,87 +92,142 @@ export default function LeadsPage() {
     lost: metrics.lost,
   }), [leads.length, metrics]);
 
-  // List stability: single return path — loading state renders inside content area only
+  // Opaque key passed to LeadListPanel to reset its load-more cursor whenever
+  // the view or search changes, without triggering a reset on background refresh.
+  const resetKey = `${activeView}:${searchQuery}`;
+  const hasActiveFilter = activeView !== "all" || searchQuery.trim() !== "";
+
+  const handleViewChange = (view: LeadView) => {
+    const params = new URLSearchParams(search);
+    if (view === "all") params.delete("view");
+    else params.set("view", view);
+    // Preserve any other existing params (e.g. future tab= or date= params).
+    const qs = params.toString();
+    setLocation(qs ? `/leads?${qs}` : "/leads");
+  };
+
+  const kpiCards: WorkspaceKpiDescriptor[] = [
+    {
+      id: "needs-action",
+      label: "Needs Action",
+      value: String(metrics.needsAction),
+      sub: "New + contacted leads",
+      icon: AlertCircle,
+      iconColor: "text-amber-600",
+      iconBg: "bg-amber-100",
+      loading: isLoading,
+      testId: "kpi-leads-needs-action",
+    },
+    {
+      id: "quoted",
+      label: "Quoted",
+      value: String(metrics.quoted),
+      sub: "Converted to quote",
+      icon: FileText,
+      iconColor: "text-blue-600",
+      iconBg: "bg-blue-100",
+      loading: isLoading,
+      testId: "kpi-leads-quoted",
+    },
+    {
+      id: "won",
+      label: "Won",
+      value: String(metrics.won),
+      sub: "Converted to job",
+      icon: TrendingUp,
+      iconColor: "text-green-600",
+      iconBg: "bg-green-100",
+      loading: isLoading,
+      testId: "kpi-leads-won",
+    },
+    {
+      id: "lost",
+      label: "Lost",
+      value: String(metrics.lost),
+      sub: "Declined or expired",
+      icon: XCircle,
+      iconColor: "text-red-500",
+      iconBg: "bg-red-100",
+      loading: isLoading,
+      testId: "kpi-leads-lost",
+    },
+  ];
+
   return (
-    <div className="h-full bg-app-bg flex flex-col overflow-hidden" data-testid="leads-page">
-      <PageHeader title="Leads">
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <Input
-            placeholder="Search leads…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 w-56 h-8 rounded-lg border-slate-200 bg-white text-sm"
-            data-testid="input-search-leads"
-          />
-        </div>
-
-        {/* Status filter */}
-        <FiltersButton activeCount={activeFilter !== "all" ? 1 : 0} onClear={() => setActiveFilter("all")}>
-          <FilterSection label="Status">
-            <div className="flex flex-wrap gap-1.5">
-              {(["all", "needs_action", "quoted", "won", "lost"] as LeadFilterStatus[]).map((f) => (
-                <FilterChip
-                  key={f}
-                  selected={activeFilter === f}
-                  onClick={() => setActiveFilter(f)}
-                  data-testid={`button-filter-${f}`}
+    <div className="h-full bg-app-bg overflow-hidden" data-testid="leads-page">
+      <OperationalWorkspace
+        center={
+          <>
+            <OperationalWorkspaceHeader
+              icon={Users}
+              iconColor="text-blue-600"
+              iconBg="bg-blue-50"
+              title="Leads"
+              subtitle="Track pre-quote pipeline opportunities."
+              search={
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" aria-hidden="true" />
+                  <Input
+                    placeholder="Search leads…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 w-52 h-8 rounded-lg border-slate-200 bg-white text-sm"
+                    data-testid="input-search-leads"
+                  />
+                </div>
+              }
+              primaryAction={
+                <Button
+                  size="sm"
+                  className="gap-1.5 rounded-lg px-3.5"
+                  onClick={() => setLocation("/leads/new")}
+                  data-testid="button-new-lead"
                 >
-                  {f === "all" ? "All" : f === "needs_action" ? "Needs Action" : f.charAt(0).toUpperCase() + f.slice(1)}
-                  {` (${statusCounts[f]})`}
-                </FilterChip>
-              ))}
+                  New Lead
+                </Button>
+              }
+              kpis={
+                <WorkspaceKpiStrip kpis={kpiCards} data-testid="leads-kpi-strip" />
+              }
+            />
+
+            {/* Filter bar — between header card and table, matching Invoices/Quotes/Jobs */}
+            <div className="shrink-0 px-4 py-2">
+              <WorkspaceFilterBar variant="flat" data-testid="leads-filter-bar">
+                {VALID_LEAD_VIEWS.map((view) => (
+                  <WorkspaceViewChip
+                    key={view}
+                    size="md"
+                    active={activeView === view}
+                    onClick={() => handleViewChange(view)}
+                    count={statusCounts[view]}
+                    data-testid={`button-filter-${view}`}
+                  >
+                    {leadFilterLabel(view)}
+                  </WorkspaceViewChip>
+                ))}
+              </WorkspaceFilterBar>
             </div>
-          </FilterSection>
-        </FiltersButton>
 
-        {/* New Lead */}
-        {/* 2026-05-06: navigates to the full-page /leads/new flow.
-            The data-testid is preserved so existing test pins still match. */}
-        <Button size="sm" className="gap-1.5 rounded-lg px-3.5" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
-          New Lead
-        </Button>
-      </PageHeader>
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-6 space-y-5">
-          {/* Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <SummaryCard label="Needs Action" value={String(metrics.needsAction)} note="New + contacted leads" icon={Users} iconColor="text-blue-600" iconBg="bg-blue-100" />
-            <SummaryCard label="Quoted" value={String(metrics.quoted)} note="Converted to quote" icon={FileText} iconColor="text-amber-600" iconBg="bg-amber-100" />
-            <SummaryCard label="Won" value={String(metrics.won)} note="Converted to job" icon={Briefcase} iconColor="text-emerald-600" iconBg="bg-emerald-100" />
-            <SummaryCard label="Lost" value={String(metrics.lost)} note="Declined or expired" icon={TrendingUp} iconColor="text-slate-500" iconBg="bg-slate-100" />
-          </div>
-
-          {/* Table */}
-          <EntityListTable<EnrichedLead>
-            rows={filteredLeads.slice(0, visibleCount)}
-            rowKey={(lead) => lead.id}
-            onRowClick={(lead) => setLocation(`/leads/${lead.id}`)}
-            loadingState={isLoading}
-            emptyState={
-              searchQuery || activeFilter !== "all"
-                ? { kind: "no-results", title: "No leads match your filters", icon: "users" }
-                : { kind: "empty", title: "No leads yet", icon: "users", description: "Create your first lead to start tracking opportunities." }
-            }
-            errorState={
-              isError
-                ? { kind: "error", title: "Failed to load leads", primaryAction: { label: "Retry", onClick: () => refetchLeads(), variant: "outline" } }
-                : undefined
-            }
-            columns={LEAD_COLUMNS}
-          />
-
-          <ListLoadMoreFooter
-            visibleCount={Math.min(visibleCount, filteredLeads.length)}
-            totalCount={filteredLeads.length}
-            hasMore={visibleCount < filteredLeads.length}
-            onLoadMore={() => setVisibleCount((c) => c + LEADS_PAGE_SIZE)}
-            label="lead"
-          />
-        </div>
-      </div>
+            <WorkspaceCenterPane data-testid="leads-center-pane">
+              <LeadListPanel
+                rows={filteredLeads}
+                loading={isLoading}
+                isError={isError}
+                onRetry={refetchLeads}
+                resetKey={resetKey}
+                hasActiveFilter={hasActiveFilter}
+                selectedLeadId={selectedContext?.leadId}
+                onSelectionChange={handleSelectionChange}
+              />
+            </WorkspaceCenterPane>
+          </>
+        }
+        centerClassName="overflow-x-auto overflow-y-hidden"
+        rightRail={selectedContext ? <LeadRailBody context={selectedContext} /> : null}
+        rightRailExpanded={!!selectedContext}
+        data-testid="leads-workspace"
+      />
     </div>
   );
 }

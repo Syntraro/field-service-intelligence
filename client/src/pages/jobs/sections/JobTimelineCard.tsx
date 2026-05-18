@@ -15,10 +15,11 @@ function buildTimeline(notes: JobNote[], visits: JobVisit[]): TimelineEvent[] {
   for (const note of notes) {
     const nameParts = [note.user?.firstName, note.user?.lastName].filter(Boolean).join(" ");
     const author = note.user?.fullName ?? (nameParts || null);
+    const noteType = note.noteType || "general";
     events.push({
       kind: "note",
       id: note.id,
-      label: note.noteType === "general" ? "Note" : note.noteType.replace(/_/g, " "),
+      label: noteType === "general" ? "Note" : noteType.replace(/_/g, " "),
       date: new Date(note.createdAt),
       author,
     });

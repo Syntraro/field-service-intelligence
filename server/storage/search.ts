@@ -2,7 +2,7 @@
  * Universal Search Storage
  *
  * Provides fast multi-entity search across jobs, invoices, customer companies,
- * client locations, and suppliers. Uses pg_trgm for fuzzy text matching.
+ * and client locations. Uses pg_trgm for fuzzy text matching.
  *
  * Phase 1 of RALPH global search implementation.
  *
@@ -19,7 +19,7 @@ import { JOB_ACTIVE_SQL_J } from "./jobFilters";
 // TYPES
 // ========================================
 
-export type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "supplier" | "contact";
+export type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "contact";
 
 export interface SearchResult {
   type: SearchResultType;
@@ -358,29 +358,6 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     LIMIT $5
   `;
 
-  const supplierQuery = `
-    SELECT
-      'supplier' as type,
-      s.id,
-      s.name as title,
-      COALESCE(s.email, s.phone, '') as subtitle,
-      CASE
-        WHEN s.name ILIKE $2 THEN 'name'
-        WHEN s.email ILIKE $2 THEN 'email'
-        WHEN $4 AND regexp_replace(s.phone, '\\D', '', 'g') ILIKE $3 THEN 'phone'
-        ELSE 'name'
-      END as match
-    FROM suppliers s
-    WHERE s.company_id = $1
-      AND s.deleted_at IS NULL
-      AND (
-        s.name ILIKE $2
-        OR s.email ILIKE $2
-        OR ($4 AND regexp_replace(s.phone, '\\D', '', 'g') ILIKE $3)
-      )
-    ORDER BY s.name
-    LIMIT $5
-  `;
 
   const contactQuery = `
     SELECT
@@ -504,12 +481,11 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
   // ========================================
   // Execute queries 1-6 + ref fields in parallel (Phase 1)
   // ========================================
-  const [invoiceRes, jobNumberRes, customerRes, locationRes, supplierRes, contactRes, refFieldRes] = await Promise.all([
+  const [invoiceRes, jobNumberRes, customerRes, locationRes, contactRes, refFieldRes] = await Promise.all([
     invoicePromise,
     jobNumberPromise,
     pool.query(customerQuery, sharedParams),
     pool.query(locationQuery, sharedParams),
-    pool.query(supplierQuery, sharedParams),
     pool.query(contactQuery, sharedParams),
     refFieldPromise,
   ]);
@@ -563,13 +539,6 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     subtitle: r.subtitle,
     match: r.match,
     customerCompanyId: r.customerCompanyId,
-  })));
-  results.push(...supplierRes.rows.map((r: any) => ({
-    type: r.type as SearchResultType,
-    id: r.id,
-    title: r.title,
-    subtitle: r.subtitle,
-    match: r.match,
   })));
   results.push(...contactRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,

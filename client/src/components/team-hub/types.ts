@@ -1,4 +1,5 @@
 // 2026-04-20 Phase 2 Team Hub: shared type shapes.
+// 2026-05-17 Phase 3: added skill library + member skill assignment types.
 // Mirrors server/routes/team.ts response structures; keep in sync if they drift.
 
 export interface TeamMemberRow {
@@ -75,4 +76,168 @@ export interface Permission {
   displayName: string;
   description: string | null;
   category: string;
+}
+
+export type MetricsPeriod = "last_30_days" | "last_90_days" | "last_12_months";
+
+export interface TeamMemberMetrics {
+  userId: string;
+  hoursWorked: number;
+  scheduledHoursInPeriod: number;
+  utilizationPct: number | null;
+  jobsCompleted: number;
+  allocatedRevenue: number;
+  avgRevPerHour: number | null;
+  leadsGenerated: number;
+  leadRevenue: number;
+}
+
+export interface TeamMetricsResponse {
+  period: MetricsPeriod;
+  members: TeamMemberMetrics[];
+}
+
+export interface MonthlyPerformancePoint {
+  month: string; // "YYYY-MM"
+  hoursWorked: number;
+  jobsCompleted: number;
+  allocatedRevenue: number;
+  avgRevPerHour: number | null;
+}
+
+export interface ScoreComponent {
+  key: "utilization" | "revPerHour" | "throughput" | "leadContribution";
+  label: string;
+  score: number;
+  hasData: boolean;
+  raw: number | null;
+  unit: string;
+}
+
+export type Grade = "A" | "B" | "C" | "D" | "F";
+
+export interface EfficiencyScore {
+  overall: number;
+  grade: Grade;
+  components: ScoreComponent[];
+  strengths: string[];
+  opportunities: string[];
+  hasData: boolean;
+  methodNote: string;
+}
+
+export interface LeadConversionMetrics {
+  leadsGenerated: number;
+  leadsConvertedToQuote: number;
+  leadsConvertedToJob: number;
+  leadRevenue: number;
+  quoteConversionRate: number | null;
+  jobConversionRate: number | null;
+  hasTracedRevenue: boolean;
+}
+
+export interface MemberPerformanceResponse {
+  period: MetricsPeriod;
+  metrics: TeamMemberMetrics;
+  monthlyTrend: MonthlyPerformancePoint[];
+  efficiencyScore: EfficiencyScore;
+  leadConversion: LeadConversionMetrics;
+}
+
+// ── Phase 3: Skills ────────────────────────────────────────────────────────
+
+export const SKILL_LEVELS = ["basic", "intermediate", "advanced", "certified"] as const;
+export type SkillLevel = typeof SKILL_LEVELS[number];
+
+export const SKILL_LEVEL_LABELS: Record<SkillLevel, string> = {
+  basic: "Basic",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+  certified: "Certified",
+};
+
+export type ExpiryStatus = "valid" | "expiring_soon" | "expired";
+
+/** One entry in the company-wide skill library. */
+export interface TeamSkillLibraryItem {
+  id: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  isActive: boolean;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+// ── Workforce capacity + workload intelligence types ─────────────────────────
+
+export type ForecastWindow = "today" | "tomorrow" | "week" | "next_week" | "30d";
+export type WorkloadWindow = "today" | "this_week" | "last_30_days";
+
+export interface WorkloadCategory {
+  hours: number;
+  pct: number;
+}
+
+export interface WorkloadBreakdown {
+  window: WorkloadWindow;
+  totalHours: number;
+  billable: WorkloadCategory;
+  drive: WorkloadCategory;
+  general: WorkloadCategory;
+}
+
+export interface MemberCapacityRow {
+  userId: string;
+  name: string;
+  role: string;
+  todayAvailableHours: number;
+  todayScheduledHours: number;
+  todayUtilizationPct: number | null;
+  workedHoursThisWeek: number;
+  scheduledRemainingHoursThisWeek: number;
+  forecastedWeekHours: number;
+  targetWeeklyHours: number;
+}
+
+export interface TeamCapacitySnapshot {
+  availableHours: number;
+  scheduledHours: number;
+  openHours: number;
+  utilizationPct: number | null;
+}
+
+export interface TeamCapacityForecast {
+  generatedAt: string;
+  today: TeamCapacitySnapshot;
+  members: MemberCapacityRow[];
+}
+
+export interface PmWindowForecast {
+  pendingInstanceCount: number;
+  estimatedTotalHours: number;
+}
+
+export interface PmForecast {
+  generatedAt: string;
+  thisWeek: PmWindowForecast;
+  nextWeek: PmWindowForecast;
+  next30Days: PmWindowForecast;
+}
+
+/** A skill assigned to a specific team member. */
+export interface TeamMemberSkill {
+  id: string;
+  skillId: string;
+  name: string;
+  category: string | null;
+  level: SkillLevel;
+  certificationName: string | null;
+  certificationExpiresAt: string | null;
+  notes: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string | null;
+  expiryStatus: ExpiryStatus | null;
 }

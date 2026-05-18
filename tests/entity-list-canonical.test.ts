@@ -34,7 +34,6 @@ const PAGE_PATHS = {
   quotes:    "client/src/pages/Quotes.tsx",
   clients:   "client/src/pages/Clients.tsx",
   locations: "client/src/pages/Locations.tsx",
-  suppliers: "client/src/pages/SuppliersListPage.tsx",
   pm:        "client/src/pages/PMWorkspacePage.tsx",
 } as const;
 
@@ -216,13 +215,6 @@ const CUSTOM_RENDER_ALLOWLIST: Record<PageKey, { count: number; entries: string[
       "locationColumns:tags   — TAG_PILLS (flex-wrap color-coded tag pills from dynamic data)",
     ],
   },
-  suppliers: {
-    count: 2,
-    entries: [
-      "SUPPLIER_COLUMNS:name   — ICON_COMPOSITE (Building2 icon + supplier name)",
-      "SUPPLIER_COLUMNS:active — CONDITIONAL (CheckCircle2 or XCircle icon based on status)",
-    ],
-  },
   pm: {
     count: 7,
     entries: [
@@ -312,12 +304,6 @@ describe("No legacy text-size ramp classes in core list page column arrays", () 
     expect(code).not.toMatch(/\btext-(?:xs|sm|base|lg|xl|2xl)\b/);
   });
 
-  it("suppliers SUPPLIER_COLUMNS — no legacy size ramp in column array", () => {
-    // Suppliers is module-scoped (no toolbar UI that might add text-xs).
-    const start = srcs.suppliers.indexOf("const SUPPLIER_COLUMNS");
-    const snippet = srcs.suppliers.slice(start, start + 3000);
-    expect(snippet).not.toMatch(FORBIDDEN_SIZE_RE);
-  });
 });
 
 // ── 8. entity-status canonical path ──────────────────────────────────────────

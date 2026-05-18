@@ -4,6 +4,25 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-17: Leads right rail canonical compliance fixes
+
+### Scope
+`client/src/pages/leads/LeadActionsRail.tsx`
+
+### Issues Fixed
+
+**1. Spurious inter-section divider**
+The initial implementation injected a manual `<div className="-mx-3 mt-3 border-t border-slate-100" />` between the Quick Actions and Recent Notes `WorkspaceSectionCard`s. This is not canonical. The canonical pattern (`JobActionsRail`) inserts exactly one manual divider — after the entity card — then lets `WorkspaceSectionCard variant="section"` own its own `border-b border-border last:border-b-0` separators between consecutive sections. The double divider was removed.
+
+**2. Non-canonical notes list rendering**
+The initial implementation used a bespoke `space-y-3` list with `text-foreground/80` (an opacity modifier) and flat `div` stacking. The canonical note rendering pattern (established by `JobLatestNotesCard` and `InvoiceActivityCard`) wraps entries in an inset card (`rounded-md border border-border bg-inset-surface p-3`), uses a brand dot bullet (`h-1.5 w-1.5 rounded-full bg-brand`), and renders `text-helper text-muted-foreground` for the meta line and `text-row text-foreground` for the note body. The leads notes section was refactored to match exactly.
+
+### Reference Canonicals
+- Section divider pattern: `JobActionsRail.tsx`
+- Note rendering pattern: `JobLatestNotesCard.tsx`, `InvoiceActivityCard.tsx`
+
+---
+
 ## 2026-05-10: Phase 2F — srOnly/Placeholder-first → Inline-field Migration
 
 ### Status

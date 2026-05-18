@@ -1,26 +1,12 @@
-// 2026-04-20 Phase 2 Team Hub: page shell at /settings/team.
-// Phase 4 (2026-04-20): URL state (?tab=&member=) persists selection across
-// refresh + tab switches.
-// 2026-05-05 member-centric restructure (real version): the page is now
-// a 2-column workspace, not a tabbed feature surface.
+// Team Management Workspace — /settings/team and /team aliases.
 //
-//   ┌───────────────┬──────────────────────────────────────┐
-//   │               │  selected-member header (chips, ⏻)   │
-//   │  TeamMember   │  ┌────────────────────────────────┐  │
-//   │  List         │  │ Overview / Schedule / Comp /   │  │
-//   │  (search +    │  │ Access tabs — all on the same  │  │
-//   │  filters +    │  │ selected member                 │  │
-//   │  rows)        │  └────────────────────────────────┘  │
-//   │               │                                      │
-//   └───────────────┴──────────────────────────────────────┘
+// Operational team management hub: default view shows a team-level
+// performance overview (no empty "pick a member" state). Selecting a
+// member from the left rail switches to the individual member workspace
+// with Performance / Schedule / Payroll & Cost / Permissions / Skills tabs.
 //
-// The user picks ONE member from the left list and every tab on the
-// right operates on that person — no tab has its own list, no tab
-// requires selecting the member again. Switching tabs preserves the
-// member because `?member=<id>` is the URL source of truth.
-//
-// Legacy `?tab=members | schedules` URL values continue to resolve
-// onto the new ids in `LEGACY_TAB_ALIAS` so old deep-links don't 404.
+// URL state: ?member=<id>&tab=<tabId> — both persisted across refreshes.
+// Legacy tab aliases preserved so old deep-links keep working.
 import { useCallback, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -32,44 +18,40 @@ import {
   TeamMemberWorkspace,
   type WorkspaceTabId,
 } from "@/components/team-hub/TeamMemberWorkspace";
-// 2026-05-05 simplification pass: TeamMetricsStrip (Active/Inactive/Total/
-// On Calendar / Custom Schedule KPI cards) removed from this surface.
-// 2026-05-04 Phase 6: removed the `isPlatformRole` defensive filter.
-// `users.role` is now constrained at the DB level to tenant roles
-// only (`users_role_tenant_only_chk` CHECK constraint), so the
-// `/api/team` payload structurally cannot contain a platform-role row.
 
-const VALID_TABS = ["overview", "schedule", "compensation", "access"] as const;
+const VALID_TABS = [
+  "performance",
+  "schedule",
+  "payroll",
+  "permissions",
+  "skills",
+] as const;
 
+// Legacy URL values from the old Overview/Compensation/Access tab set
 const LEGACY_TAB_ALIAS: Record<string, WorkspaceTabId> = {
-  members: "overview",
+  overview: "performance",
+  compensation: "payroll",
+  access: "permissions",
+  // Old member-list deep-links
+  members: "performance",
   schedules: "schedule",
 };
 
 const isValidTab = (v: string | null): v is WorkspaceTabId =>
   !!v && (VALID_TABS as readonly string[]).includes(v);
 
-/** Resolve a raw `?tab=` value to a canonical WorkspaceTabId, mapping
- *  legacy values onto their new equivalents. Returns null when the
- *  input isn't recognised; caller falls back to "overview". */
 function resolveTabId(raw: string | null): WorkspaceTabId | null {
   if (!raw) return null;
   if (isValidTab(raw)) return raw;
   return LEGACY_TAB_ALIAS[raw] ?? null;
 }
 
-/**
- * Write a shallow URL update that keeps other query params intact.
- * wouter's useLocation doesn't clobber query — we build the full path
- * ourselves and call the setter with replace semantics so we don't
- * pollute history with every tab click.
- */
 function useHubUrlState() {
   const [location, setLocation] = useLocation();
   const search = useSearch();
   const params = useMemo(() => new URLSearchParams(search), [search]);
 
-  const tab: WorkspaceTabId = resolveTabId(params.get("tab")) ?? "overview";
+  const tab: WorkspaceTabId = resolveTabId(params.get("tab")) ?? "performance";
   const selectedMember = params.get("member") || null;
 
   const updateParam = useCallback(
@@ -88,7 +70,7 @@ function useHubUrlState() {
   );
 
   const setTab = useCallback(
-    (t: WorkspaceTabId) => updateParam({ tab: t === "overview" ? null : t }),
+    (t: WorkspaceTabId) => updateParam({ tab: t === "performance" ? null : t }),
     [updateParam],
   );
   const setSelectedMember = useCallback(
@@ -119,8 +101,7 @@ export default function TeamHubPage() {
               className="text-sm text-muted-foreground mt-1"
               data-testid="text-team-subtitle"
             >
-              Pick a member on the left to manage their profile, schedule,
-              compensation, and access in one place.
+              Team performance, scheduling, payroll, and access management.
             </p>
           </div>
           <div className="flex gap-2">
@@ -142,10 +123,9 @@ export default function TeamHubPage() {
           </div>
         </div>
 
-        {/* 2-column member-centric layout. The list is the single
-            source of truth for selection; the workspace renders the
-            member-level tabs (Overview / Schedule / Compensation /
-            Access) and operates on whichever member is selected. */}
+        {/* 2-column workspace: shared left rail + member detail right pane.
+            When no member is selected the right pane shows TeamOverviewDashboard
+            instead of an empty "pick someone" state. */}
         <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4">
           <TeamMemberList
             selectedMemberId={selectedMember}

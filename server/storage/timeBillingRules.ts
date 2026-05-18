@@ -29,7 +29,6 @@ export interface TimeBillingRulesWithDefaults {
   roundingMode: RoundingMode;
   minimumBillableMinutes: number;
   billTravel: boolean;
-  billSupplierRun: boolean;
   billAdmin: boolean;
   travelRateMultiplier: string;
   onSiteRateMultiplier: string;
@@ -69,7 +68,6 @@ export function computeRulesHash(rules: TimeBillingRulesWithDefaults): string {
     roundingMode: rules.roundingMode,
     minimumBillableMinutes: rules.minimumBillableMinutes,
     billTravel: rules.billTravel,
-    billSupplierRun: rules.billSupplierRun,
     billAdmin: rules.billAdmin,
     travelRateMultiplier: rules.travelRateMultiplier,
     onSiteRateMultiplier: rules.onSiteRateMultiplier,
@@ -116,7 +114,7 @@ function getRateMultiplier(
   if (entryType === "on_site") {
     return parseFloat(rules.onSiteRateMultiplier) || 1.0;
   }
-  // Other types (admin, supplier_run, break, other) use base rate
+  // Other types (admin, break, other) use base rate
   return 1.0;
 }
 
@@ -132,10 +130,6 @@ function shouldBillType(
       return rules.billTravel
         ? { billable: true }
         : { billable: false, reason: "Travel billing disabled" };
-    case "supplier_run":
-      return rules.billSupplierRun
-        ? { billable: true }
-        : { billable: false, reason: "Supplier run billing disabled" };
     case "admin":
       return rules.billAdmin
         ? { billable: true }
@@ -299,7 +293,6 @@ export const timeBillingRulesRepository = {
         roundingMode: row.roundingMode as RoundingMode,
         minimumBillableMinutes: row.minimumBillableMinutes,
         billTravel: row.billTravel,
-        billSupplierRun: row.billSupplierRun,
         billAdmin: row.billAdmin,
         travelRateMultiplier: row.travelRateMultiplier,
         onSiteRateMultiplier: row.onSiteRateMultiplier,
@@ -349,7 +342,6 @@ export const timeBillingRulesRepository = {
         roundingMode: updated.roundingMode as RoundingMode,
         minimumBillableMinutes: updated.minimumBillableMinutes,
         billTravel: updated.billTravel,
-        billSupplierRun: updated.billSupplierRun,
         billAdmin: updated.billAdmin,
         travelRateMultiplier: updated.travelRateMultiplier,
         onSiteRateMultiplier: updated.onSiteRateMultiplier,
@@ -367,7 +359,6 @@ export const timeBillingRulesRepository = {
         roundingMode: patch.roundingMode ?? DEFAULT_TIME_BILLING_RULES.roundingMode,
         minimumBillableMinutes: patch.minimumBillableMinutes ?? DEFAULT_TIME_BILLING_RULES.minimumBillableMinutes,
         billTravel: patch.billTravel ?? DEFAULT_TIME_BILLING_RULES.billTravel,
-        billSupplierRun: patch.billSupplierRun ?? DEFAULT_TIME_BILLING_RULES.billSupplierRun,
         billAdmin: patch.billAdmin ?? DEFAULT_TIME_BILLING_RULES.billAdmin,
         travelRateMultiplier: patch.travelRateMultiplier ?? DEFAULT_TIME_BILLING_RULES.travelRateMultiplier,
         onSiteRateMultiplier: patch.onSiteRateMultiplier ?? DEFAULT_TIME_BILLING_RULES.onSiteRateMultiplier,
@@ -382,7 +373,6 @@ export const timeBillingRulesRepository = {
       roundingMode: created.roundingMode as RoundingMode,
       minimumBillableMinutes: created.minimumBillableMinutes,
       billTravel: created.billTravel,
-      billSupplierRun: created.billSupplierRun,
       billAdmin: created.billAdmin,
       travelRateMultiplier: created.travelRateMultiplier,
       onSiteRateMultiplier: created.onSiteRateMultiplier,

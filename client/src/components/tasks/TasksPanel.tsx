@@ -43,7 +43,7 @@ export type TaskRow = {
   id: string;
   title: string;
   status: "pending" | "in_progress" | "completed" | "cancelled";
-  type?: "GENERAL" | "SUPPLIER_VISIT" | "QUOTE_ASSESSMENT";
+  type?: "GENERAL" | "QUOTE_ASSESSMENT" | string;
   assignedToUserId?: string | null;
   assignedUser?: {
     id: string;
@@ -318,7 +318,6 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
               <SelectContent>
                 <SelectItem value="all">All Types</SelectItem>
                 <SelectItem value="GENERAL">General</SelectItem>
-                <SelectItem value="SUPPLIER_VISIT">Supplier Visit</SelectItem>
               </SelectContent>
             </Select>
           </div>

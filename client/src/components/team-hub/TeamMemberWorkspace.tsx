@@ -1,26 +1,7 @@
 // 2026-05-05 Team Hub member-centric restructure.
-//
-// TeamMemberWorkspace — the RIGHT pane of the new Team Hub layout.
-// Renders a header summarising the selected member (name, role,
-// status, activate/deactivate action) followed by member-level tabs
-// (Overview / Schedule / Compensation / Access).
-//
-// The workspace itself owns no member list and no member selection
-// state — both come from props supplied by `TeamHubPage`. Switching
-// tabs preserves the selected member because the page-level URL
-// param `?member=<id>` is the single source of truth.
-//
-// Tab content:
-//   overview     → MemberOverviewPanel (new — basic profile fields)
-//   schedule     → SchedulesTab    with hideMemberList=true
-//   compensation → CompensationTab with hideMemberList=true
-//   access       → RolesAccessTab  with hideMemberList=true
-//
-// The legacy tab components are reused in their entirety; only their
-// inner sidebars are hidden via the `hideMemberList` prop. Backend
-// save endpoints (PATCH /api/team/:id, PUT /api/team/:id/working-hours,
-// PUT /api/team/:id/profile, PUT /api/team/:id/permissions, the
-// activate/deactivate POSTs) are unchanged.
+// 2026-05-17 Performance redesign: tabs restructured to
+//   Performance / Schedule / Payroll & Cost / Permissions / Skills
+// The empty "select a member" state is replaced by TeamOverviewDashboard.
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,24 +12,36 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { resolveTechnicianColor } from "@shared/colors";
-import { Users, Clock, DollarSign, Shield, Power } from "lucide-react";
-import { MemberOverviewPanel } from "./MemberOverviewPanel";
+import {
+  BarChart2,
+  Calendar,
+  DollarSign,
+  Shield,
+  Wrench,
+  Power,
+  MessageSquare,
+  Briefcase,
+  MoreHorizontal,
+} from "lucide-react";
+import { MemberPerformanceTab } from "./MemberPerformanceTab";
 import { SchedulesTab } from "./SchedulesTab";
 import { CompensationTab } from "./CompensationTab";
 import { RolesAccessTab } from "./RolesAccessTab";
+import { MemberSkillsTab } from "./MemberSkillsTab";
+import { TeamOverviewDashboard } from "./TeamOverviewDashboard";
 import type { Role, TeamMemberDetail } from "./types";
 
-export type WorkspaceTabId = "overview" | "schedule" | "compensation" | "access";
+export type WorkspaceTabId =
+  | "performance"
+  | "schedule"
+  | "payroll"
+  | "permissions"
+  | "skills";
 
 interface Props {
   selectedMemberId: string | null;
   tab: WorkspaceTabId;
   onTabChange: (t: WorkspaceTabId) => void;
-  // Mirror of the page-level setter so the legacy tabs (which still
-  // accept onSelectMember) can be wired through. The workspace itself
-  // doesn't change selection — only the shared TeamMemberList does —
-  // but the legacy tabs' "no schedulable tech, fall back" affordance
-  // calls back through this in some edge cases.
   onSelectMember: (id: string | null) => void;
 }
 
@@ -90,18 +83,9 @@ export function TeamMemberWorkspace({
     },
   });
 
+  // No member selected → show team overview dashboard
   if (!selectedMemberId) {
-    return (
-      <Card data-testid="team-workspace-empty">
-        <CardContent className="py-16 text-center text-muted-foreground">
-          <p className="text-sm font-medium">Select a team member to manage their profile.</p>
-          <p className="text-xs mt-1">
-            Pick a name from the list on the left to view Overview, Schedule,
-            Compensation, and Access.
-          </p>
-        </CardContent>
-      </Card>
-    );
+    return <TeamOverviewDashboard onSelectMember={(id) => onSelectMember(id)} />;
   }
 
   const roleLabel =
@@ -111,103 +95,139 @@ export function TeamMemberWorkspace({
 
   return (
     <div className="space-y-4" data-testid="team-workspace">
-      {/* Selected-member header — always reflects the current ?member=
-          param. Activate/Deactivate routes through the existing
-          /api/team/:id/{activate|deactivate} endpoints; role + status
-          chips are read-only here (role editing lives in the Access
-          tab below). */}
+      {/* Member header — compact, operational-workspace style */}
       <Card>
-        <CardContent className="py-3 px-4 flex items-center gap-3">
-          <Avatar className="h-12 w-12 shrink-0">
-            <AvatarFallback
-              className="text-sm text-white"
-              style={{
-                backgroundColor: resolveTechnicianColor(
-                  selectedMemberId,
-                  member?.profile?.color ?? null,
-                ),
-              }}
-            >
-              {member ? getMemberInitials(member) : "—"}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2
-                className="text-lg font-semibold truncate"
-                data-testid="text-workspace-member-name"
+        <CardContent className="py-3 px-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <Avatar className="h-11 w-11 shrink-0">
+              <AvatarFallback
+                className="text-sm text-white"
+                style={{
+                  backgroundColor: resolveTechnicianColor(
+                    selectedMemberId,
+                    member?.profile?.color ?? null,
+                  ),
+                }}
               >
-                {member ? getMemberDisplayName(member) : "Loading…"}
-              </h2>
-              <Badge variant="outline" className="text-xs">
-                {roleLabel}
-              </Badge>
-              <Badge
-                variant={isInactive ? "secondary" : "default"}
-                className={
-                  isInactive
-                    ? ""
-                    : "bg-green-600 hover:bg-green-600 text-white"
-                }
-                data-testid="badge-workspace-status"
-              >
-                {isInactive ? "Inactive" : "Active"}
-              </Badge>
+                {member ? getMemberInitials(member) : "—"}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2
+                  className="text-base font-semibold truncate"
+                  data-testid="text-workspace-member-name"
+                >
+                  {member ? getMemberDisplayName(member) : "Loading…"}
+                </h2>
+                <Badge variant="outline" className="text-xs">
+                  {roleLabel}
+                </Badge>
+                <Badge
+                  variant={isInactive ? "secondary" : "default"}
+                  className={
+                    isInactive ? "" : "bg-green-600 hover:bg-green-600 text-white"
+                  }
+                  data-testid="badge-workspace-status"
+                >
+                  {isInactive ? "Inactive" : "Active"}
+                </Badge>
+              </div>
+              <p className="text-helper text-muted-foreground truncate">
+                {member?.email ?? ""}
+                {member?.phone ? ` · ${member.phone}` : ""}
+              </p>
             </div>
-            <p className="text-helper text-muted-foreground truncate">
-              {member?.email ?? ""}
-            </p>
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                disabled
+                title="Message (coming soon)"
+              >
+                <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
+                Message
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                disabled
+                title="Assign job (coming soon)"
+              >
+                <Briefcase className="h-3.5 w-3.5 mr-1.5" />
+                Assign Job
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                disabled
+                title="More actions (coming soon)"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+              {member && (
+                <Button
+                  variant={isInactive ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={isPending}
+                  onClick={() =>
+                    toggleStatus.mutate(isInactive ? "activate" : "deactivate")
+                  }
+                  data-testid="button-workspace-toggle-status"
+                >
+                  <Power className="h-3.5 w-3.5 mr-1.5" />
+                  {isPending
+                    ? "Saving…"
+                    : isInactive
+                      ? "Activate"
+                      : "Deactivate"}
+                </Button>
+              )}
+            </div>
           </div>
-          {member && (
-            <Button
-              variant={isInactive ? "default" : "outline"}
-              size="sm"
-              disabled={isPending}
-              onClick={() =>
-                toggleStatus.mutate(isInactive ? "activate" : "deactivate")
-              }
-              data-testid="button-workspace-toggle-status"
-            >
-              <Power className="h-4 w-4 mr-2" />
-              {isPending
-                ? "Saving…"
-                : isInactive
-                  ? "Activate"
-                  : "Deactivate"}
-            </Button>
-          )}
         </CardContent>
       </Card>
 
-      {/* Member-level tabs. Each tab operates on the SAME selected
-          member — no tab has its own sidebar or selector. */}
+      {/* Member-level tabs */}
       <Tabs
         value={tab}
         onValueChange={(v) => onTabChange(v as WorkspaceTabId)}
         className="space-y-4"
       >
-        <TabsList className="grid grid-cols-4 w-full md:w-auto md:inline-flex">
-          <TabsTrigger value="overview" data-testid="tab-workspace-overview">
-            <Users className="h-4 w-4 mr-2" />
-            Overview
+        <TabsList className="w-full md:w-auto md:inline-flex">
+          <TabsTrigger value="performance" data-testid="tab-workspace-performance">
+            <BarChart2 className="h-4 w-4 mr-1.5" />
+            Performance
           </TabsTrigger>
           <TabsTrigger value="schedule" data-testid="tab-workspace-schedule">
-            <Clock className="h-4 w-4 mr-2" />
+            <Calendar className="h-4 w-4 mr-1.5" />
             Schedule
           </TabsTrigger>
-          <TabsTrigger value="compensation" data-testid="tab-workspace-compensation">
-            <DollarSign className="h-4 w-4 mr-2" />
-            Compensation
+          <TabsTrigger value="payroll" data-testid="tab-workspace-payroll">
+            <DollarSign className="h-4 w-4 mr-1.5" />
+            Payroll &amp; Cost
           </TabsTrigger>
-          <TabsTrigger value="access" data-testid="tab-workspace-access">
-            <Shield className="h-4 w-4 mr-2" />
-            Access
+          <TabsTrigger value="permissions" data-testid="tab-workspace-permissions">
+            <Shield className="h-4 w-4 mr-1.5" />
+            Permissions
+          </TabsTrigger>
+          <TabsTrigger value="skills" data-testid="tab-workspace-skills">
+            <Wrench className="h-4 w-4 mr-1.5" />
+            Skills
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview" className="mt-4">
-          <MemberOverviewPanel selectedMemberId={selectedMemberId} />
+        <TabsContent value="performance" className="mt-4">
+          <MemberPerformanceTab selectedMemberId={selectedMemberId} />
         </TabsContent>
+
         <TabsContent value="schedule" className="mt-4">
           <SchedulesTab
             selectedMemberId={selectedMemberId}
@@ -215,19 +235,25 @@ export function TeamMemberWorkspace({
             hideMemberList
           />
         </TabsContent>
-        <TabsContent value="compensation" className="mt-4">
+
+        <TabsContent value="payroll" className="mt-4">
           <CompensationTab
             selectedMemberId={selectedMemberId}
             onSelectMember={onSelectMember}
             hideMemberList
           />
         </TabsContent>
-        <TabsContent value="access" className="mt-4">
+
+        <TabsContent value="permissions" className="mt-4">
           <RolesAccessTab
             selectedMemberId={selectedMemberId}
             onSelectMember={onSelectMember}
             hideMemberList
           />
+        </TabsContent>
+
+        <TabsContent value="skills" className="mt-4">
+          <MemberSkillsTab selectedMemberId={selectedMemberId} />
         </TabsContent>
       </Tabs>
     </div>

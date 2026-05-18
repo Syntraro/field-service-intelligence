@@ -112,7 +112,6 @@ const WIPE_TABLES = [
   "job_schedule_audit",
   "job_expenses",
   // Visits
-  "supplier_visit_details",
   "job_visits",
   // Invoicing
   "invoice_tax_lines",
@@ -138,9 +137,6 @@ const WIPE_TABLES = [
   "job_templates",
   // Tasks
   "tasks",
-  // Suppliers
-  "supplier_locations",
-  "suppliers",
   // Equipment & catalog (tenant-scoped)
   "equipment_catalog_items",
   "location_equipment",

@@ -30,9 +30,8 @@ import {
 } from "lucide-react";
 import type { ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 
-/** Which creation modal to open. "supplier-visit" is preserved for any
- *  legacy callers that still pass it — it maps to the task modal. */
-export type CreateNewTab = "job" | "task" | "supplier-visit";
+/** Which creation modal to open. */
+export type CreateNewTab = "job" | "task";
 
 export interface CreateMenuCallbacks {
   /** Opens the appropriate create modal for the given tab type. */

@@ -123,7 +123,7 @@ export default function QuotesPage() {
       {/* Filter bar — between header shell and table */}
       <div className="shrink-0 px-4 py-2">
         <WorkspaceFilterBar
-          className="bg-transparent border-b-0 px-0 py-0 min-h-0"
+          variant="flat"
           data-testid="quote-filter-bar"
         >
           <WorkspaceViewChip

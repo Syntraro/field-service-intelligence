@@ -288,6 +288,7 @@ export function JobsWorkspaceTab({
                 : undefined
             }
             columns={JOB_COLUMNS}
+            cellPy="py-2.5"
           />
         </div>
       </WorkspaceEntitySurface>

@@ -187,7 +187,6 @@ import {
 
 export const taskTypeEnum = pgEnum("task_type", [
   "GENERAL",
-  "SUPPLIER_VISIT",
 ]);
 
 export const taskStatusEnum = pgEnum("task_status", [
@@ -272,25 +271,3 @@ export const suppliers = pgTable("suppliers", {
     .defaultNow(),
 });
 
-/* =========================================================
-   SUPPLIER VISIT DETAILS (1:1 WITH TASK)
-   ========================================================= */
-
-export const supplierVisitDetails = pgTable("supplier_visit_details", {
-  taskId: uuid("task_id").primaryKey(),
-
-  supplierId: uuid("supplier_id"),
-  supplierNameOther: text("supplier_name_other"),
-  poNumber: text("po_number"),
-
-  reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
-  reconciledByUserId: uuid("reconciled_by_user_id"),
-
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});

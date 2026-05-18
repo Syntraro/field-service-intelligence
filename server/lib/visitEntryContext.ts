@@ -16,8 +16,6 @@ import type { TimeEntryType } from "@shared/schema";
 const VISIT_ENTRY_TYPES: ReadonlySet<string> = new Set([
   "travel_to_job",
   "on_site",
-  "travel_to_supplier",
-  "supplier_run",
   "travel_between_jobs",
 ]);
 

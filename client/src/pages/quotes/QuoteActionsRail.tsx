@@ -1,21 +1,18 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { ExternalLink, FileText } from "lucide-react";
+import { ExternalLink, Eye, FileText } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { SectionLabel } from "@/components/ui/typography";
-import { formatCurrency } from "@/lib/formatters";
+import { Button } from "@/components/ui/button";
 import { getQuoteStatusMeta } from "@/lib/statusBadges";
 import { StatusChip } from "@/components/ui/chip";
 import { WorkspaceRailEmptyState } from "@/components/workspace/WorkspaceRailEmptyState";
 import { WorkspaceRailEntityCard } from "@/components/workspace/WorkspaceRailEntityCard";
 import { QuoteWarningsCard } from "./sections/QuoteWarningsCard";
-import { QuoteFollowUpCard } from "./sections/QuoteFollowUpCard";
-import { QuoteApprovalCard } from "./sections/QuoteApprovalCard";
-import { QuoteConversionCard } from "./sections/QuoteConversionCard";
-import { QuoteClientCommunicationCard } from "./sections/QuoteClientCommunicationCard";
-import { QuoteQuickActionsCard } from "./sections/QuoteQuickActionsCard";
-import { QuoteSummaryCard } from "./sections/QuoteSummaryCard";
-import { QuoteTimelineCard } from "./sections/QuoteTimelineCard";
+import { QuoteActionsCard } from "./sections/QuoteActionsCard";
+import { QuoteActivityCard } from "./sections/QuoteActivityCard";
+import { InvoiceContactsCard, type ContactPerson } from "@/pages/receivables/sections/InvoiceContactsCard";
 import type { Quote, QuoteLine, QuoteNote, QuoteStatus } from "@shared/schema";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -47,10 +44,10 @@ interface QuoteActionsRailProps {
  *
  * Query ownership:
  * - GET /api/quotes/:id/details  — quote, lines, location, customerCompany
- * - GET /api/quotes/:id/notes    — timeline notes
+ * - GET /api/quotes/:id/notes    — activity notes
+ * - GET /api/customer-companies/:id/contacts — billing contacts
  *
  * Section cards receive data via props; they own only their own mutations.
- * No modal state here — section cards own their modal state.
  */
 export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
   const [, setLocation] = useLocation();
@@ -69,7 +66,7 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
     staleTime: 30_000,
   });
 
-  const { data: notes = [], isLoading: notesLoading } = useQuery<QuoteNote[]>({
+  const { data: notes = [], isLoading: notesLoading, isError: notesError } = useQuery<QuoteNote[]>({
     queryKey: ["quote", quoteId, "notes"],
     queryFn: async () => {
       const res = await fetch(`/api/quotes/${quoteId}/notes`, { credentials: "include" });
@@ -79,6 +76,24 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
     enabled: !!quoteId,
     staleTime: 30_000,
   });
+
+  const { data: contactsData, isLoading: contactsLoading } = useQuery<{
+    companyContacts: ContactPerson[];
+  }>({
+    queryKey: ["customer-company", context?.customerCompanyId, "contacts"],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/customer-companies/${context!.customerCompanyId}/contacts`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Failed to load contacts");
+      return res.json();
+    },
+    enabled: !!quoteId && !!context?.customerCompanyId,
+    staleTime: 60_000,
+  });
+
+  const contacts = useMemo(() => contactsData?.companyContacts ?? [], [contactsData]);
 
   // ── No selection ──────────────────────────────────────────────────────────
 
@@ -93,8 +108,6 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
 
   const quote = details?.quote;
   const lines = details?.lines ?? [];
-  const location = details?.location;
-  const customerCompany = details?.customerCompany;
   const loading = detailsLoading;
 
   // ── Entity card derivations ───────────────────────────────────────────────
@@ -160,10 +173,6 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
                 : "—",
             },
             {
-              label: "Total",
-              value: formatCurrency(context.total ?? null),
-            },
-            {
               label: "Expires",
               value: context.expiryDate
                 ? format(parseISO(context.expiryDate), "MMM d, yyyy")
@@ -174,24 +183,53 @@ export function QuoteActionsRail({ context }: QuoteActionsRailProps) {
         <div className="-mx-3 mt-3 border-t border-slate-100" />
       </div>
 
-      {/* ── Domain section cards ── */}
+      {/* ── Warnings (suppressed when empty) ── */}
       <QuoteWarningsCard quote={quote} lines={lines} loading={loading} />
-      <QuoteFollowUpCard quote={quote} loading={loading} />
-      <QuoteApprovalCard quote={quote} loading={loading} />
-      <QuoteConversionCard quote={quote} loading={loading} />
-      <QuoteClientCommunicationCard
-        quote={quote}
-        location={location}
-        customerCompany={customerCompany}
-        loading={loading}
-      />
-      <QuoteQuickActionsCard quote={quote} loading={loading} />
-      <QuoteSummaryCard
-        quote={quote}
-        location={location}
-        loading={loading}
-      />
-      <QuoteTimelineCard notes={notes} loading={notesLoading} />
+
+      {/* ── Preview Quote button ── */}
+      <div className="pt-3">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2 rounded-lg h-8 text-row"
+          onClick={() => setLocation(`/quotes/${context.quoteId}`)}
+          data-testid="rail-quote-preview"
+        >
+          <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+          Preview Quote
+        </Button>
+      </div>
+
+      {/* ── Actions ── */}
+      <div className="pt-3">
+        <QuoteActionsCard quote={quote} loading={loading} />
+      </div>
+
+      {/* ── Contacts ── */}
+      {context.customerCompanyId && (
+        <>
+          <div className="-mx-3 mt-3 border-t border-slate-100" />
+          <div className="pt-3">
+            <SectionLabel className="mb-2">Contacts</SectionLabel>
+            <InvoiceContactsCard contacts={contacts} loading={contactsLoading} />
+          </div>
+        </>
+      )}
+
+      {/* ── Activity ── */}
+      <>
+        <div className="-mx-3 mt-3 border-t border-slate-100" />
+        <div className="pt-3">
+          <SectionLabel className="mb-2">Activity</SectionLabel>
+          <QuoteActivityCard
+            quote={quote}
+            notes={notes}
+            loading={notesLoading}
+            error={notesError}
+          />
+        </div>
+      </>
+
     </div>
   );
 }

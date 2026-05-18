@@ -1,8 +1,8 @@
 /**
  * Shared invoice workspace configuration — views, filters, URL helpers.
  *
- * Single source of truth for both the v1 (/receivables) and v2 (/invoices-v2)
- * invoice workspaces. Neither page may define these locally.
+ * Single source of truth for the /invoices workspace.
+ * Neither the page nor its sub-components may define these locally.
  */
 
 import type { InvoiceView } from "@/components/invoices/InvoiceListPanel";

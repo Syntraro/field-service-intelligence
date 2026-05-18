@@ -4446,7 +4446,7 @@ export const applyJobTemplateSchema = z.object({
 // - Supplier visits can be created without selecting supplier, then reconciled later
 // ============================================================================
 
-export const taskTypeEnum = ["GENERAL", "SUPPLIER_VISIT", "QUOTE_ASSESSMENT"] as const;
+export const taskTypeEnum = ["GENERAL", "QUOTE_ASSESSMENT"] as const;
 export type TaskType = typeof taskTypeEnum[number];
 
 export const taskStatusEnum = ["pending", "in_progress", "completed", "cancelled"] as const;
@@ -4461,7 +4461,7 @@ export const tasks = pgTable("tasks", {
   // Optional assignment (can be unassigned until later)
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
 
-  type: text("type").notNull(), // GENERAL | SUPPLIER_VISIT
+  type: text("type").notNull(), // GENERAL | QUOTE_ASSESSMENT
   title: text("title").notNull(),
   notes: text("notes"),
 
@@ -4542,177 +4542,8 @@ export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type UpdateTask = z.infer<typeof updateTaskSchema>;
 export type Task = typeof tasks.$inferSelect;
 
-// ============================================================================
-// SUPPLIERS (with QBO Vendor sync and multi-location support)
-// ============================================================================
-
 export const qboSyncStatusEnum = ["NOT_SYNCED", "SYNCED", "PENDING", "ERROR"] as const;
 export type QboSyncStatus = typeof qboSyncStatusEnum[number];
-
-export const suppliers = pgTable("suppliers", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  // Status
-  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
-  // Soft delete (canonical)
-  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
-  // QBO Vendor sync fields
-  qboVendorId: text("qbo_vendor_id"),
-  qboSyncToken: text("qbo_sync_token"),
-  qboLastSyncedAt: timestamp("qbo_last_synced_at"),
-  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"),
-  qboSyncError: text("qbo_sync_error"),
-  // Contact information
-  email: text("email"),
-  phone: text("phone"),
-  website: text("website"),
-  // 2026-04-10: Account number + notes for enhanced supplier creation
-  accountNumber: text("account_number"),
-  notes: text("notes"),
-  // Timestamps
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-});
-
-export const insertSupplierSchema = createInsertSchema(suppliers).omit({
-  id: true,
-  companyId: true,
-  createdAt: true,
-  updatedAt: true,
-}).extend({
-  name: z.string().min(1, "Supplier name is required"),
-  email: z.string().email().nullable().optional(),
-  phone: z.string().nullable().optional(),
-  website: z.string().url().nullable().optional(),
-  accountNumber: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
-  qboSyncStatus: z.enum(qboSyncStatusEnum).default("NOT_SYNCED"),
-});
-
-export const updateSupplierSchema = z.object({
-  name: z.string().min(1).optional(),
-  email: z.string().email().nullable().optional(),
-  phone: z.string().nullable().optional(),
-  website: z.string().url().nullable().optional(),
-  // 2026-04-10: account number + notes wired through update flow
-  accountNumber: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
-  isActive: z.boolean().optional(),
-});
-
-export type InsertSupplier = z.infer<typeof insertSupplierSchema>;
-export type UpdateSupplier = z.infer<typeof updateSupplierSchema>;
-export type Supplier = typeof suppliers.$inferSelect;
-
-// ============================================================================
-// SUPPLIER LOCATIONS (multi-location support for suppliers)
-// ============================================================================
-
-export const supplierLocations = pgTable("supplier_locations", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  supplierId: varchar("supplier_id").notNull().references(() => suppliers.id, { onDelete: "cascade" }),
-  // Location details
-  name: text("name").notNull(),
-  address: text("address"),
-  address2: text("address2"), // Address line 2 (suite, unit, floor, bay)
-  city: text("city"),
-  province: text("province"),
-  postalCode: text("postal_code"),
-  country: text("country"),
-  // Geocoding — persisted from Google Places autocomplete
-  lat: numeric("lat", { precision: 10, scale: 7 }),
-  lng: numeric("lng", { precision: 10, scale: 7 }),
-  placeId: text("place_id"), // Google Places place_id
-  // Contact information
-  contactName: text("contact_name"),
-  email: text("email"),
-  phone: text("phone"),
-  // Notes (account numbers, branch-specific info, etc.)
-  notes: text("notes"),
-  // Status
-  isPrimary: boolean("is_primary").notNull().default(false),
-  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
-  // Soft delete (canonical)
-  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
-  // Timestamps
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-});
-
-export const insertSupplierLocationSchema = createInsertSchema(supplierLocations).omit({
-  id: true,
-  companyId: true,
-  supplierId: true,
-  createdAt: true,
-  updatedAt: true,
-}).extend({
-  name: z.string().min(1, "Location name is required"),
-  // 2026-04-10: consistent with updateSupplierLocationSchema — validate format when present
-  postalCode: postalCodeSchema,
-  // 2026-04-10: strict email — empty strings normalized to null at server boundary
-  email: z.string().email().nullable().optional(),
-});
-
-export const updateSupplierLocationSchema = z.object({
-  name: z.string().min(1).optional(),
-  address: z.string().nullable().optional(),
-  // 2026-04-10: address2 was missing — caused .strict() to reject edit payloads
-  address2: z.string().nullable().optional(),
-  city: z.string().nullable().optional(),
-  province: z.string().nullable().optional(),
-  postalCode: postalCodeSchema,
-  country: z.string().nullable().optional(),
-  lat: z.string().nullable().optional(), // numeric stored as string
-  lng: z.string().nullable().optional(),
-  placeId: z.string().nullable().optional(),
-  contactName: z.string().nullable().optional(),
-  // 2026-04-10: strict email — empty strings normalized to null at server boundary
-  email: z.string().email().nullable().optional(),
-  phone: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
-  isActive: z.boolean().optional(),
-});
-
-export type InsertSupplierLocation = z.infer<typeof insertSupplierLocationSchema>;
-export type UpdateSupplierLocation = z.infer<typeof updateSupplierLocationSchema>;
-export type SupplierLocation = typeof supplierLocations.$inferSelect;
-
-// ============================================================================
-// SUPPLIER VISIT DETAILS (1:1 extension of a Task where type=SUPPLIER_VISIT)
-// - Supplier can be null initially; office can reconcile later
-// ============================================================================
-
-export const supplierVisitDetails = pgTable("supplier_visit_details", {
-  // 1:1 with tasks; taskId is the PK
-  taskId: varchar("task_id").primaryKey().references(() => tasks.id, { onDelete: "cascade" }),
-
-  supplierId: varchar("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
-  supplierLocationId: varchar("supplier_location_id").references(() => supplierLocations.id, { onDelete: "set null" }),
-  supplierNameOther: text("supplier_name_other"), // tech may type supplier name if not in system yet (legacy)
-  poNumber: text("po_number"),
-
-  reconciledAt: timestamp("reconciled_at"),
-  reconciledByUserId: varchar("reconciled_by_user_id").references(() => users.id, { onDelete: "set null" }),
-
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-});
-
-export const insertSupplierVisitDetailsSchema = createInsertSchema(supplierVisitDetails).omit({
-  createdAt: true,
-  updatedAt: true,
-}).extend({
-  // supplierId OR supplierNameOther can be present; validation can be enforced at route/service layer
-  supplierId: z.string().nullable().optional(),
-  supplierLocationId: z.string().nullable().optional(),
-  supplierNameOther: z.string().nullable().optional(),
-  poNumber: z.string().nullable().optional(),
-});
-
-export type InsertSupplierVisitDetails = z.infer<typeof insertSupplierVisitDetailsSchema>;
-export type SupplierVisitDetails = typeof supplierVisitDetails.$inferSelect;
 
 // ============================================================================
 // QBO SYNC EVENTS (audit log for QuickBooks Online sync operations)
@@ -5498,8 +5329,6 @@ export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
 export const timeEntryTypeEnum = [
   "travel_to_job",
   "on_site",
-  "travel_to_supplier",
-  "supplier_run",
   "travel_between_jobs",
   "admin",
   "break",
@@ -5968,8 +5797,6 @@ export interface TechnicianWeeklySummary {
 export interface TimeByTypeBreakdown {
   travel_to_job: number;
   on_site: number;
-  travel_to_supplier: number;
-  supplier_run: number;
   travel_between_jobs: number;
   admin: number;
   break: number;
@@ -5987,9 +5814,8 @@ export interface WeeklyAnalyticsData {
   unassignedMinutes: number;  // time_entries where jobId IS NULL
   byTypeMinutes: TimeByTypeBreakdown;
   // Derived convenience fields
-  travelMinutes: number;      // travel_to_job + travel_to_supplier + travel_between_jobs
+  travelMinutes: number;      // travel_to_job + travel_between_jobs
   onSiteMinutes: number;
-  supplierMinutes: number;    // travel_to_supplier + supplier_run
   adminMinutes: number;
   breakMinutes: number;
   otherMinutes: number;
@@ -6136,7 +5962,6 @@ export const timeBillingRules = pgTable("time_billing_rules", {
   minimumBillableMinutes: integer("minimum_billable_minutes").notNull().default(15),
   // Type-specific billing toggles
   billTravel: boolean("bill_travel").notNull().default(true),
-  billSupplierRun: boolean("bill_supplier_run").notNull().default(true),
   billAdmin: boolean("bill_admin").notNull().default(false),
   // Rate multipliers (stored as decimal strings for precision)
   travelRateMultiplier: text("travel_rate_multiplier").notNull().default("1.0"),
@@ -6154,7 +5979,6 @@ export const DEFAULT_TIME_BILLING_RULES = {
   roundingMode: "up" as RoundingMode,
   minimumBillableMinutes: 15,
   billTravel: true,
-  billSupplierRun: true,
   billAdmin: false,
   travelRateMultiplier: "1.0",
   onSiteRateMultiplier: "1.0",
@@ -6172,7 +5996,6 @@ export const updateTimeBillingRulesSchema = z.object({
   roundingMode: z.enum(roundingModeEnum).optional(),
   minimumBillableMinutes: z.number().int().min(0).max(120).optional(),
   billTravel: z.boolean().optional(),
-  billSupplierRun: z.boolean().optional(),
   billAdmin: z.boolean().optional(),
   travelRateMultiplier: z.string().regex(/^\d+(\.\d+)?$/).optional(),
   onSiteRateMultiplier: z.string().regex(/^\d+(\.\d+)?$/).optional(),
@@ -7938,4 +7761,103 @@ export const updateReceivablesNoteSchema = z.object({
 
 export type InsertReceivablesNoteInput = z.infer<typeof insertReceivablesNoteSchema>;
 export type UpdateReceivablesNoteInput = z.infer<typeof updateReceivablesNoteSchema>;
+
+// =============================================================================
+// TEAM SKILLS — Phase 3 (2026-05-17)
+// =============================================================================
+
+/** Valid proficiency levels for a team member skill assignment. */
+export const SKILL_LEVELS = ["basic", "intermediate", "advanced", "certified"] as const;
+export type SkillLevel = typeof SKILL_LEVELS[number];
+
+/** Company-scoped skill library entry. */
+export const teamSkills = pgTable("team_skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  category: text("category"),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+  createdBy: varchar("created_by").references(() => users.id, { onDelete: "set null" }),
+  updatedBy: varchar("updated_by").references(() => users.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyIdIdx: index("team_skills_company_id_idx").on(table.companyId),
+}));
+
+// =============================================================================
+// JOB SKILL REQUIREMENTS — Phase 4 Skill-Aware Dispatch (2026-05-17)
+// =============================================================================
+
+/** Optional skill requirements attached to a specific job. */
+export const jobRequiredSkills = pgTable("job_required_skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  jobId: varchar("job_id")
+    .notNull()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  skillId: varchar("skill_id")
+    .notNull()
+    .references(() => teamSkills.id, { onDelete: "cascade" }),
+  /** NULL = any level accepted. */
+  minimumLevel: text("minimum_level"),
+  /** true = dispatcher warned if assignee lacks skill; false = preferred only. */
+  required: boolean("required").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyJobIdx: index("job_required_skills_company_job_idx").on(table.companyId, table.jobId),
+  skillIdIdx: index("job_required_skills_skill_id_idx").on(table.skillId),
+}));
+
+/** Optional skill requirements attached to a reusable job template. */
+export const jobTemplateRequiredSkills = pgTable("job_template_required_skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  templateId: varchar("template_id")
+    .notNull()
+    .references(() => jobTemplates.id, { onDelete: "cascade" }),
+  skillId: varchar("skill_id")
+    .notNull()
+    .references(() => teamSkills.id, { onDelete: "cascade" }),
+  minimumLevel: text("minimum_level"),
+  required: boolean("required").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyTemplateIdx: index("job_template_required_skills_company_template_idx").on(table.companyId, table.templateId),
+}));
+
+/** Per-member skill assignment (links a user to a library skill with level + cert details). */
+export const teamMemberSkills = pgTable("team_member_skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  skillId: varchar("skill_id")
+    .notNull()
+    .references(() => teamSkills.id, { onDelete: "cascade" }),
+  level: text("level").notNull().default("basic"),
+  certificationName: text("certification_name"),
+  certificationExpiresAt: timestamp("certification_expires_at"),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+  createdBy: varchar("created_by").references(() => users.id, { onDelete: "set null" }),
+  updatedBy: varchar("updated_by").references(() => users.id, { onDelete: "set null" }),
+}, (table) => ({
+  companyUserIdx: index("team_member_skills_company_user_idx").on(table.companyId, table.userId),
+  skillIdIdx: index("team_member_skills_skill_id_idx").on(table.skillId),
+}));
 

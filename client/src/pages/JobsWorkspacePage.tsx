@@ -112,7 +112,7 @@ export default function JobsWorkspacePage() {
       {/* Filter bar — sits on app background between header card and table */}
       <div className="shrink-0 px-4 py-2">
         <WorkspaceFilterBar
-          className="bg-transparent border-b-0 px-0 py-0 min-h-0"
+          variant="flat"
           data-testid="job-filter-bar"
         >
           <WorkspaceViewChip active={activeView === "all"} onClick={() => handleViewChange("all")} data-testid="job-view-all">All</WorkspaceViewChip>

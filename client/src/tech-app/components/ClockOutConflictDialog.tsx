@@ -23,8 +23,7 @@
  *         POST /api/tech/visits/:visitId/resume (and that route
  *         re-starts a fresh on_site entry — see techField.ts:613-658).
  *
- *   anything else        (travel_to_job, travel_between_jobs,
- *                         travel_to_supplier, supplier_run, task_work)
+ *   anything else        (travel_to_job, travel_between_jobs, task_work)
  *     • End & Clock Out →
  *         POST /api/time/entries/stop { timeEntryId }
  *         These timer types have no visit lifecycle and no canonical
@@ -107,8 +106,6 @@ function activityLabel(activeItem: ClockOutActiveItem): string {
     case "travel_between_jobs":  return "Travel between jobs";
     case "on_site":              return "On-site work";
     case "in_progress":          return "On-site work";
-    case "travel_to_supplier":   return "Travel to supplier";
-    case "supplier_run":         return "Supplier run";
     case "task_work":            return "Task work";
     default:                     return activeItem.entryType || "Active work";
   }

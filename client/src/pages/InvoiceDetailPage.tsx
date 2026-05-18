@@ -842,7 +842,7 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
       queryClient.invalidateQueries({ queryKey: receivablesKeys.viewsCounts() });
       toast({ title: "Invoice deleted" });
-      setLocation("/receivables?tab=invoices");
+      setLocation("/invoices");
     },
     onError: (error: Error) => {
       toast({ title: "Failed to delete invoice", description: error.message, variant: "destructive" });
@@ -1591,7 +1591,7 @@ export default function InvoiceDetailPage() {
     return (
       <div className="p-6 space-y-3" data-testid="invoice-not-found">
         <p className="text-sm text-muted-foreground">Invoice not found.</p>
-        <Button variant="outline" size="sm" onClick={() => setLocation("/receivables?tab=invoices")}>Back to invoices</Button>
+        <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
       </div>
     );
   }
@@ -1632,7 +1632,7 @@ export default function InvoiceDetailPage() {
               Retry
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => setLocation("/receivables?tab=invoices")}>Back to invoices</Button>
+          <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
         </div>
       </div>
     );

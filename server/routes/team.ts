@@ -5,6 +5,7 @@ import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES, canAssignRole, type Role, ADMIN_ROLES } from "../auth/roles";
 import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { certificationExpiresAtSchema } from "../utils/certExpiresAtSchema";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
@@ -38,6 +39,13 @@ import { eq, and } from "drizzle-orm";
 import { permissions, userPermissionOverrides } from "@shared/schema";
 import { requirePermission } from "../permissions";
 import { clearPermissionCache, permissionRepository } from "../storage/permissions";
+import {
+  getTeamMetrics,
+  getMemberMonthlyPerformance,
+  getLeadConversionMetrics,
+  type MetricsPeriod,
+} from "../storage/teamMetrics";
+import { computeEfficiencyScore } from "../lib/efficiencyScore";
 
 const router = Router();
 
@@ -400,6 +408,153 @@ router.get(
   })
 );
 
+// GET /api/team/metrics — Per-member operational metrics for the Team Hub.
+// Returns hours, jobs completed, revenue per hour, utilization, and lead stats
+// for every team member that had activity in the selected period.
+// ?period=last_30_days | last_90_days | last_12_months  (default: last_30_days)
+router.get(
+  "/metrics",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const raw = req.query.period as string | undefined;
+    const validPeriods: MetricsPeriod[] = ["last_30_days", "last_90_days", "last_12_months"];
+    const period: MetricsPeriod = validPeriods.includes(raw as MetricsPeriod)
+      ? (raw as MetricsPeriod)
+      : "last_30_days";
+    const members = await getTeamMetrics(req.companyId!, period);
+    res.json({ period, members });
+  })
+);
+
+// ── Team skill library routes ─────────────────────────────────────────────
+// Static /skills/* routes MUST be registered before /:userId to prevent
+// Express from treating "skills" as a userId parameter value.
+
+// GET /api/team/skills — List the company skill library with member counts.
+router.get(
+  "/skills",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { listCompanySkills } = await import("../storage/teamSkills");
+    const skills = await listCompanySkills(req.companyId!);
+    res.json(skills);
+  }),
+);
+
+const createSkillSchema = z.object({
+  name: z.string().min(1).max(100),
+  category: z.string().max(100).nullable().optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+
+// POST /api/team/skills — Create a new skill in the company library.
+router.post(
+  "/skills",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const body = validateSchema(createSkillSchema, req.body);
+    const { createSkill } = await import("../storage/teamSkills");
+    const skill = await createSkill(req.companyId!, body, req.user?.id);
+    res.status(201).json(skill);
+  }),
+);
+
+const updateSkillSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  category: z.string().max(100).nullable().optional(),
+  description: z.string().max(500).nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+// PATCH /api/team/skills/:skillId — Edit skill metadata or active state.
+router.patch(
+  "/skills/:skillId",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { skillId } = req.params;
+    const body = validateSchema(updateSkillSchema, req.body);
+    const { updateSkill } = await import("../storage/teamSkills");
+    const skill = await updateSkill(req.companyId!, skillId, body, req.user?.id);
+    res.json(skill);
+  }),
+);
+
+// DELETE /api/team/skills/:skillId — Hard-delete if unused; rejects if active members assigned.
+router.delete(
+  "/skills/:skillId",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { skillId } = req.params;
+    const { deleteSkill } = await import("../storage/teamSkills");
+    await deleteSkill(req.companyId!, skillId);
+    res.status(204).end();
+  }),
+);
+
+// GET /api/team/capacity-forecast — Workforce capacity + weekly tracking per member.
+// Static route — must remain before /:userId.
+router.get(
+  "/capacity-forecast",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { getTeamCapacityForecast } = await import("../storage/capacityForecast");
+    const data = await getTeamCapacityForecast(req.companyId!);
+    res.json(data);
+  }),
+);
+
+// GET /api/team/pm-forecast — Pending PM instance demand (count + estimated hours).
+// Static route — must remain before /:userId.
+router.get(
+  "/pm-forecast",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { getPmForecast } = await import("../storage/capacityForecast");
+    const data = await getPmForecast(req.companyId!);
+    res.json(data);
+  }),
+);
+
+// GET /api/team/skill-analytics — Phase 6: team skill coverage, expiry warnings, gaps.
+// Static route — must remain before /:userId to avoid Express param capture.
+router.get(
+  "/skill-analytics",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { getSkillAnalytics } = await import("../storage/assignmentCandidates");
+    const analytics = await getSkillAnalytics(req.companyId!);
+    res.json(analytics);
+  }),
+);
+
+// GET /api/team/technicians/skill-match — Phase 5: filter schedulable techs by skill + level.
+// ?skillId=<uuid>&minimumLevel=basic|intermediate|advanced|certified
+// Returns only active, schedulable members who have the skill at or above the minimum level.
+// Static route under /technicians/* — already before /:userId.
+router.get(
+  "/technicians/skill-match",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const skillId = req.query.skillId as string | undefined;
+    if (!skillId) throw createError(400, "skillId query parameter is required");
+    const minimumLevel = req.query.minimumLevel as string | undefined;
+    const validLevels = ["basic", "intermediate", "advanced", "certified"] as const;
+    if (minimumLevel && !validLevels.includes(minimumLevel as typeof validLevels[number])) {
+      throw createError(400, "Invalid minimumLevel");
+    }
+    const { getTechniciansBySkill } = await import("../storage/assignmentCandidates");
+    const techs = await getTechniciansBySkill(
+      req.companyId!,
+      skillId,
+      minimumLevel as typeof validLevels[number] | undefined,
+    );
+    res.json(techs);
+  }),
+);
+
 // GET /api/team - List all team members with pagination
 // 2026-05-04 PR 4: `team.view` gate added. Per ACCESS_CONTROL_MATRIX.md,
 // dispatchers and technicians do not have this permission by default
@@ -422,6 +577,70 @@ router.get(
     const { items, meta } = applyOffsetPagination(sanitized, offset, params.limit);
 
     res.json(paginatedCompat(items, meta, explicit));
+  })
+);
+
+// GET /api/team/:userId/workload-breakdown — Billable/Drive/General breakdown from time_entries.
+// ?window=today|this_week|last_30_days
+router.get(
+  "/:userId/workload-breakdown",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const member = await storage.getTeamMember(req.companyId!, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const raw = req.query.window as string | undefined;
+    const valid = ["today", "this_week", "last_30_days"] as const;
+    const window = valid.includes(raw as typeof valid[number]) ? (raw as typeof valid[number]) : "last_30_days";
+
+    const { getMemberWorkloadBreakdown } = await import("../storage/capacityForecast");
+    const data = await getMemberWorkloadBreakdown(req.companyId!, userId, window);
+    res.json(data);
+  }),
+);
+
+// GET /api/team/:userId/performance — 12-month monthly trend for the Performance tab.
+// Returns monthly breakdowns (hours, jobs, revenue, avg rev/hr) for charting,
+// plus aggregate metrics for the same period in a single round trip.
+router.get(
+  "/:userId/performance",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const member = await storage.getTeamMember(req.companyId!, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const raw = req.query.period as string | undefined;
+    const validPeriods: MetricsPeriod[] = ["last_30_days", "last_90_days", "last_12_months"];
+    const period: MetricsPeriod = validPeriods.includes(raw as MetricsPeriod)
+      ? (raw as MetricsPeriod)
+      : "last_30_days";
+
+    const [monthlyTrend, allMetrics, leadConversion] = await Promise.all([
+      getMemberMonthlyPerformance(req.companyId!, userId),
+      getTeamMetrics(req.companyId!, period),
+      getLeadConversionMetrics(req.companyId!, userId),
+    ]);
+
+    const memberMetrics = allMetrics.find((m) => m.userId === userId) ?? {
+      userId,
+      hoursWorked: 0,
+      scheduledHoursInPeriod: 0,
+      utilizationPct: null,
+      jobsCompleted: 0,
+      allocatedRevenue: 0,
+      avgRevPerHour: null,
+      leadsGenerated: 0,
+      leadRevenue: 0,
+    };
+
+    const days =
+      period === "last_30_days" ? 30 : period === "last_90_days" ? 90 : 365;
+    const periodWeeks = days / 7;
+    const efficiencyScore = computeEfficiencyScore(memberMetrics, allMetrics, periodWeeks);
+
+    res.json({ period, metrics: memberMetrics, monthlyTrend, efficiencyScore, leadConversion });
   })
 );
 
@@ -1294,6 +1513,89 @@ router.post(
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });
+  }),
+);
+
+// ── Member skill assignment routes ────────────────────────────────────────
+
+// GET /api/team/:userId/skills — Member's assigned skills with expiry status.
+router.get(
+  "/:userId/skills",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+    const { listMemberSkills } = await import("../storage/teamSkills");
+    const skills = await listMemberSkills(companyId, userId);
+    res.json(skills);
+  }),
+);
+
+const assignSkillSchema = z.object({
+  skillId: z.string().uuid(),
+  level: z.enum(["basic", "intermediate", "advanced", "certified"]),
+  certificationName: z.string().max(200).nullable().optional(),
+  certificationExpiresAt: certificationExpiresAtSchema,
+  notes: z.string().max(1000).nullable().optional(),
+});
+
+// POST /api/team/:userId/skills — Assign a library skill to this member.
+router.post(
+  "/:userId/skills",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+    const body = validateSchema(assignSkillSchema, req.body);
+    const { assignSkill } = await import("../storage/teamSkills");
+    const row = await assignSkill(companyId, userId, body, req.user?.id);
+    res.status(201).json(row);
+  }),
+);
+
+const updateMemberSkillSchema = z.object({
+  level: z.enum(["basic", "intermediate", "advanced", "certified"]).optional(),
+  certificationName: z.string().max(200).nullable().optional(),
+  certificationExpiresAt: certificationExpiresAtSchema,
+  notes: z.string().max(1000).nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+// PATCH /api/team/:userId/skills/:memberSkillId — Edit assignment details.
+router.patch(
+  "/:userId/skills/:memberSkillId",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId, memberSkillId } = req.params;
+    const companyId = req.companyId!;
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+    const body = validateSchema(updateMemberSkillSchema, req.body);
+    const { updateMemberSkill } = await import("../storage/teamSkills");
+    const row = await updateMemberSkill(companyId, memberSkillId, body, req.user?.id);
+    res.json(row);
+  }),
+);
+
+// DELETE /api/team/:userId/skills/:memberSkillId — Remove assignment (hard delete).
+router.delete(
+  "/:userId/skills/:memberSkillId",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId, memberSkillId } = req.params;
+    const companyId = req.companyId!;
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+    const { removeMemberSkill } = await import("../storage/teamSkills");
+    await removeMemberSkill(companyId, memberSkillId);
+    res.status(204).end();
   }),
 );
 

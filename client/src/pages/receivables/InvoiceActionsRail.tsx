@@ -10,7 +10,7 @@ import { WorkspaceRailEntityCard } from "@/components/workspace/WorkspaceRailEnt
 import { InvoiceActionsCard } from "./sections/InvoiceActionsCard";
 import { InvoiceContactsCard, type ContactPerson } from "./sections/InvoiceContactsCard";
 import { InvoiceActivityCard, type ReceivablesNote } from "./sections/InvoiceActivityCard";
-import type { SelectedReceivablesContext } from "./InvoicesWorkspaceTab";
+import type { SelectedReceivablesContext } from "./InvoiceRailBody";
 import type { InvoiceView } from "@/components/invoices/InvoiceListPanel";
 
 interface InvoiceActionsRailProps {

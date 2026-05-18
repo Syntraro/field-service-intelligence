@@ -52,7 +52,6 @@ import { computeEndTime, computeDuration, toISODateTime } from "./timeEntryHelpe
 const ENTRY_TYPES: { value: TimeEntryType; label: string }[] = [
   { value: "travel_to_job", label: "Travel Time" },
   { value: "on_site", label: "On Site" },
-  { value: "supplier_run", label: "Parts Pickup" },
   { value: "admin", label: "Other" },
 ];
 

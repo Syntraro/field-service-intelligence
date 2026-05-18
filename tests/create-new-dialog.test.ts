@@ -125,8 +125,10 @@ describe("createMenuConfig — CreateNewTab type ownership", () => {
     expect(menuSrc).toMatch(/export\s+type\s+CreateNewTab\s*=/);
   });
 
-  it("preserves 'job' | 'task' | 'supplier-visit' union for backward compat", () => {
-    expect(menuSrc).toMatch(/["']job["']\s*\|\s*["']task["']\s*\|\s*["']supplier-visit["']/);
+  it("CreateNewTab union contains 'job' and 'task' (supplier-visit retired 2026-05-17)", () => {
+    expect(menuSrc).toMatch(/["']job["']/);
+    expect(menuSrc).toMatch(/["']task["']/);
+    expect(menuSrc).not.toMatch(/["']supplier-visit["']/);
   });
 
   it("does NOT import CreateNewTab from CreateNewDialog", () => {

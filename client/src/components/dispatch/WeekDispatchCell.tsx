@@ -17,7 +17,7 @@ import { formatDuration, isCompletedStatus, jobStateColor, SNAP_MINUTES, MIN_DUR
 import { UNASSIGNED_COLOR } from "@shared/colors";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
 import { VisitCardContent } from "./VisitCardContent";
-import { ClipboardList, Truck, User } from "lucide-react";
+import { ClipboardList, User } from "lucide-react";
 import { useHoverSetter, useIsVisitHovered } from "./dispatchHoverContext";
 
 type Props = {
@@ -370,9 +370,7 @@ function WeekCalendarTaskBlock({ task, top, height, left, width, isSelected, isS
       style={{ top, height: Math.max(height, MIN_BLOCK_HEIGHT), left, width }}
     >
       <div className="flex items-center gap-1 overflow-hidden leading-tight">
-        {task.type === "SUPPLIER_VISIT" || task.type === "supplier_run"
-          ? <Truck className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />
-          : <ClipboardList className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />}
+        <ClipboardList className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />
         <span className="truncate text-[10px] font-medium text-blue-800">{task.title}</span>
       </div>
       {height > 24 && (

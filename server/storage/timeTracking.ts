@@ -50,8 +50,6 @@ import {
 const BILLABLE_DEFAULTS: Record<TimeEntryType, boolean> = {
   travel_to_job: true,
   on_site: true,
-  travel_to_supplier: true,
-  supplier_run: true,
   travel_between_jobs: true,
   admin: false,
   break: false,
@@ -504,7 +502,6 @@ export class TimeTrackingRepository extends BaseRepository {
         const VALID_TRANSITIONS: Record<string, string[]> = {
           travel_to_job: ["on_site"],
           on_site: ["on_site"],           // pause→resume creates a new on_site
-          travel_to_supplier: ["supplier_run"],
           travel_between_jobs: ["on_site", "travel_to_job"],
         };
         const allowed = VALID_TRANSITIONS[running.type];

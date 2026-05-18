@@ -10,7 +10,7 @@ import { ContactClientModal } from "@/components/receivables/ContactClientModal"
 import { CollectPaymentDialog } from "@/components/invoice/CollectPaymentDialog";
 import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import { ConfirmModal } from "@/components/ui/modal";
-import type { SelectedReceivablesContext } from "../InvoicesWorkspaceTab";
+import type { SelectedReceivablesContext } from "../InvoiceRailBody";
 import type { InvoiceView } from "@/components/invoices/InvoiceListPanel";
 
 interface InvoiceActionsCardProps {

@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { ExternalLink, Wrench } from "lucide-react";
 import { format, parseISO } from "date-fns";
@@ -9,12 +10,17 @@ import { SectionLabel } from "@/components/ui/typography";
 import { getJobStatusMeta } from "@/lib/statusBadges";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import { useJobVisits } from "@/hooks/useJobVisits";
-import { JobWarningsCard } from "./sections/JobWarningsCard";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+import { useJobLifecycleActions } from "@/hooks/useJobLifecycleActions";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { AddVisitDialog } from "@/components/AddVisitDialog";
+import { EntityNoteDialog } from "@/components/notes/EntityNoteDialog";
 import { JobLatestNotesCard, type JobNote } from "./sections/JobLatestNotesCard";
-import { JobNextVisitCard } from "./sections/JobNextVisitCard";
 import { JobQuickActionsCard } from "./sections/JobQuickActionsCard";
-import { JobSummaryCard } from "./sections/JobSummaryCard";
-import { JobTimelineCard } from "./sections/JobTimelineCard";
+import { JobScheduledVisitsCard } from "./sections/JobScheduledVisitsCard";
+import { JobEquipmentCard, type RailEquipmentItem } from "./sections/JobEquipmentCard";
+import { JobRequiredSkillsCard } from "@/components/jobs/JobRequiredSkillsCard";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,34 +43,38 @@ interface JobActionsRailProps {
   context: SelectedJobContext | null;
 }
 
-// ── Entity card helpers ───────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatScheduled(scheduledStart: string | null): string {
-  if (!scheduledStart) return "Not scheduled";
-  try { return format(parseISO(scheduledStart), "MMM d, yyyy"); }
-  catch { return "Not scheduled"; }
+function formatCreated(createdAt: string | undefined): string {
+  if (!createdAt) return "—";
+  try { return format(parseISO(createdAt), "MMM d, yyyy"); }
+  catch { return "—"; }
 }
 
-function priorityTone(priority: string): "neutral" | "warning" | "danger" {
-  const p = priority?.toLowerCase();
-  if (p === "urgent") return "danger";
-  if (p === "high") return "warning";
-  return "neutral";
+function formatSubStatus(subStatus: string | null | undefined): string {
+  if (!subStatus) return "—";
+  return subStatus.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
  * Job right rail — assembly-only.
  *
  * Query ownership:
- * - useJobHeader: job detail for summary, warnings, quick actions
- * - useJobVisits: visits for next-visit card and timeline
- * - GET /api/jobs/:jobId/notes: tech notes for latest-notes and timeline
+ * - useJobHeader: job detail for lifecycle actions
+ * - useJobVisits: visits for scheduled-visits card
+ * - GET /api/jobs/:id/notes: tech notes for latest-notes card (canonical key)
+ * - GET /api/jobs/:id/equipment: equipment linked to this job
+ * - useTechniciansDirectory: resolves assignedTechnicianIds → display names
  *
- * Section cards receive data via props; they own only their own mutations.
- * No modal state here — section cards own their modal state.
+ * Action ownership:
+ * - useJobLifecycleActions: close-job modal + mutation (POST /api/jobs/:id/close)
+ * - AddVisitDialog: schedule-visit modal
+ * - EntityNoteDialog: add-note modal (POST /api/jobs/:id/notes)
+ * - createInvoiceMutation: POST /api/invoices/from-job/:id (same as JobDetailPage)
  */
 export function JobActionsRail({ context }: JobActionsRailProps) {
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
   const jobId = context?.jobId ?? null;
 
   // ── Shared rail-root fetches ───────────────────────────────────────────────
@@ -75,8 +85,9 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
     enabled: !!jobId,
   });
 
+  // Canonical query key matches EntityNoteDialog's invalidation key
   const { data: notes = [], isLoading: notesLoading } = useQuery<JobNote[]>({
-    queryKey: ["jobs", jobId, "notes"],
+    queryKey: ["/api/jobs", jobId, "notes"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load job notes");
@@ -84,6 +95,50 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
     },
     enabled: !!jobId,
     staleTime: 30_000,
+  });
+
+  const { data: equipment = [], isLoading: equipmentLoading } = useQuery<RailEquipmentItem[]>({
+    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch job equipment");
+      return res.json();
+    },
+    enabled: !!jobId,
+    staleTime: 30_000,
+  });
+
+  const { teamMembers } = useTechniciansDirectory();
+  const techMap = new Map(teamMembers.map((t) => [t.id, t.fullName]));
+
+  // ── Action wiring ─────────────────────────────────────────────────────────
+
+  const lifecycleActions = useJobLifecycleActions({ job: job ?? null });
+
+  const [addVisitOpen, setAddVisitOpen] = useState(false);
+  const [addNoteOpen, setAddNoteOpen] = useState(false);
+
+  // Reuses the exact same from-job mutation path as JobDetailPage.
+  const createInvoiceMutation = useMutation({
+    mutationFn: async () => {
+      if (!jobId) throw new Error("No job selected");
+      return apiRequest<{ id: string }>(`/api/invoices/from-job/${jobId}`, {
+        method: "POST",
+        body: JSON.stringify({ markJobCompleted: false }),
+      });
+    },
+    onSuccess: (invoice) => {
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      setLocation(`/invoices/${invoice.id}`);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not create invoice",
+        description: error.message || "Failed to create invoice. Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   // ── No selection ──────────────────────────────────────────────────────────
@@ -97,15 +152,10 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
     );
   }
 
-  // ── Render — urgency-first ordering ──────────────────────────────────────
-
-  const railLoading = jobLoading || visitsLoading;
+  // ── Render ────────────────────────────────────────────────────────────────
 
   const jobPath = `/jobs/${context.jobId}`;
   const clientPath = `/clients/${context.locationId}`;
-  const priorityLabel = context.priority
-    ? context.priority.charAt(0).toUpperCase() + context.priority.slice(1).toLowerCase()
-    : "Normal";
   const jobStatusMeta = getJobStatusMeta({
     status: context.status,
     openSubStatus: context.openSubStatus,
@@ -114,7 +164,6 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
   });
 
   return (
-    // WorkspaceRailScrollContainer owns scroll, overflow, padding (px-3 py-3).
     <div data-testid="jobs-actions-rail">
       {/* ── Entity card ───────────────────────────────────────────────────── */}
       <div className="pb-1">
@@ -152,19 +201,57 @@ export function JobActionsRail({ context }: JobActionsRailProps) {
             </button>
           }
           meta={[
-            { label: "Scheduled", value: formatScheduled(context.scheduledStart) },
-            { label: "Priority", value: priorityLabel, tone: priorityTone(context.priority) },
+            { label: "Created", value: formatCreated(job?.createdAt) },
+            { label: "Sub-Status", value: formatSubStatus(context.openSubStatus) },
           ]}
         />
         <div className="-mx-3 mt-3 border-t border-slate-100" />
       </div>
 
-      <JobQuickActionsCard job={job} loading={jobLoading} />
-      <JobWarningsCard job={job} visits={visits} loading={railLoading} />
+      {/* ── Sections ──────────────────────────────────────────────────────── */}
+      <JobQuickActionsCard
+        job={job}
+        loading={jobLoading}
+        onCompleteJob={lifecycleActions.openCloseJobDialog}
+        onScheduleVisit={() => setAddVisitOpen(true)}
+        onAddNote={() => setAddNoteOpen(true)}
+        onCreateInvoice={() => createInvoiceMutation.mutate()}
+        creatingInvoice={createInvoiceMutation.isPending}
+      />
+      <JobScheduledVisitsCard
+        visits={visits}
+        loading={visitsLoading}
+        techMap={techMap}
+        jobId={context.jobId}
+      />
+      <JobRequiredSkillsCard jobId={context.jobId} />
       <JobLatestNotesCard notes={notes} loading={notesLoading} />
-      <JobNextVisitCard visits={visits} loading={visitsLoading} />
-      <JobSummaryCard job={job} loading={jobLoading} />
-      <JobTimelineCard notes={notes} visits={visits} loading={railLoading} />
+      <JobEquipmentCard
+        equipment={equipment}
+        loading={equipmentLoading}
+        jobId={context.jobId}
+      />
+
+      {/* ── Dialogs (portaled) ────────────────────────────────────────────── */}
+      {lifecycleActions.dialogsElement}
+
+      {jobId && (
+        <AddVisitDialog
+          jobId={jobId}
+          open={addVisitOpen}
+          onOpenChange={setAddVisitOpen}
+        />
+      )}
+
+      {jobId && (
+        <EntityNoteDialog
+          entityType="job"
+          entityId={jobId}
+          note={null}
+          open={addNoteOpen}
+          onOpenChange={setAddNoteOpen}
+        />
+      )}
     </div>
   );
 }

@@ -15,7 +15,7 @@ import { Link } from "wouter";
 import {
   X, Clock, MapPin, Phone, FileText, Pencil, Save,
   ExternalLink, CalendarDays, AlertTriangle, KeyRound,
-  ClipboardList, Truck, Users, CheckCircle2,
+  ClipboardList, Users, CheckCircle2,
   RotateCcw, Trash2, ChevronDown, Search,
 } from "lucide-react";
 import {
@@ -70,19 +70,13 @@ type Props = TaskProps;
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   GENERAL: "General Task",
-  SUPPLIER_VISIT: "Supplier Visit",
-  supplier_run: "Supplier Run",
+  QUOTE_ASSESSMENT: "Quote Assessment",
   pickup: "Pickup",
   delivery: "Delivery",
   meeting: "Meeting",
   training: "Training",
   vehicle_maintenance: "Vehicle Maintenance",
 };
-
-/** Returns true if this task type should show the Truck icon */
-function isSupplierType(type: string): boolean {
-  return type === "SUPPLIER_VISIT" || type === "supplier_run";
-}
 
 import { DURATION_MINUTES as DURATION_OPTIONS } from "@/lib/schedulingConstants";
 
@@ -200,9 +194,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
     }>
       <div data-panel-drag-handle className={`flex items-center justify-between border-b bg-[rgba(118,176,84,0.08)] px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""}`}>
         <div className="min-w-0 flex items-center gap-2">
-          {isSupplierType(task.type)
-            ? <Truck className="h-4 w-4 text-[#76B054] flex-shrink-0" />
-            : <ClipboardList className="h-4 w-4 text-[#76B054] flex-shrink-0" />}
+          <ClipboardList className="h-4 w-4 text-[#76B054] flex-shrink-0" />
           <div>
             <p className={`text-sm font-bold truncate ${isTaskCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
               {isTaskCompleted && <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 inline mr-1 -mt-0.5" />}

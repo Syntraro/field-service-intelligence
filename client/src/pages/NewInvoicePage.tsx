@@ -853,7 +853,7 @@ export default function NewInvoicePage() {
               testId="new-invoice-header"
               entityLabel="New Invoice"
               status={{ label: "Draft", tone: "neutral" }}
-              onBack={() => setLocationRoute("/receivables?tab=invoices")}
+              onBack={() => setLocationRoute("/invoices")}
               clientSearchText={locationSearch}
               onClientSearchTextChange={setLocationSearch}
               clientSearchResults={searchResults}
@@ -951,7 +951,7 @@ export default function NewInvoicePage() {
                 isPending: saveMutation.isPending,
                 testId: "button-new-invoice-save",
               }}
-              onCancel={() => setLocationRoute("/receivables?tab=invoices")}
+              onCancel={() => setLocationRoute("/invoices")}
               cancelDisabled={saveMutation.isPending}
               cancelTestId="button-new-invoice-cancel"
             />

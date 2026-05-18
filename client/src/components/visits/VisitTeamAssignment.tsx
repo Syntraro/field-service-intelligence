@@ -2,14 +2,11 @@
  * VisitTeamAssignment — canonical team/crew selector for visit assignment.
  *
  * 2026-04-12 UI consistency pass: one visit-assignment UX everywhere.
- *
- * Lifted verbatim from the Visit Edit modal's inline "Team" block so the
- * Schedule Visit modal (AddVisitDialog) and any future visit-assignment
- * surface share a single selector pattern:
- *   - "Assign" popover lists available technicians (hides already-selected)
- *   - Selected technicians render as removable chips with name labels
- *   - Empty state reads "Unassigned"
- *   - Multi-select by construction — single-select is just a crew of 1
+ * 2026-05-17 Phase 4 Skill-Aware Dispatch: optional `jobId` prop enables
+ *   ranked recommendations above the standard technician list. When `jobId`
+ *   is provided, the popover shows a "Recommended" section (via
+ *   AssignmentRecommendationPanel) before the full technician list.
+ *   Recommendations are transparent (score + icons) and never auto-assign.
  *
  * Data shape: `string[]` of technician user IDs. No `primaryTechnicianId`
  * concept — jobs don't own a primary, and visits carry the crew as an array.
@@ -17,8 +14,10 @@
 
 import { Plus, User, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { getMemberDisplayName } from "@/lib/displayName";
+import { AssignmentRecommendationPanel } from "@/components/dispatch/AssignmentRecommendationPanel";
 
 export interface VisitTeamAssignmentProps {
   /** Canonical crew list — the visit's `assignedTechnicianIds`. */
@@ -29,6 +28,18 @@ export interface VisitTeamAssignmentProps {
   label?: string;
   /** Optional wrapper className override (defaults to Edit-Visit styling). */
   className?: string;
+  /**
+   * When provided, the popover shows ranked assignment recommendations
+   * derived from the job's skill requirements and candidate utilization.
+   * Pass the job's ID (not the visit ID). Optional — omit for skill-agnostic
+   * assignment surfaces.
+   */
+  jobId?: string;
+  /**
+   * Target date for availability checking in recommendations (YYYY-MM-DD).
+   * Defaults to today when omitted.
+   */
+  visitDate?: string;
 }
 
 export function VisitTeamAssignment({
@@ -36,6 +47,8 @@ export function VisitTeamAssignment({
   onChange,
   label = "Team",
   className,
+  jobId,
+  visitDate,
 }: VisitTeamAssignmentProps) {
   const { teamMembers } = useTechniciansDirectory();
   const techOptions = teamMembers.map((t) => ({
@@ -70,26 +83,39 @@ export function VisitTeamAssignment({
               Assign
             </button>
           </PopoverTrigger>
-          <PopoverContent className="w-48 p-1" align="end">
-            <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">
-              Select team member
-            </div>
-            {available.length === 0 ? (
-              <div className="text-xs text-slate-400 px-2 py-2">No available</div>
-            ) : (
-              available.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => handleAdd(t.id)}
-                  className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-slate-100 flex items-center gap-2"
-                  data-testid={`option-technician-${t.id}`}
-                >
-                  <User className="h-3.5 w-3.5 text-slate-400" />
-                  {t.displayName}
-                </button>
-              ))
-            )}
+          <PopoverContent className="w-56 p-1" align="end">
+            <TooltipProvider delayDuration={300}>
+              {/* ── Recommendations section (when jobId provided) ──── */}
+              {jobId && (
+                <AssignmentRecommendationPanel
+                  jobId={jobId}
+                  date={visitDate}
+                  onSelect={handleAdd}
+                  selectedIds={value}
+                />
+              )}
+
+              {/* ── All technicians ───────────────────────────────── */}
+              <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">
+                {jobId ? "All team members" : "Select team member"}
+              </div>
+              {available.length === 0 ? (
+                <div className="text-xs text-slate-400 px-2 py-2">No available</div>
+              ) : (
+                available.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => handleAdd(t.id)}
+                    className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-slate-100 flex items-center gap-2"
+                    data-testid={`option-technician-${t.id}`}
+                  >
+                    <User className="h-3.5 w-3.5 text-slate-400" />
+                    {t.displayName}
+                  </button>
+                ))
+              )}
+            </TooltipProvider>
           </PopoverContent>
         </Popover>
       </div>

@@ -2,18 +2,15 @@
  * TaskDetailPage — Tech app task detail view.
  *
  * 2026-04-10: Created as part of task labor unification.
- * Shows task info, supplier visit details, and start/stop/complete controls
- * backed by canonical time_entries.
  */
 
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
 import { MobileShell } from "../components/MobileShell";
 import { useTechTasks } from "../hooks/useTechTasks";
 import {
-  ArrowLeft, Clock, Truck, CheckSquare, Loader2, Check, Navigation,
-  Briefcase, MapPin, FileText, Calendar, AlertCircle, X,
+  ArrowLeft, Clock, CheckSquare, Loader2, Check, Navigation,
+  Briefcase, FileText, Calendar, AlertCircle, X,
 } from "lucide-react";
 import { ActiveTimerConflictDialog, parseTimerConflict, type ActiveTimerInfo } from "../components/ActiveTimerConflictDialog";
 // 2026-04-26: canonical tech-app error formatter — same helper VisitDetailPage
@@ -22,14 +19,6 @@ import { ActiveTimerConflictDialog, parseTimerConflict, type ActiveTimerInfo } f
 // flicker that otherwise overlaps the session-expired modal.
 import { displayApiError } from "../utils/apiErrorDisplay";
 import type { Task } from "@shared/schema";
-
-interface SupplierVisitDetails {
-  taskId: string;
-  supplierId: string | null;
-  supplierLocationId: string | null;
-  supplierNameOther: string | null;
-  poNumber: string | null;
-}
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [, setLocation] = useLocation();
@@ -69,19 +58,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const task = tasks.find((t) => t.id === taskId);
 
-  // Fetch supplier visit details if SUPPLIER_VISIT type
-  const svQuery = useQuery<SupplierVisitDetails | null>({
-    queryKey: ["/api/tech/tasks", taskId, "supplier-visit"],
-    queryFn: async () => {
-      if (!task || task.type !== "SUPPLIER_VISIT") return null;
-      const res = await fetch(`/api/tasks/${taskId}/supplier-visit`, { credentials: "include" });
-      if (!res.ok) return null;
-      return res.json();
-    },
-    enabled: !!task && task.type === "SUPPLIER_VISIT",
-    staleTime: 60_000,
-  });
-
   if (!task) {
     return (
       <MobileShell showNav={false}>
@@ -104,8 +80,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   // 2026-04-10 INTEGRITY: Use canonical timer state from time_entries, not task.status
   const isInProgress = runningTaskId === taskId;
-  const isSupplier = task.type === "SUPPLIER_VISIT";
-  const sv = svQuery.data;
 
   const handleStart = async () => {
     setActionPending("start");
@@ -168,16 +142,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <div className="p-3 space-y-3">
         {/* Type badge */}
         <div className="flex items-center gap-2">
-          <div className={`h-8 w-8 rounded-md flex items-center justify-center ${
-            isSupplier ? "bg-amber-50" : "bg-indigo-50"
-          }`}>
-            {isSupplier
-              ? <Truck className="text-amber-600 h-4 w-4" />
-              : <CheckSquare className="text-indigo-600 h-4 w-4" />
-            }
+          <div className="h-8 w-8 rounded-md flex items-center justify-center bg-indigo-50">
+            <CheckSquare className="text-indigo-600 h-4 w-4" />
           </div>
           <div>
-            <span className="text-sm font-medium text-slate-700">{isSupplier ? "Supplier Visit" : "General Task"}</span>
+            <span className="text-sm font-medium text-slate-700">General Task</span>
             <span className="text-xs text-slate-400 block capitalize">{task.status.replace("_", " ")}</span>
           </div>
         </div>
@@ -204,22 +173,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <span className="text-xs font-semibold text-slate-500 uppercase">Notes</span>
             </div>
             <p className="text-sm text-slate-600 whitespace-pre-wrap">{task.notes}</p>
-          </div>
-        )}
-
-        {/* Supplier visit details */}
-        {isSupplier && sv && (
-          <div className="rounded-md border border-amber-200 bg-amber-50/50 p-3 space-y-1.5">
-            <div className="flex items-center gap-1.5 mb-1">
-              <Truck className="h-3.5 w-3.5 text-amber-500" />
-              <span className="text-xs font-semibold text-amber-700 uppercase">Supplier Details</span>
-            </div>
-            {sv.supplierNameOther && (
-              <div className="text-sm text-slate-700"><span className="text-slate-400">Supplier:</span> {sv.supplierNameOther}</div>
-            )}
-            {sv.poNumber && (
-              <div className="text-sm text-slate-700"><span className="text-slate-400">PO #:</span> {sv.poNumber}</div>
-            )}
           </div>
         )}
 

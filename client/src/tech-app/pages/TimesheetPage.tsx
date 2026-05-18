@@ -88,8 +88,8 @@ function ShiftSummaryCard({ clockInAt, clockOutAt, isActive }: {
 
 // ── Grouped entry list — groups job-related entries by jobId ──
 
-const TRAVEL_TYPES = new Set(["travel_to_job", "travel_between_jobs", "travel_to_supplier"]);
-const WORK_TYPES = new Set(["on_site", "supplier_run"]);
+const TRAVEL_TYPES = new Set(["travel_to_job", "travel_between_jobs"]);
+const WORK_TYPES = new Set(["on_site"]);
 
 function GroupedEntryList({ entries, onTap }: { entries: TimesheetEntry[]; onTap: (id: string) => void }) {
   // Group visit-linked entries by visitId (canonical).

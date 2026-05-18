@@ -151,7 +151,7 @@ router.delete(
 const createEntrySchema = z.object({
   technicianId: z.string().uuid(),
   jobId: z.string().uuid().nullable().optional(),
-  type: z.enum(["travel_to_job", "on_site", "supplier_run", "admin", "break", "other"]),
+  type: z.enum(["travel_to_job", "on_site", "travel_between_jobs", "admin", "break", "task_work", "other"]),
   startAt: z.string().datetime(),
   endAt: z.string().datetime(),
   notes: z.string().max(2000).nullable().optional(),

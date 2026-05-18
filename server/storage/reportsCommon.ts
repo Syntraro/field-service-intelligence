@@ -643,8 +643,6 @@ export async function getAvgJobValueTrendShared(
 const UNBILLABLE_TYPE_LABELS: Record<string, string> = {
   travel_to_job: "Travel to job",
   on_site: "On site",
-  travel_to_supplier: "Travel to supplier",
-  supplier_run: "Supplier run",
   travel_between_jobs: "Travel between jobs",
   admin: "Admin",
   break: "Break",

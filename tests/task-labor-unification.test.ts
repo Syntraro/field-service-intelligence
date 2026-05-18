@@ -317,7 +317,7 @@ describe("Task Labor Unification", () => {
     await db.delete(timeEntries).where(eq(timeEntries.companyId, companyId));
 
     const task = await createTechTask(companyId, userId, {
-      type: "SUPPLIER_VISIT",
+      type: "GENERAL",
       title: `${TEST_PREFIX}timesheet`,
     });
 

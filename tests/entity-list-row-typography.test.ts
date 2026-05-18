@@ -9,7 +9,7 @@
  *     text/body/date/money standard-content cells — 15px / 20px / 400;
  *     `text-row` for status/badge wrapper baseline), not to a raw Tailwind
  *     size utility. The resolver is the single source of truth for row body
- *     typography across Jobs, Invoices, Leads, Quotes, Clients, Suppliers,
+ *     typography across Jobs, Invoices, Leads, Quotes, Clients,
  *     Locations, Inventory, PMWorkspacePage, and any future page that adopts
  *     the shared component.
  *   • The `renderCellContent` function renders `entity-primary` primary

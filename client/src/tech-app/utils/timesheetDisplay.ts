@@ -9,8 +9,6 @@
 export const ENTRY_TYPE_LABELS: Record<string, string> = {
   travel_to_job: "Travel",
   on_site: "Work",
-  travel_to_supplier: "Supplier Run",
-  supplier_run: "Supplier Run",
   travel_between_jobs: "Travel",
   admin: "Admin",
   break: "Break",
@@ -21,8 +19,6 @@ export const ENTRY_TYPE_LABELS: Record<string, string> = {
 export const ENTRY_TYPE_COLORS: Record<string, string> = {
   travel_to_job: "bg-blue-100 text-blue-700",
   on_site: "bg-emerald-100 text-emerald-700",
-  travel_to_supplier: "bg-purple-100 text-purple-700",
-  supplier_run: "bg-purple-100 text-purple-700",
   travel_between_jobs: "bg-blue-100 text-blue-700",
   admin: "bg-slate-100 text-slate-600",
   break: "bg-amber-100 text-amber-700",

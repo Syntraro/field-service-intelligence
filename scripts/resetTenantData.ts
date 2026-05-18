@@ -60,10 +60,6 @@ const DELETION_ORDER: Array<[string, string]> = [
   // Recurring job instances (FK to jobs + templates)
   ["recurring_job_instances", "company_id"],
 
-  // Supplier visit details (no company_id — FK cascade from tasks)
-  // Delete via subquery: task_id IN (SELECT id FROM tasks WHERE company_id = $1)
-  ["supplier_visit_details", "SUB:task_id:tasks"],
-
   // Tasks (FK to jobs, client_locations)
   ["tasks", "company_id"],
 
@@ -120,10 +116,6 @@ const DELETION_ORDER: Array<[string, string]> = [
 
   // Customer companies
   ["customer_companies", "company_id"],
-
-  // Supplier locations + suppliers
-  ["supplier_locations", "company_id"],
-  ["suppliers", "company_id"],
 
   // Items / parts / equipment / maintenance
   ["client_parts", "company_id"],

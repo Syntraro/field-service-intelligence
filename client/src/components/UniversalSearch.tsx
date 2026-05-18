@@ -20,7 +20,7 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 // number as a blue pill when the server supplies the new fields.
 import { EntityNumber } from "@/components/common/EntityNumber";
 import {
-  Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
+  Search, Loader2, Briefcase, FileText, Building2, MapPin, UserCircle,
   LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
   Users, Wrench, Settings,
 } from "lucide-react";
@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 // TYPES
 // ========================================
 
-type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "supplier" | "contact";
+type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "contact";
 
 interface SearchResult {
   type: SearchResultType;
@@ -86,16 +86,15 @@ const NAVIGATION_COMMANDS: CommandItem[] = [
   { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, route: "/dispatch" },
   { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, route: "/pm" },
   { id: "open-clients",   label: "Open Clients",   keywords: ["clients", "customers"], icon: Users, route: "/clients" },
-  { id: "open-invoices",  label: "Open Receivables",  keywords: ["invoices", "receivables", "billing"], icon: Receipt, route: "/receivables?tab=invoices" },
+  { id: "open-invoices",  label: "Open Invoices",  keywords: ["invoices", "receivables", "billing"], icon: Receipt, route: "/invoices" },
   { id: "open-quotes",    label: "Open Quotes",    keywords: ["quotes", "estimates"], icon: FileCheck, route: "/quotes" },
   { id: "nav-dashboard",  label: "Dashboard",      keywords: ["home", "overview"], icon: LayoutDashboard, route: "/" },
   { id: "nav-dispatch",   label: "Dispatch",       keywords: ["dispatch", "calendar", "schedule", "disp"], icon: LayoutGrid, route: "/dispatch" },
   { id: "nav-jobs",       label: "Jobs",           keywords: ["jobs", "job", "work orders"], icon: ClipboardList, route: "/jobs" },
   { id: "nav-pm",         label: "PM",             keywords: ["pm", "preventive maintenance", "preventative"], icon: Wrench, route: "/pm" },
-  { id: "nav-invoices",   label: "Receivables",    keywords: ["invoices", "invoice", "receivables", "billing", "inv"], icon: Receipt, route: "/receivables?tab=invoices" },
+  { id: "nav-invoices",   label: "Invoices",       keywords: ["invoices", "invoice", "receivables", "billing", "inv"], icon: Receipt, route: "/invoices" },
   { id: "nav-quotes",     label: "Quotes",         keywords: ["quotes", "quote", "estimates", "estimate"], icon: FileCheck, route: "/quotes" },
   { id: "nav-clients",    label: "Clients",        keywords: ["clients", "client", "customers", "customer", "cli"], icon: Users, route: "/clients" },
-  { id: "nav-suppliers",  label: "Suppliers",      keywords: ["suppliers", "supplier", "vendor", "vendors"], icon: Building2, route: "/suppliers" },
   { id: "nav-reports",    label: "Reports",        keywords: ["reports", "report", "analytics"], icon: FileText, route: "/reports" },
   { id: "nav-settings",   label: "Settings",       keywords: ["settings", "preferences", "config"], icon: Settings, route: "/settings" },
   // 2026-05-03 SECURITY LOCKDOWN: the "Admin" command-palette entry that
@@ -109,7 +108,7 @@ const NAVIGATION_COMMANDS: CommandItem[] = [
 // SEARCH RESULT HELPERS (preserved from original)
 // ========================================
 
-const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "quote", "customerCompany", "location", "contact", "supplier"];
+const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "quote", "customerCompany", "location", "contact"];
 
 const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: string }>> = {
   job: Briefcase,
@@ -118,7 +117,6 @@ const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: str
   customerCompany: Building2,
   location: MapPin,
   contact: UserCircle,
-  supplier: Truck,
 };
 
 const TYPE_LABELS: Record<SearchResultType, string> = {
@@ -128,7 +126,6 @@ const TYPE_LABELS: Record<SearchResultType, string> = {
   customerCompany: "Companies",
   location: "Locations",
   contact: "Contacts",
-  supplier: "Suppliers",
 };
 
 const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
@@ -138,7 +135,6 @@ const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
   customerCompany: (id) => `/clients/${id}`,
   location: (id) => `/clients/${id}`,  // Fallback only — location routing handled explicitly in executeItem
   contact: (id) => `/clients/${id}`,  // Navigate to parent company (contacts live under companies)
-  supplier: (id) => `/suppliers/${id}`,
 };
 
 // ========================================
@@ -461,8 +457,8 @@ export default function UniversalSearch() {
               primitive followed by the descriptive `titleText`. When
               `entityNumberType` is absent, fall back to the legacy
               `title` rendering verbatim — back-compat for result
-              types not migrated (customerCompany / location / supplier
-               / contact). The `customerCompany` branch keeps using
+              types not migrated (customerCompany / location / contact).
+              The `customerCompany` branch keeps using
               `getClientDisplayName` to honor the canonical identity
               resolver. No duplicated number text — when the pill
               renders we use `titleText` (server-stripped of the

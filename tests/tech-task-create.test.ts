@@ -1,16 +1,15 @@
 /**
- * Tech Task Create — permission, validation, and supplier visit tests (2026-04-10)
+ * Tech Task Create — permission, validation, and type tests
+ *
+ * NOTE (2026-05-17): SUPPLIER_VISIT is fully retired and removed from all schemas,
+ * routes, storage, and task type enums. No new SUPPLIER_VISIT tasks can be created.
  *
  * Locks:
- *   1-5. Schema validation (type restriction, strict mode)
- *   6-8. Shared constant integrity (TECH_ALLOWED_TASK_TYPES)
- *   9-10. Self-assignment enforcement (route-level + storage-level)
- *   11-13. Storage wrapper (createTechTask always self-assigns)
- *   14. Supplier visit extension (supplierNameOther flows through)
- *   15-18. Office route unchanged
- *
- * The route uses requireSchedulable (any schedulable user of any role),
- * NOT a role-restricted gate. Self-assignment applies to ALL mobile users.
+ *   1-4. Schema validation (type restriction, strict mode)
+ *   5-6. Shared constant integrity (TECH_ALLOWED_TASK_TYPES — GENERAL only)
+ *   7-8. Self-assignment enforcement (route-level + storage-level)
+ *   9-10. Storage wrapper (createTechTask always self-assigns)
+ *   11-14. Office route unchanged
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -22,7 +21,7 @@ import {
   taskTypeEnum,
 } from "@shared/schema";
 import { eq } from "drizzle-orm";
-import { createTechTask, taskRepository } from "../server/storage/tasks";
+import { createTechTask } from "../server/storage/tasks";
 import { createTaskSchema, TECH_ALLOWED_TASK_TYPES } from "../server/lib/taskSchemas";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
@@ -39,10 +38,6 @@ const techCreateTaskSchema = createTaskSchema
   })
   .extend({
     type: z.enum(TECH_ALLOWED_TASK_TYPES),
-    supplierId: z.string().uuid().nullable().optional(),
-    supplierLocationId: z.string().uuid().nullable().optional(),
-    supplierNameOther: z.string().max(200).nullable().optional(),
-    poNumber: z.string().max(100).nullable().optional(),
   })
   .strict();
 
@@ -77,7 +72,6 @@ async function createFixtures() {
 }
 
 async function cleanupFixtures() {
-  // supplier_visit_details cascade-deletes with tasks
   await db.delete(tasks).where(eq(tasks.companyId, companyId));
   await db.delete(users).where(eq(users.companyId, companyId));
   await db.delete(companies).where(eq(companies.id, companyId));
@@ -101,8 +95,8 @@ describe("Tech task create — hardened", () => {
       expect(techCreateTaskSchema.safeParse({ title: "Test", type: "GENERAL" }).success).toBe(true);
     });
 
-    it("accepts SUPPLIER_VISIT", () => {
-      expect(techCreateTaskSchema.safeParse({ title: "Test", type: "SUPPLIER_VISIT" }).success).toBe(true);
+    it("REJECTS SUPPLIER_VISIT (retired 2026-05-17)", () => {
+      expect(techCreateTaskSchema.safeParse({ title: "Test", type: "SUPPLIER_VISIT" }).success).toBe(false);
     });
 
     it("REJECTS QUOTE_ASSESSMENT", () => {
@@ -112,16 +106,6 @@ describe("Tech task create — hardened", () => {
 
     it("REJECTS unknown type strings", () => {
       expect(techCreateTaskSchema.safeParse({ title: "Test", type: "BOGUS" }).success).toBe(false);
-    });
-
-    it("accepts supplier visit fields when present", () => {
-      const result = techCreateTaskSchema.safeParse({
-        title: "Pick up parts",
-        type: "SUPPLIER_VISIT",
-        supplierNameOther: "ABC Supply",
-        poNumber: "PO-123",
-      });
-      expect(result.success).toBe(true);
     });
   });
 
@@ -159,6 +143,12 @@ describe("Tech task create — hardened", () => {
         title: "Test", type: "GENERAL", status: "pending",
       }).success).toBe(false);
     });
+
+    it("REJECTS supplierId (supplier visit fields retired)", () => {
+      expect(techCreateTaskSchema.safeParse({
+        title: "Test", type: "GENERAL", supplierId: uuidv4(),
+      }).success).toBe(false);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -176,9 +166,12 @@ describe("Tech task create — hardened", () => {
       expect((TECH_ALLOWED_TASK_TYPES as readonly string[]).includes("QUOTE_ASSESSMENT")).toBe(false);
     });
 
-    it("contains GENERAL and SUPPLIER_VISIT", () => {
+    it("contains GENERAL", () => {
       expect((TECH_ALLOWED_TASK_TYPES as readonly string[]).includes("GENERAL")).toBe(true);
-      expect((TECH_ALLOWED_TASK_TYPES as readonly string[]).includes("SUPPLIER_VISIT")).toBe(true);
+    });
+
+    it("does NOT contain SUPPLIER_VISIT (retired 2026-05-17)", () => {
+      expect((TECH_ALLOWED_TASK_TYPES as readonly string[]).includes("SUPPLIER_VISIT")).toBe(false);
     });
   });
 
@@ -222,40 +215,6 @@ describe("Tech task create — hardened", () => {
       expect(task.createdByUserId).toBe(dispatcherUserId);
       expect(task.assignedToUserId).toBe(dispatcherUserId);
     });
-
-    it("creates a valid SUPPLIER_VISIT task", async () => {
-      const task = await createTechTask(companyId, techUserId, {
-        title: `${TEST_PREFIX}supplier visit`,
-        type: "SUPPLIER_VISIT",
-      });
-      expect(task.type).toBe("SUPPLIER_VISIT");
-      expect(task.assignedToUserId).toBe(techUserId);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────
-  // Supplier visit extension: supplierNameOther
-  // ─────────────────────────────────────────────────────────────────────
-
-  describe("supplier visit details (supplierNameOther)", () => {
-    it("stores supplierNameOther in the extension table", async () => {
-      const task = await createTechTask(companyId, techUserId, {
-        title: `${TEST_PREFIX}sv with name`,
-        type: "SUPPLIER_VISIT",
-      });
-
-      await taskRepository.updateSupplierVisit(companyId, task.id, {
-        supplierNameOther: "ABC Supply House",
-        poNumber: "PO-99",
-      });
-
-      const sv = await taskRepository.getSupplierVisitDetails(companyId, task.id);
-      expect(sv).not.toBeNull();
-      expect(sv!.supplierNameOther).toBe("ABC Supply House");
-      expect(sv!.poNumber).toBe("PO-99");
-      // supplierId should be null (tech didn't select from canonical list)
-      expect(sv!.supplierId).toBeNull();
-    });
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -269,10 +228,6 @@ describe("Tech task create — hardened", () => {
 
     it("accepts GENERAL", () => {
       expect(createTaskSchema.safeParse({ title: "Test", type: "GENERAL" }).success).toBe(true);
-    });
-
-    it("accepts SUPPLIER_VISIT", () => {
-      expect(createTaskSchema.safeParse({ title: "Test", type: "SUPPLIER_VISIT" }).success).toBe(true);
     });
 
     it("accepts assignedToUserId (free assignment for office)", () => {

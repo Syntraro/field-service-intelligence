@@ -2,8 +2,8 @@
  * Timesheet types for the technician mobile app.
  * Phase 3 (2026-04-04): Real backend-aligned types replacing mock types.
  *
- * Backend time entry types: travel_to_job, on_site, travel_to_supplier,
- * supplier_run, travel_between_jobs, admin, break, other
+ * Backend time entry types: travel_to_job, on_site, travel_between_jobs,
+ * admin, break, task_work, other
  */
 
 // ── Work session (from backend work_sessions table) ──

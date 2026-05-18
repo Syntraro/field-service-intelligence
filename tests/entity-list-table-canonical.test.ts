@@ -30,7 +30,6 @@ const JOBS           = path("client/src/pages/Jobs.tsx");
 const INVOICES       = path("client/src/pages/InvoicesListPage.tsx");
 const QUOTES         = path("client/src/pages/Quotes.tsx");
 const LEADS          = path("client/src/pages/LeadsPage.tsx");
-const SUPPLIERS      = path("client/src/pages/SuppliersListPage.tsx");
 const CLIENTS        = path("client/src/pages/Clients.tsx");
 const LOCATIONS      = path("client/src/pages/Locations.tsx");
 const INVENTORY      = path("client/src/pages/InventoryPage.tsx");
@@ -198,10 +197,6 @@ describe("Page-level columns — no redundant py-2.5 cellClassName on primary/te
     expect(countRedundantOverrides(read(LEADS))).toBe(0);
   });
 
-  it("Suppliers — no redundant py-2.5 cellClassName", () => {
-    expect(countRedundantOverrides(read(SUPPLIERS))).toBe(0);
-  });
-
   it("Clients — no redundant py-2.5 cellClassName", () => {
     expect(countRedundantOverrides(read(CLIENTS))).toBe(0);
   });
@@ -248,9 +243,6 @@ describe("Page-level columns — no copy-pasted secondary class literal", () => 
     expect(hasCopiedSecondary(read(LEADS))).toBe(false);
   });
 
-  it("Suppliers — secondary class not copy-pasted", () => {
-    expect(hasCopiedSecondary(read(SUPPLIERS))).toBe(false);
-  });
 });
 
 // ── 7. Locations — no ad-hoc text-[11px] tag pill ─────────────────────
@@ -283,7 +275,6 @@ describe("All entity list pages import EntityListTable from canonical path", () 
     ["Invoices", INVOICES],
     ["Quotes", QUOTES],
     ["Leads", LEADS],
-    ["Suppliers", SUPPLIERS],
     ["Clients", CLIENTS],
     ["Locations", LOCATIONS],
     ["Inventory", INVENTORY],

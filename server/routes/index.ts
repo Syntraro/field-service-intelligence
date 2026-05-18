@@ -58,7 +58,6 @@ import { impersonationMiddleware, trackActivity } from "../impersonationMiddlewa
 import { enforceReadOnlySupport } from "../middleware/enforceReadOnlySupport";
 import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
-import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
 import jobExpensesRouter from "./jobExpenses";
 import locationNotesRouter from "./location-notes";
@@ -384,11 +383,6 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/feedback", feedbackRouter);
-  // 2026-05-04 Phase 2 PR 4: supplier GETs (list, detail, contacts,
-  // visits) had no mount-level gate; writes already require
-  // MANAGER_ROLES per route. Closing the read surface to technicians.
-  app.use("/api/suppliers", requireRole(MANAGER_ROLES));
-  app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", requirePermission("dashboard.view"), dashboardRouter);
   // 2026-05-07 RALPH: per-user dashboard layout persistence (visibility
   // + ordering). Mounted at a sibling path so the data-aggregation
@@ -433,7 +427,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/pm/templates", pmTemplatesRouter); // PM Templates: reusable job content for maintenance plans
   app.use("/api/pm/billing", pmBillingRouter); // PM Billing Phase 2: contract billing events + oversight
   app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
-  app.use("/api/search", searchRouter); // Universal search: jobs, invoices, customers, locations, suppliers
+  app.use("/api/search", searchRouter);
   app.use("/api/reference-fields", referenceFieldsRouter); // Reference fields: definitions + per-entity values
 
   // PM parts: location-level part templates for preventive maintenance

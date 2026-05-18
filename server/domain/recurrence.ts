@@ -607,6 +607,13 @@ export async function generateInstances(
         continue;
       }
 
+      // Expiration guard: endDate is the contract end — no instances after expiry.
+      // isActive alone is insufficient; a plan can remain active past its end date.
+      if (template.endDate && parseLocalDate(template.endDate) < today) {
+        console.warn(`[pm-generate] Skipping expired template ${template.id} (endDate: ${template.endDate})`);
+        continue;
+      }
+
       // PM fix: use 1st of current month for PM templates (same as generateForSingleTemplate)
       const windowStart = pmWindowStart(today, template);
 
@@ -695,6 +702,14 @@ export async function generateForSingleTemplate(
   try {
     // Get generation window in company timezone (not server time)
     const today = await getCompanyToday(companyId);
+
+    // Expiration guard: endDate is the contract end — no instances after expiry.
+    // isActive alone is insufficient; a plan can remain active past its end date.
+    if (template.endDate && parseLocalDate(template.endDate) < today) {
+      console.warn(`[pm-generate] Skipping expired template ${templateId} (endDate: ${template.endDate})`);
+      return result;
+    }
+
     const windowEnd = addDays(today, windowDays);
 
       // PM fix: use 1st of current month as window start so period_start / day_of_month
@@ -784,6 +799,9 @@ export async function generateFromInstances(
   // Recover stale claims first
   await recoverStaleClaims(companyId);
 
+  // Compute today once for the expiration guard applied per-instance below.
+  const today = await getCompanyToday(companyId);
+
   const templateIds = new Set<string>();
 
   for (const instanceId of instanceIds) {
@@ -828,6 +846,15 @@ export async function generateFromInstances(
 
     if (!template.locationId) {
       result.errors.push(`Template ${template.id} has no location`);
+      continue;
+    }
+
+    // Expiration guard: do not promote instances for expired plans into jobs.
+    // Leave instance in "pending" — do not mark as "canceled" (that semantic is
+    // reserved for the smart-delete/deactivate path, which is a deliberate action).
+    if (template.endDate && parseLocalDate(template.endDate) < today) {
+      console.warn(`[pm-generate] Skipping expired template ${template.id} instance ${instanceId} (endDate: ${template.endDate})`);
+      result.errors.push(`Instance ${instanceId}: template ${template.id} expired (endDate: ${template.endDate}) — skipped`);
       continue;
     }
 
@@ -941,6 +968,11 @@ export async function previewGeneration(
   for (const template of templates) {
     // Skip templates without a location
     if (!template.locationId) {
+      continue;
+    }
+
+    // Expiration guard: mirrors generateInstances — expired plans are not generateable.
+    if (template.endDate && parseLocalDate(template.endDate) < today) {
       continue;
     }
 
