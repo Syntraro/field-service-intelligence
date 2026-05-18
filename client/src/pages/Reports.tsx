@@ -421,6 +421,14 @@ function SnapshotBody({ range }: { range: RangeKey }) {
     staleTime: 60_000,
   });
 
+  // Must stay above both early returns — hooks must run on every render.
+  // Passes null before the snapshot query resolves; computeInsights
+  // returns [] immediately for null snapshot.
+  const insights = useMemo(
+    () => computeInsights({ snapshot: data ?? null, partsForecast: partsForecast ?? null }),
+    [data, partsForecast],
+  );
+
   if (isLoading) {
     return (
       <Card>
@@ -444,15 +452,6 @@ function SnapshotBody({ range }: { range: RangeKey }) {
       </Card>
     );
   }
-
-  // Insights derive from the already-fetched payloads — no new query.
-  // When parts-forecast hasn't loaded yet (or failed), pass `null` so
-  // the parts-setup rule silently skips. Other rules don't depend on
-  // it. `useMemo` keeps the rule engine deterministic across re-renders.
-  const insights = useMemo(
-    () => computeInsights({ snapshot: data, partsForecast: partsForecast ?? null }),
-    [data, partsForecast],
-  );
 
   return (
     <div className="space-y-6" data-testid="snapshot-body">

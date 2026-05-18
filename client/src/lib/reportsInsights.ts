@@ -64,7 +64,8 @@ export interface Insight {
 }
 
 export interface InsightInputs {
-  snapshot: SnapshotResponse;
+  /** Null when the snapshot query hasn't resolved yet — returns [] immediately. */
+  snapshot: SnapshotResponse | null;
   /** Optional — when the parts-forecast fetch failed or hasn't
    *  resolved yet, parts-setup insights silently skip. They are
    *  never fabricated from missing data. */
@@ -92,6 +93,7 @@ export function computeInsights({
   snapshot,
   partsForecast,
 }: InsightInputs): Insight[] {
+  if (!snapshot) return [];
   const insights: Insight[] = [];
 
   // ---------------------------------------------------------------------
