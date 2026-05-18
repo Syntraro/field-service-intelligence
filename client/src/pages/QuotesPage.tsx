@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
 import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import {
   WorkspaceFilterBar,
   WorkspaceViewChip,
@@ -243,15 +244,14 @@ export default function QuotesPage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Table content */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <WorkspaceListCard>
         <QuotesWorkspaceTab
           activeView={activeView}
           searchQuery={searchQuery}
           statusFilter={statusFilter}
           onRailContextChange={handleRailContextChange}
         />
-      </div>
+      </WorkspaceListCard>
     </>
   );
 

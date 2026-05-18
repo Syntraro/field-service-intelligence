@@ -5,6 +5,7 @@ import {
   EntityListTable,
   type EntityListColumn,
 } from "@/components/lists/EntityListTable";
+import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import { PriceBookCreateServiceTemplateDialog } from "./PriceBookCreateServiceTemplateDialog";
 
@@ -179,26 +180,28 @@ export function PriceBookServiceTemplatesTab({
 
   return (
     <>
-      <WorkspaceEntitySurface>
-        <EntityListTable
-          rows={rows}
-          columns={columns}
-          rowKey={(row) => row.id}
-          loadingState={isLoading}
-          selectedRowKey={selectedTemplateId ?? undefined}
-          onRowClick={(row) => {
-            onSelectedTemplateChange(selectedTemplateId === row.id ? null : row._raw);
-          }}
-          emptyState={{
-            kind: "empty",
-            title: searchQuery ? "No templates match your search." : "No flat-rate templates yet",
-            description: searchQuery
-              ? undefined
-              : "Create a flat-rate template to package services and materials as a single line item.",
-          }}
-          fillHeight
-        />
-      </WorkspaceEntitySurface>
+      <WorkspaceCenterPane>
+        <WorkspaceEntitySurface>
+          <EntityListTable
+            rows={rows}
+            columns={columns}
+            rowKey={(row) => row.id}
+            loadingState={isLoading}
+            selectedRowKey={selectedTemplateId ?? undefined}
+            onRowClick={(row) => {
+              onSelectedTemplateChange(selectedTemplateId === row.id ? null : row._raw);
+            }}
+            emptyState={{
+              kind: "empty",
+              title: searchQuery ? "No templates match your search." : "No flat-rate templates yet",
+              description: searchQuery
+                ? undefined
+                : "Create a flat-rate template to package services and materials as a single line item.",
+            }}
+            fillHeight
+          />
+        </WorkspaceEntitySurface>
+      </WorkspaceCenterPane>
 
       <PriceBookCreateServiceTemplateDialog
         open={createOpen}

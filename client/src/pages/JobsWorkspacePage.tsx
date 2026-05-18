@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { CreateJobModal } from "@/components/CreateJobModal";
 import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
 import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import {
   WorkspaceFilterBar,
   WorkspaceViewChip,
@@ -151,15 +152,14 @@ export default function JobsWorkspacePage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Table — flex-col parent so WorkspaceCenterPane's flex-1 resolves correctly */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <WorkspaceListCard>
         <JobsWorkspaceTab
           activeView={activeView}
           searchQuery={searchQuery}
           selectedJobId={selectedContext?.jobId ?? null}
           onRailContextChange={handleRailContextChange}
         />
-      </div>
+      </WorkspaceListCard>
     </>
   );
 

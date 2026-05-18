@@ -3,7 +3,7 @@
  *
  * Verifies that:
  *   1. jobKeys.parts() produces the canonical shape.
- *   2. invalidateJobParts emits the correct bust set (including urlFamily bridge).
+ *   2. invalidateJobParts emits the correct bust set (urlFamily bridge retired Phase 3J).
  *   3. All known parts consumers resolve to the EXACT same key — preserving
  *      React Query dedupe between JobDetailPage, EditVisitModal, and
  *      QuickAddJobDialog.
@@ -74,10 +74,10 @@ describe("invalidateJobParts — invalidation scope", () => {
     expect(qc.calls).toContainEqual(jobKeys.root());
   });
 
-  it("busts the urlFamily bridge prefix (temporary)", () => {
+  it("does NOT emit the retired URL-pattern family prefix", () => {
     const qc = makeQc();
     invalidateJobParts(qc as any, JOB_ID);
-    expect(qc.calls).toContainEqual(jobKeys.urlFamily());
+    expect(qc.calls).not.toContainEqual(["/api/jobs"]);
   });
 
   it("does NOT bust unrelated sub-resources", () => {

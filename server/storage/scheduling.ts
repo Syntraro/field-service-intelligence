@@ -296,6 +296,7 @@ export class SchedulingRepository extends BaseRepository {
         jv.outcome_note,
         jv.version as visit_version,
         jv.equipment_ids,
+        jv.dispatch_order,
         j.description,
         j.access_instructions,
         j.company_id,
@@ -334,7 +335,7 @@ export class SchedulingRepository extends BaseRepository {
         AND jv.scheduled_start < ${endDate}
         AND ${sql.raw(JOB_ACTIVE_SQL_J)}
         AND j.status != 'archived'
-      ORDER BY jv.scheduled_start
+      ORDER BY jv.scheduled_start, jv.dispatch_order NULLS LAST
     `);
 
     // Parse raw results — Phase 2: visit_outcome added
@@ -353,6 +354,7 @@ export class SchedulingRepository extends BaseRepository {
       outcome_note: string | null;
       visit_version: number;
       equipment_ids: string[] | null;
+      dispatch_order: number | null;
       description: string | null;
       access_instructions: string | null;
       company_id: string;
@@ -475,6 +477,7 @@ export class SchedulingRepository extends BaseRepository {
         lat: row.location_lat ?? null,
         lng: row.location_lng ?? null,
         equipmentIds: row.equipment_ids ?? null,
+        dispatchOrder: row.dispatch_order ?? null,
       };
     });
 

@@ -108,7 +108,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
         key: "operations-categories",
         title: "Job Categories",
         description: "Organize jobs by category",
-        href: "/settings/categories",
+        href: "/price-book?view=categories",
         icon: ListTree,
         keywords: ["categories", "job types", "organize", "types"],
       },

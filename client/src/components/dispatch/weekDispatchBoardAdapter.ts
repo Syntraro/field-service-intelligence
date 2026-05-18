@@ -64,13 +64,21 @@ function buildDayCell(
   visits: DispatchVisit[],
   tasks: DispatchTask[],
 ): BoardDayCell {
-  // Sort chronologically so cards render in schedule order.
-  // Unscheduled visits (null scheduledStart) sort to the end.
+  // Sort by scheduledStart ascending (primary), dispatchOrder nulls-last (tie-breaker).
+  // scheduledStart is the canonical order after smart-reschedule rewrites times.
   const sortedVisits = [...visits].sort((a, b) => {
-    if (!a.scheduledStart && !b.scheduledStart) return 0;
+    if (!a.scheduledStart && !b.scheduledStart) {
+      const aOrd = a.dispatchOrder ?? Infinity;
+      const bOrd = b.dispatchOrder ?? Infinity;
+      return aOrd - bOrd;
+    }
     if (!a.scheduledStart) return 1;
     if (!b.scheduledStart) return -1;
-    return a.scheduledStart.localeCompare(b.scheduledStart);
+    const timeCmp = a.scheduledStart.localeCompare(b.scheduledStart);
+    if (timeCmp !== 0) return timeCmp;
+    const aOrd = a.dispatchOrder ?? Infinity;
+    const bOrd = b.dispatchOrder ?? Infinity;
+    return aOrd - bOrd;
   });
   const sortedTasks = [...tasks].sort((a, b) => {
     if (!a.scheduledStart && !b.scheduledStart) return 0;

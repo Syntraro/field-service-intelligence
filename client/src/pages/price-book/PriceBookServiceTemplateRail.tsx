@@ -5,7 +5,6 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { StatusChip } from "@/components/ui/chip";
 import { InlineInput, FormSection } from "@/components/ui/form-field";
 import { WorkspaceRailScrollContainer } from "@/components/workspace/WorkspaceRailScrollContainer";
@@ -29,7 +28,6 @@ import {
   type ProductOption,
 } from "@/lib/entities/productEntity";
 import type { ServiceTemplateDto, ComponentInput } from "@/lib/serviceTemplates/serviceTemplateTypes";
-import { formatDuration } from "@/components/dispatch/dispatchPreviewUtils";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,7 +94,7 @@ function computeWarnings(template: ServiceTemplateDto, componentEntries: Compone
   if (componentEntries.length > 0 && cost > 0 && price < cost) {
     warnings.push("Flat rate price is below estimated component cost (negative margin).");
   }
-  if (template.components.length === 0) {
+  if (componentEntries.length === 0) {
     warnings.push("No components defined — cost basis is unknown.");
   }
   return warnings;
@@ -185,7 +183,7 @@ export function PriceBookServiceTemplateRail({
     }
 
     try {
-      const updatedTemplate = await updateMutation.mutateAsync({
+      await updateMutation.mutateAsync({
         name: draftName.trim(),
         flatRatePrice: draftPrice.trim(),
         description: draftDescription.trim() || null,
@@ -424,7 +422,7 @@ export function PriceBookServiceTemplateRail({
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
               <Input
-                className="pl-8 h-8 text-sm"
+                className="pl-8 h-8"
                 placeholder="Search catalog items to add…"
                 value={itemSearch}
                 onChange={(e) => setItemSearch(e.target.value)}

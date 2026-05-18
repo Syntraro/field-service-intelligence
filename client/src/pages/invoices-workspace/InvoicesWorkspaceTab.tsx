@@ -8,6 +8,7 @@ import {
 } from "@/components/invoices/InvoiceListPanel";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
 import type { SelectedReceivablesContext } from "@/pages/receivables/InvoiceRailBody";
 
@@ -68,8 +69,7 @@ export function InvoicesWorkspaceTab({
       className="h-full flex flex-col min-h-0 overflow-hidden"
       data-testid="invoices-workspace-tab"
     >
-      {/* Elevated table container */}
-      <div className="flex-1 min-h-0 flex flex-col mx-4 mb-6 rounded-md overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.07),0_0_1px_rgba(0,0,0,0.05)]">
+      <WorkspaceListCard>
         <WorkspaceCenterPane>
           <WorkspaceEntitySurface data-testid="tab-content-invoices">
             <InvoiceListPanel
@@ -84,7 +84,7 @@ export function InvoicesWorkspaceTab({
             />
           </WorkspaceEntitySurface>
         </WorkspaceCenterPane>
-      </div>
+      </WorkspaceListCard>
     </div>
   );
 }

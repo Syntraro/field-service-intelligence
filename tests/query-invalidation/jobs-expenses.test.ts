@@ -2,8 +2,7 @@
  * Phase 3A guardrails — job expenses canonical key and invalidation.
  *
  * Asserts that jobKeys.expenses() produces the canonical shape and that
- * invalidateJobExpense emits the correct set of busts (including the
- * temporary urlFamily bridge). Mirrors the pattern from jobs.test.ts.
+ * invalidateJobExpense emits the correct set of busts (urlFamily bridge retired Phase 3J).
  */
 import { describe, it, expect } from "vitest";
 import { jobKeys } from "../../client/src/lib/queryKeys/jobs";
@@ -71,10 +70,10 @@ describe("invalidateJobExpense — invalidation scope", () => {
     expect(qc.calls).toContainEqual(jobKeys.root());
   });
 
-  it("busts the urlFamily bridge prefix (temporary)", () => {
+  it("does NOT emit the retired URL-pattern family prefix", () => {
     const qc = makeQc();
     invalidateJobExpense(qc as any, JOB_ID);
-    expect(qc.calls).toContainEqual(jobKeys.urlFamily());
+    expect(qc.calls).not.toContainEqual(["/api/jobs"]);
   });
 
   it("does NOT bust unrelated sub-resources", () => {

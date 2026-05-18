@@ -3,6 +3,7 @@ import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
+import { invalidateJob } from "@/lib/queryInvalidation";
 import { useAuth } from "@/lib/auth";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
@@ -158,9 +159,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
       return response as { job: any };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // 2026-04-05: Invalidate ["/api/jobs"] family for Job Detail sub-resource freshness
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      invalidateJob(queryClient, job.id);
       // Phase 5.1: undoing a close moves job back to a different status bucket
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({ title: "Undo Successful", description: "Job close has been undone." });
@@ -183,12 +182,8 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
       return { ...(response as { job: any; invoice: any | null }), mode };
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateJob(queryClient, job.id);
       queryClient.invalidateQueries({ queryKey: ["visits"] });
-      // 2026-04-05: Invalidate ["/api/jobs"] family so Job Detail sub-resources
-      // (time-summary, time-entries, expenses, notes) refresh after close.
-      // The ["jobs"] prefix does NOT match ["/api/jobs", ...] — separate family.
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       // Phase 5.1: closing a job removes it from active/on-hold dashboard counts
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setShowCloseJobDialog(false);

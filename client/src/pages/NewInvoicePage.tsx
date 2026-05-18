@@ -73,6 +73,7 @@ import {
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { receivablesKeys } from "@/lib/receivablesQueryKeys";
+import { jobKeys } from "@/lib/queryKeys";
 import { useToast } from "@/hooks/use-toast";
 
 import { Button } from "@/components/ui/button";
@@ -299,7 +300,7 @@ export default function NewInvoicePage() {
   // jobs that the preview rejects still get linked, the user just adds
   // manual lines for them.
   const eligibleJobsQuery = useQuery<JobsFeedResponse>({
-    queryKey: ["/api/jobs", { locationId: selectedLocation?.id, scope: "open-or-completed-not-invoiced" }],
+    queryKey: jobKeys.listForLocation(selectedLocation?.id ?? "", "open-or-completed-not-invoiced"),
     queryFn: () =>
       apiRequest<JobsFeedResponse>(
         `/api/jobs?locationId=${encodeURIComponent(selectedLocation!.id)}&limit=100`,

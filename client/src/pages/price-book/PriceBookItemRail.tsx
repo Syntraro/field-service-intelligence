@@ -260,20 +260,20 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
         </div>
 
         {/* Committed pricing summary */}
-        <div className="flex items-center gap-4 mt-3 text-sm">
+        <div className="flex items-center gap-4 mt-3">
           <div>
-            <span className="block text-[11px] text-muted-foreground">Price</span>
-            <span className="font-medium tabular-nums">{formatMoney(item.unitPrice)}</span>
+            <span className="block text-helper text-muted-foreground">Price</span>
+            <span className="text-row font-medium tabular-nums">{formatMoney(item.unitPrice)}</span>
           </div>
           <div>
-            <span className="block text-[11px] text-muted-foreground">Cost</span>
-            <span className="font-medium tabular-nums">{formatMoney(item.cost)}</span>
+            <span className="block text-helper text-muted-foreground">Cost</span>
+            <span className="text-row font-medium tabular-nums">{formatMoney(item.cost)}</span>
           </div>
           {(item.unitPrice || item.cost) && (
             <div>
-              <span className="block text-[11px] text-muted-foreground">Margin</span>
+              <span className="block text-helper text-muted-foreground">Margin</span>
               <span
-                className={`font-medium tabular-nums ${
+                className={`text-row font-medium tabular-nums ${
                   parseFloat(item.unitPrice || "0") - parseFloat(item.cost || "0") >= 0
                     ? "text-emerald-600"
                     : "text-destructive"
@@ -285,8 +285,8 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           )}
           {item.category && (
             <div>
-              <span className="block text-[11px] text-muted-foreground">Category</span>
-              <span className="font-medium text-sm">{item.category}</span>
+              <span className="block text-helper text-muted-foreground">Category</span>
+              <span className="text-row font-medium">{item.category}</span>
             </div>
           )}
         </div>
@@ -304,13 +304,13 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1">
             <div className="flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
-              <p className="text-[11px] font-medium text-amber-800">
+              <p className="text-helper font-medium text-amber-800">
                 {railWarnings.length} pricing {railWarnings.length === 1 ? "issue" : "issues"} detected
               </p>
             </div>
             <ul className="space-y-0.5">
               {railWarnings.map((w) => (
-                <li key={w.label} className="text-[11px] text-amber-700 leading-snug">
+                <li key={w.label} className="text-helper text-amber-700 leading-snug">
                   <span className="font-medium">{w.label}:</span> {w.desc}
                 </li>
               ))}
@@ -348,15 +348,15 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           {isQboSynced ? (
             <div>
               <div className="rounded-md border border-border bg-muted/30 px-3 pt-1.5 pb-2">
-                <span className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
+                <span className="block text-helper font-medium text-muted-foreground uppercase tracking-wide mb-1">
                   Type
                 </span>
-                <span className="flex items-center gap-1.5 text-sm text-foreground">
+                <span className="flex items-center gap-1.5 text-row text-foreground">
                   {draft.type === "service" ? "Service" : "Material"}
                   <Lock className="h-3 w-3 text-muted-foreground/70" aria-hidden="true" />
                 </span>
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
+              <p className="text-helper text-muted-foreground mt-1 leading-snug">
                 This item is synced to QuickBooks. QuickBooks item type cannot be changed after sync.
                 Create a new item if this needs to become a different type.
               </p>
@@ -437,7 +437,7 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
             data-testid="rail-input-price"
           />
           {draftMargin && (
-            <p className="text-[11px] text-muted-foreground px-1">
+            <p className="text-helper text-muted-foreground px-1">
               Margin:{" "}
               <span
                 className={`font-medium ${
@@ -496,13 +496,13 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           {item.qboSyncStatus === "SYNCED" ? (
             <div className="space-y-1">
               {item.qboItemId && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-helper text-muted-foreground">
                   QBO ID:{" "}
                   <span className="font-mono text-foreground/80">{item.qboItemId}</span>
                 </p>
               )}
               {item.qboLastSyncedAt && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-helper text-muted-foreground">
                   Last synced: {formatDateTime(item.qboLastSyncedAt)}
                 </p>
               )}
@@ -511,16 +511,16 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
             <div className="rounded-md bg-destructive/5 border border-destructive/20 p-3 flex gap-2">
               <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" aria-hidden="true" />
               <div className="min-w-0">
-                <p className="text-[11px] font-medium text-destructive">Sync error</p>
+                <p className="text-helper font-medium text-destructive">Sync error</p>
                 {item.qboSyncError && (
-                  <p className="text-[11px] text-destructive/80 mt-0.5 break-words">
+                  <p className="text-helper text-destructive/80 mt-0.5 break-words">
                     {item.qboSyncError}
                   </p>
                 )}
               </div>
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               This item has not been synced to QuickBooks.
             </p>
           )}
@@ -534,7 +534,7 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           <Button
             variant="outline"
             size="sm"
-            className="h-7 text-xs"
+            className="h-7 text-helper"
             onClick={handleArchiveToggle}
             disabled={isMutating}
             data-testid="rail-button-archive"
@@ -544,7 +544,7 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           <Button
             variant="outline"
             size="sm"
-            className="h-7 text-xs text-destructive hover:text-destructive border-destructive/40 hover:border-destructive/60"
+            className="h-7 text-helper text-destructive hover:text-destructive border-destructive/40 hover:border-destructive/60"
             onClick={() => setDeleteConfirmOpen(true)}
             disabled={isMutating}
             data-testid="rail-button-delete"
@@ -559,7 +559,7 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
             <Button
               variant="outline"
               size="sm"
-              className="h-7 text-xs"
+              className="h-7 text-helper"
               onClick={handleCancel}
               disabled={isMutating}
               data-testid="rail-button-cancel"
@@ -568,7 +568,7 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
             </Button>
             <Button
               size="sm"
-              className="h-7 text-xs"
+              className="h-7 text-helper"
               onClick={handleSave}
               disabled={isMutating}
               data-testid="rail-button-save"

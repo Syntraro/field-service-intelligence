@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Archive, AlertTriangle, Download, FolderOpen, Trash2, Zap } from "lucide-react";
 import { PriceBookPricingAdjustDialog } from "./PriceBookPricingAdjustDialog";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import { ProductServiceFormDialog } from "@/components/products-services/ProductServiceFormDialog";
 import {
@@ -571,107 +572,109 @@ export function PriceBookCatalogTab({
     </div>
   ) : null;
 
+  const filterRow = (
+    <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-2 border-b border-border/40 bg-card">
+      <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+        <SelectTrigger className="h-7 w-[150px] text-sm" data-testid="filter-category">
+          <SelectValue placeholder="Category" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All Categories</SelectItem>
+          {uniqueCategories.map((cat) => (
+            <SelectItem key={cat} value={cat}>
+              {cat}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+        <SelectTrigger className="h-7 w-[110px] text-sm" data-testid="filter-status">
+          <SelectValue placeholder="Status" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All</SelectItem>
+          <SelectItem value="active">Active</SelectItem>
+          <SelectItem value="archived">Archived</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Select value={qboFilter} onValueChange={(v) => setQboFilter(v as QboFilter)}>
+        <SelectTrigger className="h-7 w-[110px] text-sm" data-testid="filter-qbo">
+          <SelectValue placeholder="QBO" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All QBO</SelectItem>
+          <SelectItem value="unsynced">Unsynced</SelectItem>
+          <SelectItem value="errors">Errors Only</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Select value={pricingFilter} onValueChange={(v) => setPricingFilter(v as PricingFilter)}>
+        <SelectTrigger className="h-7 w-[140px] text-sm" data-testid="filter-pricing-issues">
+          <SelectValue placeholder="Issues" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All Items</SelectItem>
+          <SelectItem value="negative_margin">Negative Margin</SelectItem>
+          <SelectItem value="zero_price">Zero Price</SelectItem>
+          <SelectItem value="zero_cost">Zero Cost</SelectItem>
+          <SelectItem value="no_category">No Category</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <div className="flex-1" />
+
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 text-xs text-muted-foreground"
+        onClick={() => setLocation("/settings/import?type=products")}
+        data-testid="button-import"
+      >
+        Import
+      </Button>
+
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 text-xs text-muted-foreground"
+        onClick={handleExport}
+        data-testid="button-export"
+      >
+        <Download className="h-3 w-3 mr-1" /> Export
+      </Button>
+
+      <span className="text-helper text-muted-foreground">{filteredParts.length} items</span>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden" data-testid="catalog-tab">
-      {/* Filter row */}
-      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-2 border-b border-border/40 bg-card">
-        <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-          <SelectTrigger className="h-7 w-[150px] text-sm" data-testid="filter-category">
-            <SelectValue placeholder="Category" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Categories</SelectItem>
-            {uniqueCategories.map((cat) => (
-              <SelectItem key={cat} value={cat}>
-                {cat}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-          <SelectTrigger className="h-7 w-[110px] text-sm" data-testid="filter-status">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="active">Active</SelectItem>
-            <SelectItem value="archived">Archived</SelectItem>
-          </SelectContent>
-        </Select>
-
-        <Select value={qboFilter} onValueChange={(v) => setQboFilter(v as QboFilter)}>
-          <SelectTrigger className="h-7 w-[110px] text-sm" data-testid="filter-qbo">
-            <SelectValue placeholder="QBO" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All QBO</SelectItem>
-            <SelectItem value="unsynced">Unsynced</SelectItem>
-            <SelectItem value="errors">Errors Only</SelectItem>
-          </SelectContent>
-        </Select>
-
-        <Select value={pricingFilter} onValueChange={(v) => setPricingFilter(v as PricingFilter)}>
-          <SelectTrigger className="h-7 w-[140px] text-sm" data-testid="filter-pricing-issues">
-            <SelectValue placeholder="Issues" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Items</SelectItem>
-            <SelectItem value="negative_margin">Negative Margin</SelectItem>
-            <SelectItem value="zero_price">Zero Price</SelectItem>
-            <SelectItem value="zero_cost">Zero Cost</SelectItem>
-            <SelectItem value="no_category">No Category</SelectItem>
-          </SelectContent>
-        </Select>
-
-        <div className="flex-1" />
-
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 text-xs text-muted-foreground"
-          onClick={() => setLocation("/settings/import?type=products")}
-          data-testid="button-import"
-        >
-          Import
-        </Button>
-
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 text-xs text-muted-foreground"
-          onClick={handleExport}
-          data-testid="button-export"
-        >
-          <Download className="h-3 w-3 mr-1" /> Export
-        </Button>
-
-        <span className="text-helper text-muted-foreground">{filteredParts.length} items</span>
-      </div>
-
-      {/* List */}
-      <WorkspaceEntitySurface selectionBar={bulkBar} data-testid="catalog-entity-surface">
-        <EntityListTable
-          rows={filteredParts}
-          columns={columns}
-          rowKey={(row) => row.id}
-          onRowClick={(row) => {
-            onSelectedItemChange(selectedItemId === row.id ? null : row);
-          }}
-          selectedRowKey={selectedItemId ?? undefined}
-          loadingState={isLoading}
-          emptyState={{
-            kind: "empty",
-            title: searchQuery ? "No items match your search" : "No items yet",
-            description: searchQuery
-              ? "Try adjusting your search or filters."
-              : "Add an item to get started.",
-          }}
-          sortField={sortField}
-          sortDirection={sortDir}
-          onSort={(key) => handleSort(key as SortField)}
-        />
-      </WorkspaceEntitySurface>
+    <>
+      <WorkspaceCenterPane toolbar={filterRow} data-testid="catalog-tab">
+        <WorkspaceEntitySurface selectionBar={bulkBar} data-testid="catalog-entity-surface">
+          <EntityListTable
+            rows={filteredParts}
+            columns={columns}
+            rowKey={(row) => row.id}
+            onRowClick={(row) => {
+              onSelectedItemChange(selectedItemId === row.id ? null : row);
+            }}
+            selectedRowKey={selectedItemId ?? undefined}
+            loadingState={isLoading}
+            emptyState={{
+              kind: "empty",
+              title: searchQuery ? "No items match your search" : "No items yet",
+              description: searchQuery
+                ? "Try adjusting your search or filters."
+                : "Add an item to get started.",
+            }}
+            sortField={sortField}
+            sortDirection={sortDir}
+            onSort={(key) => handleSort(key as SortField)}
+          />
+        </WorkspaceEntitySurface>
+      </WorkspaceCenterPane>
 
       {/* Create dialog — edit moves to right rail in Phase 2 */}
       <ProductServiceFormDialog
@@ -721,6 +724,6 @@ export function PriceBookCatalogTab({
         selectedIds={Array.from(selectedIds)}
         onSuccess={() => setSelectedIds(new Set())}
       />
-    </div>
+    </>
   );
 }

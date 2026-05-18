@@ -149,23 +149,30 @@ export function serveStatic(app: Express) {
   // combo was functionally similar but harder to reason about; the
   // simpler form makes the intent unambiguous to reviewers and to
   // intermediate caches (CDN / corporate proxy).
+  //
+  // 2026-05-18 CDN fix: Surrogate-Control is the edge-cache equivalent of
+  // Cache-Control. Cloudflare and other CDNs sometimes ignore
+  // Cache-Control: no-store for HTML responses and serve stale shells.
+  // Setting Surrogate-Control: no-store instructs the edge layer to never
+  // store the response regardless of its Cache-Control interpretation.
   app.use(
     express.static(distPath, {
       setHeaders: (res, filePath) => {
         if (isUpdateSensitive(filePath)) {
           res.setHeader("Cache-Control", "no-store");
+          res.setHeader("Surrogate-Control", "no-store");
         }
       },
     }),
   );
 
   // (3) SPA fallback — every navigation that lands here renders index.html.
-  // The HTML response must carry the same no-store header as the
-  // static file would, otherwise we leak the stale-cache window the
-  // static layer closed.
+  // Both Cache-Control and Surrogate-Control must carry no-store so neither
+  // the browser nor any edge cache can serve a stale app shell.
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
     res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Surrogate-Control", "no-store");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

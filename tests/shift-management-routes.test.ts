@@ -326,6 +326,80 @@ describe("technicianShiftsRepository", () => {
     expect(second).toBe(false);
   });
 
+  it("truncates series by updating recurrenceEndDate", async () => {
+    // Create a fresh recurring shift to truncate.
+    const baseShift = await technicianShiftsRepository.create(
+      companyId,
+      {
+        technicianUserId: techId,
+        shiftType: "normal",
+        startsAt: new Date("2026-08-01T13:00:00Z"),
+        endsAt: new Date("2026-08-01T21:00:00Z"),
+        timeOfDayStart: "09:00",
+        timeOfDayEnd: "17:00",
+        recurrenceRule: "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+      },
+      adminId,
+    );
+    expect(baseShift.recurrenceEndDate).toBeNull();
+
+    // Truncate: set recurrenceEndDate to day before an occurrence.
+    const updated = await technicianShiftsRepository.update(companyId, baseShift.id, {
+      recurrenceEndDate: "2026-08-14",
+    });
+    expect(updated).not.toBeNull();
+    expect(updated!.recurrenceEndDate).toBe("2026-08-14");
+
+    await technicianShiftsRepository.hardDelete(companyId, baseShift.id);
+  });
+
+  it("creates a split: truncates base and creates new base from occurrence date", async () => {
+    // Simulates split-at logic: one base becomes two.
+    const originalBase = await technicianShiftsRepository.create(
+      companyId,
+      {
+        technicianUserId: techId,
+        shiftType: "normal",
+        startsAt: new Date("2026-09-01T13:00:00Z"),
+        endsAt: new Date("2026-09-01T21:00:00Z"),
+        timeOfDayStart: "09:00",
+        timeOfDayEnd: "17:00",
+        recurrenceRule: "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+      },
+      adminId,
+    );
+
+    // Step 1: Truncate original series.
+    const truncated = await technicianShiftsRepository.update(companyId, originalBase.id, {
+      recurrenceEndDate: "2026-09-11", // day before 2026-09-12
+    });
+    expect(truncated!.recurrenceEndDate).toBe("2026-09-11");
+
+    // Step 2: Create new base starting at split point.
+    const newBase = await technicianShiftsRepository.create(
+      companyId,
+      {
+        technicianUserId: techId,
+        shiftType: "on_call", // changed type for the new series
+        startsAt: new Date("2026-09-12T14:00:00Z"),
+        endsAt: new Date("2026-09-12T22:00:00Z"),
+        timeOfDayStart: "10:00",
+        timeOfDayEnd: "18:00",
+        recurrenceRule: "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+      },
+      adminId,
+    );
+    expect(newBase.shiftType).toBe("on_call");
+    expect(newBase.recurrenceRule).toBe("FREQ=WEEKLY;BYDAY=MO,WE,FR");
+
+    // Original base ends before the split; new base starts at split.
+    const reloadedOriginal = await technicianShiftsRepository.findById(companyId, originalBase.id);
+    expect(reloadedOriginal!.recurrenceEndDate).toBe("2026-09-11");
+
+    await technicianShiftsRepository.hardDelete(companyId, originalBase.id);
+    await technicianShiftsRepository.hardDelete(companyId, newBase.id);
+  });
+
   it("hard-deleting a recurring base removes its exceptions via CASCADE", async () => {
     // Add a fresh exception to recurringId so there is something to cascade.
     const exc2 = await technicianShiftsRepository.createException(

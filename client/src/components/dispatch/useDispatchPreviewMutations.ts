@@ -690,9 +690,7 @@ export function useDispatchPreviewMutations() {
       queryClient.invalidateQueries({ queryKey: ["visits"] });
       // 2026-03-23: Invalidate visit-detail so modal reflects completion state
       queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
-      // 2026-04-05: Invalidate job detail time/notes queries so Labour Summary refreshes
-      // after visit completion without waiting for SSE round-trip
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Job sub-resources (time/notes/parts) are covered by ["jobs"] semantic root above.
     }, 200);
   }, [queryClient]);
 
@@ -1288,6 +1286,41 @@ export function useDispatchPreviewMutations() {
     }
   }, [backgroundInvalidate, toast]);
 
+  /** Update board card position (dispatch_order) within a tech×day cell.
+   *  PATCH /api/calendar/visit/:visitId/dispatch-order
+   *  Optimistic: patches dispatchOrder on the cached CalendarEventDto immediately. */
+  const updateDispatchOrder = useCallback(async (params: {
+    visitId: string;
+    dispatchOrder: number | null;
+  }) => {
+    const { visitId, dispatchOrder } = params;
+
+    // Optimistic: patch dispatchOrder in calendar event cache
+    queryClient.setQueriesData<CalendarRangeResponseDto>(
+      { queryKey: ["/api/calendar"] },
+      (old) => {
+        if (!old?.events) return old;
+        return {
+          ...old,
+          events: old.events.map((e) =>
+            (e.visitId ?? e.id) === visitId ? { ...e, dispatchOrder } : e,
+          ),
+        };
+      },
+    );
+
+    try {
+      await apiRequest(`/api/calendar/visit/${visitId}/dispatch-order`, {
+        method: "PATCH",
+        body: JSON.stringify({ dispatchOrder }),
+      });
+      backgroundInvalidate({ calendarOnly: true });
+    } catch (err: any) {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      handleMutationError(err, "Order update failed");
+    }
+  }, [queryClient, backgroundInvalidate, handleMutationError]);
+
   /** Update dispatch staging bucket for an unscheduled visit.
    *  PATCH /api/calendar/visit/:visitId/queue-bucket */
   const updateQueueBucket = useCallback(async (params: {
@@ -1339,6 +1372,7 @@ export function useDispatchPreviewMutations() {
     completeVisitWithOutcome,
     deleteVisit,
     updateQueueBucket,
+    updateDispatchOrder,
     savingIds,
     isSaving: savingIds.size > 0,
   };

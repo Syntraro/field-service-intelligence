@@ -17,6 +17,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
 import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
 import {
   WorkspaceFilterBar,
@@ -209,18 +210,20 @@ export default function LeadsPage() {
               </WorkspaceFilterBar>
             </div>
 
-            <WorkspaceCenterPane data-testid="leads-center-pane">
-              <LeadListPanel
-                rows={filteredLeads}
-                loading={isLoading}
-                isError={isError}
-                onRetry={refetchLeads}
-                resetKey={resetKey}
-                hasActiveFilter={hasActiveFilter}
-                selectedLeadId={selectedContext?.leadId}
-                onSelectionChange={handleSelectionChange}
-              />
-            </WorkspaceCenterPane>
+            <WorkspaceListCard>
+              <WorkspaceCenterPane data-testid="leads-center-pane">
+                <LeadListPanel
+                  rows={filteredLeads}
+                  loading={isLoading}
+                  isError={isError}
+                  onRetry={refetchLeads}
+                  resetKey={resetKey}
+                  hasActiveFilter={hasActiveFilter}
+                  selectedLeadId={selectedContext?.leadId}
+                  onSelectionChange={handleSelectionChange}
+                />
+              </WorkspaceCenterPane>
+            </WorkspaceListCard>
           </>
         }
         centerClassName="overflow-x-auto overflow-y-hidden"

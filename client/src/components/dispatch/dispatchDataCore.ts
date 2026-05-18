@@ -16,6 +16,7 @@ import type {
   DispatchVisit,
   DispatchTask,
   DispatchLeadVisit,
+  DispatchShiftEntry,
   Technician,
 } from "./dispatchPreviewTypes";
 import {
@@ -25,6 +26,8 @@ import {
   buildTechnicianRoster,
 } from "./dispatchPreviewMappers";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+import { useFeatureEnabled } from "@/hooks/useEntitlements";
+import { partitionShifts } from "./shiftUtils";
 
 // 2026-05-05 Phase 3: lead-visit dispatch envelope. Fetched in parallel
 // with the canonical job calendar feed; merged client-side ONLY (no
@@ -93,32 +96,6 @@ export function normalizeTasks(payload: any): any[] {
   return [];
 }
 
-/** 2026-05-07 RALPH (technician time off): one row of time off per
- *  tech, surfaced to the dispatch board for visual rendering +
- *  pre-flight conflict warning when dragging visits onto an off
- *  technician. Mirrors the API response shape from
- *  `GET /api/technician-time-off?start&end`. */
-export interface DispatchTimeOffEntry {
-  id: string;
-  technicianUserId: string;
-  reason: string;
-  startsAt: string; // ISO
-  endsAt: string;   // ISO
-  allDay: boolean;
-  note: string | null;
-}
-
-interface TechnicianTimeOffListResponse {
-  entries: Array<{
-    id: string;
-    technicianUserId: string;
-    reason: string;
-    startsAt: string;
-    endsAt: string;
-    allDay: boolean;
-    note: string | null;
-  }>;
-}
 
 export interface DispatchRangeData {
   scheduledVisits: DispatchVisit[];
@@ -128,11 +105,14 @@ export interface DispatchRangeData {
    *  array — never mixed into `scheduledVisits` because the type
    *  shapes differ (no jobNumber, no job lifecycle). */
   leadVisits: DispatchLeadVisit[];
-  /** 2026-05-07 RALPH (technician time off): time-off rows whose
-   *  interval overlaps the requested range. Empty array when the
-   *  endpoint fails (defensive — a missing migration must not
-   *  break dispatch). */
-  timeOff: DispatchTimeOffEntry[];
+  /** Phase 2 Shift Management: resolved normal (working) shifts for the range.
+   *  Empty when technician_shift_management feature is disabled or query fails. */
+  shifts: DispatchShiftEntry[];
+  /** Phase 2 Shift Management: on-call shifts. Empty when feature disabled. */
+  onCallShifts: DispatchShiftEntry[];
+  /** Phase 2 Shift Management: unavailable (time-off type) shifts.
+   *  Empty when feature disabled. */
+  unavailableShifts: DispatchShiftEntry[];
   technicians: Technician[];
   isLoading: boolean;
   error: Error | null;
@@ -207,21 +187,19 @@ export function useDispatchRangeData(
     placeholderData: keepPreviousData,
   });
 
-  // 2026-05-07 RALPH (technician time off): fetch overlapping
-  // time-off rows for the visible range. Defensive: failures here
-  // (e.g., the migration hasn't been applied yet) must NOT break
-  // dispatch — the query is gated independently and the response
-  // is treated as empty on error. `retry: 1` so a backend failure
-  // surfaces fast instead of through React Query's default
-  // exponential backoff.
-  const timeOffQuery = useQuery<TechnicianTimeOffListResponse>({
-    queryKey: ["/api/technician-time-off", startISO, endISO],
+  // Phase 2: Technician shift management. Only fires when the feature
+  // is confirmed enabled — undefined (loading) and false (disabled)
+  // both suppress the query. Failures return empty arrays and MUST NOT
+  // break the dispatch board; shifts are an additive visual layer.
+  const shiftFeatureEnabled = useFeatureEnabled("technician_shift_management");
+  const shiftsQuery = useQuery<{ shifts: DispatchShiftEntry[]; timezone: string }>({
+    queryKey: ["/api/shift-management/availability", startISO, endISO],
     queryFn: () =>
-      fetchJson<TechnicianTimeOffListResponse>(
-        `/api/technician-time-off?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
+      fetchJson<{ shifts: DispatchShiftEntry[]; timezone: string }>(
+        `/api/shift-management/availability?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
       ),
     staleTime: 30_000,
-    enabled,
+    enabled: enabled && shiftFeatureEnabled === true,
     retry: 1,
     placeholderData: keepPreviousData,
   });
@@ -251,33 +229,25 @@ export function useDispatchRangeData(
     [teamMembers],
   );
 
-  // 2026-05-07 RALPH: time-off normalization. A failure here
-  // returns an empty array — dispatch keeps working, the visual
-  // shading + drag warning silently no-op.
-  const timeOff: DispatchTimeOffEntry[] = useMemo(
-    () =>
-      (timeOffQuery.data?.entries ?? []).map((row) => ({
-        id: row.id,
-        technicianUserId: row.technicianUserId,
-        reason: row.reason,
-        startsAt: row.startsAt,
-        endsAt: row.endsAt,
-        allDay: row.allDay,
-        note: row.note,
-      })),
-    [timeOffQuery.data],
-  );
+  // Phase 2: shift normalization. Partition the flat shifts array into
+  // the 3 typed buckets. Failures or disabled feature → empty arrays.
+  const { normal: shifts, onCall: onCallShifts, unavailable: unavailableShifts } = useMemo(() => {
+    const raw = shiftsQuery.data?.shifts ?? [];
+    return partitionShifts(raw);
+  }, [shiftsQuery.data]);
 
   return {
     scheduledVisits,
     unscheduledVisits,
     scheduledTasks,
     leadVisits,
-    timeOff,
+    shifts,
+    onCallShifts,
+    unavailableShifts,
     technicians,
-    // Time-off + lead-visit loading do NOT block the overall
-    // isLoading — they're additive layers; a missing time-off table
-    // must not surface as a dispatch-wide spinner.
+    // Shift and lead-visit loading do NOT block the overall isLoading —
+    // they're additive layers; a disabled shift feature must not surface
+    // as a dispatch-wide spinner.
     isLoading:
       scheduledQuery.isLoading || unscheduledQuery.isLoading || techLoading,
     error: (scheduledQuery.error ?? unscheduledQuery.error ?? techError) as Error | null,

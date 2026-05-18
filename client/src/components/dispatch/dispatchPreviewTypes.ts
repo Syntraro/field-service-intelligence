@@ -107,6 +107,8 @@ export type DispatchVisit = {
   equipmentIds?: string[] | null;
   /** Dispatch staging bucket. Always normalised — never null in the UI layer. */
   dispatchQueueBucket: DispatchQueueBucket;
+  /** Board view card position within a tech×day cell. NULL = unset. */
+  dispatchOrder?: number | null;
 };
 
 /**
@@ -134,6 +136,28 @@ export type DispatchLeadVisit = {
   locationCity: string | null;
   locationProvinceState: string | null;
   customerName: string | null;
+};
+
+/**
+ * Resolved technician shift from /api/shift-management/availability.
+ * Only present in DispatchRangeData when technician_shift_management is enabled.
+ * startsAt/endsAt are ISO strings (serialized from server Date objects).
+ */
+export type DispatchShiftEntry = {
+  id: string;
+  baseShiftId: string;
+  technicianUserId: string;
+  shiftType: "normal" | "on_call" | "unavailable";
+  shiftSubtype?: string;
+  label?: string;
+  startsAt: string;  // ISO datetime
+  endsAt: string;    // ISO datetime
+  allDay: boolean;
+  isOvernight: boolean;
+  occurrenceDate: string | null;
+  note?: string;
+  /** RRULE string from the base shift. Present for recurring occurrences; null for one-off. */
+  recurrenceRule?: string | null;
 };
 
 /** Task item rendered on the dispatch timeline */

@@ -26,7 +26,7 @@ import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
+import { invalidateJobEquipment, invalidateJobParts } from "@/lib/queryInvalidation/jobs";
 import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { useToast } from "@/hooks/use-toast";
 import { format, parseISO } from "date-fns";
@@ -1878,7 +1878,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             variant: "destructive",
           });
         }
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "parts"] });
+        invalidateJobParts(queryClient, job.id);
       }
 
       queryClient.invalidateQueries({ queryKey: ["jobs"] });

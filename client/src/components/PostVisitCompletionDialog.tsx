@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, FileText, Clock, Calendar, CalendarOff, Archive } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { invalidateJob } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { useJobVisits } from "@/hooks/useJobVisits";
 
@@ -110,9 +111,8 @@ export function PostVisitCompletionDialog({
       });
     },
     onSuccess: (result, mode) => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateJob(queryClient, jobId);
       queryClient.invalidateQueries({ queryKey: ["visits"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       onOpenChange(false);
       setPendingMode(null);

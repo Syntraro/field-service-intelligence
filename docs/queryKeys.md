@@ -123,19 +123,12 @@ action modal, and the URL-pattern capacity key.
 
 ## How legacy URL-pattern keys are handled
 
-Jobs have both semantic keys (`["jobs", "detail", id]`) and URL-pattern sub-resource keys
-(`["/api/jobs", id, "parts"]`). The semantic family prefix `["jobs"]` does NOT match the
-URL-pattern keys via React Query prefix matching.
+**Jobs: fully migrated as of Phase 3J (2026-05-18).** All job cache keys are Pattern B
+(semantic). `jobKeys.urlFamily()` has been removed; `invalidateJobLifecycle` and all other
+job helpers now bust only `["jobs", ...]` semantic keys. No `["/api/jobs", ...]` query keys
+remain anywhere in the app.
 
-This is why `invalidateJobLifecycle` explicitly busts:
-- `["jobs"]` — semantic family
-- `["jobs", "detail", id]` — explicit detail
-- `["/api/jobs", id, "parts"]` — URL-pattern parts
-- `["/api/jobs", id, "expenses"]` — URL-pattern expenses
-- `["/api/jobs", id, "time-entries"]` — URL-pattern time entries
-- `["/api/jobs"]` — URL-pattern family prefix (catches any other sub-resource added later)
-
-Similarly, dashboard has `["dashboard"]` (semantic) AND `["/api/dashboard/capacity"]` (URL-pattern).
+Dashboard has `["dashboard"]` (semantic) AND `["/api/dashboard/capacity"]` (URL-pattern).
 `invalidateDashboard` busts both explicitly.
 
 ---
@@ -214,12 +207,12 @@ and delete the bridge bust calls in `queryInvalidation/quotes.ts`.
 | `timeEntries` | `["jobs", "detail", id, "timeEntries"]` | ✅ Pattern B | `invalidateJobTimeEntries` |
 | `timeSummary` | `["jobs", "detail", id, "timeSummary"]` | ✅ Pattern B | `invalidateJobTimeEntries` (co-busted) |
 | `billablePreview` | `["jobs", "detail", id, "billablePreview"]` | ✅ Pattern B | bust via `invalidateJob` root |
-| `requiredSkills` | `["jobs", "detail", id, "requiredSkills"]` | ✅ Pattern B | bust via `invalidateJob` root |
+| `requiredSkills` | `["jobs", "detail", id, "requiredSkills"]` | ✅ Pattern B | `invalidateJobRequiredSkills` |
 | `statusEvents` | `["jobs", "detail", id, "statusEvents"]` | ✅ Pattern B | bust via `invalidateJob` root |
 | `scheduleHistory` | `["jobs", "detail", id, "scheduleHistory"]` | ✅ Pattern B | bust via `invalidateJob` root |
 | `assignmentRecs` | `["jobs", "detail", id, "assignmentRecs", date]` | ✅ Pattern B | bust via `invalidateJob` root |
 
-The `urlFamily()` bridge (`["/api/jobs"]`) is included in all helpers until all call-site consumers are migrated away from inline URL-pattern strings. Once `JobDetailPage.tsx`, `EditVisitModal.tsx`, `TimeEntryModal.tsx`, and `QuickAddJobDialog.tsx` are migrated, remove `urlFamily()` from all helpers.
+**Phase 3J complete (2026-05-18):** `jobKeys.urlFamily()` removed. All job helpers emit only canonical Pattern B keys. Zero `["/api/jobs", ...]` query keys anywhere in the app. Fetch URLs (`/api/jobs/...`) are unaffected — they are not cache keys.
 
 ---
 
@@ -230,4 +223,6 @@ The `urlFamily()` bridge (`["/api/jobs"]`) is included in all helpers until all 
 | `["/api/pm/templates"]` vs `["/api/recurring-templates"]` possible duplication | Needs investigation (F-13) |
 | `receivablesKeys` in `client/src/lib/receivablesQueryKeys.ts` | Not migrated into `queryKeys/invoices.ts` call sites — still imported directly where receivables surface uses it |
 | Quote notes key retirement | `QuoteActionsRail.tsx` `["quote", id, "notes"]` and `EntityNotesPanel.tsx` `["/api/quotes", id, "notes"]` — deferred; covered by bridge helper prefix matching |
-| Job consumer call-site migration | `JobDetailPage.tsx`, `EditVisitModal.tsx`, `TimeEntryModal.tsx`, `QuickAddJobDialog.tsx` still use inline URL-pattern strings — covered by `urlFamily()` bridge; migrate as Phase 3F+ |
+| Phase 3H (low-risk sub-resource consumers) | ✅ Complete (2026-05-18) |
+| Phase 3I (search/list + dispatch bridge) | ✅ Complete (2026-05-18): `useDispatchPreviewMutations`, `ServicePlanDispatchTab`, `NewInvoicePage`, `JobSession*Modal`, `TimeEntryEditModal`, `JobDetailPage` stray ghost all migrated |
+| Phase 3J — remove `jobKeys.urlFamily()` | ✅ Complete (2026-05-18): bridge removed; all helpers emit Pattern B only |

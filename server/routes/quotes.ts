@@ -41,6 +41,8 @@ import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 // 2026-04-08: P7 — Canonical line-item input schema (shared with invoices/jobs)
 import { canonicalLineItemInput } from "@shared/lineItem";
+// Phase 3: service template apply-to-quote
+import { serviceTemplateRepository } from "../storage/serviceTemplates";
 
 const router = Router();
 
@@ -425,6 +427,56 @@ router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), asyncHandler(asyn
   }
 
   res.json(updated);
+}));
+
+// POST /api/quotes/:id/apply-template - Apply a flat-rate service template as one quote line
+//
+// Snapshot semantics: unit cost is computed once at apply-time from the template's component
+// snapshots (SUM(qty × unitCostSnapshot)). The resulting line is fully editable; serviceTemplateId
+// is attribution metadata only and does not affect totals, tax, or pricing math.
+// Usage count is incremented atomically after the line is created.
+router.post("/:id/apply-template", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  const { templateId } = validateSchema(
+    z.object({ templateId: z.string().uuid() }),
+    req.body,
+  );
+
+  const quote = await quoteRepository.getQuote(companyId, quoteId);
+  if (!quote) throw createError(404, "Quote not found");
+  if (!isQuoteDraft(quote.status)) throw createError(409, "Cannot add lines to non-draft quotes");
+
+  const template = await serviceTemplateRepository.getById(companyId, templateId);
+  if (!template) throw createError(404, "Service template not found");
+
+  // Snapshot unit cost: SUM(component.quantity × component.unitCostSnapshot)
+  let totalCost = 0;
+  for (const comp of template.components) {
+    const qty = parseFloat(comp.quantity) || 0;
+    const cost = parseFloat(comp.unitCostSnapshot ?? "0") || 0;
+    totalCost += qty * cost;
+  }
+  const unitCostStr = totalCost.toFixed(2);
+  const flatRatePrice = String(template.flatRatePrice);
+
+  const line = await quoteRepository.createQuoteLine(companyId, quoteId, {
+    description: template.name,
+    quantity: "1",
+    unitPrice: flatRatePrice,
+    unitCost: unitCostStr,
+    taxRate: "0.0000",
+    taxAmount: "0.00",
+    lineSubtotal: flatRatePrice,
+    lineTotal: flatRatePrice,
+    lineItemType: "service",
+    serviceTemplateId: template.id,
+  });
+
+  await serviceTemplateRepository.incrementUsage(companyId, templateId);
+
+  res.status(201).json(line);
 }));
 
 // DELETE /api/quotes/:id/lines/:lineId - Remove line from quote

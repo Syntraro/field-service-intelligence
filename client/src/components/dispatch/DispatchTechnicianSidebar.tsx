@@ -9,12 +9,14 @@
  * stitching of attendance + visit state.
  */
 import { useMemo } from "react";
-import type { Technician } from "./dispatchPreviewTypes";
+import type { Technician, DispatchShiftEntry } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { LANE_HEIGHT_PX, DIVIDER_HEIGHT_PX } from "./dispatchPreviewUtils";
 import { useTechnicianLiveStates, type TechnicianLiveState } from "@/hooks/useTechnicians";
 import { StatusChip } from "@/components/ui/chip";
 import type { ChipTone } from "@/lib/chipVariants";
+import OnCallIndicator from "./OnCallIndicator";
+import ShiftOverlay from "./ShiftOverlay";
 
 type Props = {
   technicians: Technician[];
@@ -25,6 +27,15 @@ type Props = {
    *  without scanning the lane shading. Optional — when empty / not
    *  supplied, the sidebar paints exactly as it did pre-feature. */
   techsOnTimeOff?: Set<string>;
+  /** Phase 2 Shift Management: tech IDs with an on-call shift in the
+   *  visible range. Renders an "On-Call" chip next to the tech name.
+   *  Empty set / omitted = feature disabled or no on-call shifts. */
+  techsOnCall?: Set<string>;
+  /** Phase 2 Shift Management: normal (working) shifts for ShiftOverlay.
+   *  Omitted when feature disabled. */
+  normalShifts?: DispatchShiftEntry[];
+  /** YYYY-MM-DD date being displayed — passed to ShiftOverlay for filtering. */
+  selectedDateStr?: string;
 };
 
 function liveStateTone(state: TechnicianLiveState | undefined): ChipTone {
@@ -53,6 +64,9 @@ function OffShiftDivider() {
 export default function DispatchTechnicianSidebar({
   technicians,
   techsOnTimeOff,
+  techsOnCall,
+  normalShifts,
+  selectedDateStr,
 }: Props) {
   // Split into working and off-shift groups
   const working = technicians.filter(t => t.isWorking !== false);
@@ -128,7 +142,19 @@ export default function DispatchTechnicianSidebar({
                     Off
                   </StatusChip>
                 )}
+                {/* Phase 2 Shift Management: on-call chip */}
+                {!isUnassigned && (
+                  <OnCallIndicator show={techsOnCall?.has(t.id) ?? false} />
+                )}
               </div>
+              {/* Phase 2 Shift Management: shift hours below the chips row */}
+              {!isUnassigned && normalShifts && selectedDateStr && (
+                <ShiftOverlay
+                  shifts={normalShifts}
+                  technicianUserId={t.id}
+                  date={selectedDateStr}
+                />
+              )}
             </div>
           </div>
         );

@@ -212,14 +212,31 @@ describe("expandRecurringShift", () => {
     expect(dates).not.toContain("2026-01-26"); // skipped
   });
 
-  it("returns empty array for non-weekly FREQ", () => {
+  it("FREQ=DAILY normalizes to all-7-days weekly (produces occurrences every day)", () => {
+    // FREQ=DAILY;BYDAY=MO is an unusual rule — BYDAY is ignored for DAILY; we normalize
+    // FREQ=DAILY to FREQ=WEEKLY;BYDAY=all-7 for uniform expansion.
     const base = makeBase({
-      recurrenceRule: "FREQ=DAILY;BYDAY=MO",
+      recurrenceRule: "FREQ=DAILY",
+      recurrenceEndDate: "2026-01-09",
     });
     const windowStart = new Date("2026-01-05T00:00:00Z");
     const windowEnd = new Date("2026-01-12T00:00:00Z");
     const results = expandRecurringShift(base, windowStart, windowEnd, NY);
-    expect(results).toHaveLength(0);
+    const dates = occDates(results);
+    // Should produce Mon-Fri within the window (Jan 5–9, capped by recurrenceEndDate)
+    expect(dates).toContain("2026-01-05");
+    expect(dates).toContain("2026-01-06");
+    expect(dates).toContain("2026-01-07");
+    expect(dates).toContain("2026-01-08");
+    expect(dates).toContain("2026-01-09");
+    expect(dates).not.toContain("2026-01-10"); // past recurrenceEndDate
+  });
+
+  it("FREQ=MONTHLY returns empty (unsupported)", () => {
+    const base = makeBase({ recurrenceRule: "FREQ=MONTHLY" });
+    const windowStart = new Date("2026-01-01T00:00:00Z");
+    const windowEnd = new Date("2026-06-01T00:00:00Z");
+    expect(expandRecurringShift(base, windowStart, windowEnd, NY)).toHaveLength(0);
   });
 
   it("all-day shift: bounds cover full calendar day", () => {
@@ -251,5 +268,144 @@ describe("expandRecurringShift", () => {
     const dates = occDates(results);
     expect(dates).toContain("2026-01-19");
     expect(dates).not.toContain("2026-01-26");
+  });
+});
+
+// ─── FREQ=WEEKLY no BYDAY — Saturday on-call bug fix ─────────────────────────
+
+describe("FREQ=WEEKLY no BYDAY — defaults to DTSTART day of week", () => {
+  it("Saturday on-call recurs on Saturdays in subsequent weeks", () => {
+    // DTSTART is Saturday Jan 10 2026 (UTC date: note NY=UTC-5, so Jan 10 13:00 UTC = Jan 10 08:00 EST)
+    const base = makeBase({
+      startsAt: new Date("2026-01-10T13:00:00Z"), // Sat Jan 10, 08:00 EST
+      endsAt:   new Date("2026-01-10T21:00:00Z"), // Sat Jan 10, 16:00 EST
+      recurrenceRule: "FREQ=WEEKLY",               // no BYDAY — must default to Saturday
+      timeOfDayStart: "08:00",
+      timeOfDayEnd:   "16:00",
+    });
+
+    // Query next week (Jan 12–18): should find Sat Jan 17
+    const windowStart = new Date("2026-01-12T00:00:00Z");
+    const windowEnd   = new Date("2026-01-19T00:00:00Z");
+    const results = expandRecurringShift(base, windowStart, windowEnd, NY);
+    const dates = occDates(results);
+
+    expect(dates).toContain("2026-01-17"); // Sat Jan 17
+    expect(dates).not.toContain("2026-01-12"); // Mon
+    expect(dates).not.toContain("2026-01-14"); // Wed
+  });
+
+  it("Monday shift recurs on Mondays with no BYDAY", () => {
+    const base = makeBase({
+      startsAt: new Date("2026-01-05T13:00:00Z"), // Mon Jan 5
+      endsAt:   new Date("2026-01-05T21:00:00Z"),
+      recurrenceRule: "FREQ=WEEKLY",
+      timeOfDayStart: "08:00",
+      timeOfDayEnd:   "16:00",
+    });
+
+    const windowStart = new Date("2026-01-12T00:00:00Z");
+    const windowEnd   = new Date("2026-01-19T00:00:00Z");
+    const results = expandRecurringShift(base, windowStart, windowEnd, NY);
+    const dates = occDates(results);
+
+    expect(dates).toContain("2026-01-12"); // Mon Jan 12
+    expect(dates).not.toContain("2026-01-13"); // Tue — not the DTSTART day
+  });
+
+  it("Sunday shift recurs on Sundays with no BYDAY", () => {
+    // Jan 11 2026 is a Sunday
+    const base = makeBase({
+      startsAt: new Date("2026-01-11T13:00:00Z"),
+      endsAt:   new Date("2026-01-11T21:00:00Z"),
+      recurrenceRule: "FREQ=WEEKLY",
+      timeOfDayStart: "08:00",
+      timeOfDayEnd:   "16:00",
+    });
+
+    const windowStart = new Date("2026-01-18T00:00:00Z");
+    const windowEnd   = new Date("2026-01-26T00:00:00Z");
+    const results = expandRecurringShift(base, windowStart, windowEnd, NY);
+    const dates = occDates(results);
+
+    expect(dates).toContain("2026-01-18"); // Sun Jan 18
+    expect(dates).not.toContain("2026-01-19"); // Mon
+  });
+});
+
+// ─── FREQ=WEEKLY;INTERVAL=2 no BYDAY — biweekly ──────────────────────────────
+
+describe("FREQ=WEEKLY;INTERVAL=2 — biweekly recurrence", () => {
+  it("Sat on-call every other week — appears week 2, absent week 1", () => {
+    const base = makeBase({
+      startsAt: new Date("2026-01-10T13:00:00Z"), // Sat Jan 10 DTSTART
+      endsAt:   new Date("2026-01-10T21:00:00Z"),
+      recurrenceRule: "FREQ=WEEKLY;INTERVAL=2",
+      timeOfDayStart: "08:00",
+      timeOfDayEnd:   "16:00",
+    });
+
+    // Week 1 (Jan 12–18): skipped — no occurrence
+    const w1 = expandRecurringShift(
+      base, new Date("2026-01-12T00:00:00Z"), new Date("2026-01-19T00:00:00Z"), NY,
+    );
+    expect(occDates(w1)).not.toContain("2026-01-17");
+
+    // Week 2 (Jan 19–25): Sat Jan 24 should appear
+    const w2 = expandRecurringShift(
+      base, new Date("2026-01-19T00:00:00Z"), new Date("2026-01-26T00:00:00Z"), NY,
+    );
+    expect(occDates(w2)).toContain("2026-01-24");
+
+    // Week 3 (Jan 26–Feb 1): skipped again
+    const w3 = expandRecurringShift(
+      base, new Date("2026-01-26T00:00:00Z"), new Date("2026-02-02T00:00:00Z"), NY,
+    );
+    expect(occDates(w3)).not.toContain("2026-01-31");
+  });
+
+  it("biweekly with explicit BYDAY", () => {
+    const base = makeBase({
+      startsAt: new Date("2026-01-10T13:00:00Z"),
+      recurrenceRule: "FREQ=WEEKLY;BYDAY=SA,SU;INTERVAL=2",
+      timeOfDayStart: "09:00",
+      timeOfDayEnd:   "17:00",
+    });
+
+    // Week 2 (Jan 19–25): Sat Jan 24 + Sun Jan 25
+    const w2 = expandRecurringShift(
+      base, new Date("2026-01-19T00:00:00Z"), new Date("2026-01-26T00:00:00Z"), NY,
+    );
+    const dates = occDates(w2);
+    expect(dates).toContain("2026-01-24"); // Sat
+    expect(dates).toContain("2026-01-25"); // Sun
+  });
+});
+
+// ─── All-7-days weekly — date range / vacation ────────────────────────────────
+
+describe("FREQ=WEEKLY;BYDAY=all-7-days — vacation date range", () => {
+  it("appears on each day from start through recurrenceEndDate", () => {
+    const base: BaseShiftInput = {
+      startsAt: new Date("2026-01-12T05:00:00Z"), // Mon Jan 12 00:00 EST
+      endsAt:   new Date("2026-01-13T05:00:00Z"),
+      allDay: true,
+      timeOfDayStart: null,
+      timeOfDayEnd:   null,
+      recurrenceRule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU",
+      recurrenceEndDate: "2026-01-14", // 3-day block: Mon/Tue/Wed
+    };
+
+    const windowStart = new Date("2026-01-12T00:00:00Z");
+    const windowEnd   = new Date("2026-01-19T00:00:00Z");
+
+    const results = expandRecurringShift(base, windowStart, windowEnd, NY);
+    const dates = occDates(results);
+
+    expect(dates).toContain("2026-01-12"); // Mon
+    expect(dates).toContain("2026-01-13"); // Tue
+    expect(dates).toContain("2026-01-14"); // Wed
+    expect(dates).not.toContain("2026-01-15"); // Thu — after end
+    expect(dates).not.toContain("2026-01-19"); // next Mon — after end
   });
 });

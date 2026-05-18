@@ -31,6 +31,8 @@ const REASON_VARIANT_MAP: Record<string, TimeOffVariant> = {
   training: "training",
   personal: "personal",
   unavailable: "default",
+  holiday: "default",
+  scheduled_off: "default",
   other: "default",
 };
 

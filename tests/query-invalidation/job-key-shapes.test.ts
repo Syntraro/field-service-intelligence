@@ -82,10 +82,6 @@ describe("jobKeys — sub-resources under detail", () => {
     ]));
 });
 
-describe("jobKeys — temporary bridge (remove after retirement)", () => {
-  it("urlFamily()", () => expect(jobKeys.urlFamily()).toEqual(["/api/jobs"]));
-});
-
 describe("jobKeys — canonical prefix hierarchy", () => {
   const root = jobKeys.root();
 

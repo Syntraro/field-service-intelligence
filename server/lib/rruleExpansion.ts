@@ -29,6 +29,9 @@ const BYDAY_TO_JS: Record<string, number> = {
   SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
 };
 
+/** JS getDay() value (0=Sun…6=Sat) back to BYDAY abbreviation. */
+const JS_TO_BYDAY = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"] as const;
+
 /** Days from Monday (Mon=0 … Sun=6) used for within-week ordering. */
 const BYDAY_FROM_MONDAY: Record<string, number> = {
   MO: 0, TU: 1, WE: 2, TH: 3, FR: 4, SA: 5, SU: 6,
@@ -54,9 +57,31 @@ function parseRRule(rrule: string): ParsedRRule | null {
     parts[seg.slice(0, eq).trim().toUpperCase()] = seg.slice(eq + 1).trim();
   }
 
-  if (!parts["FREQ"] || parts["FREQ"].toUpperCase() !== "WEEKLY") {
-    return null;
+  const freq = parts["FREQ"]?.toUpperCase();
+
+  // Normalise FREQ=DAILY (interval=1 only) to a FREQ=WEEKLY all-7-days rule
+  // so the same expansion loop handles it without a separate code path.
+  if (freq === "DAILY") {
+    const interval = parts["INTERVAL"] ? parseInt(parts["INTERVAL"], 10) : 1;
+    if (isNaN(interval) || interval !== 1) return null; // only daily supported
+    let until: string | null = null;
+    if (parts["UNTIL"]) {
+      const raw = parts["UNTIL"].replace(/T.*$/, "");
+      if (/^\d{8}$/.test(raw)) {
+        until = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+      }
+    }
+    const count = parts["COUNT"] ? parseInt(parts["COUNT"], 10) : null;
+    return {
+      freq: "WEEKLY",
+      interval: 1,
+      byday: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"],
+      until,
+      count,
+    };
   }
+
+  if (freq !== "WEEKLY") return null;
 
   const interval = parts["INTERVAL"] ? parseInt(parts["INTERVAL"], 10) : 1;
   if (isNaN(interval) || interval < 1) return null;
@@ -66,7 +91,8 @@ function parseRRule(rrule: string): ParsedRRule | null {
     .split(",")
     .map((d) => d.trim().toUpperCase())
     .filter((d) => d in BYDAY_TO_JS);
-  if (byday.length === 0) return null;
+  // Empty byday is intentional: RFC 5545 says FREQ=WEEKLY with no BYDAY means
+  // "repeat on the same day of week as DTSTART". expandRecurringShift handles this.
 
   let until: string | null = null;
   if (parts["UNTIL"]) {
@@ -213,8 +239,14 @@ export function expandRecurringShift(
   if (parsed.until) candidates.push(parsed.until);
   const maxEndDate = candidates.reduce((a, b) => (a < b ? a : b));
 
+  // RFC 5545: FREQ=WEEKLY with no BYDAY means "repeat on the same day-of-week as DTSTART".
+  const effectiveByday =
+    parsed.byday.length > 0
+      ? parsed.byday
+      : [JS_TO_BYDAY[getDayOfWeek(dtStartDate)]];
+
   // Sort BYDAY by days-from-Monday so we emit occurrences in order within a week.
-  const sortedByday = [...parsed.byday].sort(
+  const sortedByday = [...effectiveByday].sort(
     (a, b) => (BYDAY_FROM_MONDAY[a] ?? 0) - (BYDAY_FROM_MONDAY[b] ?? 0),
   );
 

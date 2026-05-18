@@ -13,6 +13,7 @@
 import { getDayUTCBounds } from "../lib/dayBoundaries";
 import { expandRecurringShift } from "../lib/rruleExpansion";
 import { technicianShiftsRepository } from "../storage/technicianShifts";
+import { technicianTimeOffRepository } from "../storage/technicianTimeOff";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ export type ShiftSubtype =
   | "training"
   | "holiday"
   | "scheduled_off"
+  | "unavailable"
   | "other";
 
 export interface ResolvedShift {
@@ -45,6 +47,8 @@ export interface ResolvedShift {
   /** YYYY-MM-DD for recurring occurrences; null for one-off shifts. */
   occurrenceDate: string | null;
   note?: string;
+  /** RRULE string from the base shift. Present for recurring occurrences; null for one-off shifts. */
+  recurrenceRule?: string | null;
 }
 
 export interface TechnicianAvailability {
@@ -165,6 +169,7 @@ async function resolveTechnicianShifts(
       isOvernight: isOvernight(row.startsAt, row.endsAt, companyTimezone),
       occurrenceDate: null,
       note: row.note ?? undefined,
+      recurrenceRule: null,
     });
   }
 
@@ -209,6 +214,7 @@ async function resolveTechnicianShifts(
           isOvernight: isOvernight(exception.startsAt, exception.endsAt, companyTimezone),
           occurrenceDate: occ.occurrenceDate,
           note: (exception.note ?? base.note) ?? undefined,
+          recurrenceRule: base.recurrenceRule,
         });
       } else {
         // Normal (unmodified) occurrence: use expanded bounds.
@@ -227,9 +233,38 @@ async function resolveTechnicianShifts(
           isOvernight: isOvernight(occ.startsAt, occ.endsAt, companyTimezone),
           occurrenceDate: occ.occurrenceDate,
           note: base.note ?? undefined,
+          recurrenceRule: base.recurrenceRule,
         });
       }
     }
+  }
+
+  // Merge technician_time_off entries as synthetic unavailable shifts so all
+  // dispatch availability reads flow through the single canonical endpoint.
+  // id prefix "tof_" distinguishes these from real shift rows (both use UUIDs).
+  const tofRows = await technicianTimeOffRepository.listOverlapping(companyId, {
+    windowStart,
+    windowEnd,
+  });
+  const filteredTofRows = technicianUserIds !== null
+    ? tofRows.filter((r) => technicianUserIds.includes(r.technicianUserId))
+    : tofRows;
+  for (const tof of filteredTofRows) {
+    results.push({
+      id: `tof_${tof.id}`,
+      baseShiftId: `tof_${tof.id}`,
+      technicianUserId: tof.technicianUserId,
+      templateId: null,
+      shiftType: "unavailable" as ShiftType,
+      shiftSubtype: tof.reason as ShiftSubtype,
+      startsAt: tof.startsAt,
+      endsAt: tof.endsAt,
+      allDay: tof.allDay,
+      isOvernight: isOvernight(tof.startsAt, tof.endsAt, companyTimezone),
+      occurrenceDate: null,
+      note: tof.note ?? undefined,
+      recurrenceRule: null,
+    });
   }
 
   // Sort ascending by startsAt.

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { listResultsClass } from "@/components/ui/list-surface";
 import { formatFrequencyStacked } from "@/lib/servicePlanWorkspaceConfig";
 
@@ -213,7 +214,7 @@ export function ServicePlanTemplatesTab() {
         </Button>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col mx-4 mb-6 rounded-md overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.07),0_0_1px_rgba(0,0,0,0.05)]">
+      <WorkspaceListCard>
         <WorkspaceCenterPane>
           <WorkspaceEntitySurface data-testid="tab-content-templates">
             <EntityListTable<PmTemplateItem>
@@ -238,7 +239,7 @@ export function ServicePlanTemplatesTab() {
             />
           </WorkspaceEntitySurface>
         </WorkspaceCenterPane>
-      </div>
+      </WorkspaceListCard>
 
       {!isLoading && !isError && sorted.length > 0 && (
         <p className={listResultsClass} style={{ paddingLeft: "1rem", paddingRight: "1rem" }}>

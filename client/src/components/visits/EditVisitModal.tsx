@@ -94,7 +94,7 @@ import { useToast } from "@/hooks/use-toast";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { jobKeys } from "@/lib/queryKeys/jobs";
-import { invalidateJobEquipment } from "@/lib/queryInvalidation/jobs";
+import { invalidateJobEquipment, invalidateJobParts } from "@/lib/queryInvalidation/jobs";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 import { AddProductModal } from "@/components/PartsBillingCard";
@@ -284,7 +284,7 @@ export function EditVisitModal({
   // version of this modal used; React Query dedupes with PartsBillingCard
   // on the job screen.
   const { data: jobPartsRaw } = useQuery<JobPartReadRow[]>({
-    queryKey: ["/api/jobs", jobId, "parts"],
+    queryKey: jobKeys.parts(jobId),
     queryFn: async () => {
       const r = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
       if (!r.ok) throw new Error("Failed to load job parts");
@@ -343,7 +343,6 @@ export function EditVisitModal({
 
   // ── Invalidation ──
   const invalidateVisitQueries = () => { queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] }); queryClient.invalidateQueries({ queryKey: ["visits"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); };
-  const invalidateJobParts = () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] }); };
   const invalidateEquipment = () => { queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] }); invalidateJobEquipment(queryClient, jobId); };
 
   // ── Mutations ──
@@ -397,7 +396,7 @@ export function EditVisitModal({
     // duration AND (b) the user hasn't manually edited the Duration field
     // since the modal opened. Removing services NEVER auto-decrements.
     onSuccess: (_data, product) => {
-      invalidateJobParts();
+      invalidateJobParts(queryClient, jobId);
       const dur = product?.estimatedDurationMinutes;
       if (
         !manuallyEditedDuration &&
@@ -426,7 +425,7 @@ export function EditVisitModal({
   const removeServiceMutation = useMutation({
     mutationFn: async (jobPartId: string) =>
       apiRequest(`/api/jobs/${jobId}/parts/${jobPartId}`, { method: "DELETE" }),
-    onSuccess: () => invalidateJobParts(),
+    onSuccess: () => invalidateJobParts(queryClient, jobId),
     onError: (err: Error) => toast({ title: "Could not remove service", description: err.message, variant: "destructive" }),
   });
 
@@ -465,7 +464,7 @@ export function EditVisitModal({
       return { addedCount: drafts.length - failed.length, failed };
     },
     onSuccess: (result, group) => {
-      invalidateJobParts();
+      invalidateJobParts(queryClient, jobId);
       if (result.failed.length > 0) {
         toast({
           title: `Added ${result.addedCount} of ${group.itemCount} from "${group.name}"`,

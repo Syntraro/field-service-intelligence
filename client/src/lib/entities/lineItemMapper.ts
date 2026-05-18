@@ -351,6 +351,7 @@ export function hydrateDraft(row: Record<string, unknown>): LineItemDraft {
     productId: get<string | null>("productId", null),
     lineItemType: get<LineItemDraft["lineItemType"]>("lineItemType", "service"),
     source: get<LineItemDraft["source"]>("source", "manual"),
+    serviceTemplateId: get<string | null>("serviceTemplateId", null),
 
     id,
     isNew: false,
@@ -386,6 +387,7 @@ function toCanonicalPayload(draft: LineItemDraft): CanonicalLineItemInput {
     productId: draft.productId,
     lineItemType: draft.lineItemType,
     source: draft.source,
+    serviceTemplateId: draft.serviceTemplateId ?? null,
   };
 }
 

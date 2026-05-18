@@ -11,6 +11,7 @@
  *   - Empty state when no job has skill requirements
  */
 import { useQuery } from "@tanstack/react-query";
+import { jobKeys } from "@/lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -200,7 +201,7 @@ export function AssignmentRecommendationPanel({
   onSelect,
   selectedIds,
 }: AssignmentRecommendationPanelProps) {
-  const queryKey = ["/api/jobs", jobId, "assignment-recommendations", date ?? "today"];
+  const queryKey = jobKeys.assignmentRecs(jobId, date ?? "today");
 
   const { data, isLoading, isError } = useQuery<RecommendationsResponse>({
     queryKey,

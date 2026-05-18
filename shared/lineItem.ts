@@ -234,6 +234,8 @@ export const canonicalLineItemInput = z.object({
   source: z
     .enum(["manual", "job", "template", "tech"])
     .default("manual"),
+  /** Service template attribution. Only present on quote lines created via apply-template. */
+  serviceTemplateId: z.string().uuid().nullable().optional(),
 });
 
 /** Server-side type after validation: all money fields are guaranteed strings. */
@@ -285,4 +287,6 @@ export interface LineItemDraft {
   notes?: string;
   /** Sortable order (rendered tables use dnd-kit). */
   sortOrder?: number;
+  /** Service template attribution. Preserved through edits; does not affect totals. */
+  serviceTemplateId?: string | null;
 }

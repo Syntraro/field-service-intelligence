@@ -54,9 +54,10 @@ import {
   validateAssignmentSchema,
 } from "@shared/schema";
 import { technicianShiftTemplatesRepository } from "../storage/technicianShiftTemplates";
-import { technicianShiftsRepository } from "../storage/technicianShifts";
+import { technicianShiftsRepository, type ShiftSubtype } from "../storage/technicianShifts";
 import { availabilityEngine } from "../services/availabilityEngine";
 import { companyRepository } from "../storage/company";
+import { getDayUTCBounds, addCalendarDay } from "../lib/dayBoundaries";
 
 const router = Router();
 
@@ -72,6 +73,38 @@ const idParamSchema = z.object({ id: z.string().uuid() }).strict();
 const technicianExceptionParamSchema = z
   .object({ id: z.string().uuid(), exceptionId: z.string().uuid() })
   .strict();
+
+/** Convert HH:MM string to minutes since midnight. */
+function hhmmToMinutes(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+/**
+ * Derive correct UTC startsAt/endsAt from a calendar date + HH:MM times in
+ * the company's IANA timezone. DST-safe: uses getDayUTCBounds anchored at noon UTC.
+ * Overnight shifts (endMinutes < startMinutes) use the next calendar day's bounds.
+ */
+function deriveShiftTimesFromHHMM(
+  dateYmd: string,
+  timeOfDayStart: string,
+  timeOfDayEnd: string,
+  timezone: string,
+): { startsAt: Date; endsAt: Date } {
+  const { start: dayStart } = getDayUTCBounds(dateYmd, timezone);
+  const startMins = hhmmToMinutes(timeOfDayStart);
+  const endMins = hhmmToMinutes(timeOfDayEnd);
+  const startsAt = new Date(dayStart.getTime() + startMins * 60_000);
+  let endsAt: Date;
+  if (endMins > startMins) {
+    endsAt = new Date(dayStart.getTime() + endMins * 60_000);
+  } else {
+    // Overnight: end is in the next calendar day
+    const { start: nextDayStart } = getDayUTCBounds(addCalendarDay(dateYmd), timezone);
+    endsAt = new Date(nextDayStart.getTime() + endMins * 60_000);
+  }
+  return { startsAt, endsAt };
+}
 
 /** Verify the technician belongs to the requesting tenant. Throws 404 if not. */
 async function assertTechnicianInCompany(
@@ -211,6 +244,15 @@ router.post(
     const body = validateSchema(insertShiftSchema, req.body);
     const companyId = req.companyId!;
     await assertTechnicianInCompany(companyId, body.technicianUserId);
+    const timezone = await companyRepository.getCompanyTimezone(companyId);
+    // Derive DST-safe UTC bounds from HH:MM + company timezone rather than trusting the
+    // client-constructed startsAt/endsAt (which encodes local time as UTC incorrectly).
+    let startsAt = new Date(body.startsAt);
+    let endsAt = new Date(body.endsAt);
+    if (!body.allDay && body.timeOfDayStart && body.timeOfDayEnd) {
+      const dateYmd = body.startsAt.slice(0, 10);
+      ({ startsAt, endsAt } = deriveShiftTimesFromHHMM(dateYmd, body.timeOfDayStart, body.timeOfDayEnd, timezone));
+    }
     const shift = await technicianShiftsRepository.create(
       companyId,
       {
@@ -220,8 +262,8 @@ router.post(
         shiftSubtype: body.shiftSubtype ?? null,
         label: body.label ?? null,
         color: body.color ?? null,
-        startsAt: new Date(body.startsAt),
-        endsAt: new Date(body.endsAt),
+        startsAt,
+        endsAt,
         allDay: body.allDay ?? false,
         timeOfDayStart: body.timeOfDayStart ?? null,
         timeOfDayEnd: body.timeOfDayEnd ?? null,
@@ -245,9 +287,21 @@ router.patch(
     const companyId = req.companyId!;
     const existing = await technicianShiftsRepository.findById(companyId, id);
     if (!existing) throw createError(404, "Shift not found");
-    // Validate the new date range if provided (single-sided update support).
-    const nextStart = body.startsAt ? new Date(body.startsAt) : existing.startsAt;
-    const nextEnd = body.endsAt ? new Date(body.endsAt) : existing.endsAt;
+    // Derive DST-safe UTC bounds when HH:MM times and a new date are both provided.
+    let patchedStartsAt: Date | undefined = body.startsAt ? new Date(body.startsAt) : undefined;
+    let patchedEndsAt: Date | undefined = body.endsAt ? new Date(body.endsAt) : undefined;
+    if (body.startsAt && body.timeOfDayStart && body.timeOfDayEnd && !body.allDay) {
+      const timezone = await companyRepository.getCompanyTimezone(companyId);
+      const dateYmd = body.startsAt.slice(0, 10);
+      ({ startsAt: patchedStartsAt, endsAt: patchedEndsAt } = deriveShiftTimesFromHHMM(
+        dateYmd,
+        body.timeOfDayStart,
+        body.timeOfDayEnd,
+        timezone,
+      ));
+    }
+    const nextStart = patchedStartsAt ?? existing.startsAt;
+    const nextEnd = patchedEndsAt ?? existing.endsAt;
     if (nextEnd <= nextStart) {
       throw createError(400, "endsAt must be strictly after startsAt");
     }
@@ -256,8 +310,8 @@ router.patch(
       shiftSubtype: body.shiftSubtype ?? undefined,
       label: body.label,
       color: body.color,
-      startsAt: body.startsAt ? new Date(body.startsAt) : undefined,
-      endsAt: body.endsAt ? new Date(body.endsAt) : undefined,
+      startsAt: patchedStartsAt,
+      endsAt: patchedEndsAt,
       allDay: body.allDay,
       timeOfDayStart: body.timeOfDayStart,
       timeOfDayEnd: body.timeOfDayEnd,
@@ -280,6 +334,83 @@ router.delete(
     const ok = await technicianShiftsRepository.hardDelete(companyId, id);
     if (!ok) throw createError(404, "Shift not found");
     res.status(204).end();
+  }),
+);
+
+// ── POST /shifts/:id/split-at — edit this and future occurrences ──────────────
+//
+// Truncates the base shift's recurrenceEndDate to the day before occurrenceDate
+// and creates a new base shift starting at occurrenceDate with the provided
+// properties. Caller supplies the full new shift definition; the server inherits
+// technicianUserId and templateId from the base.
+
+const splitAtBodySchema = z
+  .object({
+    occurrenceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "occurrenceDate must be YYYY-MM-DD"),
+    shiftType: z.enum(["normal", "on_call", "unavailable"]),
+    shiftSubtype: z.string().optional().nullable(),
+    startsAt: z.string().datetime({ offset: true }),
+    endsAt: z.string().datetime({ offset: true }),
+    allDay: z.boolean().optional(),
+    timeOfDayStart: z.string().optional().nullable(),
+    timeOfDayEnd: z.string().optional().nullable(),
+    recurrenceRule: z.string().optional().nullable(),
+    recurrenceEndDate: z.string().optional().nullable(),
+    note: z.string().optional().nullable(),
+    label: z.string().optional().nullable(),
+    color: z.string().optional().nullable(),
+  })
+  .strict();
+
+router.post(
+  "/shifts/:id/split-at",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { id } = validateSchema(idParamSchema, req.params);
+    const body = validateSchema(splitAtBodySchema, req.body);
+    const companyId = req.companyId!;
+    const base = await technicianShiftsRepository.findById(companyId, id);
+    if (!base) throw createError(404, "Shift not found");
+    if (!base.recurrenceRule) {
+      throw createError(400, "split-at requires a recurring shift");
+    }
+    // Truncate base series to the day before the split point.
+    const splitDate = new Date(body.occurrenceDate + "T12:00:00Z");
+    splitDate.setUTCDate(splitDate.getUTCDate() - 1);
+    const truncateEndDate = splitDate.toISOString().slice(0, 10);
+    await technicianShiftsRepository.update(companyId, id, { recurrenceEndDate: truncateEndDate });
+    // Create new base starting at occurrenceDate.
+    const timezone = await companyRepository.getCompanyTimezone(companyId);
+    let startsAt = new Date(body.startsAt);
+    let endsAt = new Date(body.endsAt);
+    if (!body.allDay && body.timeOfDayStart && body.timeOfDayEnd) {
+      ({ startsAt, endsAt } = deriveShiftTimesFromHHMM(
+        body.occurrenceDate,
+        body.timeOfDayStart,
+        body.timeOfDayEnd,
+        timezone,
+      ));
+    }
+    const newShift = await technicianShiftsRepository.create(
+      companyId,
+      {
+        technicianUserId: base.technicianUserId,
+        templateId: base.templateId ?? null,
+        shiftType: body.shiftType,
+        shiftSubtype: (body.shiftSubtype ?? null) as any,
+        label: body.label ?? null,
+        color: body.color ?? null,
+        startsAt,
+        endsAt,
+        allDay: body.allDay ?? base.allDay,
+        timeOfDayStart: body.timeOfDayStart ?? null,
+        timeOfDayEnd: body.timeOfDayEnd ?? null,
+        recurrenceRule: body.recurrenceRule ?? base.recurrenceRule,
+        recurrenceEndDate: body.recurrenceEndDate ?? null,
+        note: body.note ?? null,
+      },
+      req.user!.id,
+    );
+    res.status(201).json({ shift: newShift });
   }),
 );
 

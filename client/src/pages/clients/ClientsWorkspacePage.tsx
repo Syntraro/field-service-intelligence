@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { apiRequest } from "@/lib/queryClient";
 import { OperationalWorkspace } from "@/components/workspace/OperationalWorkspace";
 import { OperationalWorkspaceHeader } from "@/components/workspace/OperationalWorkspaceHeader";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import {
   WorkspaceFilterBar,
   WorkspaceViewChip,
@@ -473,8 +474,7 @@ export default function ClientsWorkspacePage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Table — flex-col parent so WorkspaceCenterPane's flex-1 resolves */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <WorkspaceListCard>
         <ClientsWorkspaceTab
           rows={sortedGroups.slice(0, visibleCount)}
           totalFilteredCount={sortedGroups.length}
@@ -497,7 +497,7 @@ export default function ClientsWorkspacePage() {
           visibleCount={visibleCount}
           onLoadMore={() => setVisibleCount((c) => c + CLIENTS_PAGE_SIZE)}
         />
-      </div>
+      </WorkspaceListCard>
     </>
   );
 

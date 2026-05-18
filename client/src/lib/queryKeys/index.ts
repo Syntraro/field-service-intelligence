@@ -13,3 +13,4 @@ export { clientKeys } from "./clients";
 export { servicePlanKeys } from "./servicePlans";
 export { dashboardKeys } from "./dashboard";
 export { teamKeys } from "./team";
+export { shiftKeys } from "./shifts";

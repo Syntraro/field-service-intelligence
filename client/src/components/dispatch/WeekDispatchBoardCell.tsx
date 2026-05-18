@@ -10,13 +10,13 @@
  *   - Stacked visit + task cards (all items — no truncation)
  *   - "No jobs" for empty cells
  */
-import { useDroppable } from "@dnd-kit/core";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { ClipboardList } from "lucide-react";
 import type { BoardDayCell } from "./weekDispatchBoardAdapter";
 import { formatBoardHours } from "./weekDispatchBoardAdapter";
-import type { DispatchDropData } from "./dispatchDndTypes";
+import type { DispatchDragData, DispatchDropData } from "./dispatchDndTypes";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
-import { jobStateColor } from "./dispatchPreviewUtils";
+import { isCompletedStatus, jobStateColor } from "./dispatchPreviewUtils";
 
 // ── Time formatting ───────────────────────────────────────────────────────────
 
@@ -44,11 +44,31 @@ function formatTimeWindow(
 
 function VisitCard({
   visit,
+  techId,
   onSelect,
 }: {
   visit: DispatchVisit;
+  techId: string;
   onSelect: (e: React.MouseEvent) => void;
 }) {
+  const isCompleted = isCompletedStatus(visit.status);
+  const dragData: DispatchDragData = {
+    type: "scheduled-visit",
+    visitId: visit.id,
+    jobId: visit.jobId,
+    jobNumber: visit.jobNumber,
+    technicianId: techId,
+    durationMinutes: visit.durationMinutes,
+    version: visit.version,
+    isMultiTech: visit.technicianIds.length > 1,
+    originalStart: visit.scheduledStart,
+  };
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `board-visit-${visit.id}--${techId}`,
+    data: dragData,
+    disabled: isCompleted,
+  });
+
   const stateColor = jobStateColor(visit.jobStatus, visit.jobOpenSubStatus);
   const timeWindow = formatTimeWindow(
     visit.scheduledStart,
@@ -59,9 +79,12 @@ function VisitCard({
 
   return (
     <button
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
       onClick={onSelect}
       data-dispatch-block="board-visit-card"
-      className={`w-full rounded border-l-2 px-2 py-1.5 text-left transition-shadow hover:shadow-sm ${stateColor}`}
+      className={`w-full rounded border-l-2 px-2 py-1.5 text-left transition-shadow hover:shadow-sm ${stateColor} ${isDragging ? "opacity-40" : ""}`}
     >
       <p className="text-helper leading-none text-current opacity-70">{timeWindow}</p>
       <p className="mt-0.5 truncate text-row font-semibold leading-tight">{visit.customerName}</p>
@@ -93,6 +116,61 @@ function TaskCard({ task }: { task: DispatchTask }) {
       <p className="mt-0.5 text-helper leading-none opacity-70">
         {timeWindow} · {formatBoardHours(task.durationMinutes)}
       </p>
+    </div>
+  );
+}
+
+// ── Card-level split drop zones ───────────────────────────────────────────────
+
+/**
+ * Wraps a visit card with two droppable halves covering the card area:
+ *   top 50%    → insertAfterVisitId = prevVisitId  (insert before this card)
+ *   bottom 50% → insertAfterVisitId = visit.id     (insert after this card)
+ *
+ * pointer-events-none on the overlay divs so clicks pass through to the card
+ * button. dnd-kit collision detection is geometric (getBoundingClientRect),
+ * not pointer-event-based, so this does not affect drop detection.
+ */
+function CardDropZone({
+  visit,
+  prevVisitId,
+  techId,
+  dayKey,
+  children,
+}: {
+  visit: DispatchVisit;
+  prevVisitId: string | null;
+  techId: string;
+  dayKey: string;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef: topRef, isOver: topOver } = useDroppable({
+    id: `cdz-top-${visit.id}--${techId}-${dayKey}`,
+    data: { technicianId: techId, dayKey, insertAfterVisitId: prevVisitId } as DispatchDropData,
+  });
+  const { setNodeRef: bottomRef, isOver: bottomOver } = useDroppable({
+    id: `cdz-bot-${visit.id}--${techId}-${dayKey}`,
+    data: { technicianId: techId, dayKey, insertAfterVisitId: visit.id } as DispatchDropData,
+  });
+
+  return (
+    <div className="relative">
+      {/* Top-half droppable — extends 4px above card for easier targeting */}
+      <div ref={topRef} className="pointer-events-none absolute inset-x-0 -top-1 z-10 h-[calc(50%+4px)]" />
+      {/* Bottom-half droppable — extends 4px below card for easier targeting */}
+      <div ref={bottomRef} className="pointer-events-none absolute inset-x-0 -bottom-1 z-10 h-[calc(50%+4px)]" />
+      {/* Insertion indicator — 2px bar with glow for clear visual feedback */}
+      {topOver && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 -translate-y-px">
+          <div className="h-0.5 rounded-full bg-blue-500 shadow-[0_0_4px_1px_rgba(59,130,246,0.5)]" />
+        </div>
+      )}
+      {bottomOver && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 translate-y-px">
+          <div className="h-0.5 rounded-full bg-blue-500 shadow-[0_0_4px_1px_rgba(59,130,246,0.5)]" />
+        </div>
+      )}
+      {children}
     </div>
   );
 }
@@ -130,13 +208,16 @@ export default function WeekDispatchBoardCell({
 
   const isEmpty = cell.jobCount === 0;
 
-  // Merge visits + tasks into a single ordered list (visits are already chronological
-  // from the adapter; tasks follow after).
+  // Merge visits + tasks into a single ordered list (visits are already sorted
+  // by dispatchOrder then scheduledStart from the adapter; tasks follow after).
   type CardItem = { kind: "visit"; visit: DispatchVisit } | { kind: "task"; task: DispatchTask };
   const allItems: CardItem[] = [
     ...cell.visits.map((v): CardItem => ({ kind: "visit", visit: v })),
     ...cell.tasks.map((t): CardItem => ({ kind: "task", task: t })),
   ];
+
+  // Ordered visit IDs for computing prevVisitId in CardDropZone
+  const visitIds = cell.visits.map((v) => v.id);
 
   const handleCellBgClick = () => onCellClick(techId, cell.dayKey);
 
@@ -148,7 +229,7 @@ export default function WeekDispatchBoardCell({
         isOver
           ? "border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300"
           : isToday
-            ? "border-blue-200 bg-blue-50/40 hover:bg-blue-50"
+            ? "border-blue-300 bg-white hover:bg-slate-50"
             : isEmpty
               ? "border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50"
               : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
@@ -177,27 +258,38 @@ export default function WeekDispatchBoardCell({
             />
           </div>
 
-          {/* Stacked job cards — all items, no truncation */}
+          {/* Stacked job cards — visits wrapped in CardDropZone for half-card drop targets */}
           <div className="flex flex-col gap-1">
-            {allItems.map((item) =>
-              item.kind === "visit" ? (
-                <VisitCard
+            {allItems.map((item) => {
+              if (item.kind === "task") {
+                return <TaskCard key={item.task.id + "-task"} task={item.task} />;
+              }
+              const visitIdx = visitIds.indexOf(item.visit.id);
+              const prevVisitId = visitIdx > 0 ? visitIds[visitIdx - 1] : null;
+              return (
+                <CardDropZone
                   key={item.visit.id}
                   visit={item.visit}
-                  onSelect={(e) => {
-                    e.stopPropagation();
-                    onSelectVisit(item.visit);
-                  }}
-                />
-              ) : (
-                <TaskCard key={item.task.id + "-task"} task={item.task} />
-              ),
-            )}
+                  prevVisitId={prevVisitId}
+                  techId={techId}
+                  dayKey={cell.dayKey}
+                >
+                  <VisitCard
+                    visit={item.visit}
+                    techId={techId}
+                    onSelect={(e) => {
+                      e.stopPropagation();
+                      onSelectVisit(item.visit);
+                    }}
+                  />
+                </CardDropZone>
+              );
+            })}
           </div>
         </>
       )}
 
-      {/* Drop-over indicator */}
+      {/* Drop-over indicator — shown when dragging an unscheduled card over the cell */}
       {isOver && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded bg-emerald-50/50">
           <span className="rounded bg-emerald-600 px-1.5 py-0.5 text-helper text-white shadow">

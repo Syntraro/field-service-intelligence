@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { format, startOfWeek, endOfWeek } from "date-fns";
 
-export type DispatchView = "day" | "week" | "month";
+export type DispatchView = "day" | "week" | "month" | "board";
 
 type Props = {
   selectedDate: Date;
@@ -71,7 +71,7 @@ export default function DispatchBoardHeader({
           </button>
         )}
       <div className="inline-flex items-center rounded-md border bg-white p-0.5">
-        {(["day", "week", "month"] as const).map(v => (
+        {(["day", "board", "week", "month"] as const).map(v => (
           <button
             key={v}
             onClick={() => onViewChange?.(v)}

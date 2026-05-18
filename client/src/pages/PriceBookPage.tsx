@@ -10,6 +10,7 @@ import {
   WorkspaceFilterBar,
   WorkspaceViewChip,
 } from "@/components/workspace/WorkspaceFilterBar";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { PriceBookCatalogTab } from "./price-book/PriceBookCatalogTab";
 import { PriceBookKpiStrip } from "./price-book/PriceBookKpiStrip";
 import { PriceBookBundlesTab } from "./price-book/PriceBookBundlesTab";
@@ -165,8 +166,7 @@ export default function PriceBookPage() {
         </WorkspaceFilterBar>
       </div>
 
-      {/* Tab content */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <WorkspaceListCard>
         {activeView === "services" && (
           <PriceBookCatalogTab
             typeFilter="service"
@@ -212,7 +212,7 @@ export default function PriceBookPage() {
             onSelectedTemplateChange={setSelectedTemplate}
           />
         )}
-      </div>
+      </WorkspaceListCard>
     </>
   );
 

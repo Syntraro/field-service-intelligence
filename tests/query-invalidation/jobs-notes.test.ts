@@ -3,7 +3,7 @@
  *
  * Verifies that jobKeys.notes() produces the canonical shape under
  * jobKeys.detail, and that invalidateJobNotes emits the correct bust set
- * (including the temporary urlFamily bridge). Also asserts that the
+ * Also asserts that the
  * shared-note components (EntityNoteDialog, EntityNotesPanel) use the
  * canonical key for the "job" entity type branch.
  */
@@ -76,10 +76,10 @@ describe("invalidateJobNotes — invalidation scope", () => {
     expect(qc.calls).toContainEqual(jobKeys.root());
   });
 
-  it("busts the urlFamily bridge prefix (temporary)", () => {
+  it("does NOT emit the retired URL-pattern family prefix", () => {
     const qc = makeQc();
     invalidateJobNotes(qc as any, JOB_ID);
-    expect(qc.calls).toContainEqual(jobKeys.urlFamily());
+    expect(qc.calls).not.toContainEqual(["/api/jobs"]);
   });
 
   it("does NOT bust unrelated sub-resources", () => {

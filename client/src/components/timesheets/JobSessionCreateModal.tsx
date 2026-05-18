@@ -59,6 +59,7 @@ import { FormField, FormLabel, FormErrorText, InlineTextarea } from "@/component
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { CATEGORY_STYLE } from "./categoryMap";
 import {
@@ -196,7 +197,7 @@ export function JobSessionCreateModal({
 
   const trimmedSearch = jobSearch.trim();
   const jobQuery = useQuery({
-    queryKey: ["/api/jobs", { search: trimmedSearch, limit: 25 }],
+    queryKey: jobKeys.search({ search: trimmedSearch, limit: 25 }),
     queryFn: async () => {
       const res = await fetch(
         `/api/jobs?search=${encodeURIComponent(trimmedSearch)}&limit=25`,

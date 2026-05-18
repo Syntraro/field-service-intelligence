@@ -32,7 +32,7 @@ import {
 // ─── Type helpers ────────────────────────────────────────────────────────────
 
 type ShiftType = "normal" | "on_call" | "unavailable";
-type ShiftSubtype = "vacation" | "sick" | "personal" | "training" | "holiday" | "scheduled_off" | "other";
+export type ShiftSubtype = "vacation" | "sick" | "personal" | "training" | "holiday" | "scheduled_off" | "other";
 
 export interface CreateShiftInput {
   technicianUserId: string;

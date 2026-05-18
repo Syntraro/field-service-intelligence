@@ -108,6 +108,8 @@ import {
 } from "@/components/line-items";
 import { invalidateQuote, invalidateQuoteList } from "@/lib/queryInvalidation";
 import { quoteKeys } from "@/lib/queryKeys/quotes";
+import { ApplyServiceTemplateDialog } from "./quotes/ApplyServiceTemplateDialog";
+import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
 
 interface QuoteDetails {
   quote: Quote;
@@ -164,6 +166,8 @@ export default function QuoteDetailPage() {
   // bumps when the rail tab's +Add button is clicked. EntityNotesPanel
   // reacts via `openAddNoteSignal`.
   const [notesAddSignal, setNotesAddSignal] = useState(0);
+
+  const [applyTemplateOpen, setApplyTemplateOpen] = useState(false);
 
   // Canonical Product/Service create flow — same pattern as Invoice.
   // One AddProductModal instance lives at the page level; the canonical
@@ -359,6 +363,22 @@ export default function QuoteDetailPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update line item", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const applyTemplateMutation = useMutation({
+    mutationFn: (template: ServiceTemplateDto) =>
+      apiRequest(`/api/quotes/${quoteId}/apply-template`, {
+        method: "POST",
+        body: JSON.stringify({ templateId: template.id }),
+      }),
+    onSuccess: () => {
+      invalidateQuote(queryClient, quoteId);
+      toast({ title: "Flat-rate service added" });
+      setApplyTemplateOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to apply template", description: error.message, variant: "destructive" });
     },
   });
 
@@ -808,6 +828,19 @@ export default function QuoteDetailPage() {
               }}
               description={quote.notesCustomer ?? null}
             />
+            {/* Flat-rate service template shortcut — visible only when quote is draft */}
+            {isDraft && (
+              <div className="flex justify-end px-1 -mb-1">
+                <button
+                  type="button"
+                  onClick={() => setApplyTemplateOpen(true)}
+                  className="text-helper text-slate-500 hover:text-slate-700 underline underline-offset-2"
+                  data-testid="button-apply-service-template"
+                >
+                  + Add flat-rate service
+                </button>
+              </div>
+            )}
             {/* Line Items — canonical 2026-04-29 (Phase 2). The card
                 chrome / header metrics / column header / row bodies /
                 bottom action row / empty state all live in
@@ -1031,6 +1064,13 @@ export default function QuoteDetailPage() {
         onClose={handleCreateProductCancel}
         onSave={handleCreateProductSave}
         isSaving={savingCreatedProduct}
+      />
+
+      <ApplyServiceTemplateDialog
+        open={applyTemplateOpen}
+        onOpenChange={setApplyTemplateOpen}
+        onApply={(template) => applyTemplateMutation.mutate(template)}
+        isPending={applyTemplateMutation.isPending}
       />
 
       {/* Apply Template Modal */}

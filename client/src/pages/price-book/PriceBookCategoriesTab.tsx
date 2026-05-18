@@ -20,6 +20,7 @@ import {
   EntityListTable,
   type EntityListColumn,
 } from "@/components/lists/EntityListTable";
+import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import { Pencil, Trash2, Loader2 } from "lucide-react";
 
@@ -290,22 +291,24 @@ export function PriceBookCategoriesTab({
 
   return (
     <>
-      <WorkspaceEntitySurface>
-        <EntityListTable
-          rows={rows}
-          columns={columns}
-          rowKey={(row) => row.id}
-          loadingState={isLoading}
-          emptyState={{
-            kind: "empty",
-            title: searchQuery ? "No categories match your search." : "No categories yet",
-            description: searchQuery
-              ? undefined
-              : "Use \"Add Category\" above, or type a category name when adding products.",
-          }}
-          fillHeight
-        />
-      </WorkspaceEntitySurface>
+      <WorkspaceCenterPane>
+        <WorkspaceEntitySurface>
+          <EntityListTable
+            rows={rows}
+            columns={columns}
+            rowKey={(row) => row.id}
+            loadingState={isLoading}
+            emptyState={{
+              kind: "empty",
+              title: searchQuery ? "No categories match your search." : "No categories yet",
+              description: searchQuery
+                ? undefined
+                : "Use \"Add Category\" above, or type a category name when adding products.",
+            }}
+            fillHeight
+          />
+        </WorkspaceEntitySurface>
+      </WorkspaceCenterPane>
 
       {/* Add modal */}
       <ModalShell

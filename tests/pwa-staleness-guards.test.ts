@@ -124,8 +124,10 @@ describe("vite.config.ts — PWA plugin configuration", () => {
     expect(viteCfgSrc).toMatch(/build-id/);
   });
 
-  it("maximumFileSizeToCacheInBytes is at least 3 MB", () => {
-    expect(viteCfgSrc).toMatch(/maximumFileSizeToCacheInBytes:\s*3\s*\*\s*1024\s*\*\s*1024/);
+  it("maximumFileSizeToCacheInBytes is at least 4 MB", () => {
+    // Config was updated from 3 MB to 4 MB (2026-05-11) after main bundle
+    // was measured at 3.44 MB. Updated assertion to match actual value.
+    expect(viteCfgSrc).toMatch(/maximumFileSizeToCacheInBytes:\s*4\s*\*\s*1024\s*\*\s*1024/);
   });
 
   it("globPatterns includes html (index.html precached for offline fallback)", () => {

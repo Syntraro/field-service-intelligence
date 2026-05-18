@@ -86,6 +86,7 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     lng: event.lng ?? null,
     equipmentIds: (event as any).equipmentIds ?? null,
     dispatchQueueBucket: "today",
+    dispatchOrder: event.dispatchOrder ?? null,
   };
 }
 

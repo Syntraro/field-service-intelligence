@@ -45,6 +45,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CATEGORY_STYLE, categoryForType } from "./categoryMap";
+import { jobKeys } from "@/lib/queryKeys";
 
 export interface JobSessionEntry {
   id: string;
@@ -241,7 +242,7 @@ export function JobSessionEditModal({
   // Job search — only active while picker is open.
   const trimmedSearch = jobSearch.trim();
   const jobQuery = useQuery({
-    queryKey: ["/api/jobs", { search: trimmedSearch, limit: 25 }],
+    queryKey: jobKeys.search({ search: trimmedSearch, limit: 25 }),
     queryFn: async () => {
       const res = await fetch(
         `/api/jobs?search=${encodeURIComponent(trimmedSearch)}&limit=25`,

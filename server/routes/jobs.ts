@@ -67,6 +67,8 @@ import { getJobsFeed, getJobHeader, getJobCounts } from "../storage/jobsFeed";
 import type { JobFeedFilters } from "../storage/jobsFeed";
 // 2026-04-08: P7 — Canonical line-item input schema (shared with invoices/quotes)
 import { canonicalLineItemInput } from "@shared/lineItem";
+// Phase 4: service template apply-to-job
+import { serviceTemplateRepository } from "../storage/serviceTemplates";
 
 const router = Router();
 
@@ -1271,6 +1273,7 @@ function canonicalToJobPartFields(input: {
   unitPrice?: string;
   unitCost?: string;
   productId?: string | null;
+  serviceTemplateId?: string | null;
 }) {
   return {
     description: input.description,
@@ -1278,6 +1281,7 @@ function canonicalToJobPartFields(input: {
     quantity: input.quantity ?? "1",
     unitCost: input.unitCost,
     unitPrice: input.unitPrice ?? "0.00",
+    serviceTemplateId: input.serviceTemplateId ?? null,
   };
 }
 
@@ -1292,6 +1296,7 @@ function canonicalToJobPartUpdateFields(input: {
   unitPrice?: string;
   unitCost?: string;
   productId?: string | null;
+  serviceTemplateId?: string | null;
 }) {
   const out: {
     description?: string;
@@ -1299,12 +1304,14 @@ function canonicalToJobPartUpdateFields(input: {
     quantity?: string;
     unitCost?: string;
     unitPrice?: string;
+    serviceTemplateId?: string | null;
   } = {};
   if (input.description !== undefined) out.description = input.description;
   if (input.productId !== undefined) out.productId = input.productId;
   if (input.quantity !== undefined) out.quantity = input.quantity;
   if (input.unitCost !== undefined) out.unitCost = input.unitCost;
   if (input.unitPrice !== undefined) out.unitPrice = input.unitPrice;
+  if (input.serviceTemplateId !== undefined) out.serviceTemplateId = input.serviceTemplateId;
   return out;
 }
 
@@ -1347,6 +1354,53 @@ router.put("/:jobId/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (
   if (!jobPart) throw createError(404, "Job part not found");
 
   res.json(jobPart);
+}));
+
+// POST /api/jobs/:jobId/apply-template - Apply a flat-rate service template as one job part
+//
+// Snapshot semantics: unit cost computed once at apply-time from component snapshots
+// (SUM(qty × unitCostSnapshot)). The resulting job part is fully editable.
+// serviceTemplateId is attribution metadata only; it does not affect invoice creation,
+// QBO sync, or any downstream behavior. Usage count incremented after successful apply.
+router.post("/:jobId/apply-template", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const jobId = req.params.jobId;
+
+  const { templateId } = validateSchema(
+    z.object({ templateId: z.string().uuid() }),
+    req.body,
+  );
+
+  const job = await storage.getJob(companyId, jobId);
+  if (!job) throw createError(404, "Job not found");
+
+  const template = await serviceTemplateRepository.getById(companyId, templateId);
+  if (!template) throw createError(404, "Service template not found");
+
+  // Snapshot unit cost: SUM(component.quantity × component.unitCostSnapshot)
+  let totalCost = 0;
+  for (const comp of template.components) {
+    const qty = parseFloat(comp.quantity) || 0;
+    const cost = parseFloat(comp.unitCostSnapshot ?? "0") || 0;
+    totalCost += qty * cost;
+  }
+  const unitCostStr = totalCost.toFixed(2);
+  const flatRatePrice = String(template.flatRatePrice);
+
+  const jobPart = await storage.createJobPart(companyId, jobId, {
+    companyId,
+    jobId,
+    description: template.name,
+    quantity: "1",
+    unitPrice: flatRatePrice,
+    unitCost: unitCostStr,
+    productId: null,
+    serviceTemplateId: template.id,
+  });
+
+  await serviceTemplateRepository.incrementUsage(companyId, templateId);
+
+  res.status(201).json(jobPart);
 }));
 
 // DELETE /api/jobs/:jobId/parts/:id - Remove part from job

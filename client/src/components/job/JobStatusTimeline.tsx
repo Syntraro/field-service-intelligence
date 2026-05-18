@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { jobKeys } from "@/lib/queryKeys";
 import { formatDistanceToNow, format } from "date-fns";
 import { Clock, ChevronDown, ChevronRight, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -92,7 +93,7 @@ function collapseCloseEvents(events: JobStatusEvent[]): DisplayEvent[] {
 
 export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimelineProps) {
   const { data: events, isLoading } = useQuery<JobStatusEvent[]>({
-    queryKey: ["/api/jobs", jobId, "status-events"],
+    queryKey: jobKeys.statusEvents(jobId),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/status-events`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch status events");

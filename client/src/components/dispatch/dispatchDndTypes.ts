@@ -38,4 +38,7 @@ export interface DispatchDropData {
   dayKey?: string;
   /** Present when dropping into a right-rail staging bucket section */
   queueBucket?: "urgent" | "today" | "on_hold" | "less_urgent";
+  /** Present when dropping into a between-card zone in the Board view.
+   *  Null = insert at the top. String = insert after this visitId. */
+  insertAfterVisitId?: string | null;
 }

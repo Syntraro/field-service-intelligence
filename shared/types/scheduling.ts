@@ -112,6 +112,9 @@ export interface CalendarEventDto {
   /** Technician details */
   technicians: CalendarTechnicianDto[];
 
+  /** Board view card position within a tech×day cell. NULL = unset. */
+  dispatchOrder?: number | null;
+
   // ========== TECHNICIAN VISIBILITY DIAGNOSTICS ==========
   /** True if job is assigned to a technician who is not schedulable/visible */
   hasHiddenTechnician?: boolean;

@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { jobKeys } from "@/lib/queryKeys";
 import { format } from "date-fns";
 import { Clock, ChevronRight, ChevronDown, Calendar, User } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -49,7 +50,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   const { data, isLoading, error } = useQuery<{ history: ScheduleHistoryEntry[] }>({
-    queryKey: ["/api/jobs", jobId, "schedule-history"],
+    queryKey: jobKeys.scheduleHistory(jobId),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/schedule-history`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch schedule history");

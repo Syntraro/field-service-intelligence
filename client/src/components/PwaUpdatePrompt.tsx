@@ -1,6 +1,6 @@
 /**
  * PWA registration + auto-reload on deploy (2026-04-14, hardened 2026-04-26,
- * 2026-04-30 Balanced fix).
+ * 2026-04-30 Balanced fix, 2026-05-18 static-import fix).
  *
  * Paired with `registerType: "autoUpdate"` + `skipWaiting` + `clientsClaim`
  * in vite.config.ts and the NetworkFirst navigation strategy in
@@ -50,8 +50,11 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-
-const loadModule = new Function("m", "return import(m)") as (id: string) => Promise<any>;
+// 2026-05-18 stale-deploy fix: replaced new Function("m","return import(m)") hack
+// with a static import Rollup can analyze. The previous pattern bypassed Vite/Rollup
+// static analysis so virtual:pwa-register was never included in the production bundle,
+// causing SW registration to silently fail for every first-time visitor.
+import { registerSW } from "virtual:pwa-register";
 // Stores the build ID for which the last full-page reload occurred —
 // makes `controllerchange` reloads idempotent per build but allows a
 // future deploy in the same tab session to reload again. Replaces the
@@ -137,113 +140,91 @@ export function PwaUpdatePrompt() {
     let unbindPageShow: (() => void) | null = null;
     let unbindOnline: (() => void) | null = null;
 
-    loadModule("virtual:pwa-register")
-      .then((mod: any) => {
-        if (cancelled) return;
-        const updateSW = mod.registerSW({
-          immediate: true,
-          // 2026-04-26: registerType is "autoUpdate" so onNeedRefresh
-          // shouldn't fire in the steady state. We still wire it as a
-          // belt-and-suspenders signal; it will only flip needsRefresh
-          // if the new worker is somehow stuck waiting.
-          onNeedRefresh() {
-            setNeedsRefresh(true);
-          },
-          onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
-            if (!registration) return;
+    // 2026-05-18: direct call — registerSW is now statically imported so
+    // Rollup includes the virtual module in the production bundle.
+    const updateSW = registerSW({
+      immediate: true,
+      // 2026-04-26: registerType is "autoUpdate" so onNeedRefresh
+      // shouldn't fire in the steady state. We still wire it as a
+      // belt-and-suspenders signal; it will only flip needsRefresh
+      // if the new worker is somehow stuck waiting.
+      onNeedRefresh() {
+        if (!cancelled) setNeedsRefresh(true);
+      },
+      onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
+        if (cancelled || !registration) return;
 
-            // Share with the route-change effect.
-            registrationRef.current = registration;
+        // Share with the route-change effect.
+        registrationRef.current = registration;
 
-            // Hourly background poll — preserves the prior safety net for
-            // long-lived foreground tabs. The visibilitychange listener
-            // below covers the iPad-PWA-was-backgrounded case.
-            setInterval(() => {
-              registration.update().catch(() => {});
-            }, 60 * 60 * 1000);
+        // Hourly background poll — preserves the prior safety net for
+        // long-lived foreground tabs. The visibilitychange listener
+        // below covers the iPad-PWA-was-backgrounded case.
+        setInterval(() => {
+          registration.update().catch(() => {});
+        }, 60 * 60 * 1000);
 
-            // Visibility-driven update check. iOS suspends background JS
-            // for PWAs and Safari tabs; the moment the user returns to
-            // the app, ask the SW to verify it has the latest version.
-            // No-op on errors; the controllerchange path will still fire
-            // when the new SW installs + claims.
-            const onVisible = () => {
-              if (document.visibilityState === "visible") {
-                registration.update().catch(() => {});
-              }
-            };
-            document.addEventListener("visibilitychange", onVisible);
-            unbindVisibility = () => document.removeEventListener("visibilitychange", onVisible);
+        // Visibility-driven update check. iOS suspends background JS
+        // for PWAs and Safari tabs; the moment the user returns to
+        // the app, ask the SW to verify it has the latest version.
+        const onVisible = () => {
+          if (document.visibilityState === "visible") {
+            registration.update().catch(() => {});
+          }
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        unbindVisibility = () => document.removeEventListener("visibilitychange", onVisible);
 
-            // 2026-05-11 iOS resume fix: pageshow is more reliable than
-            // visibilitychange on Safari / iOS installed PWA. When iOS
-            // restores a page from the bfcache or resumes a suspended
-            // PWA context, pageshow fires even when visibilitychange
-            // does not. event.persisted === true indicates a bfcache
-            // restore; we call update() unconditionally because the cost
-            // is negligible and a false negative (missing a deploy) is
-            // worse than an extra SW update check.
-            const onPageShow = () => {
-              registration.update().catch(() => {});
-            };
-            window.addEventListener("pageshow", onPageShow);
-            unbindPageShow = () => window.removeEventListener("pageshow", onPageShow);
+        // 2026-05-11 iOS resume fix: pageshow is more reliable than
+        // visibilitychange on Safari / iOS installed PWA.
+        const onPageShow = () => {
+          registration.update().catch(() => {});
+        };
+        window.addEventListener("pageshow", onPageShow);
+        unbindPageShow = () => window.removeEventListener("pageshow", onPageShow);
 
-            // 2026-04-30: also re-check when the network comes back.
-            // visibilitychange covers "user returned to the tab", but
-            // not "user was on the tab the whole time, lost connection,
-            // and just regained it." The hourly poll would eventually
-            // catch this, but `online` makes it instant.
-            const onOnline = () => {
-              registration.update().catch(() => {});
-            };
-            window.addEventListener("online", onOnline);
-            unbindOnline = () => window.removeEventListener("online", onOnline);
+        // 2026-04-30: also re-check when the network comes back.
+        const onOnline = () => {
+          registration.update().catch(() => {});
+        };
+        window.addEventListener("online", onOnline);
+        unbindOnline = () => window.removeEventListener("online", onOnline);
 
-            // Watch for a `waiting` worker that doesn't activate in time.
-            // A `waiting` worker is one that has installed but hasn't
-            // taken over yet. Our SW calls self.skipWaiting() at module
-            // eval, so this state is normally transient. If it persists
-            // past the grace window, surface the banner so the user can
-            // manually trigger activation.
-            let timer: ReturnType<typeof setTimeout> | null = null;
-            const armBanner = () => {
-              if (timer) clearTimeout(timer);
-              timer = setTimeout(() => {
-                if (registration.waiting) {
-                  setNeedsRefresh(true);
-                }
-              }, WAITING_GRACE_MS);
-            };
-            const onUpdateFound = () => {
-              const installing = registration.installing;
-              if (!installing) return;
-              installing.addEventListener("statechange", () => {
-                if (installing.state === "installed" && registration.waiting) {
-                  armBanner();
-                }
-              });
-            };
-            registration.addEventListener("updatefound", onUpdateFound);
-            // If a worker is already waiting at registration time
-            // (multi-tab scenario), arm the banner immediately too.
-            if (registration.waiting) armBanner();
+        // Watch for a `waiting` worker that doesn't activate in time.
+        // skipWaiting makes this state transient; the banner is belt-and-
+        // suspenders for the iOS-PWA-parked-SW edge case.
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const armBanner = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            if (registration.waiting) setNeedsRefresh(true);
+          }, WAITING_GRACE_MS);
+        };
+        const onUpdateFound = () => {
+          const installing = registration.installing;
+          if (!installing) return;
+          installing.addEventListener("statechange", () => {
+            if (installing.state === "installed" && registration.waiting) {
+              armBanner();
+            }
+          });
+        };
+        registration.addEventListener("updatefound", onUpdateFound);
+        // If a worker is already waiting at registration time
+        // (multi-tab scenario), arm the banner immediately.
+        if (registration.waiting) armBanner();
 
-            unbindWaiting = () => {
-              registration.removeEventListener("updatefound", onUpdateFound);
-              if (timer) clearTimeout(timer);
-            };
-          },
-        });
-        // Capture for the banner button. updateSW(true) → posts
-        // SKIP_WAITING to the waiting worker + reloads after activation.
-        if (typeof updateSW === "function") {
-          setUpdater(() => updateSW);
-        }
-      })
-      .catch(() => {
-        // virtual:pwa-register not available (non-Vite runtime) — no-op.
-      });
+        unbindWaiting = () => {
+          registration.removeEventListener("updatefound", onUpdateFound);
+          if (timer) clearTimeout(timer);
+        };
+      },
+    });
+    // Capture for the banner button. updateSW(true) → posts
+    // SKIP_WAITING to the waiting worker + reloads after activation.
+    if (typeof updateSW === "function") {
+      setUpdater(() => updateSW);
+    }
 
     return () => {
       cancelled = true;

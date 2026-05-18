@@ -13,13 +13,13 @@ import type {
   DispatchVisit,
   DispatchTask,
   DispatchLeadVisit,
+  DispatchShiftEntry,
   Technician,
 } from "./dispatchPreviewTypes";
 import { getDispatchDayKey } from "./dispatchPreviewUtils";
 import {
   useDispatchRangeData,
   widenStartForAllDay,
-  type DispatchTimeOffEntry,
 } from "./dispatchDataCore";
 
 export interface DispatchPreviewData {
@@ -27,10 +27,12 @@ export interface DispatchPreviewData {
   unscheduledVisits: DispatchVisit[];
   scheduledTasks: DispatchTask[];
   leadVisits: DispatchLeadVisit[];
-  /** 2026-05-07 RALPH (technician time off): time-off entries
-   *  overlapping THIS day. Empty array when the endpoint fails or
-   *  no entries exist for any tech today. */
-  timeOff: DispatchTimeOffEntry[];
+  /** Phase 2 Shift Management: resolved normal (working) shifts. Empty when disabled. */
+  shifts: DispatchShiftEntry[];
+  /** Phase 2 Shift Management: on-call shifts. Empty when disabled. */
+  onCallShifts: DispatchShiftEntry[];
+  /** Phase 2 Shift Management: unavailable shifts. Empty when disabled. */
+  unavailableShifts: DispatchShiftEntry[];
   technicians: Technician[];
   isLoading: boolean;
   error: Error | null;

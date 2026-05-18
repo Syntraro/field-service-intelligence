@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { useWorkspaceSelection } from "@/hooks/useWorkspaceSelection";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { type ServicePlanView } from "@/lib/servicePlanWorkspaceConfig";
@@ -131,7 +132,7 @@ export function ServicePlansWorkspaceTab({
       className="h-full flex flex-col min-h-0 overflow-hidden"
       data-testid="service-plans-workspace-tab"
     >
-      <div className="flex-1 min-h-0 flex flex-col mx-4 mb-6 rounded-md overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.07),0_0_1px_rgba(0,0,0,0.05)]">
+      <WorkspaceListCard>
         <WorkspaceCenterPane>
           <WorkspaceEntitySurface
             data-testid="tab-content-service-plans"
@@ -158,7 +159,7 @@ export function ServicePlansWorkspaceTab({
             />
           </WorkspaceEntitySurface>
         </WorkspaceCenterPane>
-      </div>
+      </WorkspaceListCard>
     </div>
   );
 }

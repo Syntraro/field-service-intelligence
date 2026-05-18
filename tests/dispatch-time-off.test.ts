@@ -69,10 +69,10 @@ describe("Server reschedule — accepts overrideTimeOffConflict + returns 409", 
     );
   });
 
-  it("imports the time-off repository", () => {
-    expect(codeNoComments).toMatch(
-      /import\s*\{\s*technicianTimeOffRepository\s*\}\s*from\s*"\.\.\/storage\/technicianTimeOff"/,
-    );
+  it("delegates to availabilityEngine (technicianTimeOffRepository no longer imported)", () => {
+    // 2026-05-18: replaced inline time-off repo call with canonical Availability Engine
+    expect(codeNoComments).not.toMatch(/import\s*\{\s*technicianTimeOffRepository/);
+    expect(codeNoComments).toMatch(/import\s*\{\s*availabilityEngine\s*\}/);
   });
 
   it("preflight check is gated by overrideTimeOffConflict !== true", () => {
@@ -81,9 +81,9 @@ describe("Server reschedule — accepts overrideTimeOffConflict + returns 409", 
     );
   });
 
-  it("preflight calls listOverlapping for the effective range", () => {
+  it("preflight calls validateAssignmentAgainstAvailability via availability engine", () => {
     expect(codeNoComments).toMatch(
-      /technicianTimeOffRepository\.listOverlapping\(\s*companyId/,
+      /availabilityEngine\.validateAssignmentAgainstAvailability\(/,
     );
   });
 
@@ -91,55 +91,44 @@ describe("Server reschedule — accepts overrideTimeOffConflict + returns 409", 
     expect(codeNoComments).toMatch(
       /res\.status\(409\)\.json\([\s\S]{0,200}code:\s*"TIME_OFF_CONFLICT"/,
     );
-    expect(codeNoComments).toMatch(/conflicts:\s*conflicts\.map/);
+    // 2026-05-18: conflicts are now collected into allConflicts (no .map transform)
+    expect(codeNoComments).toMatch(/conflicts:\s*allConflicts/);
   });
 
-  it("preflight is wrapped in try/catch (defensive — missing migration must not crash reschedule)", () => {
-    // Pin the warn-and-continue fallback so a broken time-off table
+  it("preflight is wrapped in try/catch (defensive — engine failures must not crash reschedule)", () => {
+    // Pin the warn-and-continue fallback so a transient engine error
     // can't block the canonical reschedule path.
     expect(codeNoComments).toMatch(
-      /\[reschedule\] time-off preflight failed; proceeding without conflict check/,
+      /\[reschedule\] availability preflight failed; proceeding without conflict check/,
     );
   });
 });
 
-// ─── 2. Dispatch data hook — fetches + exposes timeOff ─────────────
+// ─── 2. Dispatch data core — canonical availability (post-canonicalization) ─
+// time-off now flows through unavailableShifts via the availability engine;
+// the /api/technician-time-off direct read has been removed from dispatch.
 
-describe("Dispatch data — useDispatchRangeData fetches time-off", () => {
+describe("Dispatch data — useDispatchRangeData canonical availability", () => {
   const code = read(DATA_CORE_PATH);
   const codeNoComments = stripComments(code);
 
-  it("declares a DispatchTimeOffEntry interface + exports it", () => {
-    expect(code).toMatch(/export interface DispatchTimeOffEntry/);
+  it("does NOT directly query /api/technician-time-off (removed; flows through engine)", () => {
+    expect(codeNoComments).not.toMatch(/\/api\/technician-time-off/);
   });
 
-  it("includes timeOff on DispatchRangeData", () => {
-    expect(code).toMatch(/timeOff:\s*DispatchTimeOffEntry\[\]/);
+  it("does NOT export DispatchTimeOffEntry (removed; replaced by unavailableShifts)", () => {
+    expect(code).not.toMatch(/export interface DispatchTimeOffEntry/);
   });
 
-  it("queries /api/technician-time-off keyed on the same start/end as /api/calendar", () => {
-    expect(codeNoComments).toMatch(
-      /queryKey:\s*\["\/api\/technician-time-off",\s*startISO,\s*endISO\]/,
-    );
-    expect(codeNoComments).toMatch(/\/api\/technician-time-off\?start=/);
+  it("DispatchRangeData exposes unavailableShifts for time-off rendering", () => {
+    expect(code).toMatch(/unavailableShifts:\s*DispatchShiftEntry\[\]/);
   });
 
-  it("the time-off query has retry: 1 so a missing migration surfaces fast", () => {
-    expect(codeNoComments).toMatch(
-      /queryKey:\s*\["\/api\/technician-time-off"[\s\S]{0,400}retry:\s*1/,
-    );
-  });
-
-  it("time-off failure does NOT enter the overall isLoading aggregation", () => {
-    // Pin: only scheduledQuery + unscheduledQuery + techLoading
-    // contribute. timeOff is additive — its failure must not surface
-    // as a dispatch-wide spinner.
+  it("shift loading does NOT block the overall isLoading aggregation", () => {
     expect(codeNoComments).toMatch(
       /isLoading:[\s\S]{0,120}scheduledQuery\.isLoading\s*\|\|\s*unscheduledQuery\.isLoading\s*\|\|\s*techLoading/,
     );
-    expect(codeNoComments).not.toMatch(
-      /timeOffQuery\.isLoading[\s\S]{0,40}\|\|/,
-    );
+    expect(codeNoComments).not.toMatch(/shiftsQuery\.isLoading[\s\S]{0,40}\|\|/);
   });
 });
 
@@ -191,10 +180,11 @@ describe("Tech sidebar — Off pill when tech has any time off today", () => {
     expect(code).toMatch(/data-testid=\{?`?tech-time-off-pill-/);
   });
 
-  it("uses the canonical amber-100 palette for the pill", () => {
-    expect(code).toMatch(
-      /bg-amber-100\s+text-amber-700\s+border-amber-300/,
-    );
+  it("uses the canonical warning tone chip for the Off pill", () => {
+    // Post-refactor (2026-05-07): uses <StatusChip tone="warning"> — amber
+    // palette is encapsulated in chipVariants, not inline in the sidebar.
+    expect(code).toMatch(/tone="warning"/);
+    expect(code).toMatch(/data-testid=\{?`?tech-time-off-pill-/);
   });
 });
 
@@ -263,8 +253,9 @@ describe("DispatchPreview — wires time-off + drag confirm + mutation override"
   const code = read(PAGE_PATH);
   const codeNoComments = stripComments(code);
 
-  it("derives timeOffEntries, timeOffByTech, techsOnTimeOff, techsOnTimeOffByDay", () => {
-    expect(codeNoComments).toMatch(/const timeOffEntries\s*=/);
+  it("derives timeOffByTech, techsOnTimeOff, techsOnTimeOffByDay from unavailableShifts", () => {
+    // timeOffEntries removed — all unavailability now flows through unavailableShifts
+    expect(codeNoComments).not.toMatch(/const timeOffEntries\s*=/);
     expect(codeNoComments).toMatch(/const timeOffByTech\s*=\s*useMemo/);
     expect(codeNoComments).toMatch(/const techsOnTimeOff\s*=\s*useMemo/);
     expect(codeNoComments).toMatch(/const techsOnTimeOffByDay\s*=\s*useMemo/);
@@ -285,14 +276,12 @@ describe("DispatchPreview — wires time-off + drag confirm + mutation override"
     expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("declares a checkTimeOffOverlap useCallback with the canonical signature", () => {
-    expect(codeNoComments).toMatch(
-      /const checkTimeOffOverlap = useCallback\(\s*\(techIds: string\[\], startISO: string, endISO: string\)/,
-    );
+  it("does NOT declare checkTimeOffOverlap (removed; unified into findOverlappingShifts)", () => {
+    expect(codeNoComments).not.toMatch(/const checkTimeOffOverlap\s*=/);
   });
 
-  it("checkTimeOffOverlap uses the canonical (a.start < b.end && a.end > b.start) predicate", () => {
-    expect(codeNoComments).toMatch(/entryStart\s*<\s*endMs\s*&&\s*entryEnd\s*>\s*startMs/);
+  it("uses findOverlappingShifts(unavailableShiftsByTech) for unavailability preflight", () => {
+    expect(codeNoComments).toMatch(/findOverlappingShifts\(\s*unavailableShiftsByTech/);
   });
 
   it("declares timeOffConfirm state mirroring the off-shift dialog pattern", () => {
@@ -304,7 +293,7 @@ describe("DispatchPreview — wires time-off + drag confirm + mutation override"
     // drag branch, with an action that re-issues the mutation with
     // overrideTimeOffConflict: true.
     expect(codeNoComments).toMatch(
-      /setTimeOffConfirm\(\{[\s\S]{0,400}overrideTimeOffConflict:\s*true/,
+      /setTimeOffConfirm\(\{[\s\S]{0,600}overrideTimeOffConflict:\s*true/,
     );
   });
 

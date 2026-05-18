@@ -11,6 +11,7 @@ import { useState, useEffect } from "react";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { getLeadStatusMeta } from "@/lib/statusBadges";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
+import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import type { EnrichedLead } from "@/lib/leadWorkspaceConfig";
 import type { SelectedLeadContext } from "./LeadActionsRail";
 
@@ -160,8 +161,19 @@ export function LeadListPanel({
   };
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="px-6 pt-4 pb-6">
+    <WorkspaceEntitySurface
+      data-testid="tab-content-leads"
+      footer={
+        <ListLoadMoreFooter
+          visibleCount={Math.min(visibleCount, rows.length)}
+          totalCount={rows.length}
+          hasMore={visibleCount < rows.length}
+          onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
+          label="lead"
+        />
+      }
+    >
+      <div className="h-full overflow-y-auto">
         <EntityListTable<EnrichedLead>
           rows={rows.slice(0, visibleCount)}
           rowKey={(lead) => lead.id}
@@ -181,15 +193,7 @@ export function LeadListPanel({
           columns={LEAD_COLUMNS}
           cellPy="py-2.5"
         />
-
-        <ListLoadMoreFooter
-          visibleCount={Math.min(visibleCount, rows.length)}
-          totalCount={rows.length}
-          hasMore={visibleCount < rows.length}
-          onLoadMore={() => setVisibleCount((c) => c + PAGE_SIZE)}
-          label="lead"
-        />
       </div>
-    </div>
+    </WorkspaceEntitySurface>
   );
 }

@@ -54,7 +54,7 @@ describe("invalidateJobSubresources", () => {
 });
 
 describe("invalidateJobLifecycle", () => {
-  it("busts semantic family, detail, all sub-resources, and URL family prefix", () => {
+  it("busts semantic family, detail, and all canonical sub-resources", () => {
     const qc = makeQc();
     invalidateJobLifecycle(qc as any, JOB_ID);
     expect(qc.calls).toContainEqual(jobKeys.all());
@@ -62,7 +62,12 @@ describe("invalidateJobLifecycle", () => {
     expect(qc.calls).toContainEqual(jobKeys.parts(JOB_ID));
     expect(qc.calls).toContainEqual(jobKeys.expenses(JOB_ID));
     expect(qc.calls).toContainEqual(jobKeys.timeEntries(JOB_ID));
-    expect(qc.calls).toContainEqual(jobKeys.urlFamily());
+  });
+
+  it("does NOT emit the retired URL-pattern family prefix", () => {
+    const qc = makeQc();
+    invalidateJobLifecycle(qc as any, JOB_ID);
+    expect(qc.calls).not.toContainEqual(["/api/jobs"]);
   });
 });
 

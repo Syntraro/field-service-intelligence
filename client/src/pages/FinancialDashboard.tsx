@@ -1697,22 +1697,6 @@ function TodaysScheduleCard({
             </div>
           )}
         </div>
-        {/* Bottom metrics: Jobs | Revenue | Drive. Revenue and drive not in
-            capacity endpoint — shown as "—". Thin strip, one row per metric. */}
-        <div className="border-t border-border/50 bg-inset-surface/60 flex items-center divide-x divide-border/50 shrink-0">
-          {(
-            [
-              { label: "Jobs", value: String(bookedBlocks.length) },
-              { label: "Revenue", value: "—" },
-              { label: "Drive", value: "—" },
-            ] as const
-          ).map(({ label, value }) => (
-            <div key={label} className="flex-1 flex items-baseline justify-center gap-1 py-1 px-1">
-              <span className="text-[12px] font-medium text-foreground tabular-nums">{value}</span>
-              <span className="text-[9px] text-muted-foreground uppercase tracking-wide">{label}</span>
-            </div>
-          ))}
-        </div>
       </div>
     );
   };

@@ -4,9 +4,6 @@
  * All sub-resources are Pattern B (semantic): ["jobs", "detail", id, sub].
  * The ["jobs"] root prefix matches the entire job cache hierarchy.
  *
- * urlFamily() is a temporary bridge that prefix-matches all legacy
- * URL-pattern keys (["/api/jobs", ...]) until consumer migrations finish.
- *
  * Use these constants — never inline string literals for job queries.
  */
 
@@ -104,7 +101,4 @@ export const jobKeys = {
   assignmentRecs: (id: string, date?: string | null) =>
     ["jobs", "detail", id, "assignmentRecs", date ?? null] as const,
 
-  /** ["/api/jobs"] — URL-pattern family prefix; prefix-matches legacy sub-resource keys.
-   *  Include in helpers until all URL-pattern consumers are migrated to Pattern B. */
-  urlFamily: () => ["/api/jobs"] as const,
 };

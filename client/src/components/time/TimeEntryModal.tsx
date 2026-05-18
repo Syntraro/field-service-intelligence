@@ -43,6 +43,7 @@ import {
 import { ConfirmModal } from "@/components/ui/modal";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { invalidateJobTimeEntries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import type { TimeEntryType } from "@shared/schema";
 import { computeEndTime, computeDuration, toISODateTime } from "./timeEntryHelpers";
@@ -274,10 +275,7 @@ export function TimeEntryModal({
             ? "The time entry has been updated successfully."
             : "The time entry has been created successfully.",
       });
-      if (jobId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
-      }
+      if (jobId) invalidateJobTimeEntries(queryClient, jobId);
       if (!isEdit) queryClient.invalidateQueries({ queryKey: ["jobs"] });
       for (const key of extraInvalidateKeys) {
         queryClient.invalidateQueries({ queryKey: key });
@@ -302,10 +300,7 @@ export function TimeEntryModal({
     },
     onSuccess: () => {
       toast({ title: "Time Entry Deleted", description: "The time entry has been removed." });
-      if (jobId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
-      }
+      if (jobId) invalidateJobTimeEntries(queryClient, jobId);
       for (const key of extraInvalidateKeys) {
         queryClient.invalidateQueries({ queryKey: key });
       }

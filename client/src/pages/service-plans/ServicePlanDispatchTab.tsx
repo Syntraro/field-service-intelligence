@@ -24,6 +24,7 @@ import { StatusChip } from "@/components/ui/chip";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { listResultsClass } from "@/components/ui/list-surface";
 import {
   ModalShell, ModalHeader, ModalTitle, ModalDescription,
@@ -31,6 +32,7 @@ import {
 } from "@/components/ui/modal";
 import { MetaRow } from "@/components/ui/meta-row";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys";
 import { useToast } from "@/hooks/use-toast";
 import { formatFrequencyStacked } from "@/lib/servicePlanWorkspaceConfig";
 import type { ChipTone } from "@/lib/chipVariants";
@@ -403,7 +405,7 @@ export function ServicePlanDispatchTab() {
     onSuccess: (data, instanceIds) => {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: jobKeys.root() });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
 
@@ -677,7 +679,7 @@ export function ServicePlanDispatchTab() {
       </div>
 
       {/* Table */}
-      <div className="flex-1 min-h-0 flex flex-col mx-4 mb-6 rounded-md overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.07),0_0_1px_rgba(0,0,0,0.05)]">
+      <WorkspaceListCard>
         <WorkspaceCenterPane>
           <WorkspaceEntitySurface data-testid="tab-content-dispatch">
             <EntityListTable<DispatchQueueItem>
@@ -703,7 +705,7 @@ export function ServicePlanDispatchTab() {
             />
           </WorkspaceEntitySurface>
         </WorkspaceCenterPane>
-      </div>
+      </WorkspaceListCard>
 
       {!itemsLoading && !itemsError && sorted.length > 0 && (
         <p className={listResultsClass} style={{ paddingLeft: "1rem", paddingRight: "1rem" }}>

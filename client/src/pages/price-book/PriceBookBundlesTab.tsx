@@ -6,6 +6,7 @@ import {
   EntityListTable,
   type EntityListColumn,
 } from "@/components/lists/EntityListTable";
+import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 
 // ─── Row shape ─────────────────────────────────────────────────────────────────
@@ -183,26 +184,28 @@ export function PriceBookBundlesTab({
 
   return (
     <>
-      <WorkspaceEntitySurface>
-        <EntityListTable
-          rows={rows}
-          columns={columns}
-          rowKey={(row) => row.id}
-          loadingState={isLoading}
-          selectedRowKey={selectedBundleId ?? undefined}
-          onRowClick={(row) => {
-            onSelectedBundleChange(selectedBundleId === row.id ? null : row._raw);
-          }}
-          emptyState={{
-            kind: "empty",
-            title: searchQuery ? "No bundles match your search." : "No bundles yet",
-            description: searchQuery
-              ? undefined
-              : "Create a bundle to group products and services together.",
-          }}
-          fillHeight
-        />
-      </WorkspaceEntitySurface>
+      <WorkspaceCenterPane>
+        <WorkspaceEntitySurface>
+          <EntityListTable
+            rows={rows}
+            columns={columns}
+            rowKey={(row) => row.id}
+            loadingState={isLoading}
+            selectedRowKey={selectedBundleId ?? undefined}
+            onRowClick={(row) => {
+              onSelectedBundleChange(selectedBundleId === row.id ? null : row._raw);
+            }}
+            emptyState={{
+              kind: "empty",
+              title: searchQuery ? "No bundles match your search." : "No bundles yet",
+              description: searchQuery
+                ? undefined
+                : "Create a bundle to group products and services together.",
+            }}
+            fillHeight
+          />
+        </WorkspaceEntitySurface>
+      </WorkspaceCenterPane>
 
       <PricebookGroupModal
         open={createOpen}

@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation, Link, Redirect, useSearch } from "wouter";
+import { Switch, Route, useLocation, Redirect, useSearch } from "wouter";
 import { AppErrorBoundary } from "@/components/error/AppErrorBoundary";
 import { Suspense, lazy } from "react";
 
@@ -14,7 +14,7 @@ function appRouteTrace(tag: string, payload: Record<string, unknown> = {}) {
   console.log(`[APP-ROUTE-TRACE] ${__apTs()} ${tag}`, payload);
 }
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { PwaUpdatePrompt } from "@/components/PwaUpdatePrompt";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -103,7 +103,7 @@ const InvoiceDisplaySettingsPage = lazy(() => import("@/pages/InvoiceDisplaySett
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import ClientsWorkspacePage from "@/pages/clients/ClientsWorkspacePage";
 import ClientDetailPage from "@/pages/ClientDetailPage";
-import PartsManagementPage from "@/pages/PartsManagementPage";
+import PriceBookPage from "@/pages/PriceBookPage";
 // 2026-04-20 Phase 2 Team Hub: TechnicianManagementPage import removed.
 // The legacy /settings/team page now resolves to TeamHubPage. The file still
 // exists on disk as a Phase-2 safety net; it will be deleted after verification.
@@ -116,7 +116,6 @@ import CustomFieldsPage from "@/pages/CustomFieldsPage";
 import TaxBillingRulesPage from "@/pages/TaxBillingRulesPage";
 import IntegrationsPage from "@/pages/IntegrationsPage";
 const QboConsolePage = lazy(() => import("@/pages/QboConsolePage"));
-import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
 import RecurringJobsPage from "@/pages/RecurringJobsPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
@@ -178,7 +177,7 @@ import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
 // QuickCreateDrawer removed — creation flows use direct modals / dedicated pages
 // SettingsShell no longer wraps routes — kept in codebase but unused (2026-04-04)
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { GlobalNotice } from "@/components/GlobalNotice";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
@@ -211,9 +210,6 @@ import { useLayoutPreference } from "@/hooks/useLayoutPreference";
 import { HelpPanel } from "@/components/help/HelpPanel";
 // TaskDialog is imported standalone by callers that own EDIT mode (e.g. TasksPanel).
 // CreateTaskModal owns creation.
-import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
-// 2026-05-01 brand pivot — canonical product / company strings.
-import { BRAND } from "@shared/branding";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -225,6 +221,7 @@ import {
 import FeedbackDialog from "@/components/FeedbackDialog";
 import Locations from "@/pages/Locations";
 import DispatchBoard from "@/pages/DispatchPreview";
+import ShiftManagementPage from "@/pages/ShiftManagementPage";
 const ServicePlansPage = lazy(() => import("@/pages/ServicePlansPage"));
 const PMWizardPage = lazy(() => import("@/pages/PMWizardPage"));
 const PMDetailPage = lazy(() => import("@/pages/PMDetailPage"));
@@ -286,6 +283,11 @@ function Router() {
       <Route path="/dispatch">
         <ProtectedRoute requireAdmin>
           <DispatchBoard />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/shift-management">
+        <ProtectedRoute requireAdmin>
+          <ShiftManagementPage />
         </ProtectedRoute>
       </Route>
       {/* 2026-05-07 Communications Hub Phase 1 — full-page workspace.
@@ -397,6 +399,11 @@ function Router() {
             <LeadDetailPage />
           </ProtectedRoute>
         )}
+      </Route>
+      <Route path="/price-book">
+        <ProtectedRoute requireAdmin>
+          <PriceBookPage />
+        </ProtectedRoute>
       </Route>
       {/* 2026-05-03 RBAC alignment: every `/reports/*` route uses
           `requireManager` so the client gate matches the server's
@@ -616,10 +623,9 @@ function Router() {
           <CommunicationSettingsPage />
         </ProtectedRoute>
       </Route>
+      {/* /settings/products → canonical /price-book workspace (back-compat redirect). */}
       <Route path="/settings/products">
-        <ProtectedRoute requireAdmin>
-          <PartsManagementPage />
-        </ProtectedRoute>
+        <Redirect to="/price-book" />
       </Route>
       <Route path="/settings/team">
         {/* 2026-04-20 Phase 2: canonical Team Management hub. The 2026-
@@ -681,10 +687,9 @@ function Router() {
           <QboConsolePage />
         </ProtectedRoute>
       </Route>
+      {/* /settings/categories → canonical /price-book?view=categories workspace. */}
       <Route path="/settings/categories">
-        <ProtectedRoute requireAdmin>
-          <CategoryManagementPage />
-        </ProtectedRoute>
+        <Redirect to="/price-book?view=categories" />
       </Route>
       <Route path="/settings/job-templates">
         <ProtectedRoute requireAdmin>
@@ -1025,16 +1030,6 @@ function AppContent() {
   // and this hook is simply not involved — no duplicate-navigation risk.
   useServiceWorkerNavigator();
 
-  // Company settings for header display — shared query key, TanStack deduplicates.
-  // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.
-  // 2026-05-04 Phase 7: dropped the `!isPlatformUser` clause — see the
-  // block above; tenant users cannot be platform-role anymore.
-  const { data: companySettings } = useQuery<{ companyName?: string }>({
-    queryKey: ["/api/company-settings"],
-    enabled: Boolean(user?.id),
-    staleTime: 5 * 60 * 1000,
-  });
-  const companyDisplayName = companySettings?.companyName || "";
 
   // 2026-04-24 routing fix: any /platform/* path renders bare. /platform/login
   // is its own standalone surface; /platform/* protected routes mount their
@@ -1092,18 +1087,8 @@ function AppContent() {
     setAddClientModalOpen(true);
   };
 
-  // 2026-05-11 sidebar trim — 9.25rem (148px), down from 9.5rem
-  // (152px). Active-state text area = W − 51px; empirical bounds put
-  // "Service Plans" in (85px, 101px], so 9.25rem yields a 97px text
-  // area with 6px of safety above the worst-case bound.
-  //
-  // The variable is the SINGLE source of truth: ui/sidebar.tsx reads
-  // `var(--sidebar-width)` for both the fixed sidebar pane AND the
-  // spacer that pushes the main content right, so this override
-  // automatically updates the main-content offset too — no second
-  // place to keep in sync. Pin: tests/sidebar-width.test.ts.
   const style = {
-    "--sidebar-width": "9.25rem",
+    "--sidebar-width": "6rem",
     "--sidebar-width-icon": "3rem",
   };
 
@@ -1135,26 +1120,19 @@ function AppContent() {
       className="h-screen overflow-hidden"
       style={style as React.CSSProperties}
     >
-      <div className="flex flex-col h-screen w-full bg-background">
-        {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg.
-            2026-04-29 Color Phase 2: hardcoded `#222b36` migrated to the
-            canonical `--header-bg` token via `bg-header-bg`. The 1px
-            translucent border-bottom stays as a Tailwind alpha utility
-            (`border-white/[0.06]`) — it's an alpha overlay, not a color
-            that belongs in the token set. */}
-        <header className="flex items-center gap-2 px-3 h-16 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
-          {/* Left: Logo + company greeting */}
-          <Link href="/" className="flex items-center gap-2 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
-            <img src={syntaroLogo} alt={BRAND.full} className="h-12 w-auto object-contain shrink-0" />
-            {!isTechnicianPage && companyDisplayName && (
-              <div className="flex flex-col justify-center min-w-0">
-                <span className="text-[13px] text-slate-400 leading-tight">Hello,</span>
-                <span className="text-[15px] font-semibold text-white truncate max-w-[200px] leading-tight">{companyDisplayName}</span>
-              </div>
-            )}
-          </Link>
-
-          {/* Spacer pushes search + actions to the right */}
+      {/* Compact sidebar: full viewport height from y=0, sibling to content column */}
+      {layoutMode === "sidebar" && <AppSidebar
+        onDashboardClick={handleDashboardClick}
+      />}
+      {/* Content column: header + page area, fills remaining width */}
+      <div className="flex flex-col flex-1 h-screen overflow-hidden bg-background">
+        <header className="flex items-center gap-2 px-3 h-11 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
+          {/* Mobile: open sidebar sheet. Hidden on md+ (sidebar is always visible). */}
+          <SidebarTrigger
+            data-testid="button-sidebar-toggle-mobile"
+            className="md:hidden text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8"
+          />
+          {/* Spacer pushes actions to the right — header is operational chrome only */}
           <div className="flex-1" />
 
           {/* Canonical app-shell notice slot. 2026-04-29: single
@@ -1373,37 +1351,11 @@ function AppContent() {
         {layoutMode === "topbar" && (
           <AppTopNav onDashboardClick={handleDashboardClick} />
         )}
-        {/* Sidebar + page content row */}
-        {/* 2026-04-29 Color Phase 2: shell wrapper bg moved from inline
-            `#222b36` to the canonical `bg-sidebar-bg` token. */}
-        <div className="flex flex-1 overflow-hidden bg-sidebar-bg">
-          {/* AppSidebar is only mounted in sidebar layout mode.
-              Omitting it also omits the gap-spacer that pushes content
-              right, so the content div fills full viewport width. */}
-          {layoutMode === "sidebar" && <AppSidebar
-            onDashboardClick={handleDashboardClick}
-            onOpenCreate={openCreate}
-            onOpenAddClient={() => setAddClientModalOpen(true)}
-            onOpenCreatePm={() => setCreatePmDialogOpen(true)}
-          />}
-          <div className="flex flex-col flex-1 overflow-hidden">
-            <ImpersonationBanner />
-            {/* 2026-04-29: `<SubscriptionBanner />` removed — its trial
-                messaging now flows through the canonical `<GlobalNotice />`
-                mounted in the dark header above (no page-layout shift).
-                ImpersonationBanner stays separate (security-critical,
-                non-dismissible by design); TimezoneSetupBanner stays
-                separate for now (server-gated visibility). */}
-            <TimezoneSetupBanner />
-            {/* 2026-04-29 Color Phase 2: global app background moved from
-                inline `#F4F8F4` (warm green-gray) to the canonical
-                `--app-bg` (#F3F5F7, cool neutral gray) via `bg-app-bg`.
-                This is the visible product change for this phase. */}
-            <main className={`flex-1 overflow-auto bg-app-bg${layoutMode === "sidebar" ? " rounded-tl-xl" : ""}`}>
-              <Router />
-            </main>
-          </div>
-        </div>
+        <ImpersonationBanner />
+        <TimezoneSetupBanner />
+        <main className={`flex-1 overflow-auto bg-app-bg${layoutMode === "sidebar" ? " rounded-tl-xl" : ""}`}>
+          <Router />
+        </main>
       </div>
       {/* 2026-03-21: Canonical CreateClientModal — single surface for all client creation */}
       <CreateClientModal

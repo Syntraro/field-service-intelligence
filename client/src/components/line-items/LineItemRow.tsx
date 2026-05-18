@@ -48,6 +48,7 @@ interface DisplayLine {
   lineSubtotal: string;
   lineTotal: string;
   date?: string | null;
+  serviceTemplateId?: string | null;
 }
 
 export interface LineItemRowProps {
@@ -205,6 +206,11 @@ export function LineItemRow({
         <div className="flex items-center gap-2">
           <div className="text-xs font-medium text-slate-900">{displayLine.description}</div>
         </div>
+        {displayLine.serviceTemplateId && (
+          <div className="mt-0.5 text-helper font-normal text-slate-400">
+            Flat-rate service
+          </div>
+        )}
         {displayLine.date && (
           <div className="mt-0.5 text-helper font-normal text-muted-foreground whitespace-pre-line">
             {format(new Date(displayLine.date), "MMM d, yyyy")}

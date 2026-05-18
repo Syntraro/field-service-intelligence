@@ -7,6 +7,7 @@ import {
   Clock,
   FileCheck,
   CalendarClock,
+  CalendarRange,
   Wrench,
   CreditCard,
   BookMarked,
@@ -121,10 +122,10 @@ export function buildTenantNavItems(
   items.push({
     title: "Price Book",
     icon: BookMarked,
-    href: "/settings/products",
+    href: "/price-book",
     isActive:
-      location === "/settings/products" ||
-      location.startsWith("/settings/products/"),
+      location === "/price-book" ||
+      location.startsWith("/price-book/"),
     testId: "nav-price-book",
     hoverText: "Catalogue of priced products and services",
   });
@@ -139,7 +140,18 @@ export function buildTenantNavItems(
     isDivider: true,
   });
 
-  // Group 5: Timesheets → Reports
+  // Group 5: Shift Management → Timesheets → Reports
+  items.push({
+    title: "Schedules",
+    icon: CalendarRange,
+    href: "/shift-management",
+    isActive:
+      location === "/shift-management" ||
+      location.startsWith("/shift-management/"),
+    testId: "nav-shift-management",
+    isDivider: true,
+    hoverText: "Technician shift schedules and availability",
+  });
   items.push({
     title: "Timesheets",
     icon: Clock,
@@ -147,7 +159,6 @@ export function buildTenantNavItems(
     isActive:
       location === "/timesheets" || location.startsWith("/timesheets/"),
     testId: "nav-timesheets",
-    isDivider: true,
   });
   items.push({
     title: "Reports",

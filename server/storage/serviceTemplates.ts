@@ -27,13 +27,6 @@ export class ServiceTemplateNameConflictError extends Error {
   }
 }
 
-export class ServiceTemplateNotFoundError extends Error {
-  constructor() {
-    super("Service template not found");
-    this.name = "ServiceTemplateNotFoundError";
-  }
-}
-
 export class ServiceTemplateComponentItemError extends Error {
   constructor(itemId: string) {
     super(`Catalog item ${itemId} not found or belongs to a different tenant`);
@@ -151,7 +144,12 @@ class ServiceTemplateRepository extends BaseRepository {
       })
       .from(serviceTemplateComponents)
       .innerJoin(items, eq(serviceTemplateComponents.itemId, items.id))
-      .where(eq(serviceTemplateComponents.templateId, id))
+      .where(
+        and(
+          eq(serviceTemplateComponents.companyId, companyId),
+          eq(serviceTemplateComponents.templateId, id),
+        ),
+      )
       .orderBy(asc(serviceTemplateComponents.sortOrder));
 
     return {
@@ -300,7 +298,7 @@ class ServiceTemplateRepository extends BaseRepository {
 
     const [result] = await db
       .update(serviceTemplates)
-      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .set({ deletedAt: new Date(), isActive: false, updatedAt: new Date() })
       .where(
         and(
           eq(serviceTemplates.id, id),

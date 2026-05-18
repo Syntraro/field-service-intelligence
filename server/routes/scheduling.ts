@@ -1080,6 +1080,41 @@ router.patch(
 );
 
 // ============================================================================
+// PATCH /api/calendar/visit/:visitId/dispatch-order
+// Update board card position within a tech×day cell.
+// This is NOT a lifecycle status — dispatcher-only ordering field.
+// ============================================================================
+
+const dispatchOrderSchema = z.object({
+  dispatchOrder: z.number().int().nullable(),
+});
+
+router.patch(
+  "/visit/:visitId/dispatch-order",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { visitId } = validateSchema(visitIdParamSchema, req.params);
+    const { dispatchOrder } = validateSchema(dispatchOrderSchema, req.body);
+
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!visit) throw createError(404, "Visit not found or access denied");
+
+    await db
+      .update(jobVisits)
+      .set({ dispatchOrder })
+      .where(
+        and(
+          eq(jobVisits.id, visitId),
+          eq(jobVisits.companyId, companyId),
+        )
+      );
+
+    res.json({ visitId, dispatchOrder });
+  })
+);
+
+// ============================================================================
 // POST /api/calendar/bulk-unschedule
 //
 // 2026-04-18 Phase 2 (multi-visit): this endpoint is VISIT-SCOPED.

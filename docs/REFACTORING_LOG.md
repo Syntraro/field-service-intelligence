@@ -4,6 +4,168 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-18: Price Book Orphaned File Deletion
+
+All five legacy Price Book files confirmed orphaned via full import scan before deletion. Zero active consumers beyond the chain itself.
+
+| File deleted | Why safe |
+|---|---|
+| `pages/PartsManagementPage.tsx` | No imports anywhere; `/settings/products` route redirects |
+| `components/ProductsServicesManager.tsx` | Only imported by PartsManagementPage |
+| `components/products-services/ProductsServicesToolbar.tsx` | Only imported by ProductsServicesManager |
+| `pages/CategoryManagementPage.tsx` | Dead import in App.tsx; `/settings/categories` route redirects |
+| `hooks/useProductsServices.ts` | Only imported by ProductsServicesManager |
+
+`import CategoryManagementPage` also removed from `App.tsx` (dead import, never rendered after route redirect was added).
+
+**Kept (active consumers exist):**
+- `ProductServiceFormDialog.tsx` → `PriceBookCatalogTab` (create flow)
+- `ProductServiceDeleteDialog.tsx` → `PriceBookCatalogTab` (`BulkDeleteDialog`, `BulkCategoryDialog`)
+- `products-services/types.ts` → `PriceBookPage`, `PriceBookItemRail`, `PriceBookCatalogTab`, `PriceBookKpiStrip`, `QuickAddJobDialog`
+
+TypeScript check: no new errors introduced.
+
+---
+
+## 2026-05-18: Price Book Legacy Removal + Canonical Typography Normalization
+
+**Context:** After the previous session wired `/price-book` route to `PriceBookPage`, the legacy `PartsManagementPage` import became orphaned and `/settings/categories` still rendered the old `CategoryManagementPage` directly. Additionally, all three Price Book rails used forbidden `text-[11px]`, `text-[10px]`, `text-sm`, and `text-xs` classes instead of canonical tokens.
+
+**Legacy references removed:**
+
+| Ref | Action |
+|-----|--------|
+| `import PartsManagementPage` in `App.tsx` | Removed — dead import after route redirect |
+| `/settings/categories` → `CategoryManagementPage` | Changed to `<Redirect to="/price-book?view=categories" />` |
+| `settingsNavConfig.ts` "Job Categories" href | Updated to `/price-book?view=categories` directly |
+
+`PartsManagementPage.tsx` and `ProductsServicesManager.tsx` are now orphaned on disk — no import chain reaches them. They can be deleted in a follow-up pass once verified safe. `ProductServiceFormDialog` is still active: used by `PriceBookCatalogTab` for item create flow.
+
+**Canonical right rail — no structural changes needed:**
+All three rails already use `WorkspaceRailScrollContainer` (canonical scroll container), pinned header, scrollable body, and pinned footer pattern. `DetailRightRail` is the per-entity detail-page pattern (not applicable here). Verdict: PASS.
+
+**Typography normalization:**
+
+| Pattern | Token replaced | Files affected |
+|---------|---------------|----------------|
+| `text-[11px]` on labels/metadata | → `text-helper` | ItemRail, BundleRail |
+| `text-[10px]` on locked field label | → `text-helper` | ItemRail |
+| `text-sm` on value spans (inherited from wrapper div) | → `text-row` | ItemRail, BundleRail |
+| `text-sm` wrapper div | Removed; explicit `text-row` on value spans | ItemRail, BundleRail |
+| `text-sm` on search `<Input>` className | Removed — Input component owns its text sizing | BundleRail, ServiceTemplateRail |
+| `text-xs` on footer action buttons | → `text-helper` | ItemRail, BundleRail |
+| `text-sm` on `<Label>` for checkboxes | Kept — permanent exception (CLAUDE.md) | ItemRail |
+| `text-helper` / `text-row` already in use | No change | ServiceTemplateRail (already canonical) |
+
+---
+
+## 2026-05-18: Operational Shell Architecture — SidebarBrand extraction
+
+**Motivation:** Decouple branding responsibility from the top header. The header was carrying a tenant greeting ("Hello, [company]") and an implicit company-settings data dependency that conflated identity/dashboard UX with operational chrome. Moving branding fully into the sidebar aligns with the product's dispatch-centric, enterprise positioning.
+
+**Changes:**
+
+- **New component: `SidebarBrand`** (`client/src/components/SidebarBrand.tsx`)
+  - Self-contained brand block: mark image → wordmark → tagline, all centered.
+  - Typography: `text-label` (13px/UPPERCASE/500/tracked) for wordmark; `text-nav-compact` (12px/500) for tagline.
+  - Logo swap is isolated: replace the `<img src>` without touching shell layout.
+  - Structured for upcoming icon-only mark replacement (image is a drop-in slot).
+
+- **`AppSidebar.tsx`** — `SidebarHeader` now renders `<SidebarBrand>`. Removed `syntaroLogo`, `BRAND`, `SidebarTrigger`, and `ActionMenu` imports (all now dead).
+
+- **`App.tsx`** — removed company greeting block, `useQuery` company-settings fetch, `companyDisplayName` variable, and now-unused `Link` + `useQuery` imports. Header is operational-only chrome.
+
+**Before/after branding structure:**
+
+| Surface | Before | After |
+|---|---|---|
+| Header | "Hello, [company]" two-line greeting link | Empty (spacer only) |
+| Sidebar header | `<img>` (h-8 logo image only) | `<SidebarBrand>` (mark + wordmark + tagline) |
+| Brand data source | `useQuery("/api/company-settings")` in App shell | None in shell; branding is static |
+
+**Upcoming logo swap:** Replace `src={syntaroLogo}` in `SidebarBrand.tsx` with an SVG component or new asset import. No other file needs to change.
+
+---
+
+## 2026-05-18: RALPH Service Templates Phase 3 Hardening Audit
+
+**Context:** Phase 3 (Quote Integration) was implemented in the prior session. This audit verified all 20 items and found one bug.
+
+**Bug: ApplyServiceTemplateDialog state not reset on programmatic close**
+
+- **Root cause:** When the parent's `applyTemplateMutation.onSuccess` fires `setApplyTemplateOpen(false)`, Radix Dialog closes without calling `onOpenChange`. The dialog's existing `handleOpenChange` cleanup path (which calls `setSearch("")` and `setSelected(null)`) was only reached on user-initiated close (Escape key, backdrop click, Cancel button). Programmatic close left `search`/`selected` stale, so re-opening the dialog showed the previously selected template.
+- **Fix:** Added `useEffect(() => { if (!open) { reset state } }, [open])` in `ApplyServiceTemplateDialog`. The effect fires whenever `open` transitions to `false`, covering both user-initiated and programmatic close.
+- **File:** `client/src/pages/quotes/ApplyServiceTemplateDialog.tsx`
+
+**Audit summary (all 20 items):**
+
+| # | Item | Result |
+|---|------|--------|
+| 1 | Migration applied correctly | PASS — DB confirmed: column nullable varchar, FK ON DELETE SET NULL, partial index |
+| 2 | quote_lines.service_template_id nullable + indexed | PASS |
+| 3 | Existing manual quote lines still work | PASS — no serviceTemplateId in blank/catalog drafts; Drizzle stores NULL |
+| 4 | Existing catalog item quote lines still work | PASS |
+| 5 | Existing bundle quote lines still work | PASS |
+| 6 | Existing quote templates still work | PASS — quoteTemplates storage has zero serviceTemplateId references |
+| 7 | Apply-template creates exactly ONE line | PASS |
+| 8 | Generated line has serviceTemplateId | PASS |
+| 9 | Snapshot pricing (unitPrice=flatRatePrice, unitCost=SUM of component snapshots) | PASS |
+| 10 | Editing fields preserves serviceTemplateId | PASS — hydrateDraft reads it; toCanonicalPayload passes it in PATCH |
+| 11 | serviceTemplateId only cleared explicitly | PASS — Drizzle skips undefined columns; null preserved via hydrate→payload chain |
+| 12 | usageCount increments only after successful apply | PASS — incrementUsage called after createQuoteLine returns successfully |
+| 13 | Quote totals correct | PASS — recalculateTotals reads line columns; lineSubtotal/lineTotal correctly set at INSERT |
+| 14 | No invoice behavior changed | PASS — serviceTemplateId silently dropped by Drizzle on invoice_lines (no such column) |
+| 15 | No job behavior changed | PASS |
+| 16 | No QBO behavior changed | PASS — zero refs in QBO services |
+| 17 | canonicalLineItemInput addition does not leak | PASS — same pattern as `source` (accepted by Zod, dropped by Drizzle on unsupported tables) |
+| 18 | Attribution is staff-facing only, not in customer PDFs | PASS — PDF service only reads description/unitPrice |
+| 19 | Authorization/company scoping correct | PASS — requireRole(MANAGER_ROLES) + requireFeature("quotes") + companyId on all repo calls |
+| 20 | Only pre-existing WeekDispatchBoard TypeScript errors | PASS |
+
+---
+
+## 2026-05-18: RALPH Service Templates Phase 4 — Job Integration Canonical Audit
+
+**Context:** Phase 4 added service template apply-to-job support using the existing canonical line item pipeline already present on `JobDetailPage`.
+
+**Canonical line item audit findings:**
+
+`JobDetailPage` already uses `LineItemsCard` + `useLineItemsDrafts` + a full `LineItemsAdapter` wired to `POST/PUT /api/jobs/:jobId/parts` and `DELETE /api/jobs/:jobId/parts/:partId`. The `lineItemMapper` functions `hydrateDraft` and `toCanonicalPayload` already handled the full draft → wire payload path. `draftToJobPartPayload` delegates to `toCanonicalPayload`, so it automatically passes through any field added to `canonicalLineItemInput`.
+
+The only enforcement point was `canonicalToJobPartFields()` — an explicit allowlist projector in `server/routes/jobs.ts` that gates what canonical fields reach the `job_parts` INSERT. Adding `serviceTemplateId` required:
+1. DB column (`migrations/2026_05_18_job_parts_service_template.sql`)
+2. Drizzle schema (`shared/schema.ts` — `jobParts` + `updateJobPartSchema`)
+3. Projector update (`canonicalToJobPartFields` + `canonicalToJobPartUpdateFields`) — covers all 4 write paths (regular POST/PUT + admin POST/PUT)
+4. Apply-template endpoint (`POST /api/jobs/:jobId/apply-template`)
+
+No changes to `LineItemsCard`, `useLineItemsDrafts`, `lineItemMapper`, or the adapter — the pipeline was already complete.
+
+**Attribution display — shared surface:**
+
+`serviceTemplateId` was added to `DisplayLine` in `LineItemRow.tsx`. The "Flat-rate service" attribution text renders on both quote lines AND job parts via the same `LineItemsCard` → `LineItemRow` render path. Zero per-surface duplication.
+
+**Audit summary:**
+
+| # | Item | Result |
+|---|------|--------|
+| 1 | Migration applied (job_parts.service_template_id) | PASS — nullable varchar, FK ON DELETE SET NULL, partial index |
+| 2 | Drizzle schema updated | PASS — jobParts + updateJobPartSchema |
+| 3 | canonicalToJobPartFields projector updated | PASS — serviceTemplateId in output |
+| 4 | canonicalToJobPartUpdateFields projector updated | PASS — conditional assign if !== undefined |
+| 5 | All 4 write paths covered by projectors | PASS — regular + admin POST/PUT all call the same projectors |
+| 6 | Apply-template endpoint snapshot semantics | PASS — unitPrice=flatRatePrice, unitCost=SUM(qty×costSnapshot) |
+| 7 | Usage count increments only after success | PASS — incrementUsage called after createJobPart returns |
+| 8 | Authorization scoping | PASS — requireRole(MANAGER_ROLES) + companyId on all repo calls |
+| 9 | ApplyServiceTemplateDialog reused from Phase 3 | PASS — no new dialog; same component |
+| 10 | Attribution display shared via LineItemRow | PASS — single DisplayLine.serviceTemplateId branch covers both surfaces |
+| 11 | No invoice/QBO behavior changed | PASS — zero refs in invoice/QBO services |
+| 12 | No PM/dispatch/tech-app behavior changed | PASS |
+| 13 | Only pre-existing TypeScript errors (WeekDispatchBoard) | PASS |
+
+**Deferred (by spec):** Invoice integration, PM integration, dispatch integration, operational metadata display (skill tags, team size, duration) on job detail post-apply.
+
+---
+
 ## 2026-05-18: Technician Shift Management Phase 1 — Backend Foundation
 
 Introduced the canonical Availability Engine and shift management infrastructure.

@@ -14,6 +14,7 @@ export {
   invalidateJobTimeEntries,
   invalidateJobEquipment,
   invalidateJobNotes,
+  invalidateJobRequiredSkills,
 } from "./jobs";
 
 export {

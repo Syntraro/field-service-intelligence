@@ -8,6 +8,8 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { jobKeys } from "@/lib/queryKeys";
+import { invalidateJobRequiredSkills } from "@/lib/queryInvalidation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -114,7 +116,7 @@ function EditRequirementModal({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "required-skills"] });
+      invalidateJobRequiredSkills(queryClient, jobId);
       onOpenChange(false);
     },
     onError: (e: Error) => setError(e.message),
@@ -208,7 +210,7 @@ export function JobRequiredSkillsCard({ jobId }: JobRequiredSkillsCardProps) {
   const [removeTarget, setRemoveTarget] = useState<JobRequiredSkillRow | null>(null);
 
   const { data: requirements = [], isLoading } = useQuery<JobRequiredSkillRow[]>({
-    queryKey: ["/api/jobs", jobId, "required-skills"],
+    queryKey: jobKeys.requiredSkills(jobId),
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/required-skills`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load");
@@ -225,7 +227,7 @@ export function JobRequiredSkillsCard({ jobId }: JobRequiredSkillsCardProps) {
     mutationFn: (id: string) =>
       apiRequest(`/api/jobs/${jobId}/required-skills/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "required-skills"] });
+      invalidateJobRequiredSkills(queryClient, jobId);
       setRemoveTarget(null);
     },
   });

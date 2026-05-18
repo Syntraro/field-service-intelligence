@@ -20,7 +20,6 @@ import type {
   Technician,
   DispatchVisit,
   DispatchTask,
-  NeedsVisitSetupJob,
 } from "./dispatchPreviewTypes";
 import { buildBoardTeams, formatBoardHours } from "./weekDispatchBoardAdapter";
 import type { BoardDayCell } from "./weekDispatchBoardAdapter";
@@ -150,7 +149,6 @@ type Props = {
   tasksByTechByDay: Map<string, Map<string, DispatchTask[]>>;
   weekDays: Date[];
   unscheduledVisits: DispatchVisit[];
-  noVisitJobs: NeedsVisitSetupJob[];
   savingIds: Set<string>;
   onSelectVisit: (visit: DispatchVisit) => void;
 };
@@ -161,7 +159,6 @@ export default function WeekDispatchBoard({
   tasksByTechByDay,
   weekDays,
   unscheduledVisits,
-  noVisitJobs,
   savingIds,
   onSelectVisit,
 }: Props) {
@@ -223,7 +220,6 @@ export default function WeekDispatchBoard({
         savingIds={savingIds}
         selectedVisitId={null}
         onSelectVisit={onSelectVisit}
-        noVisitJobs={noVisitJobs}
       />
     </div>
   );

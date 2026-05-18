@@ -32,10 +32,16 @@ import { useDispatchPreviewData } from "@/components/dispatch/useDispatchPreview
 import { useDispatchWeekData } from "@/components/dispatch/useDispatchWeekData";
 import { useDispatchMonthData } from "@/components/dispatch/useDispatchMonthData";
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import { getTimelineConfig, HOUR_WIDTH_PX, SNAP_MINUTES, DEFAULT_SCHEDULE_HOUR } from "@/components/dispatch/dispatchPreviewUtils";
+import { getTimelineConfig, HOUR_WIDTH_PX, SNAP_MINUTES, DEFAULT_SCHEDULE_HOUR, isCompletedStatus } from "@/components/dispatch/dispatchPreviewUtils";
 import { UNASSIGNED_COLOR } from "@shared/colors";
 // checkOverlap + findNearestValidSlot now accessed via resolvePlacement() shared resolver
 import { useTechnicianWorkingHours, isTechWorkingOnDate, isTechWorkingInRange } from "@/hooks/useTechnicianWorkingHours";
+import { useFeatureEnabled } from "@/hooks/useEntitlements";
+import {
+  buildShiftsByTech,
+  findOverlappingShifts,
+  isTechShiftedOnDate,
+} from "@/components/dispatch/shiftUtils";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -51,6 +57,7 @@ import DispatchUnscheduledPanel from "@/components/dispatch/DispatchUnscheduledP
 import DispatchDetailPanel from "@/components/dispatch/DispatchDetailPanel";
 // DispatchDragPreview removed — drag preview now rendered inline from shared dragPlacement result
 import WeekDispatchGrid, { WEEK_START_HOUR, WEEK_HOUR_HEIGHT_PX } from "@/components/dispatch/WeekDispatchGrid";
+import WeekDispatchBoard from "@/components/dispatch/WeekDispatchBoard";
 import MonthDispatchGrid from "@/components/dispatch/MonthDispatchGrid";
 import DispatchMapPanel from "@/components/dispatch/DispatchMapPanel";
 import { useLiveTechnicians } from "@/hooks/useLiveTechnicians";
@@ -103,7 +110,7 @@ export default function DispatchPreview() {
     if (typeof window === "undefined") return "day";
     try {
       const saved = window.localStorage.getItem(DISPATCH_VIEW_KEY);
-      if (saved === "day" || saved === "week" || saved === "month") return saved;
+      if (saved === "day" || saved === "week" || saved === "month" || saved === "board") return saved;
     } catch {
       // ignore — fall through to default
     }
@@ -147,12 +154,12 @@ export default function DispatchPreview() {
 
   const onPrevDay = useCallback(() => {
     setSelectedDate(d =>
-      activeView === "month" ? subMonths(d, 1) : activeView === "week" ? subWeeks(d, 1) : subDays(d, 1)
+      activeView === "month" ? subMonths(d, 1) : (activeView === "week" || activeView === "board") ? subWeeks(d, 1) : subDays(d, 1)
     );
   }, [activeView]);
   const onNextDay = useCallback(() => {
     setSelectedDate(d =>
-      activeView === "month" ? addMonths(d, 1) : activeView === "week" ? addWeeks(d, 1) : addDays(d, 1)
+      activeView === "month" ? addMonths(d, 1) : (activeView === "week" || activeView === "board") ? addWeeks(d, 1) : addDays(d, 1)
     );
   }, [activeView]);
   const onToday = useCallback(() => setSelectedDate(new Date()), []);
@@ -160,16 +167,19 @@ export default function DispatchPreview() {
   // ── Real data from backend — only active view fetches ──
   // All three views follow the same pattern: thin adapter over useDispatchRangeData.
   const dayData = useDispatchPreviewData(selectedDate, activeView === "day");
-  const weekData = useDispatchWeekData(selectedDate, activeView === "week");
+  const weekData = useDispatchWeekData(selectedDate, activeView === "week" || activeView === "board");
   const monthData = useDispatchMonthData(selectedDate, activeView === "month");
+
+  // ── Phase 2: Shift management feature gate ──
+  const shiftFeatureEnabled = useFeatureEnabled("technician_shift_management");
 
   // ── Working hours for technician on-shift/off-shift grouping ──
   const { scheduleMap } = useTechnicianWorkingHours();
 
   // Enrich technicians with isWorking flag based on current view context
-  const rawTechnicians = activeView === "month" ? monthData.technicians : activeView === "week" ? weekData.technicians : dayData.technicians;
+  const rawTechnicians = activeView === "month" ? monthData.technicians : (activeView === "week" || activeView === "board") ? weekData.technicians : dayData.technicians;
   const technicians: Technician[] = useMemo(() => {
-    if (activeView === "week" || activeView === "month") {
+    if (activeView === "week" || activeView === "month" || activeView === "board") {
       const ws = activeView === "month" ? monthData.gridStart : startOfWeek(selectedDate, { weekStartsOn: 1 });
       const we = activeView === "month" ? monthData.gridEnd : endOfWeek(selectedDate, { weekStartsOn: 1 });
       const days = eachDayOfInterval({ start: ws, end: we });
@@ -178,11 +188,19 @@ export default function DispatchPreview() {
         isWorking: isTechWorkingInRange(scheduleMap, t.id, days),
       }));
     }
+    // Phase 2: when shift management is enabled, use shift data for isWorking.
+    // dayData.shifts is read directly here to avoid a forward reference to
+    // normalShiftsByTech, which is derived from activeData (declared after this memo).
+    const dayNormalByTech = shiftFeatureEnabled
+      ? buildShiftsByTech(dayData.shifts.filter(s => s.shiftType === "normal"))
+      : new Map<string, import("@/components/dispatch/dispatchPreviewTypes").DispatchShiftEntry[]>();
     return rawTechnicians.map(t => ({
       ...t,
-      isWorking: isTechWorkingOnDate(scheduleMap, t.id, selectedDate),
+      isWorking: (shiftFeatureEnabled && dayNormalByTech.has(t.id))
+        ? isTechShiftedOnDate(dayNormalByTech, t.id, format(selectedDate, "yyyy-MM-dd"))
+        : isTechWorkingOnDate(scheduleMap, t.id, selectedDate),
     }));
-  }, [rawTechnicians, scheduleMap, selectedDate, activeView, monthData.gridStart, monthData.gridEnd]);
+  }, [rawTechnicians, scheduleMap, selectedDate, activeView, monthData.gridStart, monthData.gridEnd, shiftFeatureEnabled, dayData.shifts]);
 
   // Sort technicians: working first, then off-shift (stable sort preserves original order within groups)
   const sortedTechnicians = useMemo(() => {
@@ -228,7 +246,7 @@ export default function DispatchPreview() {
 
   // Use active view's data for shared state
   // (technicians already computed above with isWorking enrichment)
-  const activeData = activeView === "month" ? monthData : activeView === "week" ? weekData : dayData;
+  const activeData = activeView === "month" ? monthData : (activeView === "week" || activeView === "board") ? weekData : dayData;
   const scheduledVisits = activeData.scheduledVisits;
   const unscheduledVisits = activeData.unscheduledVisits;
   const scheduledTasks = activeData.scheduledTasks;
@@ -237,15 +255,17 @@ export default function DispatchPreview() {
   // job-centric DispatchVisit shape because they have no jobNumber,
   // no lifecycle, no drag/resize. Click-through goes to /leads/:id.
   const leadVisits = activeData.leadVisits ?? [];
-  // 2026-05-07 RALPH (technician time off): time-off entries
-  // overlapping the visible range. The day adapter narrows to today;
-  // week / month adapters return the full visible range. The lane
-  // shading + sidebar pill + drag-confirm warning all read this.
-  const timeOffEntries = (activeData as any).timeOff ?? [];
+  // Phase 2 Shift Management: shift buckets from the guarded query.
+  // Default to [] when feature disabled or query not yet resolved.
+  const normalShifts = activeData.shifts ?? [];
+  const onCallShifts = activeData.onCallShifts ?? [];
+  const unavailableShifts = activeData.unavailableShifts ?? [];
   const isLoading = activeData.isLoading;
   const error = activeData.error;
 
-  // Per-tech map of time-off entries for fast lane lookup.
+  // Per-tech map of unavailable entries (incl. merged time-off) for lane shading.
+  // unavailableShifts is populated by the availability engine, which now merges
+  // technician_time_off rows as synthetic shift entries (tof_${id} prefix).
   const timeOffByTech = useMemo(() => {
     const m = new Map<string, Array<{
       id: string;
@@ -254,41 +274,47 @@ export default function DispatchPreview() {
       reason: string;
       allDay: boolean;
     }>>();
-    for (const t of timeOffEntries) {
-      const arr = m.get(t.technicianUserId) ?? [];
+    for (const s of unavailableShifts) {
+      const arr = m.get(s.technicianUserId) ?? [];
       arr.push({
-        id: t.id,
-        startsAt: t.startsAt,
-        endsAt: t.endsAt,
-        reason: t.reason,
-        allDay: t.allDay,
+        id: s.id,
+        startsAt: s.startsAt,
+        endsAt: s.endsAt,
+        reason: s.shiftSubtype ?? "unavailable",
+        allDay: s.allDay,
       });
-      m.set(t.technicianUserId, arr);
+      m.set(s.technicianUserId, arr);
     }
     return m;
-  }, [timeOffEntries]);
+  }, [unavailableShifts]);
 
-  // Set of tech IDs with any time-off in the visible range — used
-  // by the sidebar to paint an "Off" pill next to the tech name.
+  // Set of tech IDs with any unavailability in the visible range — sidebar "Off" pill.
   const techsOnTimeOff = useMemo(
-    () => new Set<string>(timeOffEntries.map((t: any) => t.technicianUserId)),
-    [timeOffEntries],
+    () => new Set<string>(unavailableShifts.map((s) => s.technicianUserId)),
+    [unavailableShifts],
   );
 
-  // Per-day Set<techId> for week + month chip rendering. Each
-  // `dayKey` (YYYY-MM-DD) maps to the set of unique techs that
-  // have any time-off entry overlapping that calendar day. The
-  // chip shows `set.size`. Computed once per timeOffEntries
-  // change so it doesn't recompute on every drag tick.
+  // Phase 2: per-tech maps for shift-management advisory checks.
+  const unavailableShiftsByTech = useMemo(
+    () => buildShiftsByTech(unavailableShifts),
+    [unavailableShifts],
+  );
+  const normalShiftsByTech = useMemo(
+    () => buildShiftsByTech(normalShifts),
+    [normalShifts],
+  );
+  const techsOnCall = useMemo(
+    () => new Set<string>(onCallShifts.map((s) => s.technicianUserId)),
+    [onCallShifts],
+  );
+
+  // Per-day Set<techId> for week + month chip rendering. Derived from
+  // unavailableShifts (which now includes merged time-off entries).
   const techsOnTimeOffByDay = useMemo(() => {
     const m = new Map<string, Set<string>>();
-    for (const t of timeOffEntries as any[]) {
-      const start = new Date(t.startsAt);
-      const end = new Date(t.endsAt);
-      // Iterate each calendar day the entry covers (clamped to a
-      // sane upper bound so a malformed multi-year row can't loop
-      // forever — capacity already clips reads to the visible
-      // range).
+    for (const s of unavailableShifts) {
+      const start = new Date(s.startsAt);
+      const end = new Date(s.endsAt);
       const cursor = new Date(
         start.getFullYear(),
         start.getMonth(),
@@ -301,22 +327,16 @@ export default function DispatchPreview() {
         const d = String(cursor.getDate()).padStart(2, "0");
         const key = `${y}-${mo}-${d}`;
         const set = m.get(key) ?? new Set<string>();
-        set.add(t.technicianUserId);
+        set.add(s.technicianUserId);
         m.set(key, set);
         cursor.setDate(cursor.getDate() + 1);
         safety++;
       }
     }
     return m;
-  }, [timeOffEntries]);
+  }, [unavailableShifts]);
 
-  // 2026-05-07 RALPH (technician time off): per-day list of RICH
-  // entries for the canonical week + month chip rendering. Each
-  // entry carries the tech NAME (resolved from the technicians
-  // roster) so the chip can render "Time off · Vacation · …"
-  // alongside the tech's name without a downstream lookup. Day
-  // iteration uses the same 366-day safety bound as
-  // `techsOnTimeOffByDay`.
+  // Per-day rich entries for week + month chip rendering (tech name included).
   const timeOffEntriesByDay = useMemo(() => {
     const techNameById = new Map<string, string>();
     for (const t of technicians) techNameById.set(t.id, t.name);
@@ -332,9 +352,9 @@ export default function DispatchPreview() {
         allDay: boolean;
       }>
     >();
-    for (const t of timeOffEntries as any[]) {
-      const start = new Date(t.startsAt);
-      const end = new Date(t.endsAt);
+    for (const s of unavailableShifts) {
+      const start = new Date(s.startsAt);
+      const end = new Date(s.endsAt);
       const cursor = new Date(
         start.getFullYear(),
         start.getMonth(),
@@ -348,14 +368,13 @@ export default function DispatchPreview() {
         const key = `${y}-${mo}-${d}`;
         const arr = m.get(key) ?? [];
         arr.push({
-          id: t.id,
-          technicianUserId: t.technicianUserId,
-          technicianName:
-            techNameById.get(t.technicianUserId) ?? "Technician",
-          reason: t.reason,
-          startsAt: t.startsAt,
-          endsAt: t.endsAt,
-          allDay: t.allDay,
+          id: s.id,
+          technicianUserId: s.technicianUserId,
+          technicianName: techNameById.get(s.technicianUserId) ?? "Technician",
+          reason: s.shiftSubtype ?? "unavailable",
+          startsAt: s.startsAt,
+          endsAt: s.endsAt,
+          allDay: s.allDay,
         });
         m.set(key, arr);
         cursor.setDate(cursor.getDate() + 1);
@@ -363,42 +382,7 @@ export default function DispatchPreview() {
       }
     }
     return m;
-  }, [timeOffEntries, technicians]);
-
-  // 2026-05-07 RALPH (technician time off): preflight overlap
-  // check used by drag/drop handlers BEFORE issuing the
-  // reschedule mutation. Returns the conflicting time-off entries
-  // (empty array = no conflict, fire away). The resolved tech IDs
-  // are tested against `timeOffByTech` for any interval that
-  // overlaps the requested [startISO, endISO) window.
-  const checkTimeOffOverlap = useCallback(
-    (techIds: string[], startISO: string, endISO: string) => {
-      if (!techIds.length) return [] as Array<typeof timeOffEntries[number]>;
-      const startMs = Date.parse(startISO);
-      const endMs = Date.parse(endISO);
-      if (!isFinite(startMs) || !isFinite(endMs) || endMs <= startMs) {
-        return [] as Array<typeof timeOffEntries[number]>;
-      }
-      const matches: Array<typeof timeOffEntries[number]> = [];
-      for (const techId of techIds) {
-        const list = timeOffByTech.get(techId);
-        if (!list) continue;
-        for (const entry of list) {
-          const entryStart = Date.parse(entry.startsAt);
-          const entryEnd = Date.parse(entry.endsAt);
-          // Canonical overlap predicate: a.start < b.end && a.end > b.start.
-          if (entryStart < endMs && entryEnd > startMs) {
-            matches.push({
-              ...entry,
-              technicianUserId: techId,
-            } as any);
-          }
-        }
-      }
-      return matches;
-    },
-    [timeOffByTech],
-  );
+  }, [unavailableShifts, technicians]);
 
   // ── Mutations ──
   // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
@@ -406,7 +390,7 @@ export default function DispatchPreview() {
   // 2026-04-21 Phase 1: updateVisitCrew, updateVisitStatus removed from this
   // destructure — dispatch board no longer performs those quick-actions. Crew
   // and status changes go through EditVisitModal (canonical visit editor).
-  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateQueueBucket, savingIds } =
+  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateQueueBucket, updateDispatchOrder, savingIds } =
     useDispatchPreviewMutations();
 
   // ── Timeline scroll ref (for computing drop positions) ──
@@ -609,8 +593,8 @@ export default function DispatchPreview() {
     const seen = new Set<string>();
     const result: DispatchVisit[] = [];
     // Flatten from the view-appropriate filtered map (deduplicates multi-tech visits)
-    const source = activeView === "week" ? filteredWeekVisits : visitsByTech;
-    if (activeView === "week") {
+    const source = (activeView === "week" || activeView === "board") ? filteredWeekVisits : visitsByTech;
+    if (activeView === "week" || activeView === "board") {
       // Week: Map<techId, Map<dayKey, DispatchVisit[]>>
       Array.from((source as Map<string, Map<string, DispatchVisit[]>>).values()).forEach(dayMap => {
         Array.from(dayMap.values()).forEach(visits => {
@@ -852,6 +836,81 @@ export default function DispatchPreview() {
       return;
     }
 
+    // ── Board view position drop (card half-zone drop) ───────────────────────
+    // insertAfterVisitId being defined (even as null) marks this as a reorder drop.
+    // Only handles same-cell reorder — cross-cell drops fall through to rescheduleVisit.
+    if (activeView === "board" && dropData && "insertAfterVisitId" in dropData &&
+        dropData.dayKey && dropData.technicianId &&
+        dragData.type === "scheduled-visit" && dragData.visitId) {
+      const targetTechId = dropData.technicianId;
+      const targetDayKey = dropData.dayKey;
+
+      // Only reorder for same-cell drags. Cross-cell drops fall through to reschedule.
+      const origDayKey = dragData.originalStart
+        ? format(new Date(dragData.originalStart), "yyyy-MM-dd")
+        : null;
+      const isSameCell = dragData.technicianId === targetTechId && origDayKey === targetDayKey;
+
+      if (isSameCell) {
+        const insertAfterVisitId = dropData.insertAfterVisitId ?? null;
+        const cellVisits = filteredWeekVisits.get(targetTechId)?.get(targetDayKey) ?? [];
+        // Sort same way the adapter does: scheduledStart primary, dispatchOrder tie-breaker
+        const sorted = [...cellVisits].sort((a, b) => {
+          if (!a.scheduledStart && !b.scheduledStart) {
+            return (a.dispatchOrder ?? Infinity) - (b.dispatchOrder ?? Infinity);
+          }
+          if (!a.scheduledStart) return 1;
+          if (!b.scheduledStart) return -1;
+          const cmp = a.scheduledStart.localeCompare(b.scheduledStart);
+          if (cmp !== 0) return cmp;
+          return (a.dispatchOrder ?? Infinity) - (b.dispatchOrder ?? Infinity);
+        });
+        // Remove the dragged card from the sorted list and re-insert at drop position
+        const withoutSelf = sorted.filter(v => v.id !== dragData.visitId);
+        let insertIdx: number;
+        if (insertAfterVisitId === null) {
+          insertIdx = 0;
+        } else {
+          const afterIdx = withoutSelf.findIndex(v => v.id === insertAfterVisitId);
+          insertIdx = afterIdx === -1 ? withoutSelf.length : afterIdx + 1;
+        }
+        const orderedVisits = [...withoutSelf];
+        const draggedVisit = sorted.find(v => v.id === dragData.visitId);
+        orderedVisits.splice(insertIdx, 0, draggedVisit ?? ({ id: dragData.visitId } as DispatchVisit));
+
+        // Smart-reschedule: resequence times back-to-back starting from the
+        // earliest scheduledStart among reorderable visits. Completed visits and
+        // visits without scheduledStart are excluded — they don't move.
+        const reorderable = orderedVisits.filter(
+          v => v.scheduledStart && !isCompletedStatus(v.status ?? ""),
+        );
+        if (reorderable.length > 0) {
+          const anchorMs = Math.min(...reorderable.map(v => new Date(v.scheduledStart!).getTime()));
+          let cursorMs = anchorMs;
+          // Fire sequentially so inflightRef stays accurate and backgroundInvalidate
+          // waits until all writes are done (rescheduleVisit increments inflightRef).
+          (async () => {
+            for (const v of reorderable) {
+              const durationMs = (v.durationMinutes ?? 60) * 60_000;
+              const newStart = new Date(cursorMs).toISOString();
+              const newEnd   = new Date(cursorMs + durationMs).toISOString();
+              cursorMs += durationMs;
+              if (newStart !== v.scheduledStart) {
+                await rescheduleVisit({
+                  visitId: v.id,
+                  jobId: v.jobId,
+                  startAt: newStart,
+                  endAt: newEnd,
+                });
+              }
+            }
+          })();
+        }
+        return;
+      }
+      // Cross-cell position drop: fall through to normal reschedule path below
+    }
+
     // Day view requires technicianId; week calendar drops provide dayKey only
     if (!dropData?.technicianId && !dropData?.dayKey) return;
     // 2026-03-26: Unassigned lane is now a valid drop target — dropping here
@@ -889,9 +948,14 @@ export default function DispatchPreview() {
         const clamped = Math.max(weekStart * 60, Math.min(snapped, weekEnd * 60 - SNAP_MINUTES));
         timeH = Math.floor(clamped / 60);
         timeM = clamped % 60;
+      } else if (activeView === "board" && dragData.originalStart) {
+        // Board has no time axis — preserve the original time-of-day on the new day.
+        // Unscheduled → board drops reach this path with originalStart = null and
+        // fall through to DEFAULT_SCHEDULE_HOUR via the outer else.
+        const origDate = new Date(dragData.originalStart);
+        timeH = origDate.getHours();
+        timeM = origDate.getMinutes();
       } else {
-        // Week grid element not found (should not happen). Use explicit default
-        // rather than preserving original time, which would mask the bug.
         timeH = DEFAULT_SCHEDULE_HOUR;
         timeM = 0;
       }
@@ -955,40 +1019,39 @@ export default function DispatchPreview() {
                 : techChanged && dropData.technicianId
                   ? [dropData.technicianId]
                   : undefined;
-            // 2026-05-07 RALPH (technician time off): preflight
-            // overlap check. If the resolved (tech, range) overlaps
-            // a known time-off entry, defer the mutation behind the
-            // confirmation dialog. Cancel → no-op. Confirm →
-            // re-issue the mutation with overrideTimeOffConflict=true
-            // so the server-side check (the safety net) accepts the
-            // assignment without bouncing 409.
             const effectiveTechIds = isDropOnUnassigned
               ? []
               : crewChange ?? [dragData.technicianId].filter(Boolean);
-            const tofEntries = checkTimeOffOverlap(
-              effectiveTechIds as string[],
-              startAt,
-              endAt,
-            );
-            if (tofEntries.length > 0) {
-              const offTech = sortedTechnicians.find(
-                (t) => t.id === tofEntries[0].technicianUserId,
+            // Unified unavailability check: covers shift-type unavailables AND
+            // time-off entries (merged by the availability engine). Blocks via
+            // confirm dialog; override resends with overrideTimeOffConflict: true.
+            if (shiftFeatureEnabled && !isDropOnUnassigned && effectiveTechIds.length > 0) {
+              const unavailConflicts = findOverlappingShifts(
+                unavailableShiftsByTech,
+                effectiveTechIds as string[],
+                startAt,
+                endAt,
               );
-              setTimeOffConfirm({
-                techName: offTech?.name ?? "Technician",
-                reason: tofEntries[0].reason,
-                action: () => {
-                  rescheduleVisit({
-                    visitId: vid,
-                    jobId: dragData.jobId,
-                    assignedTechnicianIds: crewChange,
-                    startAt,
-                    endAt,
-                    overrideTimeOffConflict: true,
-                  });
-                },
-              });
-              return;
+              if (unavailConflicts.length > 0) {
+                const conflictTech = sortedTechnicians.find(
+                  (t) => t.id === unavailConflicts[0].technicianUserId,
+                );
+                setTimeOffConfirm({
+                  techName: conflictTech?.name ?? "Technician",
+                  reason: unavailConflicts[0].shiftSubtype ?? "unavailable",
+                  action: () => {
+                    rescheduleVisit({
+                      visitId: vid,
+                      jobId: dragData.jobId,
+                      assignedTechnicianIds: crewChange,
+                      startAt,
+                      endAt,
+                      overrideTimeOffConflict: true,
+                    });
+                  },
+                });
+                return;
+              }
             }
             rescheduleVisit({
               visitId: vid,
@@ -1107,6 +1170,35 @@ export default function DispatchPreview() {
               : techChanged
                 ? [dayDropTechId]
                 : undefined;
+          // Unified unavailability check (day view): covers shift-type unavailables
+          // AND time-off entries (merged by the availability engine). Blocks via
+          // confirm dialog; override resends with overrideTimeOffConflict: true.
+          if (!isDropOnUnassigned && shiftFeatureEnabled) {
+            const unavailConflicts = findOverlappingShifts(
+              unavailableShiftsByTech,
+              [dayDropTechId],
+              startAt,
+              endAt,
+            );
+            if (unavailConflicts.length > 0) {
+              const conflictTech = sortedTechnicians.find(t => t.id === unavailConflicts[0].technicianUserId);
+              setTimeOffConfirm({
+                techName: conflictTech?.name ?? "Technician",
+                reason: unavailConflicts[0].shiftSubtype ?? "unavailable",
+                action: () => {
+                  rescheduleVisit({
+                    visitId: vid,
+                    jobId: dragData.jobId,
+                    assignedTechnicianIds: crewChange,
+                    startAt,
+                    endAt,
+                    overrideTimeOffConflict: true,
+                  });
+                },
+              });
+              return;
+            }
+          }
           rescheduleVisit({
             visitId: vid,
             jobId: dragData.jobId,
@@ -1126,8 +1218,9 @@ export default function DispatchPreview() {
         return;
       }
     }
+
     executeMutation();
-  }, [activeDragData, selectedDate, activeView, show24Hour, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, scheduleMap, tlConfig, allVisits]);
+  }, [activeDragData, selectedDate, activeView, show24Hour, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, scheduleMap, tlConfig, allVisits, shiftFeatureEnabled, unavailableShiftsByTech, filteredWeekVisits, updateDispatchOrder]);
 
   // ── Unschedule handler ──
   // Stabilization: version resolved internally by mutation from fresh cache
@@ -1618,15 +1711,15 @@ export default function DispatchPreview() {
           selectedStatuses={selectedStatuses}
           onStatusToggle={onStatusToggle}
           includeUnassigned
-          showHideWeekends={activeView === "week"}
+          showHideWeekends={activeView === "week" || activeView === "board"}
           hideWeekends={hideWeekends}
           onToggleHideWeekends={onToggleHideWeekends}
-          showMap={showMap}
-          onToggleMap={() => setShowMap(prev => !prev)}
-          showUnscheduledOnMap={showUnscheduledOnMap}
-          onToggleUnscheduledOnMap={() => setShowUnscheduledOnMap(prev => !prev)}
-          showRoutes={showRoutes}
-          onToggleRoutes={() => setShowRoutes(prev => !prev)}
+          showMap={activeView !== "board" ? showMap : undefined}
+          onToggleMap={activeView !== "board" ? () => setShowMap(prev => !prev) : undefined}
+          showUnscheduledOnMap={activeView !== "board" ? showUnscheduledOnMap : undefined}
+          onToggleUnscheduledOnMap={activeView !== "board" ? () => setShowUnscheduledOnMap(prev => !prev) : undefined}
+          showRoutes={activeView !== "board" ? showRoutes : undefined}
+          onToggleRoutes={activeView !== "board" ? () => setShowRoutes(prev => !prev) : undefined}
         />
 
 
@@ -1661,6 +1754,9 @@ export default function DispatchPreview() {
               <DispatchTechnicianSidebar
                 technicians={visibleTechs}
                 techsOnTimeOff={techsOnTimeOff}
+                techsOnCall={techsOnCall}
+                normalShifts={shiftFeatureEnabled ? normalShifts : undefined}
+                selectedDateStr={format(selectedDate, "yyyy-MM-dd")}
               />
               <DispatchTimeline
                 technicians={visibleTechs}
@@ -1707,6 +1803,17 @@ export default function DispatchPreview() {
                 </div>
               )}
             </>
+          ) : activeView === "board" ? (
+            /* ── Board View — resource-centric capacity grid (Mon–Sun × tech) ── */
+            <WeekDispatchBoard
+              technicians={weekVisibleTechs}
+              visitsByTechByDay={filteredWeekVisits}
+              tasksByTechByDay={filteredWeekTasks}
+              weekDays={filteredWeekDays}
+              unscheduledVisits={unscheduledVisits}
+              savingIds={savingIds}
+              onSelectVisit={handleSelectVisit}
+            />
           ) : activeView === "week" ? (
             /* ── Week View ── */
             <>

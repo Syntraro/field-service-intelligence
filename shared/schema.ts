@@ -4010,6 +4010,8 @@ export const jobParts = pgTable("job_parts", {
   equipmentLabel: text("equipment_label"), // Legacy: Copied from PM template or added by tech
   sortOrder: integer("sort_order").notNull().default(0), // For ordering line items in Parts & Billing
   isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Service template attribution (Phase 4 — flat-rate service integration)
+  serviceTemplateId: varchar("service_template_id").references(() => serviceTemplates.id, { onDelete: "set null" }),
   // Soft delete (canonical)
   deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -4036,6 +4038,7 @@ export const updateJobPartSchema = z.object({
   equipmentLabel: z.string().nullable().optional(),
   sortOrder: z.number().optional(),
   isActive: z.boolean().optional(),
+  serviceTemplateId: z.string().nullable().optional(),
 });
 
 export type InsertJobPart = z.infer<typeof insertJobPartSchema>;
@@ -4147,6 +4150,10 @@ export const jobVisits = pgTable("job_visits", {
   // Allowed values: urgent | today | on_hold | less_urgent
   // NULL is normalised to 'today' at the application layer.
   dispatchQueueBucket: text("dispatch_queue_bucket"),
+
+  // Board view card position within a tech×day cell. Sparse integers (0, 10, 20...).
+  // NULL = unset; adapter falls back to scheduledStart ordering.
+  dispatchOrder: integer("dispatch_order"),
 
   // Soft delete + optimistic locking
   isActive: boolean("is_active").notNull().default(true),
@@ -4873,6 +4880,8 @@ export const quoteLines = pgTable("quote_lines", {
   lineTotal: numeric("line_total", { precision: 12, scale: 2 }).notNull().default("0.00"),
   // Product reference
   productId: varchar("product_id").references(() => items.id, { onDelete: "set null" }),
+  // Service template attribution (Phase 3 — flat-rate service integration)
+  serviceTemplateId: varchar("service_template_id").references(() => serviceTemplates.id, { onDelete: "set null" }),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -4900,6 +4909,7 @@ export const updateQuoteLineSchema = z.object({
   taxAmount: z.string().optional(),
   lineTotal: z.string().optional(),
   productId: z.string().nullable().optional(),
+  serviceTemplateId: z.string().nullable().optional(),
 });
 
 export type InsertQuoteLine = z.infer<typeof insertQuoteLineSchema>;

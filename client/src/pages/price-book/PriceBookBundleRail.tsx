@@ -271,24 +271,24 @@ export function PriceBookBundleRail({
         </div>
 
         {/* Committed pricing summary */}
-        <div className="flex items-center gap-4 mt-3 text-sm">
+        <div className="flex items-center gap-4 mt-3">
           <div>
-            <span className="block text-[11px] text-muted-foreground">Est. Total</span>
-            <span className="font-medium tabular-nums">
+            <span className="block text-helper text-muted-foreground">Est. Total</span>
+            <span className="text-row font-medium tabular-nums">
               {totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "—"}
             </span>
           </div>
           <div>
-            <span className="block text-[11px] text-muted-foreground">Est. Cost</span>
-            <span className="font-medium tabular-nums">
+            <span className="block text-helper text-muted-foreground">Est. Cost</span>
+            <span className="text-row font-medium tabular-nums">
               {totalCost > 0 ? `$${totalCost.toFixed(2)}` : "—"}
             </span>
           </div>
           {(totalPrice > 0 || totalCost > 0) && (
             <div>
-              <span className="block text-[11px] text-muted-foreground">Margin</span>
+              <span className="block text-helper text-muted-foreground">Margin</span>
               <span
-                className={`font-medium tabular-nums ${
+                className={`text-row font-medium tabular-nums ${
                   margin >= 0 ? "text-emerald-600" : "text-destructive"
                 }`}
               >
@@ -329,7 +329,7 @@ export function PriceBookBundleRail({
         {/* Included Items */}
         <FormSection title="Included Items" className="space-y-2">
           {childEntries.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground py-1">
+            <p className="text-helper text-muted-foreground py-1">
               No items yet. Search below to add items to this bundle.
             </p>
           ) : (
@@ -340,9 +340,9 @@ export function PriceBookBundleRail({
                   className="flex items-center gap-2 py-1.5 px-2 rounded-md bg-muted/40 hover:bg-muted/60 transition-colors"
                 >
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{entry.product.name}</p>
+                    <p className="text-row font-medium truncate">{entry.product.name}</p>
                     {entry.product.unitPrice && (
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-helper text-muted-foreground">
                         {formatMoney(entry.product.unitPrice)} each
                       </p>
                     )}
@@ -358,7 +358,7 @@ export function PriceBookBundleRail({
                     >
                       <Minus className="h-3 w-3" />
                     </Button>
-                    <span className="text-sm tabular-nums w-6 text-center">
+                    <span className="text-row tabular-nums w-6 text-center">
                       {entry.quantity}
                     </span>
                     <Button
@@ -399,7 +399,7 @@ export function PriceBookBundleRail({
               placeholder="Search catalog…"
               value={itemSearch}
               onChange={(e) => setItemSearch(e.target.value)}
-              className="pl-8 h-8 text-sm"
+              className="pl-8 h-8"
               data-testid="rail-input-item-search"
             />
           </div>
@@ -412,7 +412,7 @@ export function PriceBookBundleRail({
                   <Skeleton className="h-8 w-full" />
                 </div>
               ) : displayedSearchResults.length === 0 ? (
-                <p className="text-[11px] text-muted-foreground px-3 py-2">
+                <p className="text-helper text-muted-foreground px-3 py-2">
                   No items found.
                 </p>
               ) : (
@@ -428,9 +428,9 @@ export function PriceBookBundleRail({
                     disabled={isMutating}
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{item.name}</p>
+                      <p className="text-row font-medium truncate">{item.name}</p>
                       {item.unitPrice && (
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-helper text-muted-foreground">
                           {formatMoney(item.unitPrice)}
                         </p>
                       )}
@@ -446,7 +446,7 @@ export function PriceBookBundleRail({
         {/* Usage Context */}
         {group.usageCount > 0 && (
           <FormSection title="Usage" className="space-y-1">
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-helper text-muted-foreground">
               This bundle has been added to {group.usageCount}{" "}
               {group.usageCount === 1 ? "job, quote, or invoice" : "jobs, quotes, or invoices"}.
             </p>
@@ -469,7 +469,7 @@ export function PriceBookBundleRail({
           <Button
             variant="outline"
             size="sm"
-            className="h-7 text-xs text-destructive hover:text-destructive border-destructive/40 hover:border-destructive/60"
+            className="h-7 text-helper text-destructive hover:text-destructive border-destructive/40 hover:border-destructive/60"
             onClick={() => setDeleteConfirmOpen(true)}
             disabled={isMutating}
             data-testid="rail-button-delete-bundle"
@@ -483,7 +483,7 @@ export function PriceBookBundleRail({
             <Button
               variant="outline"
               size="sm"
-              className="h-7 text-xs"
+              className="h-7 text-helper"
               onClick={handleCancel}
               disabled={isMutating}
               data-testid="rail-button-cancel"
@@ -492,7 +492,7 @@ export function PriceBookBundleRail({
             </Button>
             <Button
               size="sm"
-              className="h-7 text-xs"
+              className="h-7 text-helper"
               onClick={handleSave}
               disabled={isMutating}
               data-testid="rail-button-save"
