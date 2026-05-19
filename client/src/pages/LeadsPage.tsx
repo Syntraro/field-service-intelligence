@@ -6,6 +6,7 @@
  * Delegates: columns, pagination, table/footer render → LeadListPanel.
  */
 import { useState, useMemo, useCallback } from "react";
+import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useSearch, useLocation } from "wouter";
 import {
@@ -227,8 +228,14 @@ export default function LeadsPage() {
           </>
         }
         centerClassName="overflow-x-auto overflow-y-hidden"
-        rightRail={selectedContext ? <LeadRailBody context={selectedContext} /> : null}
+        rightRail={selectedContext ? <LeadRailBody context={selectedContext} /> : <></>}
         rightRailExpanded={!!selectedContext}
+        rightExpandedWidth={380}
+        rightCollapsedWidth={0}
+        rightRailClassName={cn(
+          !!selectedContext && "border-l border-border shadow-[-8px_0_18px_rgba(15,23,42,0.06)]",
+        )}
+        showRailDivider={false}
         data-testid="leads-workspace"
       />
     </div>
