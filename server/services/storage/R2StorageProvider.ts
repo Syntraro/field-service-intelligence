@@ -202,6 +202,24 @@ export class R2StorageProvider implements StorageProvider {
     return { deleted, errors };
   }
 
+  /** Upload a buffer directly to R2 (server-side, no presigned URL). */
+  async putObjectBuffer(
+    bucket: string,
+    objectKey: string,
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: objectKey,
+        Body: buffer,
+        ContentType: contentType,
+        ContentLength: buffer.byteLength,
+      }),
+    );
+  }
+
   async getObjectBuffer(bucket: string, objectKey: string): Promise<Buffer> {
     const res = await this.client.send(
       new GetObjectCommand({ Bucket: bucket, Key: objectKey }),

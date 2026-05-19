@@ -15,12 +15,28 @@ import {
   computeAvailableMinutes,
   computeTargetWeeklyHours,
 } from "../server/storage/capacityForecast";
-import type {
-  VisitDuration,
-  WorkingHourRow,
-  CompanyHourRow,
-  TimeOffRow,
-} from "../server/storage/capacityForecast";
+import type { VisitDuration } from "../server/storage/capacityForecast";
+import type { ResolvedShift } from "../server/services/availabilityEngine";
+
+function mkShift(
+  userId: string,
+  type: "normal" | "on_call" | "unavailable",
+  start: Date,
+  end: Date,
+): ResolvedShift {
+  return {
+    id: "test-id",
+    baseShiftId: "test-base-id",
+    technicianUserId: userId,
+    templateId: null,
+    shiftType: type,
+    startsAt: start,
+    endsAt: end,
+    allDay: false,
+    isOvernight: false,
+    occurrenceDate: null,
+  };
+}
 
 // ── categorizeEntry ───────────────────────────────────────────────────────────
 
@@ -193,146 +209,115 @@ describe("accumulateVisitMinutes", () => {
 // ── computeTargetWeeklyHours ──────────────────────────────────────────────────
 
 describe("computeTargetWeeklyHours", () => {
-  it("returns 40 when no working hours rows", () => {
-    expect(computeTargetWeeklyHours([])).toBe(40);
+  it("returns 0 when no shifts", () => {
+    expect(computeTargetWeeklyHours([])).toBe(0);
   });
 
-  it("sums hours across working days", () => {
-    const rows: WorkingHourRow[] = [
-      { dayOfWeek: 1, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
-      { dayOfWeek: 2, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
-      { dayOfWeek: 3, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
-      { dayOfWeek: 4, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
-      { dayOfWeek: 5, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
+  it("sums hours across normal shifts Mon–Fri (8h each = 40h)", () => {
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-18T08:00:00Z"), new Date("2026-05-18T16:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-19T08:00:00Z"), new Date("2026-05-19T16:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-20T08:00:00Z"), new Date("2026-05-20T16:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-21T08:00:00Z"), new Date("2026-05-21T16:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-22T08:00:00Z"), new Date("2026-05-22T16:00:00Z")),
     ];
-    expect(computeTargetWeeklyHours(rows)).toBe(40);
+    expect(computeTargetWeeklyHours(shifts)).toBe(40);
   });
 
-  it("handles part-time schedule (shorter days)", () => {
-    const rows: WorkingHourRow[] = [
-      { dayOfWeek: 1, isWorking: true, startTime: "09:00", endTime: "13:00" }, // 4h
-      { dayOfWeek: 2, isWorking: true, startTime: "09:00", endTime: "13:00" }, // 4h
-      { dayOfWeek: 3, isWorking: true, startTime: "09:00", endTime: "13:00" }, // 4h
+  it("handles part-time (3×4h = 12h)", () => {
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-18T09:00:00Z"), new Date("2026-05-18T13:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-19T09:00:00Z"), new Date("2026-05-19T13:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-20T09:00:00Z"), new Date("2026-05-20T13:00:00Z")),
     ];
-    expect(computeTargetWeeklyHours(rows)).toBe(12);
+    expect(computeTargetWeeklyHours(shifts)).toBe(12);
   });
 
-  it("ignores non-working days", () => {
-    const rows: WorkingHourRow[] = [
-      { dayOfWeek: 1, isWorking: true, startTime: "08:00", endTime: "16:00" }, // 8h
-      { dayOfWeek: 6, isWorking: false, startTime: null, endTime: null },       // off
-      { dayOfWeek: 0, isWorking: false, startTime: null, endTime: null },       // off
+  it("ignores on_call and unavailable shifts", () => {
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-18T08:00:00Z"), new Date("2026-05-18T16:00:00Z")),
+      mkShift("u1", "on_call", new Date("2026-05-18T16:00:00Z"), new Date("2026-05-19T08:00:00Z")),
+      mkShift("u1", "unavailable", new Date("2026-05-19T00:00:00Z"), new Date("2026-05-20T00:00:00Z")),
     ];
-    expect(computeTargetWeeklyHours(rows)).toBe(8);
+    expect(computeTargetWeeklyHours(shifts)).toBe(8);
   });
 
-  it("returns 40 when all days are non-working (no hours to sum)", () => {
-    const rows: WorkingHourRow[] = [
-      { dayOfWeek: 1, isWorking: false, startTime: null, endTime: null },
+  it("returns 0 when all shifts are unavailable (no normal shifts)", () => {
+    const shifts = [
+      mkShift("u1", "unavailable", new Date("2026-05-18T00:00:00Z"), new Date("2026-05-19T00:00:00Z")),
     ];
-    expect(computeTargetWeeklyHours(rows)).toBe(40);
-  });
-
-  it("ignores rows with null startTime or endTime", () => {
-    const rows: WorkingHourRow[] = [
-      { dayOfWeek: 1, isWorking: true, startTime: null, endTime: "16:00" },
-      { dayOfWeek: 2, isWorking: true, startTime: "08:00", endTime: null },
-    ];
-    expect(computeTargetWeeklyHours(rows)).toBe(40);
+    expect(computeTargetWeeklyHours(shifts)).toBe(0);
   });
 });
 
 // ── computeAvailableMinutes ───────────────────────────────────────────────────
 
 describe("computeAvailableMinutes", () => {
-  // 2026-05-19 is a Tuesday
-  const tue = new Date("2026-05-19T00:00:00");
-  const tueEnd = new Date("2026-05-19T23:59:59.999");
-  const noCompanyHours: CompanyHourRow[] = [];
-  const noTof: TimeOffRow[] = [];
+  const tueMon = new Date("2026-05-19T08:00:00Z");  // shift start
+  const tueEod = new Date("2026-05-19T16:00:00Z");  // shift end (8h = 480 min)
+  const rangeStart = new Date("2026-05-19T00:00:00Z");
+  const rangeEnd   = new Date("2026-05-19T23:59:59.999Z");
 
-  const stdWh: WorkingHourRow[] = [
-    { dayOfWeek: 2, isWorking: true, startTime: "08:00", endTime: "16:00" }, // Tue: 8h = 480min
-  ];
+  it("returns shift duration for a normal shift fitting within the range", () => {
+    const shifts = [mkShift("u1", "normal", tueMon, tueEod)];
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, shifts)).toBe(480);
+  });
 
-  it("returns working minutes for a working day", () => {
-    const mins = computeAvailableMinutes(tue, tueEnd, stdWh, noCompanyHours, noTof);
+  it("returns 0 when no shifts", () => {
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, [])).toBe(0);
+  });
+
+  it("returns 0 when shift is entirely outside the range", () => {
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-20T08:00:00Z"), new Date("2026-05-20T16:00:00Z")),
+    ];
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, shifts)).toBe(0);
+  });
+
+  it("clips a shift that extends past the range end", () => {
+    // Shift 08:00–20:00, range ends at 16:00 → 8h = 480 min
+    const shifts = [
+      mkShift("u1", "normal", tueMon, new Date("2026-05-19T20:00:00Z")),
+    ];
+    const mins = computeAvailableMinutes(rangeStart, new Date("2026-05-19T16:00:00Z"), shifts);
     expect(mins).toBe(480);
   });
 
-  it("returns 0 for a non-working day", () => {
-    // 2026-05-17 is a Sunday (dow=0), stdWh has no Sunday row → default weekday
-    // Actually Sunday = 0, and no custom row, no company row → 0 (weekend default)
-    const sun = new Date("2026-05-17T00:00:00");
-    const sunEnd = new Date("2026-05-17T23:59:59.999");
-    const mins = computeAvailableMinutes(sun, sunEnd, [], noCompanyHours, noTof);
-    expect(mins).toBe(0);
-  });
-
-  it("defaults to 480 min Mon-Fri when no custom or company hours", () => {
-    // 2026-05-18 is a Monday
-    const mon = new Date("2026-05-18T00:00:00");
-    const monEnd = new Date("2026-05-18T23:59:59.999");
-    const mins = computeAvailableMinutes(mon, monEnd, [], noCompanyHours, noTof);
-    expect(mins).toBe(480);
-  });
-
-  it("uses company hours as fallback when no member custom hours", () => {
-    const company: CompanyHourRow[] = [
-      { dayOfWeek: 2, isOpen: true, startMinutes: 540, endMinutes: 1020 }, // 9–17 = 480 min
+  it("subtracts time-off (unavailable shift) overlap", () => {
+    // Normal 08:00–16:00, unavailable 10:00–12:00 → 360 min remaining
+    const shifts = [
+      mkShift("u1", "normal", tueMon, tueEod),
+      mkShift("u1", "unavailable", new Date("2026-05-19T10:00:00Z"), new Date("2026-05-19T12:00:00Z")),
     ];
-    const mins = computeAvailableMinutes(tue, tueEnd, [], company, noTof);
-    expect(mins).toBe(480);
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, shifts)).toBe(360);
   });
 
-  it("subtracts all-day time-off (removes entire working day)", () => {
-    const tof: TimeOffRow[] = [
-      {
-        startsAt: new Date("2026-05-19T00:00:00"),
-        endsAt: new Date("2026-05-20T00:00:00"),
-        allDay: true,
-      },
+  it("subtracts full-day unavailable shift", () => {
+    // Full-day unavailable covers the entire normal shift
+    const shifts = [
+      mkShift("u1", "normal", tueMon, tueEod),
+      mkShift("u1", "unavailable", new Date("2026-05-19T00:00:00Z"), new Date("2026-05-20T00:00:00Z")),
     ];
-    const mins = computeAvailableMinutes(tue, tueEnd, stdWh, noCompanyHours, tof);
-    expect(mins).toBe(0);
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, shifts)).toBe(0);
   });
 
-  it("subtracts partial time-off (hourly)", () => {
-    // 2h off during an 8h day = 6h remaining
-    const tof: TimeOffRow[] = [
-      {
-        startsAt: new Date("2026-05-19T08:00:00"),
-        endsAt: new Date("2026-05-19T10:00:00"),
-        allDay: false,
-      },
+  it("clamps result to 0 (no negative available minutes)", () => {
+    // unavailable spans more than the normal shift → result ≥ 0
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-19T09:00:00Z"), new Date("2026-05-19T09:30:00Z")),
+      mkShift("u1", "unavailable", new Date("2026-05-19T00:00:00Z"), new Date("2026-05-20T00:00:00Z")),
     ];
-    const mins = computeAvailableMinutes(tue, tueEnd, stdWh, noCompanyHours, tof);
-    expect(mins).toBe(360); // 480 - 120
-  });
-
-  it("sums available minutes across a week range", () => {
-    // Mon–Fri 2026-05-18 to 2026-05-22, all 8h days, no custom hours
-    const weekStart = new Date("2026-05-18T00:00:00");
-    const weekEnd = new Date("2026-05-22T23:59:59.999");
-    const mins = computeAvailableMinutes(weekStart, weekEnd, [], noCompanyHours, noTof);
-    expect(mins).toBe(480 * 5); // 2400 min = 40h
-  });
-
-  it("clamps time-off removal to 0 (no negative available)", () => {
-    // time-off covering more than working hours → result is 0
-    const stdWh2: WorkingHourRow[] = [
-      { dayOfWeek: 2, isWorking: true, startTime: "09:00", endTime: "09:30" }, // 30 min
-    ];
-    const tof: TimeOffRow[] = [
-      {
-        startsAt: new Date("2026-05-19T00:00:00"),
-        endsAt: new Date("2026-05-20T00:00:00"),
-        allDay: false, // full-day hourly
-      },
-    ];
-    const mins = computeAvailableMinutes(tue, tueEnd, stdWh2, noCompanyHours, tof);
+    const mins = computeAvailableMinutes(rangeStart, rangeEnd, shifts);
     expect(mins).toBeGreaterThanOrEqual(0);
-    expect(mins).toBeLessThanOrEqual(30);
+  });
+
+  it("sums multiple normal shifts", () => {
+    // Two 4h shifts in one day = 480 min
+    const shifts = [
+      mkShift("u1", "normal", new Date("2026-05-19T08:00:00Z"), new Date("2026-05-19T12:00:00Z")),
+      mkShift("u1", "normal", new Date("2026-05-19T13:00:00Z"), new Date("2026-05-19T17:00:00Z")),
+    ];
+    expect(computeAvailableMinutes(rangeStart, rangeEnd, shifts)).toBe(480);
   });
 });
 

@@ -138,7 +138,7 @@ function DeleteShiftScopeModal({
 
 // ── Main page ────────────────────────────────────────────────────────
 
-export default function ShiftManagementPage() {
+export default function ShiftManagementPage({ embedded = false }: { embedded?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isEnabled = useFeatureEnabled("technician_shift_management");
@@ -156,6 +156,7 @@ export default function ShiftManagementPage() {
   const [defaultDate, setDefaultDate] = useState<string | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<DispatchShiftEntry | null>(null);
   const [deleteScope, setDeleteScope] = useState<DeleteScope>("occurrence");
+  const [addWorkShiftsFull, setAddWorkShiftsFull] = useState(false);
 
   // Technician directory
   const { teamMembers, isLoading: techLoading } = useTechniciansDirectory();
@@ -251,10 +252,11 @@ export default function ShiftManagementPage() {
 
   // ── Handlers ──────────────────────────────────────────────────────
 
-  function handleAddShift(techId?: string, date?: string) {
+  function handleAddShift(techId?: string, date?: string, workShiftsFull?: boolean) {
     setEditShift(null);
     setDefaultTechId(techId);
     setDefaultDate(date);
+    setAddWorkShiftsFull(workShiftsFull ?? false);
     setFormOpen(true);
   }
 
@@ -306,7 +308,7 @@ export default function ShiftManagementPage() {
   if (isEnabled === false) {
     return (
       <div className="flex flex-col gap-0 h-full">
-        <PageHeader onAdd={() => handleAddShift()} addDisabled />
+        <PageHeader onAdd={() => handleAddShift()} addDisabled hideTitle={embedded} />
         <FeatureDisabledState />
       </div>
     );
@@ -316,7 +318,7 @@ export default function ShiftManagementPage() {
 
   return (
     <div className="flex flex-col gap-0 h-full" data-testid="shift-management-page">
-      <PageHeader onAdd={() => handleAddShift()} />
+      <PageHeader onAdd={() => handleAddShift()} hideTitle={embedded} />
 
       <div className="flex-1 overflow-auto p-4 sm:p-6">
         {isLoading ? (
@@ -347,6 +349,7 @@ export default function ShiftManagementPage() {
         defaultTechnicianId={defaultTechId}
         defaultDate={defaultDate}
         timezone={timezone}
+        workShiftsFull={addWorkShiftsFull}
       />
 
       {/* Delete confirmation — non-recurring shifts */}
@@ -384,15 +387,20 @@ export default function ShiftManagementPage() {
 interface PageHeaderProps {
   onAdd: () => void;
   addDisabled?: boolean;
+  hideTitle?: boolean;
 }
 
-function PageHeader({ onAdd, addDisabled }: PageHeaderProps) {
+function PageHeader({ onAdd, addDisabled, hideTitle }: PageHeaderProps) {
   return (
-    <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
-      <div className="flex items-center gap-2">
-        <CalendarRange className="h-5 w-5 text-slate-500" />
-        <h1 className="text-header font-semibold text-slate-900">Shift Management</h1>
-      </div>
+    <div
+      className={`flex items-center border-b border-slate-200 bg-white px-4 py-3 sm:px-6 ${hideTitle ? "justify-end" : "justify-between"}`}
+    >
+      {!hideTitle && (
+        <div className="flex items-center gap-2">
+          <CalendarRange className="h-5 w-5 text-slate-500" />
+          <h1 className="text-header font-semibold text-slate-900">Shift Management</h1>
+        </div>
+      )}
       <Button
         size="sm"
         onClick={onAdd}

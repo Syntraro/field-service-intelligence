@@ -11,14 +11,21 @@ export interface Part {
   taxCode?: string | null;
   category?: string | null;
   isActive?: boolean | null;
-  estimatedDurationMinutes?: number | null; // Service duration in minutes (internal, not synced to QBO)
-  trackInventory?: boolean | null; // Inventory tracking toggle (future use)
+  estimatedDurationMinutes?: number | null;
+  trackInventory?: boolean | null;
   qboItemId?: string | null;
   qboSyncToken?: string | null;
   qboSyncStatus?: string | null;
   qboSyncError?: string | null;
   qboLastSyncedAt?: string | null;
   updatedAt?: string | null;
+  // Optional item image (added 2026-05-18)
+  imageFileId?: string | null;
+  imageStorageKey?: string | null;
+  imageMimeType?: string | null;
+  imageFileName?: string | null;
+  imageAltText?: string | null;
+  thumbnailStorageKey?: string | null;
 }
 
 export interface ProductFormData {

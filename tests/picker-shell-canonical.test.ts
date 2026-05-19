@@ -10,8 +10,7 @@
  *     overflow-y-auto) from the canonical base,
  *   - re-introduces the ad-hoc shell pattern in any of the 7 migrated
  *     consumers (CollectPaymentDialog, LinkContactDialog ×2,
- *     CreateMaintenancePlanDialog ×2, PricebookGroupModal,
- *     BatchSendInvoicesModal).
+ *     CreateMaintenancePlanDialog ×2, BatchSendInvoicesModal).
  *
  * Note: vitest runs with environment:"node" and include:"tests/**\/*.test.ts"
  * — this is a source-read pin, not a render test.
@@ -82,14 +81,6 @@ describe("PickerShell consumers — ad-hoc shells removed", () => {
     expect(lines).toHaveLength(0);
   });
 
-  it("PricebookGroupModal — no raw picker-shell className", () => {
-    const code = src(
-      "client/src/components/line-items/PricebookGroupModal.tsx",
-    );
-    const lines = code.split("\n").filter((l) => adHocPattern.test(l));
-    expect(lines).toHaveLength(0);
-  });
-
   it("BatchSendInvoicesModal — no raw picker-shell className", () => {
     const code = src(
       "client/src/components/communication/BatchSendInvoicesModal.tsx",
@@ -106,7 +97,6 @@ describe("PickerShell consumers — import confirmed", () => {
     "client/src/components/invoice/CollectPaymentDialog.tsx",
     "client/src/components/communications/LinkContactDialog.tsx",
     "client/src/components/pm/CreateMaintenancePlanDialog.tsx",
-    "client/src/components/line-items/PricebookGroupModal.tsx",
     "client/src/components/communication/BatchSendInvoicesModal.tsx",
   ];
 

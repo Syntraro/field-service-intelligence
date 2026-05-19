@@ -51,16 +51,7 @@ import { LineItemRow } from "./LineItemRow";
 import { AddLineItemForm } from "./AddLineItemForm";
 import { PricebookPickerModal } from "./PricebookPickerModal";
 import { LineItemEditModal } from "./LineItemEditModal";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { blankDraft } from "@/lib/entities/lineItemMapper";
 import type { LineItemDraft } from "@shared/lineItem";
 import type { ProductOption } from "@/lib/entities/productEntity";
@@ -856,47 +847,23 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               onRequestCreateProduct={adapter.requestCreateProduct}
             />
           )}
-          {/* AlertDialog for delete confirmation — modal taxonomy
-              rule #1 (destructive confirm → AlertDialog). One mount;
-              `pendingDeleteId` drives open. */}
-          <AlertDialog
+          <ConfirmModal
             open={!!pendingDeleteId}
-            onOpenChange={(o) => {
-              if (!o) setPendingDeleteId(null);
-            }}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete line item?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will remove the line from this {adapter.surface === "invoice"
-                    ? "invoice"
-                    : adapter.surface === "quote" || adapter.surface === "quote-template"
-                      ? "quote"
-                      : "job"}. This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel
-                  disabled={persistedSaving}
-                  data-testid="button-delete-line-cancel"
-                >
-                  Cancel
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void handlePersistedDelete();
-                  }}
-                  disabled={persistedSaving}
-                  data-testid="button-delete-line-confirm"
-                  className="bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-600"
-                >
-                  {persistedSaving ? "Deleting…" : "Delete"}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+            onOpenChange={(o) => { if (!o) setPendingDeleteId(null); }}
+            title="Delete line item?"
+            description={`This will remove the line from this ${
+              adapter.surface === "invoice"
+                ? "invoice"
+                : adapter.surface === "quote" || adapter.surface === "quote-template"
+                  ? "quote"
+                  : "job"
+            }. This cannot be undone.`}
+            confirmLabel="Delete"
+            variant="destructive"
+            isPending={persistedSaving}
+            onConfirm={() => { void handlePersistedDelete(); }}
+            testIdPrefix="line-item-delete"
+          />
         </>
       )}
     </CardShell>

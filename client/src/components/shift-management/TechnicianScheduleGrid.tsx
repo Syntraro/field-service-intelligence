@@ -17,7 +17,8 @@ interface Props {
   shifts: DispatchShiftEntry[];
   onPrevWeek: () => void;
   onNextWeek: () => void;
-  onAddShift: (technicianId?: string, date?: string) => void;
+  /** workShiftsFull=true when the cell already has 2 Work shifts and the modal should block adding another. */
+  onAddShift: (technicianId?: string, date?: string, workShiftsFull?: boolean) => void;
   onEditShift: (shift: DispatchShiftEntry) => void;
   onDeleteShift: (shift: DispatchShiftEntry) => void;
   /** Company IANA timezone — passed to ShiftBlock for correct local-time display. */
@@ -70,6 +71,20 @@ export default function TechnicianScheduleGrid({
       idx.set(s.technicianUserId, techMap);
     }
     return idx;
+  }, [shifts]);
+
+  // Count Work shifts (shiftType="normal") per technician per day for the cap check.
+  const workShiftCount = useMemo(() => {
+    const counts = new Map<string, Map<string, number>>();
+    for (const s of shifts) {
+      if (s.shiftType !== "normal") continue;
+      const key = s.technicianUserId;
+      const dateK = shiftDateKey(s);
+      const techMap = counts.get(key) ?? new Map<string, number>();
+      techMap.set(dateK, (techMap.get(dateK) ?? 0) + 1);
+      counts.set(key, techMap);
+    }
+    return counts;
   }, [shifts]);
 
   const weekLabel = `${format(weekStart, "MMM d")} – ${format(addDays(weekStart, 6), "MMM d, yyyy")}`;
@@ -155,6 +170,8 @@ export default function TechnicianScheduleGrid({
                     {/* Day cells */}
                     {days.map((d) => {
                       const dayShifts = techMap?.get(d.key) ?? [];
+                      const dayWorkCount = workShiftCount.get(tech.id)?.get(d.key) ?? 0;
+                      const workShiftsFull = dayWorkCount >= 2;
                       return (
                         <td
                           key={d.key}
@@ -173,10 +190,16 @@ export default function TechnicianScheduleGrid({
                             ))}
                             <button
                               type="button"
-                              onClick={() => onAddShift(tech.id, d.key)}
-                              className="flex items-center justify-center rounded border border-dashed border-slate-200 py-0.5 text-[10px] text-slate-300 hover:border-slate-400 hover:text-slate-500 transition-colors"
+                              onClick={() => onAddShift(tech.id, d.key, workShiftsFull)}
+                              className={`flex items-center justify-center rounded border border-dashed py-0.5 text-[10px] transition-colors ${
+                                workShiftsFull
+                                  ? "border-slate-100 text-slate-200 hover:border-slate-200 hover:text-slate-300"
+                                  : "border-slate-200 text-slate-300 hover:border-slate-400 hover:text-slate-500"
+                              }`}
+                              title={workShiftsFull ? "Work shifts full — add On Call or Unavailable" : undefined}
                               aria-label={`Add shift for ${tech.fullName} on ${d.key}`}
                               data-testid={`add-shift-${tech.id}-${d.key}`}
+                              data-work-full={workShiftsFull || undefined}
                             >
                               <Plus className="h-3 w-3" />
                             </button>

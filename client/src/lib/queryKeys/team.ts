@@ -11,9 +11,6 @@ export const teamKeys = {
   /** ["/api/team/technicians"] — technician-only list */
   technicians: () => ["/api/team/technicians"] as const,
 
-  /** ["/api/team/technicians/working-hours"] — technician working-hour config */
-  workingHours: () => ["/api/team/technicians/working-hours"] as const,
-
   /** ["/api/team/technicians/live-state"] — realtime technician activity status */
   liveState: () => ["/api/team/technicians/live-state"] as const,
 

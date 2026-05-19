@@ -620,3 +620,62 @@ describe("ShiftManagementPage — delete scope for recurring shifts", () => {
     expect(src).toContain("all occurrences");
   });
 });
+
+// ── 21. Work-shift-per-day cap — grid ────────────────────────────────
+
+describe("TechnicianScheduleGrid — work-shift-per-day cap", () => {
+  const src = read(GRID_PATH);
+  const stripped = stripComments(src);
+
+  it("computes workShiftCount from shifts (shiftType === 'normal')", () => {
+    expect(src).toContain("workShiftCount");
+    expect(src).toContain("shiftType");
+    expect(src).toContain('"normal"');
+  });
+
+  it("derives workShiftsFull = dayWorkCount >= 2", () => {
+    expect(stripped).toMatch(/workShiftsFull\s*=\s*dayWorkCount\s*>=\s*2/);
+  });
+
+  it("passes workShiftsFull to onAddShift callback", () => {
+    expect(stripped).toMatch(/onAddShift\s*\([^)]*workShiftsFull/);
+  });
+
+  it("onAddShift prop type includes workShiftsFull boolean", () => {
+    expect(src).toContain("workShiftsFull");
+  });
+
+  it("marks + button with data-work-full attribute when full", () => {
+    expect(src).toContain("data-work-full");
+  });
+});
+
+// ── 22. Work-shift-per-day cap — modal ───────────────────────────────
+
+describe("ShiftFormModal — workShiftsFull prop enforces Work cap", () => {
+  const src = read(FORM_PATH);
+  const stripped = stripComments(src);
+
+  it("accepts workShiftsFull prop", () => {
+    expect(src).toContain("workShiftsFull");
+  });
+
+  it("defaults shiftType to on_call when workShiftsFull is true", () => {
+    expect(stripped).toMatch(/workShiftsFull\s*\?\s*"on_call"\s*:\s*"normal"/);
+  });
+
+  it("disables Work button when workShiftsFull", () => {
+    expect(stripped).toMatch(/isWorkBlocked[\s\S]{0,400}disabled/);
+  });
+
+  it("shows FormHelperText with cap message when workShiftsFull", () => {
+    expect(src).toContain("A technician can have up to 2 work shifts per day.");
+    expect(src).toContain("FormHelperText");
+  });
+
+  it("ShiftManagementPage passes workShiftsFull to ShiftFormModal", () => {
+    const pageSrc = read(PAGE_PATH);
+    expect(pageSrc).toContain("workShiftsFull={addWorkShiftsFull}");
+    expect(pageSrc).toContain("addWorkShiftsFull");
+  });
+});

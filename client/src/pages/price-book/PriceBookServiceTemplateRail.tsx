@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X, Search, Plus, Minus, Loader2, AlertTriangle, Info } from "lucide-react";
+import { ItemImageUpload } from "@/components/pricebook/ItemImageUpload";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -8,16 +9,7 @@ import { Input } from "@/components/ui/input";
 import { StatusChip } from "@/components/ui/chip";
 import { InlineInput, FormSection } from "@/components/ui/form-field";
 import { WorkspaceRailScrollContainer } from "@/components/workspace/WorkspaceRailScrollContainer";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   useUpdateServiceTemplate,
   useSetServiceTemplateComponents,
@@ -331,6 +323,15 @@ export function PriceBookServiceTemplateRail({
             </div>
           </div>
 
+          {/* Item image */}
+          <ItemImageUpload
+            entityType="service-template"
+            entityId={template.id}
+            currentImage={template}
+            onChanged={onSaved}
+            invalidateKeys={[["/api/service-templates"]]}
+          />
+
           {/* Customer-facing section */}
           <FormSection title="Customer-Facing">
             <InlineInput
@@ -486,26 +487,17 @@ export function PriceBookServiceTemplateRail({
         </div>
       </WorkspaceRailScrollContainer>
 
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete template?</AlertDialogTitle>
-            <AlertDialogDescription>
-              "{template.name}" will be permanently removed. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete template?"
+        description={`"${template.name}" will be permanently removed. This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={handleDelete}
+        testIdPrefix="service-template-delete"
+      />
     </>
   );
 }

@@ -188,7 +188,6 @@ export interface IStorage {
   getTechnicianProfile: typeof teamRepository.getTechnicianProfile;
   upsertTechnicianProfile: typeof teamRepository.upsertTechnicianProfile;
   getWorkingHours: typeof teamRepository.getWorkingHours;
-  setWorkingHours: typeof teamRepository.setWorkingHours;
   getUserPermissionOverrides: typeof teamRepository.getUserPermissionOverrides;
   setUserPermissionOverrides: typeof teamRepository.setUserPermissionOverrides;
   getTechniciansByCompanyId: typeof teamRepository.getTechniciansByCompanyId;
@@ -396,7 +395,6 @@ export const storage: IStorage = {
   getTechnicianProfile: teamRepository.getTechnicianProfile.bind(teamRepository),
   upsertTechnicianProfile: teamRepository.upsertTechnicianProfile.bind(teamRepository),
   getWorkingHours: teamRepository.getWorkingHours.bind(teamRepository),
-  setWorkingHours: teamRepository.setWorkingHours.bind(teamRepository),
   getUserPermissionOverrides: teamRepository.getUserPermissionOverrides.bind(teamRepository),
   setUserPermissionOverrides: teamRepository.setUserPermissionOverrides.bind(teamRepository),
   getTechniciansByCompanyId: teamRepository.getTechniciansByCompanyId.bind(teamRepository),

@@ -248,11 +248,8 @@ describe("ConfirmVoidModal — migrated to ConfirmModal", () => {
 
 describe("DeleteConfirmDialog — migrated to ConfirmModal", () => {
   it("imports ConfirmModal from canonical path", () => {
-    const importLines = DELETE_SRC.split("\n")
-      .filter((l) => l.trimStart().startsWith("import "))
-      .join("\n");
-    expect(importLines).toMatch(/ConfirmModal/);
-    expect(importLines).toMatch(/@\/components\/ui\/modal/);
+    expect(DELETE_SRC).toMatch(/ConfirmModal/);
+    expect(DELETE_SRC).toMatch(/from\s+["']@\/components\/ui\/modal["']/);
   });
 
   it("DeleteConfirmDialog uses <ConfirmModal variant=\"destructive\">", () => {
@@ -285,11 +282,8 @@ describe("DeleteConfirmDialog — migrated to ConfirmModal", () => {
   });
 
   it("file has no remaining AlertDialog import", () => {
-    const importLines = DELETE_SRC.split("\n")
-      .filter((l) => l.trimStart().startsWith("import "))
-      .join("\n");
-    expect(importLines).not.toMatch(/alert-dialog/);
-    expect(importLines).not.toMatch(/AlertDialogAction/);
+    expect(DELETE_SRC).not.toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
+    expect(DELETE_SRC).not.toMatch(/AlertDialogAction/);
   });
 
   it("BulkCategoryDialog is NOT migrated (has form input — not a simple confirm)", () => {
@@ -411,43 +405,18 @@ describe("PricebookPickerModal — error/empty use ModalStateBody", () => {
     expect(PRICEBOOK_SRC).toMatch(/data-testid="pricebook-empty"/);
   });
 
-  it("group-delete uses ConfirmModal (no AlertDialog)", () => {
-    expect(PRICEBOOK_SRC).toMatch(/ConfirmModal/);
-    expect(PRICEBOOK_SRC).not.toMatch(/<AlertDialog/);
-  });
-
-  it("group-delete ConfirmModal has testIdPrefix pricebook-group-delete", () => {
-    expect(PRICEBOOK_SRC).toMatch(/testIdPrefix="pricebook-group-delete"/);
-  });
-
-  it("group-delete ConfirmModal surfaces mutation error via emphasis prop", () => {
-    expect(PRICEBOOK_SRC).toMatch(/emphasis=\{[\s\S]{0,100}?deleteMutation\.isError/);
-  });
-
-  it("group-delete does NOT import alert-dialog", () => {
-    const importLines = PRICEBOOK_SRC.split("\n")
-      .filter((l) => l.trimStart().startsWith("import "))
-      .join("\n");
-    expect(importLines).not.toMatch(/alert-dialog/);
-  });
 });
 
 // ── EntityNoteDialog — nested inline AlertDialog consolidation ────────
 
 describe("EntityNoteDialog — nested confirms migrated to ConfirmModal", () => {
   it("imports ConfirmModal from canonical path", () => {
-    const importLines = ENTITY_NOTE_SRC.split("\n")
-      .filter((l) => l.trimStart().startsWith("import "))
-      .join("\n");
-    expect(importLines).toMatch(/ConfirmModal/);
-    expect(importLines).toMatch(/@\/components\/ui\/modal/);
+    expect(ENTITY_NOTE_SRC).toMatch(/ConfirmModal/);
+    expect(ENTITY_NOTE_SRC).toMatch(/from\s+["']@\/components\/ui\/modal["']/);
   });
 
   it("does NOT import alert-dialog", () => {
-    const importLines = ENTITY_NOTE_SRC.split("\n")
-      .filter((l) => l.trimStart().startsWith("import "))
-      .join("\n");
-    expect(importLines).not.toMatch(/alert-dialog/);
+    expect(ENTITY_NOTE_SRC).not.toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
   });
 
   it("does NOT use <AlertDialog JSX", () => {

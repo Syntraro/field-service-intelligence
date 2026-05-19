@@ -17,16 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   Collapsible,
   CollapsibleContent,
@@ -622,31 +613,22 @@ export default function ManageRoles() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Role</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete the "{roleToDelete?.displayName}" role? This action cannot be undone.
-              {roleToDelete?.memberCount && roleToDelete.memberCount > 0 && (
-                <span className="block mt-2 text-destructive font-medium">
-                  This role has {roleToDelete.memberCount} member(s) assigned. Please reassign them before deleting.
-                </span>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => roleToDelete && deleteRoleMutation.mutate(roleToDelete.id)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={!!(roleToDelete?.memberCount && roleToDelete.memberCount > 0)}
-            >
-              Delete Role
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        title="Delete Role"
+        description={`Are you sure you want to delete the "${roleToDelete?.displayName}" role? This action cannot be undone.`}
+        emphasis={
+          roleToDelete?.memberCount && roleToDelete.memberCount > 0
+            ? `This role has ${roleToDelete.memberCount} member(s) assigned. Please reassign them before deleting.`
+            : undefined
+        }
+        confirmLabel="Delete Role"
+        variant="destructive"
+        isPending={deleteRoleMutation.isPending}
+        onConfirm={() => { setShowDeleteDialog(false); roleToDelete && deleteRoleMutation.mutate(roleToDelete.id); }}
+        testIdPrefix="role-delete"
+      />
     </div>
   );
 }

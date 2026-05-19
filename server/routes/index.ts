@@ -14,8 +14,8 @@ import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import itemCategoriesRouter from "./itemCategories";
-import pricebookGroupsRouter from "./pricebookGroups";
 import serviceTemplatesRouter from "./serviceTemplates";
+import pricebookImagesRouter from "./pricebookImages";
 import companySettingsRouter from "./companySettings";
 // 2026-05-05: tenant-level Invoice Display policy. Companion endpoint to
 // /api/company-settings — see `server/routes/invoiceDisplaySettings.ts`.
@@ -374,10 +374,12 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
   app.use("/api/item-categories", itemCategoriesRouter);
-  app.use("/api/pricebook-groups", pricebookGroupsRouter);
   // 2026-05-18 RALPH Phase 1: Flat-rate service templates.
   // Reads open (any authed staff). Writes gate on MANAGER_ROLES + pricing.edit.
   app.use("/api/service-templates", serviceTemplatesRouter);
+  // 2026-05-18: Pricebook image upload/remove — server-side processing (sharp).
+  // Handles /api/items/:id/image and /api/service-templates/:id/image.
+  app.use("/api", pricebookImagesRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/invoice-display-settings", invoiceDisplaySettingsRouter);
   app.use("/api/company-tax-registrations", companyTaxRegistrationsRouter);

@@ -540,13 +540,8 @@ describe("TeamHubPage v2 — KPI strip removed, header simplified", () => {
     );
   });
 
-  it("page subtitle reframes the page as a single-member workspace + drops the active/total count", () => {
-    // 2026-05-05 v4 member-centric restructure: the subtitle was
-    // updated from the v2 feature-list copy to a workspace-pattern
-    // hint. Both must NOT contain the legacy active/total count.
-    expect(teamHubSrc).toMatch(
-      /data-testid="text-team-subtitle"[\s\S]+?Pick a member on the left/,
-    );
+  it("page subtitle reframes the page as team management hub + drops the active/total count", () => {
+    expect(teamHubSrc).toMatch(/data-testid="text-team-subtitle"/);
     // The previous "X active · Y total" subtitle was removed.
     expect(teamHubSrc).not.toMatch(/text-team-count/);
   });
@@ -601,14 +596,17 @@ describe("TeamHubPage v2 — KPI strip removed, header simplified", () => {
     // Soft-deprecation: old deep-links must not 404. The
     // LEGACY_TAB_ALIAS map silently rewrites them onto the new ids.
     expect(teamHubSrc).toMatch(/LEGACY_TAB_ALIAS/);
-    expect(teamHubSrc).toMatch(/members:\s*"overview"/);
-    expect(teamHubSrc).toMatch(/schedules:\s*"schedule"/);
+    expect(teamHubSrc).toMatch(/members:\s*"performance"/);
+    // schedule/schedules aliases now redirect to permissions (schedule tab removed)
+    expect(teamHubSrc).toMatch(/schedules:\s*"permissions"/);
   });
 
-  it("VALID_TABS lists the 4 v3 ids in canonical order", () => {
+  it("VALID_TABS lists the current ids (Performance / Payroll / Permissions / Skills)", () => {
     expect(teamHubSrc).toMatch(
-      /VALID_TABS\s*=\s*\[\s*"overview",\s*"schedule",\s*"compensation",\s*"access"\s*\]/,
+      /VALID_TABS\s*=\s*\[\s*"performance",\s*"payroll",\s*"permissions",\s*"skills"\s*\]/,
     );
+    // Schedule tab removed — Shift Management is now canonical
+    expect(teamHubSrc).not.toMatch(/"schedule"/);
   });
 });
 
@@ -657,18 +655,18 @@ describe("TeamMemberWorkspace — member-level tabs all share one selection", ()
     "utf-8",
   );
 
-  it("renders the four member-level tabs (Overview / Schedule / Compensation / Access)", () => {
-    expect(wsSrc).toMatch(/data-testid="tab-workspace-overview"/);
-    expect(wsSrc).toMatch(/data-testid="tab-workspace-schedule"/);
-    expect(wsSrc).toMatch(/data-testid="tab-workspace-compensation"/);
-    expect(wsSrc).toMatch(/data-testid="tab-workspace-access"/);
+  it("renders the member-level tabs (Performance / Payroll & Cost / Permissions / Skills)", () => {
+    expect(wsSrc).toMatch(/data-testid="tab-workspace-performance"/);
+    expect(wsSrc).toMatch(/data-testid="tab-workspace-payroll"/);
+    expect(wsSrc).toMatch(/data-testid="tab-workspace-permissions"/);
+    expect(wsSrc).toMatch(/data-testid="tab-workspace-skills"/);
+    // Schedule tab removed — Shift Management is now canonical
+    expect(wsSrc).not.toMatch(/data-testid="tab-workspace-schedule"/);
   });
 
-  it("mounts the legacy tab components with hideMemberList=true so they skip their own sidebars", () => {
+  it("mounts the tab components with hideMemberList=true so they skip their own sidebars", () => {
     // 2026-05-05 brief: "No tab has its own separate member list."
-    // The workspace passes `hideMemberList` to every legacy tab it
-    // mounts so the inner 260px sidebars are suppressed.
-    expect(wsSrc).toMatch(/<SchedulesTab[\s\S]+?hideMemberList[\s\S]+?\/>/);
+    // The workspace passes `hideMemberList` to every tab it mounts.
     expect(wsSrc).toMatch(/<CompensationTab[\s\S]+?hideMemberList[\s\S]+?\/>/);
     expect(wsSrc).toMatch(/<RolesAccessTab[\s\S]+?hideMemberList[\s\S]+?\/>/);
   });
@@ -894,11 +892,7 @@ describe("RolesAccessTab — owns role management (v2 refinement pin)", () => {
   });
 });
 
-describe("Legacy tabs accept hideMemberList prop for workspace embedding", () => {
-  const schedSrc = readFileSync(
-    resolve(__dirname, "../client/src/components/team-hub/SchedulesTab.tsx"),
-    "utf-8",
-  );
+describe("Tabs accept hideMemberList prop for workspace embedding", () => {
   const compSrc = readFileSync(
     resolve(
       __dirname,
@@ -915,7 +909,6 @@ describe("Legacy tabs accept hideMemberList prop for workspace embedding", () =>
   );
 
   for (const [name, src] of [
-    ["SchedulesTab", schedSrc] as const,
     ["CompensationTab", compSrc] as const,
     ["RolesAccessTab", rolesSrc] as const,
   ]) {
@@ -951,9 +944,10 @@ describe("App routing — v3 member-centric short-path aliases", () => {
     );
   });
 
-  it("legacy `/team/schedules` and `/team/compensation` redirect to the Hub with the right sub-tab", () => {
+  it("legacy `/team/schedules` redirects to canonical Shift Management; `/team/compensation` redirects to Hub", () => {
+    // Schedule tab removed — Shift Management is now canonical
     expect(appSrc).toMatch(
-      /path="\/team\/schedules"[\s\S]+?<Redirect to="\/team\?tab=schedule"\s*\/>/,
+      /path="\/team\/schedules"[\s\S]+?<Redirect to="\/shift-management"\s*\/>/,
     );
     expect(appSrc).toMatch(
       /path="\/team\/compensation"[\s\S]+?<Redirect to="\/team\?tab=compensation"\s*\/>/,

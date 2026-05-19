@@ -35,16 +35,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { ArrowLeft, KeyRound, Save, ExternalLink } from "lucide-react";
@@ -126,10 +117,6 @@ export default function TeamMemberDetail() {
     queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
     queryClient.invalidateQueries({ queryKey: ["/api/team"] });
     queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
-    queryClient.invalidateQueries({
-      queryKey: ["/api/team/technicians/working-hours"],
-      exact: false,
-    });
   };
 
   const updateBasic = useMutation({
@@ -424,40 +411,27 @@ export default function TeamMemberDetail() {
         <CalendarSyncSection userId={member.id} memberFirstName={member.firstName} />
       </div>
 
-      <AlertDialog open={deactivateOpen} onOpenChange={setDeactivateOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Disable account</AlertDialogTitle>
-            <AlertDialogDescription>
-              This prevents {member.firstName || member.email} from accessing the system.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deactivate.mutate()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Disable
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={deactivateOpen}
+        onOpenChange={setDeactivateOpen}
+        title="Disable account"
+        description={`This prevents ${member.firstName || member.email} from accessing the system.`}
+        confirmLabel="Disable"
+        variant="destructive"
+        onConfirm={() => { setDeactivateOpen(false); deactivate.mutate(); }}
+        testIdPrefix="member-deactivate"
+      />
 
-      <AlertDialog open={activateOpen} onOpenChange={setActivateOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable account</AlertDialogTitle>
-            <AlertDialogDescription>
-              This re-enables {member.firstName || member.email} to access the system.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => activate.mutate()}>Enable</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={activateOpen}
+        onOpenChange={setActivateOpen}
+        title="Enable account"
+        description={`This re-enables ${member.firstName || member.email} to access the system.`}
+        confirmLabel="Enable"
+        variant="neutral"
+        onConfirm={() => { setActivateOpen(false); activate.mutate(); }}
+        testIdPrefix="member-activate"
+      />
 
       <Dialog
         open={resetOpen}

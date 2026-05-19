@@ -26,7 +26,6 @@ import {
   buildTechnicianRoster,
 } from "./dispatchPreviewMappers";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import { partitionShifts } from "./shiftUtils";
 
 // 2026-05-05 Phase 3: lead-visit dispatch envelope. Fetched in parallel
@@ -105,13 +104,11 @@ export interface DispatchRangeData {
    *  array — never mixed into `scheduledVisits` because the type
    *  shapes differ (no jobNumber, no job lifecycle). */
   leadVisits: DispatchLeadVisit[];
-  /** Phase 2 Shift Management: resolved normal (working) shifts for the range.
-   *  Empty when technician_shift_management feature is disabled or query fails. */
+  /** Normal (working) shifts for the range. Empty when no shifts are defined. */
   shifts: DispatchShiftEntry[];
-  /** Phase 2 Shift Management: on-call shifts. Empty when feature disabled. */
+  /** On-call shifts for the range. */
   onCallShifts: DispatchShiftEntry[];
-  /** Phase 2 Shift Management: unavailable (time-off type) shifts.
-   *  Empty when feature disabled. */
+  /** Unavailable shifts (including merged time-off). Empty when none defined. */
   unavailableShifts: DispatchShiftEntry[];
   technicians: Technician[];
   isLoading: boolean;
@@ -187,11 +184,11 @@ export function useDispatchRangeData(
     placeholderData: keepPreviousData,
   });
 
-  // Phase 2: Technician shift management. Only fires when the feature
-  // is confirmed enabled — undefined (loading) and false (disabled)
-  // both suppress the query. Failures return empty arrays and MUST NOT
-  // break the dispatch board; shifts are an additive visual layer.
-  const shiftFeatureEnabled = useFeatureEnabled("technician_shift_management");
+  // Shift availability — always fetched. Shift Management is the canonical
+  // schedule source; the read endpoint has no feature gate so all tenants
+  // can populate the dispatch board. Write operations (create/edit/delete)
+  // remain feature-gated on the server. Failures return empty arrays and
+  // must not break the board.
   const shiftsQuery = useQuery<{ shifts: DispatchShiftEntry[]; timezone: string }>({
     queryKey: ["/api/shift-management/availability", startISO, endISO],
     queryFn: () =>
@@ -199,7 +196,7 @@ export function useDispatchRangeData(
         `/api/shift-management/availability?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
       ),
     staleTime: 30_000,
-    enabled: enabled && shiftFeatureEnabled === true,
+    enabled,
     retry: 1,
     placeholderData: keepPreviousData,
   });
@@ -229,8 +226,7 @@ export function useDispatchRangeData(
     [teamMembers],
   );
 
-  // Phase 2: shift normalization. Partition the flat shifts array into
-  // the 3 typed buckets. Failures or disabled feature → empty arrays.
+  // Partition the flat shifts array into the 3 typed buckets.
   const { normal: shifts, onCall: onCallShifts, unavailable: unavailableShifts } = useMemo(() => {
     const raw = shiftsQuery.data?.shifts ?? [];
     return partitionShifts(raw);
@@ -246,8 +242,7 @@ export function useDispatchRangeData(
     unavailableShifts,
     technicians,
     // Shift and lead-visit loading do NOT block the overall isLoading —
-    // they're additive layers; a disabled shift feature must not surface
-    // as a dispatch-wide spinner.
+    // they're additive layers and must not surface as a dispatch-wide spinner.
     isLoading:
       scheduledQuery.isLoading || unscheduledQuery.isLoading || techLoading,
     error: (scheduledQuery.error ?? unscheduledQuery.error ?? techError) as Error | null,

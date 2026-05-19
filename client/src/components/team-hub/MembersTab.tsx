@@ -92,10 +92,6 @@ export function MembersTab({ onSelectMember }: Props) {
       toast({ title: vars.disable ? "Member disabled" : "Member enabled" });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/team/technicians/working-hours"],
-        exact: false,
-      });
     },
     onError: (err: any) => {
       toast({ variant: "destructive", title: "Error", description: err?.message });

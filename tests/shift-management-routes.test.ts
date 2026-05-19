@@ -326,6 +326,125 @@ describe("technicianShiftsRepository", () => {
     expect(second).toBe(false);
   });
 
+  it("countWorkShiftsOnDay: one Work shift → count is 1", async () => {
+    const shift = await technicianShiftsRepository.create(
+      companyId,
+      {
+        technicianUserId: techId,
+        shiftType: "normal",
+        startsAt: new Date("2026-10-06T13:00:00Z"),
+        endsAt: new Date("2026-10-06T21:00:00Z"),
+        timeOfDayStart: "09:00",
+        timeOfDayEnd: "17:00",
+      },
+      adminId,
+    );
+    const count = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-06T00:00:00Z"),
+      new Date("2026-10-07T00:00:00Z"),
+    );
+    expect(count).toBe(1);
+    await technicianShiftsRepository.hardDelete(companyId, shift.id);
+  });
+
+  it("countWorkShiftsOnDay: two Work shifts allowed (count is 2)", async () => {
+    const s1 = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "normal", startsAt: new Date("2026-10-07T12:00:00Z"), endsAt: new Date("2026-10-07T16:00:00Z") },
+      adminId,
+    );
+    const s2 = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "normal", startsAt: new Date("2026-10-07T17:00:00Z"), endsAt: new Date("2026-10-07T21:00:00Z") },
+      adminId,
+    );
+    const count = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-07T00:00:00Z"),
+      new Date("2026-10-08T00:00:00Z"),
+    );
+    expect(count).toBe(2);
+    await technicianShiftsRepository.hardDelete(companyId, s1.id);
+    await technicianShiftsRepository.hardDelete(companyId, s2.id);
+  });
+
+  it("countWorkShiftsOnDay: third Work shift would be blocked (count >= 2)", async () => {
+    const s1 = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "normal", startsAt: new Date("2026-10-08T12:00:00Z"), endsAt: new Date("2026-10-08T16:00:00Z") },
+      adminId,
+    );
+    const s2 = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "normal", startsAt: new Date("2026-10-08T17:00:00Z"), endsAt: new Date("2026-10-08T21:00:00Z") },
+      adminId,
+    );
+    const count = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-08T00:00:00Z"),
+      new Date("2026-10-09T00:00:00Z"),
+    );
+    // Route would throw 400 when count >= 2
+    expect(count).toBeGreaterThanOrEqual(2);
+    await technicianShiftsRepository.hardDelete(companyId, s1.id);
+    await technicianShiftsRepository.hardDelete(companyId, s2.id);
+  });
+
+  it("countWorkShiftsOnDay: On Call not counted (returns 0 for on_call shifts)", async () => {
+    const s = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "on_call", startsAt: new Date("2026-10-09T12:00:00Z"), endsAt: new Date("2026-10-09T21:00:00Z") },
+      adminId,
+    );
+    const count = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-09T00:00:00Z"),
+      new Date("2026-10-10T00:00:00Z"),
+    );
+    expect(count).toBe(0);
+    await technicianShiftsRepository.hardDelete(companyId, s.id);
+  });
+
+  it("countWorkShiftsOnDay: Unavailable not counted", async () => {
+    const s = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "unavailable", shiftSubtype: "vacation", startsAt: new Date("2026-10-10T12:00:00Z"), endsAt: new Date("2026-10-10T21:00:00Z") },
+      adminId,
+    );
+    const count = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-10T00:00:00Z"),
+      new Date("2026-10-11T00:00:00Z"),
+    );
+    expect(count).toBe(0);
+    await technicianShiftsRepository.hardDelete(companyId, s.id);
+  });
+
+  it("countWorkShiftsOnDay: excludeShiftId excludes the edited shift itself", async () => {
+    const s = await technicianShiftsRepository.create(
+      companyId,
+      { technicianUserId: techId, shiftType: "normal", startsAt: new Date("2026-10-11T12:00:00Z"), endsAt: new Date("2026-10-11T16:00:00Z") },
+      adminId,
+    );
+    // With exclusion: count should not include s itself
+    const countExcluded = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-11T00:00:00Z"),
+      new Date("2026-10-12T00:00:00Z"),
+      s.id,
+    );
+    expect(countExcluded).toBe(0);
+    // Without exclusion: count is 1
+    const countAll = await technicianShiftsRepository.countWorkShiftsOnDay(
+      companyId, techId,
+      new Date("2026-10-11T00:00:00Z"),
+      new Date("2026-10-12T00:00:00Z"),
+    );
+    expect(countAll).toBe(1);
+    await technicianShiftsRepository.hardDelete(companyId, s.id);
+  });
+
   it("truncates series by updating recurrenceEndDate", async () => {
     // Create a fresh recurring shift to truncate.
     const baseShift = await technicianShiftsRepository.create(

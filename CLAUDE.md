@@ -83,7 +83,7 @@ The Drizzle schema in `shared/schema.ts` is the TypeScript type source of truth;
 ### Modal Taxonomy
 Classify every new dialog by intent before picking a primitive. Do NOT default to a raw shadcn `Dialog`.
 
-1. **Destructive confirmation** → `AlertDialog`
+1. **Destructive or neutral confirmation** → `ConfirmModal` with `variant="destructive"` or `variant="neutral"` (`client/src/components/ui/modal.tsx`)
 2. **Generic / simple modal** → `ModalShell` + `Modal*` primitives (`client/src/components/ui/modal.tsx`)
 3. **Operational / action-row / list drilldown** → `OperationalActionModal`
 4. **Complex reusable workflow** → dedicated domain wrapper

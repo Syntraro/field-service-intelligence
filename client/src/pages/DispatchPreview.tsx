@@ -5,7 +5,7 @@
  * Route: /dispatch (primary), /calendar (alias)
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
+import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, addMinutes, format } from "date-fns";
 import { AlertCircle, Loader2 } from "lucide-react";
 // 2026-05-05 Phase 3: wouter navigation for the lead-visits strip
 // click-through. Other dispatch click handlers route via internal
@@ -34,12 +34,12 @@ import { useDispatchMonthData } from "@/components/dispatch/useDispatchMonthData
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
 import { getTimelineConfig, HOUR_WIDTH_PX, SNAP_MINUTES, DEFAULT_SCHEDULE_HOUR, isCompletedStatus } from "@/components/dispatch/dispatchPreviewUtils";
 import { UNASSIGNED_COLOR } from "@shared/colors";
+import type { CalendarRangeResponseDto } from "@shared/types/scheduling";
 // checkOverlap + findNearestValidSlot now accessed via resolvePlacement() shared resolver
-import { useTechnicianWorkingHours, isTechWorkingOnDate, isTechWorkingInRange } from "@/hooks/useTechnicianWorkingHours";
-import { useFeatureEnabled } from "@/hooks/useEntitlements";
 import {
   buildShiftsByTech,
   findOverlappingShifts,
+  isSequenceWithinShiftHours,
   isTechShiftedOnDate,
 } from "@/components/dispatch/shiftUtils";
 import {
@@ -170,37 +170,26 @@ export default function DispatchPreview() {
   const weekData = useDispatchWeekData(selectedDate, activeView === "week" || activeView === "board");
   const monthData = useDispatchMonthData(selectedDate, activeView === "month");
 
-  // ── Phase 2: Shift management feature gate ──
-  const shiftFeatureEnabled = useFeatureEnabled("technician_shift_management");
-
-  // ── Working hours for technician on-shift/off-shift grouping ──
-  const { scheduleMap } = useTechnicianWorkingHours();
-
-  // Enrich technicians with isWorking flag based on current view context
+  // Enrich technicians with isWorking flag based on current view's shift data.
+  // Shift Management is the canonical schedule source — no working-hours fallback.
   const rawTechnicians = activeView === "month" ? monthData.technicians : (activeView === "week" || activeView === "board") ? weekData.technicians : dayData.technicians;
   const technicians: Technician[] = useMemo(() => {
     if (activeView === "week" || activeView === "month" || activeView === "board") {
-      const ws = activeView === "month" ? monthData.gridStart : startOfWeek(selectedDate, { weekStartsOn: 1 });
-      const we = activeView === "month" ? monthData.gridEnd : endOfWeek(selectedDate, { weekStartsOn: 1 });
-      const days = eachDayOfInterval({ start: ws, end: we });
+      // Tech works this week/month if they have at least one normal shift in the range.
+      const viewShifts = activeView === "month" ? monthData.shifts : weekData.shifts;
+      const normalByTechForView = buildShiftsByTech(viewShifts.filter(s => s.shiftType === "normal"));
       return rawTechnicians.map(t => ({
         ...t,
-        isWorking: isTechWorkingInRange(scheduleMap, t.id, days),
+        isWorking: normalByTechForView.has(t.id),
       }));
     }
-    // Phase 2: when shift management is enabled, use shift data for isWorking.
-    // dayData.shifts is read directly here to avoid a forward reference to
-    // normalShiftsByTech, which is derived from activeData (declared after this memo).
-    const dayNormalByTech = shiftFeatureEnabled
-      ? buildShiftsByTech(dayData.shifts.filter(s => s.shiftType === "normal"))
-      : new Map<string, import("@/components/dispatch/dispatchPreviewTypes").DispatchShiftEntry[]>();
+    // Day view: tech is working if they have a normal shift on this specific date.
+    const dayNormalByTech = buildShiftsByTech(dayData.shifts.filter(s => s.shiftType === "normal"));
     return rawTechnicians.map(t => ({
       ...t,
-      isWorking: (shiftFeatureEnabled && dayNormalByTech.has(t.id))
-        ? isTechShiftedOnDate(dayNormalByTech, t.id, format(selectedDate, "yyyy-MM-dd"))
-        : isTechWorkingOnDate(scheduleMap, t.id, selectedDate),
+      isWorking: isTechShiftedOnDate(dayNormalByTech, t.id, format(selectedDate, "yyyy-MM-dd")),
     }));
-  }, [rawTechnicians, scheduleMap, selectedDate, activeView, monthData.gridStart, monthData.gridEnd, shiftFeatureEnabled, dayData.shifts]);
+  }, [rawTechnicians, selectedDate, activeView, monthData.shifts, weekData.shifts, monthData.gridStart, monthData.gridEnd, dayData.shifts]);
 
   // Sort technicians: working first, then off-shift (stable sort preserves original order within groups)
   const sortedTechnicians = useMemo(() => {
@@ -865,7 +854,7 @@ export default function DispatchPreview() {
           if (cmp !== 0) return cmp;
           return (a.dispatchOrder ?? Infinity) - (b.dispatchOrder ?? Infinity);
         });
-        // Remove the dragged card from the sorted list and re-insert at drop position
+        // Remove the dragged card and re-insert at the drop position
         const withoutSelf = sorted.filter(v => v.id !== dragData.visitId);
         let insertIdx: number;
         if (insertAfterVisitId === null) {
@@ -878,34 +867,97 @@ export default function DispatchPreview() {
         const draggedVisit = sorted.find(v => v.id === dragData.visitId);
         orderedVisits.splice(insertIdx, 0, draggedVisit ?? ({ id: dragData.visitId } as DispatchVisit));
 
-        // Smart-reschedule: resequence times back-to-back starting from the
-        // earliest scheduledStart among reorderable visits. Completed visits and
-        // visits without scheduledStart are excluded — they don't move.
+        // Exclude completed and unscheduled visits — they don't resequence.
         const reorderable = orderedVisits.filter(
           v => v.scheduledStart && !isCompletedStatus(v.status ?? ""),
         );
-        if (reorderable.length > 0) {
-          const anchorMs = Math.min(...reorderable.map(v => new Date(v.scheduledStart!).getTime()));
-          let cursorMs = anchorMs;
-          // Fire sequentially so inflightRef stays accurate and backgroundInvalidate
-          // waits until all writes are done (rescheduleVisit increments inflightRef).
+        if (reorderable.length === 0) return;
+
+        // Pre-compute all final times in one pass.
+        const anchorMs = Math.min(...reorderable.map(v => new Date(v.scheduledStart!).getTime()));
+        let cursorMs = anchorMs;
+        const batchTimes = new Map<string, { startAt: string; endAt: string; durationMinutes: number }>();
+        for (const v of reorderable) {
+          const dMs = (v.durationMinutes ?? 60) * 60_000;
+          batchTimes.set(v.id, {
+            startAt: new Date(cursorMs).toISOString(),
+            endAt:   new Date(cursorMs + dMs).toISOString(),
+            durationMinutes: v.durationMinutes ?? 60,
+          });
+          cursorMs += dMs;
+        }
+        const overallStartISO = new Date(anchorMs).toISOString();
+        const overallEndISO   = new Date(cursorMs).toISOString();
+
+        // applyReorder: atomic cache pre-apply → sequential server writes.
+        //
+        // The single setQueriesData call patches all N visits in one render, so
+        // the UI jumps directly to the correct final order. Each subsequent
+        // rescheduleVisit then writes the same values that are already in the
+        // cache, producing no additional visible change (no intermediate flicker).
+        //
+        // Sequential await preserves inflightRef accounting so backgroundInvalidate
+        // waits until all server writes complete before refetching.
+        const applyReorder = () => {
+          queryClient.setQueriesData<CalendarRangeResponseDto>(
+            { queryKey: ["/api/calendar"] },
+            (old) => {
+              if (!old?.events) return old;
+              const events = old.events.map(e => {
+                const patch = batchTimes.get(e.visitId ?? e.id);
+                if (!patch) return e;
+                return {
+                  ...e,
+                  startAt: patch.startAt,
+                  endAt:   patch.endAt,
+                  durationMinutes: patch.durationMinutes,
+                  date: patch.startAt.slice(0, 10),
+                };
+              });
+              return { ...old, events };
+            },
+          );
           (async () => {
             for (const v of reorderable) {
-              const durationMs = (v.durationMinutes ?? 60) * 60_000;
-              const newStart = new Date(cursorMs).toISOString();
-              const newEnd   = new Date(cursorMs + durationMs).toISOString();
-              cursorMs += durationMs;
-              if (newStart !== v.scheduledStart) {
+              const p = batchTimes.get(v.id)!;
+              if (p.startAt !== v.scheduledStart) {
                 await rescheduleVisit({
                   visitId: v.id,
                   jobId: v.jobId,
-                  startAt: newStart,
-                  endAt: newEnd,
+                  startAt: p.startAt,
+                  endAt:   p.endAt,
                 });
               }
             }
           })();
         }
+
+        // Off-shift / time-off warning before mutating (mirrors cross-cell pattern).
+        // Check for unavailability overlap (time-off or unavailable shift entries).
+        const unavailConflicts = findOverlappingShifts(
+          unavailableShiftsByTech, [targetTechId],
+          overallStartISO, overallEndISO,
+        );
+        if (unavailConflicts.length > 0) {
+          const tech = sortedTechnicians.find(t => t.id === targetTechId);
+          setTimeOffConfirm({
+            techName: tech?.name ?? "Technician",
+            reason: unavailConflicts[0].shiftSubtype ?? "unavailable",
+            action: applyReorder,
+          });
+          return;
+        }
+        // Check if the resequenced end time extends beyond the tech's shift window.
+        if (!isSequenceWithinShiftHours(normalShiftsByTech, targetTechId, overallStartISO, overallEndISO)) {
+          const tech = sortedTechnicians.find(t => t.id === targetTechId);
+          setOffShiftConfirm({
+            techName: tech?.name ?? "Technician",
+            action: applyReorder,
+          });
+          return;
+        }
+
+        applyReorder();
         return;
       }
       // Cross-cell position drop: fall through to normal reschedule path below
@@ -1025,7 +1077,7 @@ export default function DispatchPreview() {
             // Unified unavailability check: covers shift-type unavailables AND
             // time-off entries (merged by the availability engine). Blocks via
             // confirm dialog; override resends with overrideTimeOffConflict: true.
-            if (shiftFeatureEnabled && !isDropOnUnassigned && effectiveTechIds.length > 0) {
+            if (!isDropOnUnassigned && effectiveTechIds.length > 0) {
               const unavailConflicts = findOverlappingShifts(
                 unavailableShiftsByTech,
                 effectiveTechIds as string[],
@@ -1066,10 +1118,8 @@ export default function DispatchPreview() {
 
       // Off-shift check for week view drop target (skip for Unassigned lane and calendar drops)
       if (!isDropOnUnassigned && hasExplicitTech) {
-        const [y, m, d] = dropData.dayKey.split("-").map(Number);
         const targetTech = sortedTechnicians.find(t => t.id === dropData.technicianId);
-        const targetDate = new Date(y, m - 1, d);
-        const isOffShiftOnDay = targetTech && !isTechWorkingOnDate(scheduleMap, targetTech.id, targetDate);
+        const isOffShiftOnDay = targetTech && !isTechShiftedOnDate(normalShiftsByTech, targetTech.id, dropData.dayKey);
         if (isOffShiftOnDay && targetTech) {
           setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
           return;
@@ -1173,7 +1223,7 @@ export default function DispatchPreview() {
           // Unified unavailability check (day view): covers shift-type unavailables
           // AND time-off entries (merged by the availability engine). Blocks via
           // confirm dialog; override resends with overrideTimeOffConflict: true.
-          if (!isDropOnUnassigned && shiftFeatureEnabled) {
+          if (!isDropOnUnassigned) {
             const unavailConflicts = findOverlappingShifts(
               unavailableShiftsByTech,
               [dayDropTechId],
@@ -1220,7 +1270,7 @@ export default function DispatchPreview() {
     }
 
     executeMutation();
-  }, [activeDragData, selectedDate, activeView, show24Hour, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, scheduleMap, tlConfig, allVisits, shiftFeatureEnabled, unavailableShiftsByTech, filteredWeekVisits, updateDispatchOrder]);
+  }, [activeDragData, selectedDate, activeView, show24Hour, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, tlConfig, allVisits, unavailableShiftsByTech, normalShiftsByTech, filteredWeekVisits, updateDispatchOrder]);
 
   // ── Unschedule handler ──
   // Stabilization: version resolved internally by mutation from fresh cache
@@ -1755,7 +1805,7 @@ export default function DispatchPreview() {
                 technicians={visibleTechs}
                 techsOnTimeOff={techsOnTimeOff}
                 techsOnCall={techsOnCall}
-                normalShifts={shiftFeatureEnabled ? normalShifts : undefined}
+                normalShifts={normalShifts}
                 selectedDateStr={format(selectedDate, "yyyy-MM-dd")}
               />
               <DispatchTimeline

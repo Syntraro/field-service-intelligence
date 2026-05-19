@@ -22,10 +22,7 @@ import { Button } from "@/components/ui/button";
 // canonical 7-tone palette.
 import { StatusChip } from "@/components/ui/chip";
 import type { ChipTone } from "@/lib/chipVariants";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertCircle,
@@ -287,33 +284,17 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
         )}
       </CardContent>
 
-      <AlertDialog
+      <ConfirmModal
         open={!!confirmResendId}
         onOpenChange={(open) => { if (!open) setConfirmResendId(null); }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Resend this email?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Sends the same message and attachment to the original recipients.
-              You can only resend once.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={resendMutation.isPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={resendMutation.isPending}
-              onClick={(e) => {
-                e.preventDefault();
-                if (confirmResendId) resendMutation.mutate(confirmResendId);
-              }}
-              data-testid="button-confirm-delivery-resend"
-            >
-              {resendMutation.isPending ? "Resending…" : "Resend"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title="Resend this email?"
+        description="Sends the same message and attachment to the original recipients. You can only resend once."
+        confirmLabel="Resend"
+        variant="neutral"
+        isPending={resendMutation.isPending}
+        onConfirm={() => { if (confirmResendId) resendMutation.mutate(confirmResendId); }}
+        testIdPrefix="delivery-resend"
+      />
     </Card>
   );
 }

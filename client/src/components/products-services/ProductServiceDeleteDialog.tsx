@@ -12,20 +12,9 @@ import {
   ModalPrimaryAction,
   ModalSecondaryAction,
 } from "@/components/ui/modal";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { FileText, Loader2 } from "lucide-react";
 import { Part } from "./types";
 
-// Single Delete Confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1
 interface DeleteConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -40,26 +29,16 @@ export function DeleteConfirmDialog({
   onConfirm,
 }: DeleteConfirmDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid="delete-item-modal">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete Item?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Delete &ldquo;{product?.name}&rdquo;? This cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel data-testid="delete-item-cancel">Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            data-testid="delete-item-confirm"
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Delete Item?"
+      description={`Delete "${product?.name}"? This cannot be undone.`}
+      confirmLabel="Delete"
+      variant="destructive"
+      onConfirm={onConfirm}
+      testIdPrefix="delete-item"
+    />
   );
 }
 
@@ -96,7 +75,6 @@ export function ArchiveConfirmDialog({
   );
 }
 
-// Bulk Delete Confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1
 interface BulkDeleteDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -111,26 +89,16 @@ export function BulkDeleteDialog({
   onConfirm,
 }: BulkDeleteDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid="bulk-delete-modal">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete {count} Items?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This action cannot be undone. Consider archiving instead.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel data-testid="bulk-delete-cancel">Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            data-testid="bulk-delete-confirm"
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Delete ${count} Items?`}
+      description="This action cannot be undone. Consider archiving instead."
+      confirmLabel="Delete"
+      variant="destructive"
+      onConfirm={onConfirm}
+      testIdPrefix="bulk-delete"
+    />
   );
 }
 

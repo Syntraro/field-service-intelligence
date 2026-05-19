@@ -3,15 +3,7 @@ import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { FileText, Pause, Pencil, Play, Trash2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { WorkspaceSectionCard } from "@/components/workspace/WorkspaceSectionCard";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -313,32 +305,17 @@ export function ServicePlanQuickActionsCard({
         )}
       </WorkspaceSectionCard>
 
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {isArchiveOutcome ? "Archive Service Plan?" : "Delete Service Plan?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmDescription}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteMutation.isPending}>
-              Cancel
-            </AlertDialogCancel>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => deleteMutation.mutate()}
-              disabled={deleteMutation.isPending}
-              data-testid="service-plan-delete-confirm"
-            >
-              {deleteMutation.isPending ? "Deleting…" : deleteButtonLabel}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title={isArchiveOutcome ? "Archive Service Plan?" : "Delete Service Plan?"}
+        description={confirmDescription}
+        confirmLabel={deleteButtonLabel}
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        testIdPrefix="service-plan-delete"
+      />
     </>
   );
 }

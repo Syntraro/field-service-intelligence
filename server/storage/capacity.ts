@@ -5,8 +5,7 @@
  *   - Schedulable tech list:    filterSchedulableTechnicians()       (domain/scheduling)
  *   - Today's visits (blockers): schedulingRepository.getScheduledJobsInRange()
  *                                 (same source as GET /api/calendar + dispatch board)
- *   - Per-tech workday:          teamRepository.getWorkingHours()     (workingHours table)
- *   - Company-default workday:   businessHoursRepository.getCompanyBusinessHours()
+ *   - Per-tech workday:          availabilityEngine.resolveTechnicianShifts()  (technician_shifts table)
  *   - Tech name resolution:      resolveTechnicianName()
  *
  * Output shape is tuned for the Dashboard's "Today's Capacity" card — one
@@ -22,7 +21,6 @@
 
 import { schedulingRepository } from "./scheduling";
 import { teamRepository } from "./team";
-import { businessHoursRepository } from "./businessHours";
 import { companyRepository } from "./company";
 import { technicianTimeOffRepository } from "./technicianTimeOff";
 import { taskRepository } from "./tasks";
@@ -33,6 +31,7 @@ import {
   getStartOfNextDayInTimezone,
 } from "../domain/scheduling";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
+import { availabilityEngine, type ResolvedShift } from "../services/availabilityEngine";
 
 const MIN_SLOT_MINUTES = 30;
 /**
@@ -114,7 +113,7 @@ export interface TechnicianCapacity {
   meaningfulSlotCount: number;
   /** Full workday bounds today (so the UI can show "Fully open today · 8h available"). */
   workday: { startISO: string; endISO: string } | null;
-  workdaySource: "custom" | "company";
+  workdaySource: "shift";
   /**
    * Full-day schedule rows (booked visits + ≥120min open gaps) for the
    * tech tile. Empty when state === "off_today". Clipped to workday
@@ -213,16 +212,6 @@ interface Interval {
   end: number;
 }
 
-/** Parse "HH:MM" → minutes-from-midnight. Null when invalid/absent. */
-function parseHHMM(s: string | null | undefined): number | null {
-  if (!s) return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
-  if (!m) return null;
-  const hh = Number(m[1]);
-  const mm = Number(m[2]);
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  return hh * 60 + mm;
-}
 
 function mergeIntervals(intervals: Interval[]): Interval[] {
   if (intervals.length === 0) return [];
@@ -529,22 +518,6 @@ export async function getTodayCapacity(
   const dayStart = getStartOfDayInTimezone(now, timezone);
   const dayEnd = getStartOfNextDayInTimezone(now, timezone);
 
-  // Day-of-week of "today" in the company's local calendar. Derived from
-  // the company-local YMD (not from dayStart.getUTCDay() — that breaks for
-  // positive UTC offsets where the UTC instant of local midnight lands on
-  // the previous UTC day).
-  const localYmdFmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const ymdParts = localYmdFmt.formatToParts(now);
-  const localY = Number(ymdParts.find(p => p.type === "year")?.value ?? "0");
-  const localM = Number(ymdParts.find(p => p.type === "month")?.value ?? "1") - 1;
-  const localD = Number(ymdParts.find(p => p.type === "day")?.value ?? "1");
-  const dow = new Date(Date.UTC(localY, localM, localD)).getUTCDay(); // 0=Sun..6=Sat
-
   const nowMs = now.getTime();
   const dayStartMs = dayStart.getTime();
   const dayEndMs = dayEnd.getTime();
@@ -571,15 +544,21 @@ export async function getTodayCapacity(
     excludedTechNames.set(user.id, resolveTechnicianName(user as any));
   }
 
-  const [companyHours, ...perTechHours] = await Promise.all([
-    businessHoursRepository.getCompanyBusinessHours(companyId),
-    ...schedulable.map(m => teamRepository.getWorkingHours(m.id)),
-  ]);
-
-  const companyDay = companyHours.find(h => h.dayOfWeek === dow) ?? null;
-  const companyWorkingToday = companyDay?.isOpen ?? false;
-  const companyStartMin = companyDay?.startMinutes ?? null;
-  const companyEndMin = companyDay?.endMinutes ?? null;
+  const schedulableUserIds = schedulable.map(m => m.id);
+  const todaysShifts = await availabilityEngine.resolveTechnicianShifts(
+    companyId,
+    schedulableUserIds,
+    dayStart,
+    dayEnd,
+    timezone,
+  );
+  const normalShiftsByTech = new Map<string, ResolvedShift[]>();
+  for (const shift of todaysShifts) {
+    if (shift.shiftType !== "normal") continue;
+    const arr = normalShiftsByTech.get(shift.technicianUserId) ?? [];
+    arr.push(shift);
+    normalShiftsByTech.set(shift.technicianUserId, arr);
+  }
 
   // --- Today's visits (canonical query — same as calendar/dispatch) -------
   const todaysVisits = await schedulingRepository.getScheduledJobsInRange(
@@ -915,33 +894,19 @@ export async function getTodayCapacity(
   });
 
   // --- Per-tech capacity --------------------------------------------------
-  const technicians: TechnicianCapacity[] = schedulable.map((member, idx) => {
+  const technicians: TechnicianCapacity[] = schedulable.map((member) => {
     const name = resolveTechnicianName(member as any);
-    const useCustom = (member as any).useCustomSchedule === true;
-    const customHours = perTechHours[idx] ?? [];
-    const customDay = useCustom ? customHours.find(h => h.dayOfWeek === dow) : undefined;
+    const normalShifts = normalShiftsByTech.get(member.id) ?? [];
+    const primaryShift = normalShifts.length > 0
+      ? normalShifts.reduce((a, b) => a.startsAt < b.startsAt ? a : b)
+      : null;
+    // Clip shift bounds to today's calendar window (handles overnight shifts).
+    const shiftStartMs = primaryShift ? Math.max(primaryShift.startsAt.getTime(), dayStartMs) : null;
+    const shiftEndMs = primaryShift ? Math.min(primaryShift.endsAt.getTime(), dayEndMs) : null;
+    const isWorking = shiftStartMs !== null && shiftEndMs !== null && shiftEndMs > shiftStartMs;
 
-    let workStartMin: number | null = null;
-    let workEndMin: number | null = null;
-    let isWorking: boolean;
-    let source: "custom" | "company";
-    if (useCustom && customDay) {
-      source = "custom";
-      isWorking = !!customDay.isWorking;
-      workStartMin = parseHHMM(customDay.startTime);
-      workEndMin = parseHHMM(customDay.endTime);
-    } else {
-      source = "company";
-      isWorking = companyWorkingToday;
-      workStartMin = companyStartMin;
-      workEndMin = companyEndMin;
-    }
-
-    const baseWorkday = (isWorking && workStartMin != null && workEndMin != null && workEndMin > workStartMin)
-      ? {
-          startISO: new Date(dayStartMs + workStartMin * 60_000).toISOString(),
-          endISO: new Date(dayStartMs + workEndMin * 60_000).toISOString(),
-        }
+    const baseWorkday = isWorking
+      ? { startISO: new Date(shiftStartMs!).toISOString(), endISO: new Date(shiftEndMs!).toISOString() }
       : null;
 
     // --- Schedule blocks for tile (computed once, used by every return path).
@@ -953,8 +918,7 @@ export async function getTodayCapacity(
       (acc, v) => acc + Math.round((v.end - v.start) / 60_000),
       0,
     );
-    const hasValidWorkday =
-      isWorking && workStartMin != null && workEndMin != null && workEndMin > workStartMin;
+    const hasValidWorkday = isWorking;
 
     // 2026-04-26 polish v6: schedule blocks now render for off-shift techs
     // who have assigned visits. The dashboard's "Today's Schedule" used to
@@ -971,8 +935,8 @@ export async function getTodayCapacity(
     const scheduleBlocks: ScheduleBlock[] = (() => {
       if (hasValidWorkday) {
         return buildScheduleBlocks(
-          dayStartMs + workStartMin! * 60_000,
-          dayStartMs + workEndMin! * 60_000,
+          shiftStartMs!,
+          shiftEndMs!,
           techVisits,
           techTimeOff,
           techTasks,
@@ -1017,7 +981,7 @@ export async function getTodayCapacity(
         totalAvailableMinutes: 0,
         meaningfulSlotCount: 0,
         workday: baseWorkday,
-        workdaySource: source,
+        workdaySource: "shift",
         scheduleBlocks,
         visitCount,
         bookedMinutes,
@@ -1025,8 +989,8 @@ export async function getTodayCapacity(
       };
     }
 
-    const workStartMs = dayStartMs + workStartMin! * 60_000;
-    const workEndMs = dayStartMs + workEndMin! * 60_000;
+    const workStartMs = shiftStartMs!;
+    const workEndMs = shiftEndMs!;
 
     // Has the workday already ended?
     if (nowMs >= workEndMs) {
@@ -1038,7 +1002,7 @@ export async function getTodayCapacity(
         totalAvailableMinutes: 0,
         meaningfulSlotCount: 0,
         workday: baseWorkday,
-        workdaySource: source,
+        workdaySource: "shift",
         scheduleBlocks,
         visitCount,
         bookedMinutes,
@@ -1066,7 +1030,7 @@ export async function getTodayCapacity(
         totalAvailableMinutes: durationMinutes,
         meaningfulSlotCount: 1,
         workday: baseWorkday,
-        workdaySource: source,
+        workdaySource: "shift",
         scheduleBlocks,
         visitCount,
         bookedMinutes,
@@ -1100,7 +1064,7 @@ export async function getTodayCapacity(
         totalAvailableMinutes: 0,
         meaningfulSlotCount: 0,
         workday: baseWorkday,
-        workdaySource: source,
+        workdaySource: "shift",
         scheduleBlocks,
         visitCount,
         bookedMinutes,
@@ -1137,7 +1101,7 @@ export async function getTodayCapacity(
       totalAvailableMinutes,
       meaningfulSlotCount: meaningful.length,
       workday: baseWorkday,
-      workdaySource: source,
+      workdaySource: "shift",
       scheduleBlocks,
       visitCount,
       bookedMinutes,

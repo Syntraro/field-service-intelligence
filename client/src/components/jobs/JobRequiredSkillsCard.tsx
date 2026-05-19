@@ -34,8 +34,8 @@ import {
   ModalFooter,
   ModalPrimaryAction,
   ModalSecondaryAction,
+  ConfirmModal,
 } from "@/components/ui/modal";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { FormField, FormLabel, FormErrorText } from "@/components/ui/form-field";
 import { Label } from "@/components/ui/label";
 import { Wrench, Plus, MoreHorizontal, Trash2, Pencil, ShieldAlert } from "lucide-react";
@@ -313,25 +313,16 @@ export function JobRequiredSkillsCard({ jobId }: JobRequiredSkillsCardProps) {
       )}
 
       {/* Remove confirmation */}
-      <AlertDialog open={!!removeTarget} onOpenChange={(v) => { if (!v) setRemoveTarget(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove "{removeTarget?.skillName}"?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the skill requirement from this job. Existing assignments are not affected.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => removeTarget && removeMutation.mutate(removeTarget.id)}
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={!!removeTarget}
+        onOpenChange={(v) => { if (!v) setRemoveTarget(null); }}
+        title={`Remove "${removeTarget?.skillName}"?`}
+        description="This will remove the skill requirement from this job. Existing assignments are not affected."
+        confirmLabel="Remove"
+        variant="destructive"
+        onConfirm={() => { const t = removeTarget; setRemoveTarget(null); if (t) removeMutation.mutate(t.id); }}
+        testIdPrefix="job-skill-remove"
+      />
     </>
   );
 }

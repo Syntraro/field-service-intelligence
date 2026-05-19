@@ -23,16 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { AlertTriangle, Trash2, Search, Loader2 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -413,39 +404,18 @@ export function BulkArchivedJobsCleanupCard() {
       </CardContent>
 
       {/* Destructive warning dialog (only when invoice-linked rows are in scope) */}
-      <AlertDialog open={showWarningDialog} onOpenChange={setShowWarningDialog}>
-        <AlertDialogContent data-testid="dialog-bulk-cleanup-warning">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-destructive" />
-              Some archived jobs are linked to invoices
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {preview?.warningMessage ??
-                "Some archived jobs are linked to invoices. Deleting these jobs will keep the invoices, but detach them from the jobs. Do you still want to proceed?"}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              onClick={handleCancelWarning}
-              data-testid="button-bulk-cleanup-warning-cancel"
-            >
-              No, cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleConfirmedRun}
-              disabled={runMutation.isPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="button-bulk-cleanup-warning-confirm"
-            >
-              {runMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : null}
-              Yes, delete and detach
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showWarningDialog}
+        onOpenChange={setShowWarningDialog}
+        title="Some archived jobs are linked to invoices"
+        description={preview?.warningMessage ?? "Some archived jobs are linked to invoices. Deleting these jobs will keep the invoices, but detach them from the jobs. Do you still want to proceed?"}
+        cancelLabel="No, cancel"
+        confirmLabel="Yes, delete and detach"
+        variant="destructive"
+        isPending={runMutation.isPending}
+        onConfirm={() => { setShowWarningDialog(false); handleConfirmedRun(); }}
+        testIdPrefix="bulk-cleanup-warning"
+      />
     </Card>
   );
 }

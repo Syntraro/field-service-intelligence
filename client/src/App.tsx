@@ -104,10 +104,8 @@ const InvoiceDisplaySettingsPage = lazy(() => import("@/pages/InvoiceDisplaySett
 import ClientsWorkspacePage from "@/pages/clients/ClientsWorkspacePage";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import PriceBookPage from "@/pages/PriceBookPage";
-// 2026-04-20 Phase 2 Team Hub: TechnicianManagementPage import removed.
-// The legacy /settings/team page now resolves to TeamHubPage. The file still
-// exists on disk as a Phase-2 safety net; it will be deleted after verification.
-import TeamHubPage from "@/pages/TeamHubPage";
+// TeamHubPage is used by TeamWorkspacePage (Members tab) — not imported here directly.
+import TeamWorkspacePage from "@/pages/TeamWorkspacePage";
 import ManageRoles from "@/pages/ManageRoles";
 import TeamMemberDetail from "@/pages/TeamMemberDetail";
 // Technician and DailyParts imports removed — pages call non-existent endpoints (UI-001)
@@ -285,10 +283,9 @@ function Router() {
           <DispatchBoard />
         </ProtectedRoute>
       </Route>
+      {/* /shift-management → canonical /team/schedules workspace tab */}
       <Route path="/shift-management">
-        <ProtectedRoute requireAdmin>
-          <ShiftManagementPage />
-        </ProtectedRoute>
+        <Redirect to="/team/schedules" />
       </Route>
       {/* 2026-05-07 Communications Hub Phase 1 — full-page workspace.
           All authenticated users may open the page; role-aware visibility
@@ -627,35 +624,44 @@ function Router() {
       <Route path="/settings/products">
         <Redirect to="/price-book" />
       </Route>
+      {/* /settings/team → canonical Team Workspace (2026-05-18) */}
       <Route path="/settings/team">
-        {/* 2026-04-20 Phase 2: canonical Team Management hub. The 2026-
-            05-05 member-centric restructure relabels the tabs as
-            Overview / Schedule / Compensation / Access; the underlying
-            components are reused. Legacy `?tab=members | schedules`
-            URL values still resolve via TeamHubPage's
-            LEGACY_TAB_ALIAS map. */}
-        <ProtectedRoute requireAdmin>
-          <TeamHubPage />
-        </ProtectedRoute>
+        <Redirect to="/team" />
       </Route>
-      {/* 2026-05-05: short-path aliases for the Team Hub. Soft-
-          deprecation only — the canonical surface remains
-          `/settings/team`. */}
+      {/* Team Workspace — permission-aware tabbed hub for Members,
+          Schedules, Timesheets, and Performance. /team redirects to the
+          first tab the user has permission to access. */}
       <Route path="/team">
         <ProtectedRoute requireAdmin>
-          <TeamHubPage />
+          <TeamWorkspacePage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/team/members">
+        <ProtectedRoute requireAdmin>
+          <TeamWorkspacePage />
         </ProtectedRoute>
       </Route>
       <Route path="/team/schedules">
-        {/* Legacy deep-link → redirect to the Schedule sub-tab on the
-            canonical Team Hub. Members can still bookmark this path. */}
-        <Redirect to="/team?tab=schedule" />
+        <ProtectedRoute requireAdmin>
+          <TeamWorkspacePage />
+        </ProtectedRoute>
       </Route>
+      <Route path="/team/timesheets">
+        <ProtectedRoute requireAdmin>
+          <TeamWorkspacePage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/team/performance">
+        <ProtectedRoute requireAdmin>
+          <TeamWorkspacePage />
+        </ProtectedRoute>
+      </Route>
+      {/* Legacy deep-links — keep working but redirect to workspace paths */}
       <Route path="/team/compensation">
-        <Redirect to="/team?tab=payroll" />
+        <Redirect to="/team/members" />
       </Route>
       <Route path="/team/access">
-        <Redirect to="/team?tab=permissions" />
+        <Redirect to="/team/members" />
       </Route>
       <Route path="/settings/custom-fields">
         <ProtectedRoute requireAdmin>

@@ -27,6 +27,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { Calendar, CreditCard, RefreshCw, AlertTriangle, CheckCircle2, Clock, ArrowLeft } from "lucide-react";
 import { Link } from "wouter";
@@ -476,33 +477,22 @@ export default function SubscriptionSettings() {
         )}
       </div>
 
-      {/* Cancel Dialog */}
-      <AlertDialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Cancel Subscription?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {isAnnual && endDateFormatted ? (
-                <>
-                  Your subscription will be cancelled but you'll retain access until{" "}
-                  <strong>{endDateFormatted}</strong>. After that, you'll need to resubscribe.
-                </>
-              ) : (
-                "Your subscription will be cancelled immediately."
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep Subscription</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => cancelMutation.mutate()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {cancelMutation.isPending ? "Cancelling..." : "Yes, Cancel"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showCancelDialog}
+        onOpenChange={setShowCancelDialog}
+        title="Cancel Subscription?"
+        description={
+          isAnnual && endDateFormatted
+            ? `Your subscription will be cancelled but you'll retain access until ${endDateFormatted}. After that, you'll need to resubscribe.`
+            : "Your subscription will be cancelled immediately."
+        }
+        confirmLabel="Yes, Cancel"
+        cancelLabel="Keep Subscription"
+        variant="destructive"
+        isPending={cancelMutation.isPending}
+        onConfirm={() => { setShowCancelDialog(false); cancelMutation.mutate(); }}
+        testIdPrefix="subscription-cancel"
+      />
 
       {/* Renew Dialog */}
       <AlertDialog open={showRenewDialog} onOpenChange={setShowRenewDialog}>

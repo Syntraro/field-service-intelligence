@@ -5,6 +5,7 @@ import {
   EntityListTable,
   type EntityListColumn,
 } from "@/components/lists/EntityListTable";
+import { PricebookThumb } from "@/components/pricebook/ItemImageUpload";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
 import { WorkspaceEntitySurface } from "@/components/workspace/WorkspaceEntitySurface";
 import { PriceBookCreateServiceTemplateDialog } from "./PriceBookCreateServiceTemplateDialog";
@@ -45,6 +46,25 @@ function computeTemplateCostAndMargin(t: ServiceTemplateDto): { estimatedCost: s
 
 function buildColumns(): EntityListColumn<TemplateRow>[] {
   return [
+    {
+      id: "thumb",
+      kind: "body",
+      header: "",
+      ratio: 0.3,
+      minWidthPx: 40,
+      cell: {
+        type: "customRender",
+        reason: "THUMBNAIL — flat-rate template image; no typed descriptor covers image thumbnail cells",
+        render: (row) => (
+          <PricebookThumb
+            entityType="service-template"
+            entityId={row.id}
+            thumbnailStorageKey={row._raw.thumbnailStorageKey}
+            className="h-8 w-8"
+          />
+        ),
+      },
+    },
     {
       id: "name",
       kind: "primary",

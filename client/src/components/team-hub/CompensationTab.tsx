@@ -1,9 +1,8 @@
 // 2026-04-20 Phase 2 Team Hub: Compensation tab.
 // Phase 4 (2026-04-20): selection lifted to TeamHubPage; shared dirty hook.
 //
-// Left rail = schedulable technicians (same selector pattern as SchedulesTab
-// for muscle memory). Right panel = cost rate, billable rate, calendar color,
-// internal note. Reuses PUT /api/team/:userId/profile exactly.
+// Left rail = schedulable technicians. Right panel = cost rate + billable rate.
+// Calendar colour and internal notes moved to Profile tab (2026-05-18 refinement pass).
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -11,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
@@ -42,8 +40,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
     queryKey: ["/api/team/technicians"],
   });
 
-  // Local fallback only — see SchedulesTab for the same pattern. We never
-  // overwrite the URL just because Compensation can't show a non-tech.
+  // Local fallback only — don't rewrite URL just because Compensation can't show a non-tech.
   const displayedId = useMemo(() => {
     if (technicians.length === 0) return null;
     if (selectedMemberId && technicians.some((t) => t.id === selectedMemberId)) {
@@ -66,8 +63,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
   const [form, setForm] = useState({
     laborCostPerHour: "",
     billableRatePerHour: "",
-    color: "#3b82f6",
-    note: "",
   });
 
   useEffect(() => {
@@ -75,8 +70,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
     setForm({
       laborCostPerHour: member.profile?.laborCostPerHour ?? "",
       billableRatePerHour: member.profile?.billableRatePerHour ?? "",
-      color: member.profile?.color ?? resolveTechnicianColor(member.id, null),
-      note: member.profile?.note ?? "",
     });
     dirty.markClean();
   }, [member?.id]);
@@ -99,13 +92,11 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
         body: JSON.stringify({
           laborCostPerHour: form.laborCostPerHour === "" ? null : form.laborCostPerHour,
           billableRatePerHour: form.billableRatePerHour === "" ? null : form.billableRatePerHour,
-          color: form.color,
-          note: form.note === "" ? null : form.note,
         }),
       });
     },
     onSuccess: () => {
-      toast({ title: "Compensation updated" });
+      toast({ title: "Rates saved" });
       queryClient.invalidateQueries({ queryKey: [`/api/team/${displayedId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
       dirty.markClean();
@@ -270,37 +261,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
                     />
                   </div>
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="comp-color">Calendar color</Label>
-                <div className="flex items-center gap-3">
-                  <Input
-                    id="comp-color"
-                    type="color"
-                    value={form.color}
-                    onChange={(e) => setField("color", e.target.value)}
-                    className="w-16 h-8 p-1"
-                    data-testid="input-comp-color"
-                  />
-                  <div
-                    className="h-9 w-24 rounded-md border"
-                    style={{ backgroundColor: form.color }}
-                    aria-hidden="true"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="comp-note">Internal notes</Label>
-                <Textarea
-                  id="comp-note"
-                  value={form.note}
-                  onChange={(e) => setField("note", e.target.value)}
-                  placeholder="Payroll type, overtime arrangement, etc."
-                  rows={3}
-                  data-testid="input-comp-note"
-                />
               </div>
 
               <div className="flex justify-end items-center gap-2 pt-2">

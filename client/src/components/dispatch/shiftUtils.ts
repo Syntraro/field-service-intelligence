@@ -85,6 +85,31 @@ export function hasNormalShiftCovering(
 }
 
 /**
+ * Returns true if the sequence end time (endISO) falls within at least one of
+ * the technician's normal shift windows. Used to warn when a same-cell Board
+ * reorder pushes visits past the end of the tech's scheduled shift.
+ *
+ * Safe to call when shift data is unavailable — returns true (no warning) when
+ * endISO cannot be parsed or when no normal shifts exist for the tech.
+ */
+export function isSequenceWithinShiftHours(
+  normalShiftsByTech: Map<string, DispatchShiftEntry[]>,
+  techId: string,
+  _startISO: string,
+  endISO: string,
+): boolean {
+  const endMs = Date.parse(endISO);
+  if (!isFinite(endMs)) return true;
+  const shifts = normalShiftsByTech.get(techId) ?? [];
+  if (shifts.length === 0) return true; // no shift data → no warning
+  return shifts.some(s => {
+    const sStart = Date.parse(s.startsAt);
+    const sEnd   = Date.parse(s.endsAt);
+    return sStart <= endMs && endMs <= sEnd;
+  });
+}
+
+/**
  * Returns true if the tech has any normal shift entry on the given date
  * (YYYY-MM-DD in company timezone). Recurring shifts use their occurrenceDate;
  * one-off shifts are matched against their UTC startsAt date.

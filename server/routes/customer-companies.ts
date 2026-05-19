@@ -19,7 +19,7 @@ import { logEventAsync } from "../lib/events";
 import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
 import { getClientIntelligence } from "../storage/clientIntelligence";
 import { db } from "../db";
-import { clientLocations, customerCompanies, invoices, invoiceNotes, events, users } from "@shared/schema";
+import { clientLocations, customerCompanies, invoices, invoiceNotes, events, users, payments } from "@shared/schema";
 import {
   INVALID_EMAIL_MESSAGE,
   isValidOptionalEmail,
@@ -2004,5 +2004,52 @@ router.get("/:companyId/unlinked-suggestions", asyncHandler(async (req: AuthedRe
     },
   });
 }));
+
+/**
+ * GET /api/customer-companies/:customerCompanyId/payments
+ * All payments for a customer company, joined to invoice + location.
+ * Used by the Payments tab on the Client Detail workspace.
+ * Returns at most 500 rows ordered by receivedAt desc.
+ */
+router.get(
+  "/:customerCompanyId/payments",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId: tenantCompanyId } = req;
+    const { customerCompanyId } = req.params;
+
+    // INNER JOIN on invoices is intentional: it scopes payments to this
+    // customer company via invoices.customerCompanyId. Multi-invoice
+    // payments (invoiceId IS NULL, linked via payment_allocations) are
+    // excluded until the payment_allocations join path ships separately.
+    const rows = await db
+      .select({
+        id: payments.id,
+        amount: payments.amount,
+        method: payments.method,
+        paymentType: payments.paymentType,
+        receivedAt: payments.receivedAt,
+        invoiceId: payments.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+        invoiceStatus: invoices.status,
+        locationId: clientLocations.id,
+        locationName: sql<string>`COALESCE(${clientLocations.location}, ${clientLocations.companyName}, ${clientLocations.address})`,
+      })
+      .from(payments)
+      .innerJoin(invoices, and(
+        eq(invoices.id, payments.invoiceId),
+        eq(invoices.companyId, tenantCompanyId!),
+        eq(invoices.customerCompanyId, customerCompanyId),
+      ))
+      .leftJoin(clientLocations, and(
+        eq(clientLocations.id, invoices.locationId),
+        eq(clientLocations.companyId, tenantCompanyId!),
+      ))
+      .where(eq(payments.companyId, tenantCompanyId!))
+      .orderBy(desc(payments.receivedAt))
+      .limit(500);
+
+    res.json(rows);
+  }),
+);
 
 export default router;

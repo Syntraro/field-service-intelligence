@@ -115,114 +115,96 @@ const ALL_TSX = walkTsx(CLIENT_SRC);
 
 // ── 1. Import shape ───────────────────────────────────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1 — imports", () => {
-  it("imports AlertDialog primitives from alert-dialog", () => {
-    expect(src).toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
+describe("ProductServiceDeleteDialog Phase 2 — imports", () => {
+  it("does NOT import from alert-dialog (AlertDialog retired — all confirms use ConfirmModal)", () => {
+    expect(src).not.toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
   });
 
-  it("imports AlertDialogContent", () => {
-    expect(src).toContain("AlertDialogContent");
-  });
-
-  it("imports AlertDialogAction", () => {
-    expect(src).toContain("AlertDialogAction");
-  });
-
-  it("imports AlertDialogCancel", () => {
-    expect(src).toContain("AlertDialogCancel");
-  });
-
-  it("does NOT import from dialog (Phase 1b: form dialogs migrated to ModalShell)", () => {
+  it("does NOT import from dialog (form dialogs use ModalShell)", () => {
     expect(src).not.toMatch(/from\s+["']@\/components\/ui\/dialog["']/);
   });
 
-  it("still imports ConfirmModal (ArchiveConfirmDialog is neutral)", () => {
+  it("imports ConfirmModal from modal", () => {
     expect(src).toMatch(/from\s+["']@\/components\/ui\/modal["']/);
+    expect(src).toMatch(/ConfirmModal/);
   });
 });
 
-// ── 2. DeleteConfirmDialog → AlertDialog ─────────────────────────────────────
+// ── 2. DeleteConfirmDialog → ConfirmModal ─────────────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1 — DeleteConfirmDialog uses AlertDialog", () => {
-  it("renders at least one AlertDialog open", () => {
-    expect(codeOnly).toMatch(/<AlertDialog[\s>]/);
+describe("ProductServiceDeleteDialog Phase 2 — DeleteConfirmDialog uses ConfirmModal", () => {
+  const deleteFnStart = src.indexOf("export function DeleteConfirmDialog");
+  const archiveFnStart = src.indexOf("export function ArchiveConfirmDialog");
+  const deleteSection = src.slice(deleteFnStart, archiveFnStart);
+
+  it("renders <ConfirmModal variant=\"destructive\">", () => {
+    expect(deleteSection).toMatch(/<ConfirmModal/);
+    expect(deleteSection).toMatch(/variant="destructive"/);
   });
 
-  it("preserves data-testid delete-item-modal on AlertDialogContent", () => {
-    expect(src).toContain('data-testid="delete-item-modal"');
+  it("does not use <AlertDialog", () => {
+    expect(deleteSection).not.toMatch(/<AlertDialog/);
   });
 
-  it("preserves data-testid delete-item-confirm on AlertDialogAction", () => {
-    expect(src).toContain('data-testid="delete-item-confirm"');
+  it("uses testIdPrefix delete-item (generates delete-item-modal/confirm/cancel)", () => {
+    expect(deleteSection).toContain('testIdPrefix="delete-item"');
   });
 
-  it("preserves data-testid delete-item-cancel on AlertDialogCancel", () => {
-    expect(src).toContain('data-testid="delete-item-cancel"');
+  it("title wording preserved: Delete Item?", () => {
+    expect(deleteSection).toContain("Delete Item?");
   });
 
-  it("delete branch wording preserved: Delete Item?", () => {
-    expect(src).toContain("Delete Item?");
+  it("description includes product name and cannot-be-undone wording", () => {
+    expect(deleteSection).toMatch(/product.*name/);
+    expect(deleteSection).toContain("This cannot be undone.");
   });
 
-  it("delete branch wording preserved: cannot be undone", () => {
-    expect(src).toContain("This cannot be undone.");
-  });
-
-  it("delete branch action label preserved: Delete", () => {
-    expect(codeOnly).toMatch(/<AlertDialogAction[\s\S]{0,200}>\s*Delete\s*<\/AlertDialogAction>/);
-  });
-
-  it("delete branch carries destructive styling", () => {
-    expect(src).toContain("bg-destructive text-destructive-foreground hover:bg-destructive/90");
-  });
-
-  it("does not pass delete-item testIdPrefix to ConfirmModal", () => {
-    expect(src).not.toMatch(/testIdPrefix="delete-item"/);
+  it("confirm label: Delete", () => {
+    expect(deleteSection).toContain('confirmLabel="Delete"');
   });
 });
 
-// ── 3. BulkDeleteDialog → AlertDialog ────────────────────────────────────────
+// ── 3. BulkDeleteDialog → ConfirmModal ────────────────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1 — BulkDeleteDialog uses AlertDialog", () => {
-  it("renders at least two AlertDialog opens (delete + bulk-delete)", () => {
-    const count = (codeOnly.match(/<AlertDialog[\s>]/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(2);
+describe("ProductServiceDeleteDialog Phase 2 — BulkDeleteDialog uses ConfirmModal", () => {
+  const bulkFnStart = src.indexOf("export function BulkDeleteDialog");
+  const bulkCategoryFnStart = src.indexOf("export function BulkCategoryDialog");
+  const bulkSection = src.slice(bulkFnStart, bulkCategoryFnStart);
+
+  it("renders <ConfirmModal variant=\"destructive\">", () => {
+    expect(bulkSection).toMatch(/<ConfirmModal/);
+    expect(bulkSection).toMatch(/variant="destructive"/);
   });
 
-  it("preserves data-testid bulk-delete-modal on AlertDialogContent", () => {
-    expect(src).toContain('data-testid="bulk-delete-modal"');
+  it("does not use <AlertDialog", () => {
+    expect(bulkSection).not.toMatch(/<AlertDialog/);
   });
 
-  it("preserves data-testid bulk-delete-confirm on AlertDialogAction", () => {
-    expect(src).toContain('data-testid="bulk-delete-confirm"');
+  it("uses testIdPrefix bulk-delete (generates bulk-delete-modal/confirm/cancel)", () => {
+    expect(bulkSection).toContain('testIdPrefix="bulk-delete"');
   });
 
-  it("preserves data-testid bulk-delete-cancel on AlertDialogCancel", () => {
-    expect(src).toContain('data-testid="bulk-delete-cancel"');
+  it("title includes count and Delete wording", () => {
+    expect(bulkSection).toMatch(/count/);
+    expect(bulkSection).toMatch(/Delete/);
   });
 
-  it("bulk-delete wording preserved: cannot be undone", () => {
-    const count = (src.match(/This action cannot be undone/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(1);
+  it("description wording preserved: cannot be undone", () => {
+    expect(bulkSection).toContain("This action cannot be undone.");
   });
 
-  it("bulk-delete wording preserved: Consider archiving instead", () => {
-    expect(src).toContain("Consider archiving instead.");
+  it("description wording preserved: Consider archiving instead", () => {
+    expect(bulkSection).toContain("Consider archiving instead.");
   });
 
-  it("bulk-delete action label preserved: Delete", () => {
-    const count = (codeOnly.match(/<AlertDialogAction[\s\S]{0,200}>\s*Delete\s*<\/AlertDialogAction>/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(2);
-  });
-
-  it("does not pass bulk-delete testIdPrefix to ConfirmModal", () => {
-    expect(src).not.toMatch(/testIdPrefix="bulk-delete"/);
+  it("confirm label: Delete", () => {
+    expect(bulkSection).toContain('confirmLabel="Delete"');
   });
 });
 
 // ── 4. ArchiveConfirmDialog stays on ConfirmModal ────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1 — ArchiveConfirmDialog stays on ConfirmModal", () => {
+describe("ProductServiceDeleteDialog — ArchiveConfirmDialog stays on ConfirmModal", () => {
   it("ArchiveConfirmDialog uses ConfirmModal (neutral, reversible — not destructive)", () => {
     expect(codeOnly).toContain("ConfirmModal");
   });
@@ -238,7 +220,7 @@ describe("ProductServiceDeleteDialog Phase 1 — ArchiveConfirmDialog stays on C
 
 // ── 5. BulkCategoryDialog → ModalShell (Phase 1b) ────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1b — BulkCategoryDialog uses ModalShell", () => {
+describe("ProductServiceDeleteDialog Phase 2 — BulkCategoryDialog uses ModalShell", () => {
   it("Dialog import has been removed entirely", () => {
     expect(src).not.toMatch(/from\s+["']@\/components\/ui\/dialog["']/);
   });
@@ -284,7 +266,7 @@ describe("ProductServiceDeleteDialog Phase 1b — BulkCategoryDialog uses ModalS
 
 // ── 6. ImportDialog → ModalShell (Phase 1b) ──────────────────────────────────
 
-describe("ProductServiceDeleteDialog Phase 1b — ImportDialog uses ModalShell", () => {
+describe("ProductServiceDeleteDialog Phase 2 — ImportDialog uses ModalShell", () => {
   it("ImportDialog renders ModalShell (not raw Dialog)", () => {
     const count = (codeOnly.match(/<ModalShell/g) ?? []).length;
     expect(count).toBeGreaterThanOrEqual(2);
@@ -341,8 +323,8 @@ describe("ProductServiceDeleteDialog Phase 1b — ImportDialog uses ModalShell",
 
 describe("App-wide — raw Dialog ceiling", () => {
   // ── Baseline: 34 opens across 25 non-allowlisted files (2026-05-10).
-  // Phase 2: InvoiceDetailPage showDeleteConfirm → AlertDialog (−1).
-  // Phase 3: ClientDetailPage deleteDialogOpen + confirmDeleteId + confirmRestoreId → AlertDialog (−3).
+  // Phase 2: InvoiceDetailPage showDeleteConfirm → ConfirmModal (0 raw Dialog change).
+  // Phase 3: ClientDetailPage archiveDialogOpen + permDeleteDialogOpen → AlertDialog (no raw Dialog change).
   // Phase 4: PMScheduleCard hardDeleteDialogOpen → AlertDialog (−1).
   // Phase 5: FeedbackDialog → ModalShell (−1).
   // Phase 6: JobEquipmentSection "Add Equipment" → ModalShell (−1).
@@ -440,24 +422,37 @@ describe("App-wide — ModalShell floor", () => {
   });
 });
 
-// ── 10. InvoiceDetailPage — Phase 2 delete confirmation guard ─────────────────
+// ── 10. InvoiceDetailPage — Phase 3 delete confirmation guard ─────────────────
 //
-// Pins that the showDeleteConfirm dialog uses AlertDialog (rule #1 — destructive)
-// and that the Dialog import is preserved for the remaining showPaymentDialog form.
+// Pins that the showDeleteConfirm dialog uses ConfirmModal (migrated from AlertDialog).
+// The Dialog import is preserved for the remaining showPaymentDialog form.
 
-describe("InvoiceDetailPage Phase 2 — showDeleteConfirm uses AlertDialog", () => {
+describe("InvoiceDetailPage Phase 3 — showDeleteConfirm uses ConfirmModal", () => {
   const invoiceSrc = readFileSync(
     resolve(__dirname, "../client/src/pages/InvoiceDetailPage.tsx"),
     "utf-8",
   );
   const invoiceCode = stripAll(invoiceSrc);
 
-  it("imports AlertDialog primitives from alert-dialog", () => {
-    expect(invoiceSrc).toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
+  it("does NOT import alert-dialog (migrated to ConfirmModal)", () => {
+    expect(invoiceSrc).not.toMatch(/from\s+["']@\/components\/ui\/alert-dialog["']/);
   });
 
-  it("delete confirm renders AlertDialog (not raw Dialog)", () => {
-    expect(invoiceCode).toMatch(/AlertDialog\s+open=\{showDeleteConfirm\}/);
+  it("imports ConfirmModal from modal", () => {
+    expect(invoiceSrc).toMatch(/ConfirmModal/);
+    expect(invoiceSrc).toMatch(/from\s+["']@\/components\/ui\/modal["']/);
+  });
+
+  it("delete confirm renders <ConfirmModal (not AlertDialog)", () => {
+    expect(invoiceCode).toContain("<ConfirmModal");
+  });
+
+  it("delete confirm uses variant destructive", () => {
+    expect(invoiceSrc).toContain('variant="destructive"');
+  });
+
+  it("delete confirm open state bound to showDeleteConfirm", () => {
+    expect(invoiceCode).toContain("open={showDeleteConfirm}");
   });
 
   it("delete confirm title wording preserved: Delete Draft Invoice", () => {
@@ -470,22 +465,6 @@ describe("InvoiceDetailPage Phase 2 — showDeleteConfirm uses AlertDialog", () 
 
   it("delete confirm calls deleteMutation.mutate()", () => {
     expect(invoiceCode).toContain("deleteMutation.mutate()");
-  });
-
-  it("delete confirm preserves disabled={deleteMutation.isPending}", () => {
-    expect(invoiceCode).toContain("disabled={deleteMutation.isPending}");
-  });
-
-  it("delete confirm preserves Deleting... loading text", () => {
-    expect(invoiceSrc).toContain("Deleting...");
-  });
-
-  it("delete confirm carries destructive styling", () => {
-    expect(invoiceSrc).toContain("bg-destructive text-destructive-foreground hover:bg-destructive/90");
-  });
-
-  it("cancel sets showDeleteConfirm to false", () => {
-    expect(invoiceCode).toContain("setShowDeleteConfirm(false)");
   });
 
   it("Dialog import retained (showPaymentDialog form still uses raw Dialog)", () => {
@@ -501,12 +480,13 @@ describe("InvoiceDetailPage Phase 2 — showDeleteConfirm uses AlertDialog", () 
   });
 });
 
-// ── 11. ClientDetailPage — Phase 3 confirmation guards ────────────────────────
+// ── 11. ClientDetailPage — confirmation guards ────────────────────────────────
 //
-// Pins that the three blocking/destructive confirmation dialogs use AlertDialog.
+// Pins that destructive confirmation dialogs use AlertDialog (non-ConfirmModal:
+// permDeleteDialogOpen has a text-input gate; archiveDialogOpen is non-binary).
 // addLocationDialogOpen and other form dialogs in ClientDetailPage are out of scope.
 
-describe("ClientDetailPage Phase 3 — deleteDialogOpen, confirmDeleteId, confirmRestoreId use AlertDialog", () => {
+describe("ClientDetailPage — archiveDialogOpen and permDeleteDialogOpen use AlertDialog", () => {
   const clientSrc = readFileSync(
     resolve(__dirname, "../client/src/pages/ClientDetailPage.tsx"),
     "utf-8",
@@ -521,101 +501,42 @@ describe("ClientDetailPage Phase 3 — deleteDialogOpen, confirmDeleteId, confir
     expect(clientSrc).toMatch(/from\s+["']@\/components\/ui\/dialog["']/);
   });
 
-  // deleteDialogOpen
-  it("deleteDialogOpen renders AlertDialog", () => {
-    expect(clientCode).toMatch(/AlertDialog\s+open=\{deleteDialogOpen\}/);
+  // archiveDialogOpen
+  it("archiveDialogOpen renders AlertDialog", () => {
+    expect(clientCode).toMatch(/AlertDialog\s+open=\{archiveDialogOpen\}/);
   });
 
-  it("deleteDialogOpen no longer uses raw Dialog", () => {
-    expect(clientCode).not.toMatch(/<Dialog\s+open=\{deleteDialogOpen\}/);
+  it("archiveDialogOpen no longer uses raw Dialog", () => {
+    expect(clientCode).not.toMatch(/<Dialog\s+open=\{archiveDialogOpen\}/);
   });
 
-  it("deleteDialogOpen wording preserved: permanently remove", () => {
-    expect(clientSrc).toContain("permanently remove");
-  });
-
-  it("deleteDialogOpen text-confirm input preserved: placeholder DELETE", () => {
-    expect(clientSrc).toContain('placeholder="DELETE"');
-  });
-
-  it("deleteDialogOpen hard-delete disabled state preserved", () => {
-    expect(clientCode).toContain('deleteConfirmText !== "DELETE" || executeDelete.isPending');
-  });
-
-  it("deleteDialogOpen hard-delete carries destructive styling", () => {
-    expect(clientSrc).toContain("bg-destructive text-destructive-foreground hover:bg-destructive/90");
-  });
-
-  it("deleteDialogOpen archive action preserved: Archiving...", () => {
+  it("archiveDialogOpen archive action preserved: Archiving...", () => {
     expect(clientSrc).toContain("Archiving...");
   });
 
-  it("deleteDialogOpen cancel sets deleteDialogOpen false", () => {
-    expect(clientCode).toContain("setDeleteDialogOpen(false)");
+  // permDeleteDialogOpen
+  it("permDeleteDialogOpen renders AlertDialog", () => {
+    expect(clientCode).toMatch(/AlertDialog\s+open=\{permDeleteDialogOpen\}/);
   });
 
-  // confirmDeleteId
-  it("confirmDeleteId renders AlertDialog", () => {
-    expect(clientCode).toMatch(/AlertDialog\s+open=\{!!confirmDeleteId\}/);
+  it("permDeleteDialogOpen no longer uses raw Dialog", () => {
+    expect(clientCode).not.toMatch(/<Dialog\s+open=\{permDeleteDialogOpen\}/);
   });
 
-  it("confirmDeleteId no longer uses raw Dialog", () => {
-    expect(clientCode).not.toMatch(/<Dialog\s+open=\{!!confirmDeleteId\}/);
+  it("permDeleteDialogOpen text-confirm input preserved: placeholder DELETE", () => {
+    expect(clientSrc).toContain('placeholder="DELETE"');
   });
 
-  it("confirmDeleteId title wording preserved", () => {
-    expect(clientSrc).toContain("Delete this equipment?");
+  it("permDeleteDialogOpen hard-delete disabled state preserved", () => {
+    expect(clientCode).toContain('permDeleteConfirmText !== "DELETE"');
   });
 
-  it("confirmDeleteId description preserved: Service history", () => {
-    expect(clientSrc).toContain("Service history and related notes will be preserved.");
+  it("permDeleteDialogOpen hard-delete carries destructive styling", () => {
+    expect(clientSrc).toContain("bg-destructive text-destructive-foreground hover:bg-destructive/90");
   });
 
-  it("confirmDeleteId calls onDelete", () => {
-    expect(clientCode).toContain("onDelete(confirmDeleteId!)");
-  });
-
-  it("confirmDeleteId carries destructive styling", () => {
-    const count = (clientSrc.match(/bg-destructive text-destructive-foreground hover:bg-destructive\/90/g) ?? []).length;
-    expect(count).toBeGreaterThanOrEqual(2);
-  });
-
-  it("confirmDeleteId cancel clears confirmDeleteId", () => {
-    expect(clientCode).toContain("setConfirmDeleteId(null)");
-  });
-
-  // confirmRestoreId
-  it("confirmRestoreId renders AlertDialog", () => {
-    expect(clientCode).toMatch(/AlertDialog\s+open=\{!!confirmRestoreId\}/);
-  });
-
-  it("confirmRestoreId no longer uses raw Dialog", () => {
-    expect(clientCode).not.toMatch(/<Dialog\s+open=\{!!confirmRestoreId\}/);
-  });
-
-  it("confirmRestoreId title wording preserved", () => {
-    expect(clientSrc).toContain("Restore this equipment?");
-  });
-
-  it("confirmRestoreId description preserved: return it to the active", () => {
-    expect(clientSrc).toContain("return it to the active equipment list.");
-  });
-
-  it("confirmRestoreId calls restoreMutation.mutate", () => {
-    expect(clientCode).toContain("restoreMutation.mutate(confirmRestoreId!)");
-  });
-
-  it("confirmRestoreId isPending spinner preserved", () => {
-    expect(clientSrc).toContain("restoreMutation.isPending");
-    expect(clientSrc).toContain("animate-spin");
-  });
-
-  it("confirmRestoreId disabled={restoreMutation.isPending} preserved", () => {
-    expect(clientCode).toContain("disabled={restoreMutation.isPending}");
-  });
-
-  it("confirmRestoreId cancel clears confirmRestoreId", () => {
-    expect(clientCode).toContain("setConfirmRestoreId(null)");
+  it("permDeleteDialogOpen wording preserved: permanently delete", () => {
+    expect(clientSrc).toContain("permanently delete");
   });
 
   // addLocationDialogOpen untouched

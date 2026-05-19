@@ -4,14 +4,13 @@ import {
   Users,
   FileText,
   ShieldAlert,
-  Clock,
   FileCheck,
   CalendarClock,
-  CalendarRange,
   Wrench,
   CreditCard,
   BookMarked,
   Inbox,
+  UserCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -140,25 +139,19 @@ export function buildTenantNavItems(
     isDivider: true,
   });
 
-  // Group 5: Shift Management → Timesheets → Reports
+  // Group 5: Team workspace (Members, Schedules, Timesheets, Performance) → Reports
   items.push({
-    title: "Schedules",
-    icon: CalendarRange,
-    href: "/shift-management",
+    title: "Team",
+    icon: UserCheck,
+    href: "/team",
     isActive:
+      location === "/team" ||
+      location.startsWith("/team/") ||
       location === "/shift-management" ||
       location.startsWith("/shift-management/"),
-    testId: "nav-shift-management",
+    testId: "nav-team",
     isDivider: true,
-    hoverText: "Technician shift schedules and availability",
-  });
-  items.push({
-    title: "Timesheets",
-    icon: Clock,
-    href: "/timesheets",
-    isActive:
-      location === "/timesheets" || location.startsWith("/timesheets/"),
-    testId: "nav-timesheets",
+    hoverText: "Members, schedules, timesheets, and workforce access",
   });
   items.push({
     title: "Reports",

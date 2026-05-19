@@ -19,16 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { Power, PowerOff, Shield, Calendar, X, Loader2 } from "lucide-react";
 import type { Role, TeamMemberRow } from "./types";
@@ -58,10 +49,6 @@ async function runFanOut(
 const invalidateAfterBulk = () => {
   queryClient.invalidateQueries({ queryKey: ["/api/team"] });
   queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
-  queryClient.invalidateQueries({
-    queryKey: ["/api/team/technicians/working-hours"],
-    exact: false,
-  });
 };
 
 export function BulkActionsBar({ selectedIds, members, onClear }: Props) {
@@ -299,30 +286,17 @@ export function BulkActionsBar({ selectedIds, members, onClear }: Props) {
         {isRunning && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
       </div>
 
-      <AlertDialog
+      <ConfirmModal
         open={pendingAction !== null}
         onOpenChange={(open) => !open && setPendingAction(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{actionLabel}</AlertDialogTitle>
-            <AlertDialogDescription>{confirmText}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={runPending}
-              className={
-                pendingAction === "deactivate"
-                  ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  : ""
-              }
-            >
-              {actionLabel}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={actionLabel}
+        description={confirmText}
+        confirmLabel={actionLabel}
+        variant={pendingAction === "deactivate" ? "destructive" : "neutral"}
+        isPending={isRunning}
+        onConfirm={runPending}
+        testIdPrefix="bulk-action-confirm"
+      />
     </>
   );
 }

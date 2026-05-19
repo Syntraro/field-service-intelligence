@@ -59,16 +59,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   Tooltip,
   TooltipContent,
@@ -959,99 +950,53 @@ export default function QuoteDetailPage() {
           (Delete → /quotes; Convert to Job → /jobs/:id), so the close
           path is harmless. */}
 
-      {/* Approve Confirmation */}
-      <AlertDialog open={showApproveConfirm} onOpenChange={setShowApproveConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Approve Quote</AlertDialogTitle>
-            <AlertDialogDescription>
-              Mark this quote as approved by the client?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-approve-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending}
-              data-testid="button-approve-confirm"
-            >
-              {approveMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Mark Approved
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showApproveConfirm}
+        onOpenChange={setShowApproveConfirm}
+        title="Approve Quote"
+        description="Mark this quote as approved by the client?"
+        confirmLabel="Mark Approved"
+        variant="neutral"
+        isPending={approveMutation.isPending}
+        onConfirm={() => { setShowApproveConfirm(false); approveMutation.mutate(); }}
+        testIdPrefix="quote-approve"
+      />
 
-      {/* Decline Confirmation */}
-      <AlertDialog open={showDeclineConfirm} onOpenChange={setShowDeclineConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Decline Quote</AlertDialogTitle>
-            <AlertDialogDescription>
-              Mark this quote as declined by the client?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-decline-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => declineMutation.mutate()}
-              disabled={declineMutation.isPending}
-              data-testid="button-decline-confirm"
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {declineMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Mark Declined
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeclineConfirm}
+        onOpenChange={setShowDeclineConfirm}
+        title="Decline Quote"
+        description="Mark this quote as declined by the client?"
+        confirmLabel="Mark Declined"
+        variant="destructive"
+        isPending={declineMutation.isPending}
+        onConfirm={() => { setShowDeclineConfirm(false); declineMutation.mutate(); }}
+        testIdPrefix="quote-decline"
+      />
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Quote</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this quote? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteMutation.mutate()}
-              disabled={deleteMutation.isPending}
-              data-testid="button-delete-confirm"
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleteMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Delete Quote
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        title="Delete Quote"
+        description="Are you sure you want to delete this quote? This action cannot be undone."
+        confirmLabel="Delete Quote"
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => { setShowDeleteConfirm(false); deleteMutation.mutate(); }}
+        testIdPrefix="quote-delete"
+      />
 
-      {/* Convert to Job Confirmation */}
-      <AlertDialog open={showConvertToJobConfirm} onOpenChange={setShowConvertToJobConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Convert to Job</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will create a new job from {quote.quoteNumber} with all line items. The quote will be marked as converted.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-convert-to-job-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => convertToJobMutation.mutate()}
-              disabled={convertToJobMutation.isPending}
-              data-testid="button-convert-to-job-confirm"
-            >
-              {convertToJobMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Create Job
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showConvertToJobConfirm}
+        onOpenChange={setShowConvertToJobConfirm}
+        title="Convert to Job"
+        description={`This will create a new job from ${quote.quoteNumber} with all line items. The quote will be marked as converted.`}
+        confirmLabel="Create Job"
+        variant="neutral"
+        isPending={convertToJobMutation.isPending}
+        onConfirm={() => { setShowConvertToJobConfirm(false); convertToJobMutation.mutate(); }}
+        testIdPrefix="quote-convert-to-job"
+      />
 
       {/* 2026-04-29 (Phase 2 canonical extraction): one AddProductModal
           instance per page, opened by `requestCreateProduct(name)` from

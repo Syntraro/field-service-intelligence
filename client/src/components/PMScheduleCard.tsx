@@ -26,7 +26,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { ChevronDown, ChevronRight, Pause, Play, Pencil, Zap, Archive } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
@@ -492,26 +493,17 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
       </Collapsible>
 
       {/* Archive (soft delete) confirmation */}
-      <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove PM Schedule</AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes the schedule going forward. No new PM jobs will be generated. Any PM jobs already generated will remain and must be removed manually if you don't want them. The schedule can be restored from the recurring templates page.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => archiveMutation.mutate()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={archiveMutation.isPending}
-            >
-              {archiveMutation.isPending ? "Removing..." : "Remove Schedule"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={archiveDialogOpen}
+        onOpenChange={setArchiveDialogOpen}
+        title="Remove PM Schedule"
+        description="This removes the schedule going forward. No new PM jobs will be generated. Any PM jobs already generated will remain and must be removed manually if you don't want them. The schedule can be restored from the recurring templates page."
+        confirmLabel="Remove Schedule"
+        variant="destructive"
+        isPending={archiveMutation.isPending}
+        onConfirm={() => archiveMutation.mutate()}
+        testIdPrefix="pm-archive"
+      />
 
       {/* Hard delete confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
       <AlertDialog open={hardDeleteDialogOpen} onOpenChange={(v) => { setHardDeleteDialogOpen(v); if (!v) setHardDeleteConfirmText(""); }}>

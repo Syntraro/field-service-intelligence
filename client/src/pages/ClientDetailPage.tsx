@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ClientDetailPage — Card-based client workspace.
  *
  * Layout (2026-05-02 refactor):
@@ -48,19 +48,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
-  Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
+  Receipt, Star, Trash2, Pencil,
   Clock, Package, Tag, Building2, AlertTriangle, Archive, Loader2,
-  ChevronLeft, ChevronRight, ChevronDown, Check,
-  // 2026-05-07 right-rail icons. Wrench already imported above; reused.
-  // 2026-05-12 RALPH: Users / Wallet / CalendarClock / Activity removed
-  // (tabs they backed are gone). LayoutDashboard added for Summary tab.
-  // 2026-05-14: Users restored — Contacts tab re-added to right rail.
+  ChevronLeft, ChevronDown, Check,
   StickyNote, LayoutDashboard, X, Users,
 } from "lucide-react";
 import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-// 2026-05-08 chip canonicalization: the local FilterChips generic
-// below now composes the canonical <FilterChip> from chip.tsx.
 import { Chip, FilterChip } from "@/components/ui/chip";
 import {
   Popover, PopoverTrigger, PopoverContent,
@@ -92,14 +86,6 @@ import {
 // `RailContentCard` import is intentionally absent.
 import { RailPanelRenderer } from "@/components/detail-rail/RailPanelRenderer";
 import { RailContentCardMeta } from "@/components/detail-rail/RailContentCard";
-import type {
-  RailPanelDescriptor,
-  RailCardDescriptor,
-  RailTitleTrailing,
-  RailMetaItem,
-  RailMetaRowDescriptor,
-} from "@/components/detail-rail/railTypes";
-import { formatRailActivity } from "@/components/activity-feed/formatRailActivity";
 import { CreateJobModal } from "@/components/CreateJobModal";
 import LocationFormModal from "@/components/LocationFormModal";
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
@@ -113,8 +99,6 @@ import EditTagsModal from "@/components/EditTagsModal";
 // will be deleted in a follow-up cleanup.
 import {
   ContactFormDialog,
-  STANDARD_CONTACT_ROLES,
-  type ContactScope,
   type ContactModalLocation,
   type ContactModalAssignment,
 } from "@/components/ContactFormDialog";
@@ -125,20 +109,33 @@ import LocPricingTab from "@/components/LocPricingTab";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { quoteKeys } from "@/lib/queryKeys/quotes";
-import { format } from "date-fns";
-import { formatCurrency } from "@/lib/formatters";
 import type {
   Client, CustomerCompany, Job, Invoice, ClientContact, ClientTag, Quote,
-  LocationEquipment, LocationPMPartTemplate,
+  LocationEquipment,
 } from "@shared/schema";
-import { isJobOverdue } from "@shared/schema";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
-import { getJobStatusDisplay } from "@/components/job/jobUtils";
-import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { SectionLabel } from "@/components/ui/typography";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { ClientOverviewTab } from "@/pages/ClientOverviewTab";
+import { ClientKpiStrip } from "@/components/clients/ClientKpiStrip";
+import { ClientJobsTab } from "./clients/ClientJobsTab";
+import { ClientInvoicesTab } from "./clients/ClientInvoicesTab";
+import { ClientQuotesTab } from "./clients/ClientQuotesTab";
+import { ClientPaymentsTab } from "./clients/ClientPaymentsTab";
+import { ClientEquipmentTab } from "./clients/ClientEquipmentTab";
+import { ClientPartsTab } from "./clients/ClientPartsTab";
+import { locationDisplayName, locationAddress, locationAddressLines } from "@/lib/clientHelpers";
+import type { EnrichedQuote, PMPartWithItem, ClientPaymentRow } from "./clients/tabShared";
+import {
+  RailBillingShape,
+  ClientBillingPanelBody,
+  MaintenanceTemplateRow,
+  buildClientMaintenancePanelDescriptor,
+  ClientActivityFeedItem,
+  buildClientActivityPanelDescriptor,
+  ContactCard,
+} from "./clients/railDescriptors";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -155,10 +152,12 @@ type ScopeType = "company" | "location";
  *  `ClientOverviewTab` (no separate Pricing tab). */
 type WorkspaceTab =
   | "overview"
-  | "active"
   | "jobs"
   | "invoices"
-  | "quotes";
+  | "quotes"
+  | "payments"
+  | "equipment"
+  | "parts";
 
 /** Utility-rail panels in the right sidebar.
  *  2026-05-02: dropped the "fields" tab (Reference-Fields). Data + APIs
@@ -172,42 +171,9 @@ type WorkspaceTab =
 type UtilityTab =
   | "summary"
   | "notes"
-  | "contacts"
-  | "equipment-parts";
+  | "contacts";
 
 type UtilityPanel = UtilityTab | null;
-
-// ContactScope type and STANDARD_CONTACT_ROLES imported from @/components/ContactFormDialog
-
-/** Normalize a contact record into a consistent shape for rendering.
- *  2026-05-02 honorific split: surfaces `title` (honorific) and
- *  `jobTitle` (professional role) separately so cards can render them
- *  as a single combined display name + a subtitle row. */
-function normalizeContact(c: ClientContact): {
-  id: string;
-  displayName: string;
-  jobTitle: string | null;
-  email: string | null;
-  phone: string | null;
-  roles: string[];
-  scope: ContactScope;
-  locationId: string | null;
-  isPrimary: boolean;
-} {
-  const honorific = (c.title ?? "").trim();
-  const baseName = [c.firstName, c.lastName].filter(Boolean).join(" ") || "Unnamed";
-  return {
-    id: c.id,
-    displayName: honorific ? `${honorific} ${baseName}` : baseName,
-    jobTitle: ((c as any).jobTitle ?? "").trim() || null,
-    email: c.email ?? null,
-    phone: c.phone ?? null,
-    roles: Array.isArray(c.roles) ? c.roles : [],
-    scope: c.locationId ? "location" : "company",
-    locationId: c.locationId ?? null,
-    isPrimary: c.isPrimary ?? false,
-  };
-}
 
 type CompanyOverview = {
   company: CustomerCompany;
@@ -226,17 +192,6 @@ type CompanyOverview = {
   } | null;
 };
 
-interface EnrichedQuote extends Quote {
-  location?: { id: string; companyName: string };
-}
-
-interface PMPartWithItem extends LocationPMPartTemplate {
-  itemName: string | null;
-  itemSku: string | null;
-  itemCategory: string | null;
-  itemCost: string | null;
-}
-
 /** 2026-05-02 layout refactor: a single uniform tab list across both
  *  scopes. Equipment / Parts are inherently location-scoped data, so
  *  in company ("All Locations") scope they render an empty-state row
@@ -246,180 +201,23 @@ interface PMPartWithItem extends LocationPMPartTemplate {
  *  in `LOCATION_TABS`. */
 const COMPANY_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
-  { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
+  { key: "payments", label: "Payments" },
 ];
 
 const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "overview", label: "Overview" },
-  { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
+  { key: "payments", label: "Payments" },
+  { key: "equipment", label: "Equipment" },
+  { key: "parts", label: "Parts" },
 ];
 
 const WORKSPACE_TAB_KEYS = new Set(LOCATION_TABS.map(t => t.key));
-
-// ─── Currency formatter ──────────────────────────────────────────────────────
-const fmt = new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" });
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function locationDisplayName(loc: Client): string {
-  return loc.location?.trim()
-    || (loc.address ? `${loc.address}${loc.city ? `, ${loc.city}` : ""}` : null)
-    || "Unnamed Location";
-}
-
-function locationAddress(loc: Client): string {
-  // Address line 2 shown after line 1 when present.
-  // Single-line variant — used by the compact left-rail location list
-  // where multi-line would break the truncation behavior.
-  return [loc.address, loc.address2, loc.city, loc.province, loc.postalCode].filter(Boolean).join(", ");
-}
-
-/**
- * 2026-05-01: Multi-line variant of {@link locationAddress} — produced
- * to MATCH `billingAddressLines` (defined in the page body for the
- * parent company billing block) so the dual-address card shows
- * Service Address and Billing Address with the same line shape:
- *   Line 1: street
- *   Line 2: street2 (when present)
- *   Line 3: "City, Province, Postal"
- * Returns an array of non-empty strings; consumers map to <p> per line.
- */
-function locationAddressLines(loc: Client | null | undefined): string[] {
-  if (!loc) return [];
-  return [
-    loc.address,
-    loc.address2,
-    [loc.city, loc.province, loc.postalCode].filter(Boolean).join(", "),
-  ].filter((line): line is string => Boolean(line && line.trim()));
-}
-
-function EmptyState({ label }: { label: string }) {
-  return <p className="py-8 text-center text-helper text-muted-foreground">{label}</p>;
-}
-
-/** 2026-05-02 layout refactor: empty state shown when a tab is
- *  rendered in "All Locations" scope but the underlying data is
- *  location-scoped (Equipment / Parts). Same shape as the regular
- *  EmptyState but with an icon + title + secondary description so the
- *  user understands why nothing's listed and what to do next. */
-function ScopeRequiredEmpty({ icon, title, description }: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="py-10 text-center" data-testid="scope-required-empty">
-      <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 mb-2">{icon}</div>
-      <p className="text-sm font-medium text-slate-700">{title}</p>
-      <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">{description}</p>
-    </div>
-  );
-}
-
-/** Part C: Shared job row — single visual pattern for all job lists (company + location).
- *  Optional locationLabel shown when needed for company-wide context. */
-function JobRow({ job, locationLabel, onNavigate }: {
-  job: Job;
-  locationLabel?: string;
-  onNavigate: (p: string) => void;
-}) {
-  const display = getJobStatusDisplay(job);
-  const overdue = isJobOverdue(job);
-  return (
-    <div
-      className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-      onClick={() => onNavigate(`/jobs/${job.id}`)}
-    >
-      <div className="min-w-0 flex-1">
-        <span className="font-medium text-slate-500 tabular-nums">#{job.jobNumber}</span>
-        <span className="text-slate-300 mx-1">—</span>
-        <span className="font-medium text-slate-700">{job.summary}</span>
-        {locationLabel && (
-          <p className="text-xs text-slate-400 truncate">{locationLabel}</p>
-        )}
-        {!locationLabel && job.scheduledStart && (
-          <p className="text-xs text-slate-400">{format(new Date(job.scheduledStart), "MMM dd, yyyy")}</p>
-        )}
-      </div>
-      <Badge
-        variant={overdue ? "destructive" : (display.variant as any)}
-        className="text-xs flex-shrink-0 ml-2"
-      >
-        {overdue ? "Overdue" : display.label}
-      </Badge>
-    </div>
-  );
-}
-
-/** Filter chip row — shared UI for Jobs/Invoices/Quotes tab filters.
- *  Composes the canonical `<FilterChip>` primitive from
- *  `@/components/ui/chip` so the chip visual (height, radius, focus
- *  ring, selected fill) lives in one place. The local generic stays
- *  to keep the count-trailing layout co-located with the workspace
- *  tab logic. */
-function FilterChips<T extends string>({
-  options, value, onChange,
-}: {
-  options: { key: T; label: string; count?: number }[];
-  value: T;
-  onChange: (key: T) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1 flex-wrap mb-2" data-testid="workspace-filter-chips">
-      {options.map(opt => {
-        const isSelected = value === opt.key;
-        return (
-          <FilterChip
-            key={opt.key}
-            selected={isSelected}
-            onClick={() => onChange(opt.key)}
-            size="compact"
-            trailingIcon={
-              typeof opt.count === "number" ? (
-                <span className={cn("tabular-nums", isSelected ? "text-white/80" : "text-text-muted")}>
-                  {opt.count}
-                </span>
-              ) : undefined
-            }
-          >
-            {opt.label}
-          </FilterChip>
-        );
-      })}
-    </div>
-  );
-}
-
-type JobFilter = "active" | "all" | "completed";
-type InvoiceFilter = "all" | "draft" | "awaiting" | "paid" | "overdue";
-type QuoteFilter = "all" | "draft" | "sent" | "approved";
-
-function isJobActive(j: Job): boolean { return j.status === "open"; }
-function isJobCompleted(j: Job): boolean { return j.status === "completed" || j.status === "invoiced"; }
-
-function matchInvoiceFilter(inv: Invoice, f: InvoiceFilter): boolean {
-  if (f === "all") return inv.status !== "voided";
-  if (f === "draft") return inv.status === "draft";
-  if (f === "paid") return inv.status === "paid";
-  if (f === "awaiting") return inv.status === "awaiting_payment" || inv.status === "sent" || inv.status === "partial_paid";
-  // overdue
-  if (inv.status === "paid" || inv.status === "voided" || inv.status === "draft") return false;
-  return Boolean(inv.dueDate && new Date(inv.dueDate) < new Date());
-}
-
-function matchQuoteFilter(q: EnrichedQuote, f: QuoteFilter): boolean {
-  if (f === "all") return true;
-  if (f === "draft") return q.status === "draft";
-  if (f === "sent") return q.status === "sent";
-  if (f === "approved") return q.status === "approved" || q.status === "converted";
-  return true;
-}
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
@@ -431,7 +229,7 @@ export default function ClientDetailPage() {
   // ── Scope state ──
   const [scopeType, setScopeType] = useState<ScopeType>("company");
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("active");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("jobs");
   // 2026-05-07: `utilityTab` now models the active SIDE PANEL — null
   // means rail-only (no panel open). Defaults to "contacts" so the
   // page reads with a meaningful initial panel rather than empty space.
@@ -559,12 +357,11 @@ export default function ClientDetailPage() {
     }
   }, [routerSearch]);
 
-  // Push URL state when scope/tab changes. "active" (Active Work) is the
-  // default tab as of the 2026-04-18 refinement.
+  // Push URL state when scope/tab changes. "jobs" is the default tab.
   const updateUrlParams = useCallback((scope: ScopeType, locId: string | null, tab: WorkspaceTab) => {
     const params = new URLSearchParams();
     if (scope === "location" && locId) params.set("location", locId);
-    if (tab !== "active") params.set("tab", tab);
+    if (tab !== "jobs") params.set("tab", tab);
     const qs = params.toString();
     const newUrl = `/clients/${clientId}${qs ? `?${qs}` : ""}`;
     window.history.replaceState(null, "", newUrl);
@@ -573,16 +370,17 @@ export default function ClientDetailPage() {
   const handleSelectCompany = useCallback(() => {
     setScopeType("company");
     setSelectedLocationId(null);
-    setWorkspaceTab("active");
-    updateUrlParams("company", null, "active");
-  }, [updateUrlParams]);
+    // Equipment / Parts are location-only — fall back to jobs when switching to company scope.
+    const nextTab: WorkspaceTab = (workspaceTab === "equipment" || workspaceTab === "parts") ? "jobs" : workspaceTab;
+    setWorkspaceTab(nextTab);
+    updateUrlParams("company", null, nextTab);
+  }, [updateUrlParams, workspaceTab]);
 
   const handleSelectLocation = useCallback((locId: string) => {
     setScopeType("location");
     setSelectedLocationId(locId);
-    setWorkspaceTab("active");
-    updateUrlParams("location", locId, "active");
-  }, [updateUrlParams]);
+    updateUrlParams("location", locId, workspaceTab);
+  }, [updateUrlParams, workspaceTab]);
 
   const handleTabChange = useCallback((tab: WorkspaceTab) => {
     setWorkspaceTab(tab);
@@ -793,6 +591,37 @@ export default function ClientDetailPage() {
   const pendingQuotesCount = clientQuotes.filter(q =>
     q.status === "draft" || q.status === "sent"
   ).length;
+
+  const lastServiceDate = useMemo<Date | null>(() => {
+    const completed = companyJobs
+      .filter(j => j.status === "completed" || j.status === "invoiced")
+      .map(j => new Date(j.updatedAt ?? j.createdAt))
+      .filter(d => !isNaN(d.getTime()));
+    if (completed.length === 0) return null;
+    return completed.reduce((max, d) => d > max ? d : max);
+  }, [companyJobs]);
+
+  // Active maintenance count — same query key as ClientMaintenancePanelBody; cache shared.
+  const { data: allTemplates = [] } = useQuery<{ clientId?: string | null; locationId?: string | null }[]>({
+    queryKey: ["/api/recurring-templates", "for-client", companyId],
+    queryFn: () => apiRequest("/api/recurring-templates"),
+    enabled: Boolean(companyId),
+    staleTime: 60_000,
+    refetchIntervalInBackground: false,
+  });
+  const activeMaintenanceCount = useMemo(
+    () => allTemplates.filter(t => t.clientId === companyId).length,
+    [allTemplates, companyId],
+  );
+
+  // Company payments — fetched for the Payments center tab.
+  const { data: companyPayments = [] } = useQuery<ClientPaymentRow[]>({
+    queryKey: ["/api/customer-companies", companyId, "payments"],
+    queryFn: () => apiRequest(`/api/customer-companies/${companyId}/payments`),
+    enabled: Boolean(companyId),
+    staleTime: 30_000,
+    refetchIntervalInBackground: false,
+  });
 
   // ── Mutations ──
   const createLocationMutation = useMutation({
@@ -1301,44 +1130,6 @@ export default function ClientDetailPage() {
         />
       ),
     },
-    {
-      id: "equipment-parts",
-      label: "Equip & Parts",
-      icon: Wrench,
-      testId: "rail-item-equipment-parts",
-      // Location-scope only: at company scope there is no single
-      // location to add equipment or parts to.
-      action: scopeType === "location" ? (
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={() => setEquipmentModalOpen(true)}
-            className={RAIL_ACTION_BTN_CLASS}
-            data-testid="client-side-panel-action-add-equipment"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Equipment
-          </button>
-          <button
-            type="button"
-            onClick={() => setPartsModalOpen(true)}
-            className={RAIL_ACTION_BTN_CLASS}
-            data-testid="client-side-panel-action-add-part"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Part
-          </button>
-        </div>
-      ) : null,
-      content: (
-        <ClientEquipmentPartsPanelBody
-          scopeType={scopeType}
-          equipment={locationEquipment}
-          onOpen={setDetailEquipment}
-          pmParts={pmParts}
-        />
-      ),
-    },
   ];
 
   return (
@@ -1801,6 +1592,16 @@ export default function ClientDetailPage() {
                     {isSingleLocation && !hasDistinctBillingAddress && soleLocation?.roofLadderCode && (
                       <p className="text-xs text-slate-500 pb-2">Site Code: <span className="font-medium text-slate-700">{soleLocation.roofLadderCode}</span></p>
                     )}
+                    {/* KPI strip — compact operational summary */}
+                    <ClientKpiStrip
+                      openJobs={activeJobsCount}
+                      outstanding={outstandingInvoices.total}
+                      overdueInvoices={overdueInvoicesCount}
+                      activeMaintenance={activeMaintenanceCount}
+                      totalLocations={locations.length}
+                      lastServiceDate={lastServiceDate}
+                    />
+
                     {/* Tab bar */}
                     <div className="flex -mb-px overflow-x-auto">
                       {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
@@ -1834,19 +1635,10 @@ export default function ClientDetailPage() {
                             locationId={null}
                           />
                         )}
-                        {workspaceTab === "active" && (
-                          <ActiveWorkTab
-                            jobs={companyJobs}
-                            invoices={allInvoices}
-                            quotes={clientQuotes}
-                            locations={locations}
-                            scopeType="company"
-                            onNavigate={setLocation}
-                          />
-                        )}
-                        {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
-                        {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
-                        {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
+                        {workspaceTab === "jobs" && <ClientJobsTab jobs={companyJobs} locations={locations} showLocation onNavigate={setLocation} />}
+                        {workspaceTab === "invoices" && <ClientInvoicesTab invoices={allInvoices} locations={locations} showLocation onNavigate={setLocation} />}
+                        {workspaceTab === "quotes" && <ClientQuotesTab quotes={clientQuotes} locations={locations} showLocation onNavigate={setLocation} />}
+                        {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments} showLocation onNavigate={setLocation} />}
                       </>
                     ) : selectedLoc ? (
                       <>
@@ -1860,19 +1652,19 @@ export default function ClientDetailPage() {
                             locationId={selectedLocationId}
                           />
                         )}
-                        {workspaceTab === "active" && (
-                          <ActiveWorkTab
-                            jobs={locJobs}
-                            invoices={locInvoices}
-                            quotes={locQuotes}
-                            locations={locations}
+                        {workspaceTab === "jobs" && <ClientJobsTab jobs={locJobs} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                        {workspaceTab === "invoices" && <ClientInvoicesTab invoices={locInvoices} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                        {workspaceTab === "quotes" && <ClientQuotesTab quotes={locQuotes} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                        {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments.filter(p => p.locationId === selectedLocationId)} showLocation={false} onNavigate={setLocation} />}
+                        {workspaceTab === "equipment" && (
+                          <ClientEquipmentTab
+                            equipment={locationEquipment}
                             scopeType="location"
-                            onNavigate={setLocation}
+                            onAdd={() => setEquipmentModalOpen(true)}
+                            onOpen={(eq) => setDetailEquipment(eq)}
                           />
                         )}
-                        {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
-                        {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
-                        {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
+                        {workspaceTab === "parts" && <ClientPartsTab parts={pmParts} scopeType="location" onManage={() => setPartsModalOpen(true)} />}
                       </>
                     ) : (
                       <p className="text-sm text-slate-400 text-center py-12">Select a location from the scope selector above.</p>
@@ -2529,581 +2321,12 @@ const LocContactsCompact = forwardRef<ContactsCompactRef, {
   );
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Rail panel body type alias (2026-05-07 canonical rail extraction)
-// ═══════════════════════════════════════════════════════════════════════════════
-// The legacy `UtilityRail` / `RailHeaderAction` / `RailEmptyState` and
-// the `UtilityRailProps` type were removed when the canonical
-// `<DetailRightRail>` primitive (`@/components/detail-rail/DetailRightRail`)
-// took over the rail chrome. The per-tab body components below
-// (`ClientBillingPanelBody`, `BillingSummary`, etc.) still need a stable
-// shape for the billing aggregates, so we keep just that one type alias
-// here.
-
-export interface RailBillingShape {
-  lifetimeRevenue: number;
-  paidYtd: number;
-  outstanding: { count: number; total: number; overdueTotal: number };
-  aging: { current: number; d30: number; d60: number; d90: number };
-}
-
-// 2026-05-07 canonical rail extraction: legacy `UtilityRail`,
-// `RailHeaderAction`, and `UtilityRailProps` removed. The chrome (icon
-// strip + panel header + close X) is rendered by `<DetailRightRail>`
-// from `@/components/detail-rail/DetailRightRail`; per-tab `+ Add`
-// buttons are inlined inside the `clientRailTabs` array constructed in
-// the page render. The per-tab body components below remain unchanged
-// — they're domain-specific and stay on this page.
-//
-// `RailEmptyState` is kept as a thin shim around the canonical
-// `<DetailRightRailEmpty>` so the existing panel-body call sites
-// (Equipment / Parts / Maintenance / Activity empty states) keep
-// rendering the canonical empty-state DOM (testid
-// `client-side-panel-empty`) without rewriting six callsites. New code
-// should call `<DetailRightRailEmpty testIdPrefix="client-side">`
-// directly.
-function RailEmptyState({ message, hint }: { message: string; hint?: string }) {
-  return (
-    <DetailRightRailEmpty
-      message={message}
-      hint={hint}
-      testIdPrefix="client-side"
-    />
-  );
-}
-
-// ── Compact panel bodies ──────────────────────────────────────────────
-
-interface ClientBillingPanelBodyProps {
-  billing: RailBillingShape;
-  paymentTermsDays: number | null;
-  billingStreet: string | null;
-  billingCity: string | null;
-  billingProvince: string | null;
-  billingPostalCode: string | null;
-}
-
-// 2026-05-07 Phase 5 (re-recovery): Billing panel migrated onto the
-// data-driven `<RailPanelRenderer>` pipeline. Billing is the first
-// `kind: "single"` consumer (one info card, not a list) and the first
-// user of the new `kind: "block"` footer descriptor (label + multi-line
-// lines + italic fallback). Card is non-clickable — Billing is purely
-// informational.
-function buildClientBillingPanelDescriptor(
-  billing: RailBillingShape,
-  paymentTermsDays: number | null,
-  billingStreet: string | null,
-  billingCity: string | null,
-  billingProvince: string | null,
-  billingPostalCode: string | null,
-): RailPanelDescriptor {
-  const termsLabel =
-    paymentTermsDays === null
-      ? "Use company default"
-      : paymentTermsDays === 0
-        ? "Due on receipt"
-        : `Net ${paymentTermsDays}`;
-
-  // Address-line accumulator — line1 from `billingStreet`, line2 from
-  // joined city/province/postal. Empty / whitespace-only fields are
-  // filtered before the join so we never emit "City, , Postal" rows
-  // with stray commas.
-  const addressLines: string[] = [];
-  const line1 = billingStreet?.trim() || null;
-  if (line1) addressLines.push(line1);
-  const line2 =
-    [billingCity, billingProvince, billingPostalCode]
-      .filter((v) => v && v.trim().length > 0)
-      .join(", ") || null;
-  if (line2) addressLines.push(line2);
-
-  return {
-    kind: "single",
-    card: {
-      key: "billing",
-      testId: "client-billing-panel-body",
-      fields: [
-        { label: "Payment terms", value: termsLabel },
-        {
-          label: "Outstanding",
-          value: formatCurrency(billing.outstanding.total),
-        },
-        {
-          label: "Lifetime revenue",
-          value: formatCurrency(billing.lifetimeRevenue),
-        },
-        { label: "Paid YTD", value: formatCurrency(billing.paidYtd) },
-      ],
-      footer: {
-        kind: "block",
-        label: "Billing address",
-        lines: addressLines,
-        fallback: "No billing address on file.",
-      },
-    },
-  };
-}
-
-function ClientBillingPanelBody({
-  billing,
-  paymentTermsDays,
-  billingStreet,
-  billingCity,
-  billingProvince,
-  billingPostalCode,
-}: ClientBillingPanelBodyProps) {
-  return (
-    <RailPanelRenderer
-      panel={buildClientBillingPanelDescriptor(
-        billing,
-        paymentTermsDays,
-        billingStreet,
-        billingCity,
-        billingProvince,
-        billingPostalCode,
-      )}
-      testIdPrefix="client-side"
-    />
-  );
-}
-
-interface ClientEquipmentPanelBodyProps {
-  scopeType: ScopeType;
-  equipment: LocationEquipment[];
-  // 2026-05-07: card-click handler — opens the canonical
-  // EquipmentDetailModal mounted at the page level.
-  onOpen: (eq: LocationEquipment) => void;
-}
-
-// 2026-05-07 Phase 4 (re-recovery): visible-card cap. The Equipment
-// rail caps at 8 cards to keep the panel reasonable on long lists; the
-// `+N more items not shown.` indicator below the cards is rendered by
-// `<RailPanelRenderer>` via the `overflow: { count, testId }` field on
-// the list descriptor.
-const CLIENT_EQUIPMENT_VISIBLE_CAP = 8;
-
-// 2026-05-07 Phase 4 (re-recovery): Equipment panel migrated onto the
-// data-driven `<RailPanelRenderer>` pipeline. Equipment is the first
-// re-recovery to exercise the clickable-card descriptor variant in
-// active use (cards open `EquipmentDetailModal` via `onClick`) and the
-// `overflow: { count }` indicator the renderer adds to long lists.
-// Card chrome / typography / overflow chrome / empty-state visuals all
-// live inside the renderer.
-function buildClientEquipmentPanelDescriptor(
-  scopeType: ScopeType,
-  equipment: LocationEquipment[],
-  onOpen: (eq: LocationEquipment) => void,
-): RailPanelDescriptor {
-  // Company-scope branch: equipment is per-location.
-  if (scopeType === "company") {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-equipment-panel-body",
-      empty: {
-        message: "Equipment is tracked per location.",
-        hint: "Pick a specific location to view its equipment.",
-      },
-    };
-  }
-
-  // Location-scope, no equipment yet.
-  if (equipment.length === 0) {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-equipment-panel-body",
-      empty: {
-        message: "No equipment yet.",
-        hint: "Add equipment to track installed systems for this client.",
-      },
-    };
-  }
-
-  // Populated branch — cap visible cards at 8, surface overflow count.
-  const visible = equipment.slice(0, CLIENT_EQUIPMENT_VISIBLE_CAP);
-  const overflowCount = equipment.length - visible.length;
-
-  const cards: RailCardDescriptor[] = visible.map((eq) => {
-    const subtitleParts = [eq.manufacturer, eq.modelNumber].filter(
-      (s): s is string => !!s && s.trim().length > 0,
-    );
-    const subtitle =
-      subtitleParts.length > 0 ? subtitleParts.join(" · ") : null;
-    const notesBody =
-      eq.notes && eq.notes.trim().length > 0 ? eq.notes : undefined;
-
-    const fields: NonNullable<RailCardDescriptor["fields"]> = [];
-    if (eq.equipmentType) {
-      fields.push({
-        label: "Type",
-        value: eq.equipmentType,
-        testId: "client-equipment-card-row-type",
-      });
-    }
-    if (eq.serialNumber) {
-      fields.push({
-        label: "Serial",
-        value: eq.serialNumber,
-        valueClassName: "break-all",
-        testId: "client-equipment-card-row-serial",
-      });
-    }
-    if (eq.tagNumber) {
-      fields.push({
-        label: "Tag",
-        value: eq.tagNumber,
-        testId: "client-equipment-card-row-tag",
-      });
-    }
-    if (eq.installDate) {
-      fields.push({
-        label: "Installed",
-        value: eq.installDate,
-        testId: "client-equipment-card-row-installed",
-      });
-    }
-    if (eq.warrantyExpiry) {
-      fields.push({
-        label: "Warranty",
-        value: eq.warrantyExpiry,
-        testId: "client-equipment-card-row-warranty",
-      });
-    }
-
-    return {
-      key: eq.id,
-      testId: "client-equipment-card",
-      onClick: () => onOpen(eq),
-      ariaLabel: `Open equipment ${eq.name}`,
-      title: {
-        text: eq.name,
-        // Disable the canonical title `truncate` so long equipment
-        // names wrap instead of clipping.
-        className: "break-words whitespace-normal",
-        chip: {
-          text: eq.isActive ? "Active" : "Archived",
-          variant: eq.isActive ? "success" : "neutral",
-          testId: "client-equipment-card-status",
-        },
-      },
-      meta: subtitle ?? undefined,
-      fields: fields.length > 0 ? fields : undefined,
-      body: notesBody,
-      bodyClamp: notesBody ? 3 : undefined,
-    };
-  });
-
-  return {
-    kind: "list",
-    cards,
-    testId: "client-equipment-panel-body",
-    overflow:
-      overflowCount > 0
-        ? {
-            count: overflowCount,
-            testId: "client-equipment-panel-overflow",
-          }
-        : undefined,
-  };
-}
-
-function ClientEquipmentPanelBody({
-  scopeType,
-  equipment,
-  onOpen,
-}: ClientEquipmentPanelBodyProps) {
-  return (
-    <RailPanelRenderer
-      panel={buildClientEquipmentPanelDescriptor(scopeType, equipment, onOpen)}
-      testIdPrefix="client-side"
-    />
-  );
-}
-
-interface ClientPartsPanelBodyProps {
-  scopeType: ScopeType;
-  pmParts: PMPartWithItem[];
-}
-
-// 2026-05-07: Phase 1 data-driven right-rail (re-recovery). Parts panel
-// is the bellwether — the body component is a thin mount on
-// `<RailPanelRenderer>` driven by `buildClientPartsPanelDescriptor`.
-// Card chrome / typography / chip sizing / empty-state visuals all live
-// inside the renderer; the page only describes WHICH data shows and
-// HOW it groups. Cards are non-clickable because single-row part
-// editing is not a canonical surface today — `<PartsSelectorModal>`
-// (mounted at the page level, opened by the rail header `+ Add Part`
-// action) is the only edit path and operates on the full list.
-function buildClientPartsPanelDescriptor(
-  scopeType: ScopeType,
-  pmParts: PMPartWithItem[],
-): RailPanelDescriptor {
-  // Company-scope branch: parts are per-location, so the company-wide
-  // rail surface shows only the explanatory empty state.
-  if (scopeType === "company") {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-parts-panel-body",
-      empty: {
-        message: "Parts are tracked per location.",
-        hint: "Pick a specific location to view its PM parts.",
-      },
-    };
-  }
-
-  // Location-scope branch with no parts yet.
-  if (pmParts.length === 0) {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-parts-panel-body",
-      empty: {
-        message: "No client-specific parts yet.",
-        hint: "Add parts the technician should bring on every PM visit.",
-      },
-    };
-  }
-
-  // Populated list. Each part becomes a non-clickable card with title +
-  // quantity chip + gated SKU/Category/Cost/Equipment fields + optional
-  // description body.
-  const cards: RailCardDescriptor[] = pmParts.map((p) => {
-    const fields: RailCardDescriptor["fields"] = [];
-    if (p.itemSku) {
-      fields.push({
-        label: "SKU",
-        value: p.itemSku,
-        valueClassName: "break-all",
-        testId: "client-parts-card-row-sku",
-      });
-    }
-    if (p.itemCategory) {
-      fields.push({
-        label: "Category",
-        value: p.itemCategory,
-        testId: "client-parts-card-row-category",
-      });
-    }
-    if (p.itemCost) {
-      fields.push({
-        label: "Cost",
-        value: formatCurrency(p.itemCost),
-        testId: "client-parts-card-row-cost",
-      });
-    }
-    if (p.equipmentLabel) {
-      fields.push({
-        label: "Equipment",
-        value: p.equipmentLabel,
-        valueClassName: "line-clamp-2 break-words",
-        testId: "client-parts-card-row-equipment",
-      });
-    }
-
-    const description =
-      p.descriptionOverride && p.descriptionOverride.trim().length > 0
-        ? p.descriptionOverride
-        : undefined;
-
-    return {
-      key: p.id,
-      testId: "client-parts-card",
-      title: {
-        text: p.itemName ?? "Unknown part",
-        // Disable the canonical title `truncate` so long part names wrap
-        // instead of clipping — matches the prior `break-words` rendering.
-        className: "break-words whitespace-normal",
-        chip: {
-          text: `×${p.quantityPerVisit}`,
-          variant: "neutral",
-          testId: "client-parts-card-quantity",
-        },
-      },
-      fields: fields.length > 0 ? fields : undefined,
-      body: description,
-      bodyClamp: description ? 3 : undefined,
-    };
-  });
-
-  return {
-    kind: "list",
-    cards,
-    testId: "client-parts-panel-body",
-  };
-}
-
-function ClientPartsPanelBody({ scopeType, pmParts }: ClientPartsPanelBodyProps) {
-  return (
-    <RailPanelRenderer
-      panel={buildClientPartsPanelDescriptor(scopeType, pmParts)}
-      testIdPrefix="client-side"
-    />
-  );
-}
+// ── Rail panel bodies (hooks — stay on this page) ────────────────────
 
 interface ClientMaintenancePanelBodyProps {
   companyId: string | null;
   locationId: string | null;
   scopeType: ScopeType;
-}
-
-// 2026-05-07 Phase 2 (re-recovery): one row from the recurring-templates
-// feed. Type covers every field the GET `/api/recurring-templates` route
-// ships (full row + joined client/location names + computed
-// `nextOccurrence`). Optional unused fields stay typed so a future
-// refactor that wants to surface them doesn't have to re-derive the shape.
-interface MaintenanceTemplateRow {
-  id: string;
-  title: string;
-  description: string | null;
-  clientId: string | null;
-  locationId: string | null;
-  isActive: boolean;
-  jobType: string;
-  recurrenceKind: string;
-  interval: number;
-  startDate: string | null;
-  endDate: string | null;
-  serviceWindowDaysBefore: number | null;
-  serviceWindowDaysAfter: number | null;
-  pmBillingModel: string | null;
-  pmBillingLabel: string | null;
-  pmContractAmount: string | null;
-  clientName: string | null;
-  locationName: string | null;
-  locationAddress: string | null;
-  nextOccurrence: string | null;
-}
-
-// 2026-05-07 Phase 2 (re-recovery): Maintenance panel migrated onto the
-// data-driven `<RailPanelRenderer>` pipeline. The descriptor carries the
-// per-card snapshot (title + status chip + gated dl fields + optional
-// description body + footer link to the canonical detail page); the
-// renderer owns chrome / typography / footer-link composition. Cards
-// are non-clickable — only the footer link navigates.
-//
-// Title bar reads "View / Edit in Maintenance" per the descriptor test
-// spec (`tests/client-rail-maintenance-descriptor.test.ts`). The route
-// itself (`/pm/:id`) is unchanged; only the user-facing copy here is
-// pinned to the test-spec wording rather than the parallel "Service
-// Plans" rebrand copy that lived in the prior inline JSX.
-function buildClientMaintenancePanelDescriptor(
-  matching: MaintenanceTemplateRow[],
-): RailPanelDescriptor {
-  if (matching.length === 0) {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-maintenance-panel-body",
-      empty: {
-        message: "No maintenance plans yet.",
-        hint: "Add a maintenance plan to schedule recurring service for this client.",
-      },
-    };
-  }
-
-  const cards: RailCardDescriptor[] = matching.map((t) => {
-    const cadence =
-      t.recurrenceKind === "weekly"
-        ? `Every ${t.interval > 1 ? `${t.interval} weeks` : "week"}`
-        : t.recurrenceKind === "monthly"
-          ? `Every ${t.interval > 1 ? `${t.interval} months` : "month"}`
-          : t.recurrenceKind;
-    const billingLine =
-      t.pmBillingLabel ||
-      (t.pmBillingModel ? t.pmBillingModel.replaceAll("_", " ") : null);
-    const serviceWindow =
-      t.serviceWindowDaysBefore !== null && t.serviceWindowDaysAfter !== null
-        ? `${t.serviceWindowDaysBefore} days before — ${t.serviceWindowDaysAfter} days after`
-        : null;
-    const locationLine =
-      [t.locationName, t.locationAddress]
-        .filter((s): s is string => !!s && s.trim().length > 0)
-        .join(" · ") || null;
-    const description =
-      t.description && t.description.trim().length > 0 ? t.description : null;
-
-    const fields: NonNullable<RailCardDescriptor["fields"]> = [
-      {
-        label: "Frequency",
-        value: cadence,
-        testId: "client-maintenance-card-row-frequency",
-      },
-    ];
-    if (t.nextOccurrence) {
-      fields.push({
-        label: "Next due",
-        value: t.nextOccurrence,
-        valueClassName: "font-medium",
-        testId: "client-maintenance-card-row-next-due",
-      });
-    }
-    if (t.startDate) {
-      fields.push({
-        label: "Started",
-        value: t.startDate,
-        testId: "client-maintenance-card-row-started",
-      });
-    }
-    if (serviceWindow) {
-      fields.push({
-        label: "Window",
-        value: serviceWindow,
-        testId: "client-maintenance-card-row-window",
-      });
-    }
-    if (billingLine) {
-      fields.push({
-        label: "Billing",
-        value: billingLine,
-        valueClassName: "capitalize",
-        testId: "client-maintenance-card-row-billing",
-      });
-    }
-    if (locationLine) {
-      fields.push({
-        label: "Location",
-        value: locationLine,
-        valueClassName: "line-clamp-2 break-words",
-        testId: "client-maintenance-card-row-location",
-      });
-    }
-
-    return {
-      key: t.id,
-      testId: "client-maintenance-card",
-      title: {
-        text: t.title,
-        // Disable the canonical title `truncate` so long plan names wrap.
-        className: "break-words whitespace-normal",
-        chip: {
-          text: t.isActive ? "Active" : "Paused",
-          variant: t.isActive ? "success" : "neutral",
-          testId: "client-maintenance-card-status",
-        },
-      },
-      fields,
-      body: description ?? undefined,
-      bodyClamp: description ? 3 : undefined,
-      footer: {
-        kind: "link",
-        href: `/pm/${t.id}`,
-        label: "View / Edit in Maintenance",
-        icon: ChevronRight,
-        ariaLabel: `View or edit maintenance plan ${t.title}`,
-        title: "View / Edit in Maintenance",
-        testId: "client-maintenance-card-action",
-      },
-    };
-  });
-
-  return {
-    kind: "list",
-    cards,
-    testId: "client-maintenance-panel-body",
-  };
 }
 
 function ClientMaintenancePanelBody({
@@ -3150,77 +2373,6 @@ interface ClientActivityPanelBodyProps {
   scopeType: ScopeType;
   customerCompanyId: string | null;
   locationId: string | null;
-}
-
-// 2026-05-07 Phase 3 (re-recovery): one row in the rail Activity feed.
-// `summary` is intentionally NOT consumed for display — server emitters
-// historically interpolated raw UUIDs into it. Per-row copy is rebuilt
-// from `eventType` + `meta` via `formatRailActivity` inside the
-// descriptor builder below.
-interface ClientActivityFeedItem {
-  id: string;
-  eventType: string;
-  summary: string | null;
-  meta: Record<string, unknown> | null;
-  createdAt: string;
-}
-
-// 2026-05-07 Phase 3 (re-recovery): Activity panel migrated onto the
-// data-driven `<RailPanelRenderer>` pipeline. The descriptor carries
-// per-row formatted copy (no raw event_type, no server summary, no
-// UUIDs); card chrome / typography / compact spacing live in the
-// renderer. Cards are non-clickable.
-function buildClientActivityPanelDescriptor(
-  items: ClientActivityFeedItem[],
-): RailPanelDescriptor {
-  if (items.length === 0) {
-    return {
-      kind: "list",
-      cards: [],
-      testId: "client-activity-panel-body",
-      spacing: "compact",
-      empty: { message: "No activity yet." },
-    };
-  }
-
-  const cards: RailCardDescriptor[] = items.map((it) => {
-    // user-facing copy is rebuilt from event_type + meta. Never render
-    // the raw event_type ("Note.Created") or the server summary (which
-    // used to interpolate raw locationId UUIDs).
-    const display = formatRailActivity({
-      eventType: it.eventType,
-      summary: it.summary,
-      meta: it.meta,
-    });
-    const timestamp = format(
-      new Date(it.createdAt),
-      "MMM d, yyyy h:mm a",
-    );
-    const metaLine = display.locationName
-      ? `${timestamp} · ${display.locationName}`
-      : timestamp;
-    return {
-      key: it.id,
-      testId: "client-activity-row",
-      title: {
-        text: display.title,
-        as: "span",
-        testId: "client-activity-row-title",
-      },
-      body: display.body ?? undefined,
-      bodyClamp: display.body ? 2 : undefined,
-      bodyTestId: "client-activity-row-body",
-      meta: metaLine,
-      metaTestId: "client-activity-row-meta",
-    };
-  });
-
-  return {
-    kind: "list",
-    cards,
-    testId: "client-activity-panel-body",
-    spacing: "compact",
-  };
 }
 
 function ClientActivityPanelBody({
@@ -3322,920 +2474,4 @@ function ClientSummaryTabContent({
   );
 }
 
-// ── Equipment & Parts tab — stacks Equipment / Parts ──────────────────
 
-interface ClientEquipmentPartsPanelBodyProps {
-  scopeType: ScopeType;
-  equipment: LocationEquipment[];
-  onOpen: (eq: LocationEquipment) => void;
-  pmParts: PMPartWithItem[];
-}
-
-function ClientEquipmentPartsPanelBody({
-  scopeType,
-  equipment,
-  onOpen,
-  pmParts,
-}: ClientEquipmentPartsPanelBodyProps) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <SectionLabel className="mb-2">Equipment</SectionLabel>
-        <ClientEquipmentPanelBody scopeType={scopeType} equipment={equipment} onOpen={onOpen} />
-      </div>
-      <div>
-        <SectionLabel className="mb-2">Parts</SectionLabel>
-        <ClientPartsPanelBody scopeType={scopeType} pmParts={pmParts} />
-      </div>
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="text-slate-700 truncate text-right">{value}</dd>
-    </div>
-  );
-}
-
-function BillingSummary({ billing }: { billing: RailBillingShape }) {
-  const { outstanding, lifetimeRevenue, paidYtd, aging } = billing;
-  return (
-    <div className="text-xs space-y-3">
-      <dl className="space-y-2">
-        <DetailRow label="Outstanding" value={
-          <span className="tabular-nums font-semibold text-slate-900">{fmt.format(outstanding.total)}</span>
-        } />
-        {outstanding.overdueTotal > 0 && (
-          <DetailRow label="Overdue" value={
-            <span className="tabular-nums font-semibold text-red-600">{fmt.format(outstanding.overdueTotal)}</span>
-          } />
-        )}
-        <DetailRow label="Paid YTD" value={
-          <span className="tabular-nums text-slate-700">{fmt.format(paidYtd)}</span>
-        } />
-        <DetailRow label="Lifetime Revenue" value={
-          <span className="tabular-nums text-slate-700">{fmt.format(lifetimeRevenue)}</span>
-        } />
-      </dl>
-      {outstanding.count > 0 && (
-        <div className="pt-1.5 border-t border-slate-100">
-          <dt className="text-slate-500 mb-1.5">Aging</dt>
-          <div className="space-y-1">
-            <AgingRow label="Current" amount={aging.current} />
-            <AgingRow label="1–30d" amount={aging.d30} />
-            <AgingRow label="31–60d" amount={aging.d60} />
-            <AgingRow label="60d+" amount={aging.d90} danger />
-          </div>
-        </div>
-      )}
-      {outstanding.count === 0 && (
-        <p className="text-slate-400 text-xs text-center pt-1">No open balances.</p>
-      )}
-    </div>
-  );
-}
-
-function AgingRow({ label, amount, danger }: { label: string; amount: number; danger?: boolean }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className={cn("text-slate-500", danger && amount > 0 && "text-red-500")}>{label}</span>
-      <span className={cn("tabular-nums", danger && amount > 0 ? "text-red-600 font-medium" : "text-slate-600")}>
-        {fmt.format(amount)}
-      </span>
-    </div>
-  );
-}
-
-/** Compact activity for metadata panel */
-function ClientActivityCompact({ companyId }: { companyId?: string }) {
-  const { data: activity = [], isLoading } = useQuery<any[]>({
-    queryKey: ["/api/activity", "customer_company", companyId],
-    queryFn: async () => {
-      const res = await fetch(`/api/activity/customer_company/${companyId}?limit=10`, { credentials: "include" });
-      if (!res.ok) return [];
-      const json = await res.json();
-      return normalizeActivityPayload(json);
-    },
-    enabled: Boolean(companyId),
-  });
-
-  if (!companyId) return <p className="text-helper text-muted-foreground/60">—</p>;
-  if (isLoading) return <Skeleton className="h-5 w-24" />;
-  if (activity.length === 0) return <p className="text-helper text-muted-foreground/60">No activity yet.</p>;
-
-  return (
-    <div className="space-y-1.5">
-      {activity.slice(0, 8).map((evt: any, i: number) => (
-        <div key={evt.id || i} className="flex items-start gap-2 text-xs">
-          <div className="h-1.5 w-1.5 rounded-full bg-slate-300 flex-shrink-0 mt-1.5" />
-          <div className="flex-1 min-w-0">
-            <p className="text-foreground truncate">{evt.description || evt.action || "Event"}</p>
-            <p className="text-muted-foreground text-helper">
-              {evt.createdAt ? format(new Date(evt.createdAt), "MMM dd, h:mm a") : ""}
-            </p>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Active Work — cross-entity operational view (2026-04-18 refinement)
-// ═══════════════════════════════════════════════════════════════════════════════
-// Aggregates the "what needs action right now" view across Jobs,
-// Invoices, and Quotes for the current scope. All data comes from the
-// already-loaded canonical datasets in ClientDetailPage — no new
-// queries, no fabricated statuses.
-//
-// Sections (only rendered when that section has items):
-//   - Active Jobs         = status === "open" (overdue shown first)
-//   - Unpaid Invoices     = awaiting_payment / sent / partial_paid, and
-//                           any invoice past its due date
-//   - Open Quotes         = draft (not yet sent) and sent (awaiting
-//                           client response)
-
-function ActiveWorkTab({
-  jobs, invoices, quotes, locations, scopeType, onNavigate,
-}: {
-  jobs: Job[];
-  invoices: Invoice[];
-  quotes: EnrichedQuote[];
-  locations: Client[];
-  scopeType: ScopeType;
-  onNavigate: (p: string) => void;
-}) {
-  const locMap = useMemo(
-    () => new Map(locations.map(l => [l.id, locationDisplayName(l)])),
-    [locations],
-  );
-
-  // ── Active jobs (status === "open"), overdue first, then most recent ──
-  const activeJobs = useMemo(() => {
-    return jobs
-      .filter(isJobActive)
-      .sort((a, b) => {
-        const oa = isJobOverdue(a) ? 0 : 1;
-        const ob = isJobOverdue(b) ? 0 : 1;
-        if (oa !== ob) return oa - ob;
-        const pa = getJobStatusDisplay(a).priority;
-        const pb = getJobStatusDisplay(b).priority;
-        if (pa !== pb) return pa - pb;
-        return new Date(b.updatedAt ?? b.createdAt).getTime()
-             - new Date(a.updatedAt ?? a.createdAt).getTime();
-      });
-  }, [jobs]);
-
-  // ── Unpaid invoices: awaiting + overdue; overdue first ──
-  const unpaidInvoices = useMemo(() => {
-    const list = invoices.filter(inv =>
-      matchInvoiceFilter(inv, "awaiting") || matchInvoiceFilter(inv, "overdue"),
-    );
-    return list.sort((a, b) => {
-      const oa = matchInvoiceFilter(a, "overdue") ? 0 : 1;
-      const ob = matchInvoiceFilter(b, "overdue") ? 0 : 1;
-      if (oa !== ob) return oa - ob;
-      const da = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
-      const db = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
-      return da - db;
-    });
-  }, [invoices]);
-
-  // ── Open quotes: draft (not sent) and sent (awaiting approval) ──
-  const openQuotes = useMemo(() => {
-    const list = quotes.filter(q => q.status === "draft" || q.status === "sent");
-    return list.sort((a, b) =>
-      new Date(b.updatedAt ?? b.createdAt).getTime()
-      - new Date(a.updatedAt ?? a.createdAt).getTime(),
-    );
-  }, [quotes]);
-
-  const totalCount = activeJobs.length + unpaidInvoices.length + openQuotes.length;
-  if (totalCount === 0) {
-    return <EmptyState label="No active work — everything is current." />;
-  }
-
-  const showLocation = scopeType === "company";
-
-  return (
-    <div className="space-y-4" data-testid="active-work-tab">
-      {activeJobs.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-label font-semibold tracking-wider text-slate-600">
-              Active Jobs
-            </h3>
-            <span className="text-xs text-slate-400">{activeJobs.length}</span>
-          </div>
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {activeJobs.map(j => (
-              <JobRow
-                key={j.id}
-                job={j}
-                locationLabel={showLocation ? locMap.get(j.locationId) : undefined}
-                onNavigate={onNavigate}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {unpaidInvoices.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-label font-semibold tracking-wider text-slate-600">
-              Unpaid Invoices
-            </h3>
-            <span className="text-xs text-slate-400">{unpaidInvoices.length}</span>
-          </div>
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {unpaidInvoices.map(inv => {
-              const badge = getInvoiceStatusBadge(inv.status, false);
-              const overdue = matchInvoiceFilter(inv, "overdue");
-              return (
-                <div
-                  key={inv.id}
-                  className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-                  onClick={() => onNavigate(`/invoices/${inv.id}`)}
-                >
-                  <div className="min-w-0 flex-1">
-                    <span className="font-medium text-slate-700">
-                      INV #{inv.invoiceNumber || inv.id.slice(0, 6)}
-                    </span>
-                    <span className="text-slate-500 ml-2">
-                      {fmt.format(Number(inv.total ?? 0))}
-                    </span>
-                    {showLocation && locMap.get(inv.locationId) && (
-                      <p className="text-slate-400 text-xs truncate">{locMap.get(inv.locationId)}</p>
-                    )}
-                    {inv.dueDate && (
-                      <p className={cn("text-xs", overdue ? "text-red-500" : "text-slate-400")}>
-                        Due {format(new Date(inv.dueDate), "MMM dd, yyyy")}
-                      </p>
-                    )}
-                  </div>
-                  <Badge
-                    variant={overdue ? "destructive" : badge.variant}
-                    className="text-xs flex-shrink-0 ml-2"
-                  >
-                    {overdue ? "Overdue" : badge.label}
-                  </Badge>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {openQuotes.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-label font-semibold tracking-wider text-slate-600">
-              Open Quotes
-            </h3>
-            <span className="text-xs text-slate-400">{openQuotes.length}</span>
-          </div>
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {openQuotes.map(q => (
-              <div
-                key={q.id}
-                className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-                onClick={() => onNavigate(`/quotes/${q.id}`)}
-              >
-                <div className="min-w-0 flex-1">
-                  <span className="font-medium text-slate-700">
-                    {(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}
-                  </span>
-                  {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
-                  <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
-                  {showLocation && q.locationId && locMap.get(q.locationId) && (
-                    <p className="text-slate-400 text-xs truncate">{locMap.get(q.locationId)}</p>
-                  )}
-                </div>
-                <Badge variant="outline" className="text-xs capitalize flex-shrink-0 ml-2">
-                  {q.status}
-                </Badge>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Location-Scope Workspace Tab Components
-// ═══════════════════════════════════════════════════════════════════════════════
-
-{/* Part C: Unified job rows via shared JobRow component */}
-function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string) => void }) {
-  // Default filter is "all" — Active Work has its own dedicated tab
-  // (2026-04-18 refinement).
-  const [filter, setFilter] = useState<JobFilter>("all");
-  const counts = useMemo(() => ({
-    active: jobs.filter(isJobActive).length,
-    all: jobs.length,
-    completed: jobs.filter(isJobCompleted).length,
-  }), [jobs]);
-  const filtered = useMemo(() => {
-    if (filter === "active") return jobs.filter(isJobActive);
-    if (filter === "completed") return jobs.filter(isJobCompleted);
-    return jobs;
-  }, [jobs, filter]);
-
-  if (jobs.length === 0) return <EmptyState label="No jobs for this location" />;
-  return (
-    <div>
-      <FilterChips<JobFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "active", label: "Active", count: counts.active },
-          { key: "all", label: "All", count: counts.all },
-          { key: "completed", label: "Complete", count: counts.completed },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No jobs in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(j => (
-            <JobRow key={j.id} job={j} onNavigate={onNavigate} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LocInvoicesTab({ invoices, onNavigate }: { invoices: Invoice[]; onNavigate: (p: string) => void }) {
-  const [filter, setFilter] = useState<InvoiceFilter>("all");
-  const counts = useMemo(() => ({
-    all: invoices.filter(i => matchInvoiceFilter(i, "all")).length,
-    draft: invoices.filter(i => matchInvoiceFilter(i, "draft")).length,
-    awaiting: invoices.filter(i => matchInvoiceFilter(i, "awaiting")).length,
-    paid: invoices.filter(i => matchInvoiceFilter(i, "paid")).length,
-    overdue: invoices.filter(i => matchInvoiceFilter(i, "overdue")).length,
-  }), [invoices]);
-  const filtered = useMemo(() => invoices.filter(i => matchInvoiceFilter(i, filter)), [invoices, filter]);
-
-  if (invoices.length === 0) return <EmptyState label="No invoices for this location" />;
-  return (
-    <div>
-      <FilterChips<InvoiceFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "all", label: "All", count: counts.all },
-          { key: "draft", label: "Draft", count: counts.draft },
-          { key: "awaiting", label: "Awaiting", count: counts.awaiting },
-          { key: "paid", label: "Paid", count: counts.paid },
-          { key: "overdue", label: "Overdue", count: counts.overdue },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No invoices in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(inv => (
-            <div key={inv.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-              onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-              <div>
-                <div className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
-                <div className="text-slate-400 text-xs">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
-              </div>
-              <div className="text-right">
-                {(() => {
-                  const badge = getInvoiceStatusBadge(inv.status, false);
-                  return <Badge variant={badge.variant} className="text-xs flex-shrink-0">{badge.label}</Badge>;
-                })()}
-                <p className="text-slate-500 text-xs">{fmt.format(Number(inv.total ?? 0))}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavigate: (p: string) => void }) {
-  const [filter, setFilter] = useState<QuoteFilter>("all");
-  const counts = useMemo(() => ({
-    all: quotes.length,
-    draft: quotes.filter(q => matchQuoteFilter(q, "draft")).length,
-    sent: quotes.filter(q => matchQuoteFilter(q, "sent")).length,
-    approved: quotes.filter(q => matchQuoteFilter(q, "approved")).length,
-  }), [quotes]);
-  const filtered = useMemo(() => quotes.filter(q => matchQuoteFilter(q, filter)), [quotes, filter]);
-
-  if (quotes.length === 0) return <EmptyState label="No quotes for this location" />;
-  return (
-    <div>
-      <FilterChips<QuoteFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "all", label: "All", count: counts.all },
-          { key: "draft", label: "Draft", count: counts.draft },
-          { key: "sent", label: "Sent", count: counts.sent },
-          { key: "approved", label: "Approved", count: counts.approved },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No quotes in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(q => (
-            <div key={q.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-              onClick={() => onNavigate(`/quotes/${q.id}`)}>
-              <div>
-                <div className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
-                <div className="text-slate-400 text-xs">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
-              </div>
-              <div className="text-right">
-                <Badge variant="outline" className="text-xs capitalize flex-shrink-0">{q.status}</Badge>
-                <p className="text-slate-500 text-xs">{fmt.format(Number(q.total ?? 0))}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LocEquipmentTab({
-  equipment, locationId, onAdd, onDelete,
-}: {
-  equipment: LocationEquipment[];
-  locationId: string;
-  onAdd: () => void;
-  onDelete: (id: string) => void;
-}) {
-  const { toast } = useToast();
-  const [detailEquipment, setDetailEquipment] = useState<LocationEquipment | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
-  const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
-  const confirmTarget = confirmDeleteId ? equipment.find(e => e.id === confirmDeleteId) : null;
-
-  // Fetch archived equipment only when toggle is on
-  const archivedQuery = useQuery<LocationEquipment[]>({
-    queryKey: ["/api/clients", locationId, "equipment", "archived"],
-    queryFn: () => apiRequest(`/api/clients/${locationId}/equipment/archived`),
-    enabled: showArchived,
-  });
-
-  const restoreMutation = useMutation({
-    mutationFn: (equipmentId: string) =>
-      apiRequest(`/api/clients/${locationId}/equipment/${equipmentId}/restore`, { method: "POST" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment", "archived"] });
-      toast({ title: "Equipment restored" });
-      setConfirmRestoreId(null);
-    },
-    onError: () => toast({ title: "Error", description: "Failed to restore equipment.", variant: "destructive" }),
-  });
-
-  const archivedList = archivedQuery.data ?? [];
-  const restoreTarget = confirmRestoreId ? archivedList.find(e => e.id === confirmRestoreId) : null;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-label font-semibold tracking-wider text-slate-600">Equipment</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">{equipment.length} units</span>
-          <Button variant="outline" size="sm" className="h-6 text-xs" onClick={onAdd}>
-            <Plus className="mr-1 h-3 w-3" />Add
-          </Button>
-        </div>
-      </div>
-      {equipment.length === 0 && !showArchived ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No equipment registered</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {equipment.map(eq => (
-            <div key={eq.id} className="px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-              onClick={() => setDetailEquipment(eq)}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-slate-700">{eq.name}</div>
-                  <div className="text-slate-400 text-xs">{eq.equipmentType || "—"}</div>
-                </div>
-                <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-destructive"
-                  onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(eq.id); }}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-              <div className="mt-0.5 text-xs text-slate-400">
-                {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Show archived toggle */}
-      <button onClick={() => setShowArchived(v => !v)}
-        className="mt-2 text-xs font-medium text-slate-400 hover:text-slate-600 transition-colors">
-        {showArchived ? "Hide archived" : "Show archived"}
-      </button>
-
-      {/* Archived equipment list */}
-      {showArchived && archivedList.length > 0 && (
-        <div className="mt-1.5 border border-slate-200 rounded bg-slate-50 divide-y divide-slate-100">
-          {archivedList.map(eq => (
-            <div key={eq.id} className="px-3 py-2 text-xs opacity-60">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-slate-500">{eq.name}</div>
-                  <div className="text-slate-400 text-xs">{eq.equipmentType || "—"}</div>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Badge variant="secondary" className="text-xs px-1 py-0">Archived</Badge>
-                  <Button variant="outline" size="sm" className="h-5 text-xs px-2"
-                    onClick={() => setConfirmRestoreId(eq.id)}>
-                    Restore
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {showArchived && archivedList.length === 0 && !archivedQuery.isLoading && (
-        <p className="text-xs text-slate-400 mt-1">No archived equipment</p>
-      )}
-
-      {/* Delete confirmation dialog — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
-      {confirmTarget && (
-        <AlertDialog open={!!confirmDeleteId} onOpenChange={(open) => { if (!open) setConfirmDeleteId(null); }}>
-          <AlertDialogContent className="sm:max-w-[400px]">
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete this equipment?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will remove <span className="font-medium text-foreground">{confirmTarget.name}</span> from
-                the active equipment list for this location. Service history and related notes will be preserved.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="gap-2 sm:gap-0">
-              <AlertDialogCancel onClick={() => setConfirmDeleteId(null)}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => { onDelete(confirmDeleteId!); setConfirmDeleteId(null); }}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
-
-      {/* Restore confirmation dialog — blocking confirmation → AlertDialog per CLAUDE.md taxonomy rule #1 */}
-      {restoreTarget && (
-        <AlertDialog open={!!confirmRestoreId} onOpenChange={(open) => { if (!open) setConfirmRestoreId(null); }}>
-          <AlertDialogContent className="sm:max-w-[400px]">
-            <AlertDialogHeader>
-              <AlertDialogTitle>Restore this equipment?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will make <span className="font-medium text-foreground">{restoreTarget.name}</span> active
-                again and return it to the active equipment list.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="gap-2 sm:gap-0">
-              <AlertDialogCancel onClick={() => setConfirmRestoreId(null)}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => restoreMutation.mutate(confirmRestoreId!)}
-                disabled={restoreMutation.isPending}
-              >
-                {restoreMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                Restore
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
-
-      <EquipmentDetailModal
-        open={!!detailEquipment}
-        onOpenChange={(open) => { if (!open) setDetailEquipment(null); }}
-        equipment={detailEquipment}
-      />
-    </div>
-  );
-}
-
-function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () => void }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-label font-semibold tracking-wider text-slate-600">PM Parts</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">{pmParts.length} items</span>
-          <Button variant="outline" size="sm" className="h-6 text-xs" onClick={onAdd}>
-            <Plus className="mr-1 h-3 w-3" />Add
-          </Button>
-        </div>
-      </div>
-      {pmParts.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No PM parts configured</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {pmParts.map(p => (
-            <div key={p.id} className="flex items-center justify-between py-2 px-3 text-xs">
-              <div>
-                <div className="font-medium text-slate-700">{p.itemName || "Unknown Part"}</div>
-                {p.itemSku && <div className="text-slate-400 text-xs">{p.itemSku}</div>}
-              </div>
-              <span className="text-slate-500 font-medium text-xs">x{p.quantityPerVisit}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Client-Wide Tab Components (used by company scope)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/** Company-wide Jobs tab with Active/All/Complete filters (2026-04-18).
- *  Default filter is "all" — Active Work has its own dedicated tab. */
-function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locations: Client[]; onNavigate: (p: string) => void }) {
-  const [filter, setFilter] = useState<JobFilter>("all");
-  const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
-  const nonArchived = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
-  const counts = useMemo(() => ({
-    active: nonArchived.filter(isJobActive).length,
-    all: nonArchived.length,
-    completed: nonArchived.filter(isJobCompleted).length,
-  }), [nonArchived]);
-  const filtered = useMemo(() => {
-    if (filter === "active") return nonArchived.filter(isJobActive);
-    if (filter === "completed") return nonArchived.filter(isJobCompleted);
-    return nonArchived;
-  }, [nonArchived, filter]);
-
-  if (jobs.length === 0) return <EmptyState label="No jobs for this client" />;
-  return (
-    <div>
-      <FilterChips<JobFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "active", label: "Active", count: counts.active },
-          { key: "all", label: "All", count: counts.all },
-          { key: "completed", label: "Complete", count: counts.completed },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No jobs in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(j => (
-            <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: Invoice[]; locations: Client[]; onNavigate: (p: string) => void }) {
-  const [filter, setFilter] = useState<InvoiceFilter>("all");
-  const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
-  const counts = useMemo(() => ({
-    all: invoices.filter(i => matchInvoiceFilter(i, "all")).length,
-    draft: invoices.filter(i => matchInvoiceFilter(i, "draft")).length,
-    awaiting: invoices.filter(i => matchInvoiceFilter(i, "awaiting")).length,
-    paid: invoices.filter(i => matchInvoiceFilter(i, "paid")).length,
-    overdue: invoices.filter(i => matchInvoiceFilter(i, "overdue")).length,
-  }), [invoices]);
-  const filtered = useMemo(() => invoices.filter(i => matchInvoiceFilter(i, filter)), [invoices, filter]);
-
-  if (invoices.length === 0) return <EmptyState label="No invoices for this client" />;
-  return (
-    <div>
-      <FilterChips<InvoiceFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "all", label: "All", count: counts.all },
-          { key: "draft", label: "Draft", count: counts.draft },
-          { key: "awaiting", label: "Awaiting", count: counts.awaiting },
-          { key: "paid", label: "Paid", count: counts.paid },
-          { key: "overdue", label: "Overdue", count: counts.overdue },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No invoices in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(inv => (
-            <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-              onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-              <div>
-                <span className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
-                <span className="text-slate-500 ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
-                <p className="text-slate-400 text-xs">{locMap.get(inv.locationId) || ""}</p>
-              </div>
-              {(() => {
-                const badge = getInvoiceStatusBadge(inv.status, false);
-                return <Badge variant={badge.variant} className="text-xs flex-shrink-0">{badge.label}</Badge>;
-              })()}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: EnrichedQuote[]; locations: Client[]; onNavigate: (p: string) => void }) {
-  const [filter, setFilter] = useState<QuoteFilter>("all");
-  const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
-  const counts = useMemo(() => ({
-    all: quotes.length,
-    draft: quotes.filter(q => matchQuoteFilter(q, "draft")).length,
-    sent: quotes.filter(q => matchQuoteFilter(q, "sent")).length,
-    approved: quotes.filter(q => matchQuoteFilter(q, "approved")).length,
-  }), [quotes]);
-  const filtered = useMemo(() => quotes.filter(q => matchQuoteFilter(q, filter)), [quotes, filter]);
-
-  if (quotes.length === 0) return <EmptyState label="No quotes for this client" />;
-  return (
-    <div>
-      <FilterChips<QuoteFilter>
-        value={filter}
-        onChange={setFilter}
-        options={[
-          { key: "all", label: "All", count: counts.all },
-          { key: "draft", label: "Draft", count: counts.draft },
-          { key: "sent", label: "Sent", count: counts.sent },
-          { key: "approved", label: "Approved", count: counts.approved },
-        ]}
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No quotes in this filter</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {filtered.map(q => (
-            <div key={q.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-              onClick={() => onNavigate(`/quotes/${q.id}`)}>
-              <div>
-                <span className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
-                {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
-                <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
-                <p className="text-slate-400 text-xs">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
-              </div>
-              <Badge variant="outline" className="text-xs capitalize flex-shrink-0">{q.status}</Badge>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Shared Components
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/** Contact card — compact layout. Hierarchy: name (primary) →
- *  jobTitle (secondary) → phone/email (meta row 1) → location label
- *  (meta row 2) → role chips (chipRow). Primary shown as a star icon
- *  in title.trailing; "Company" scope chip when applicable.
- *
- *  2026-05-03: the entire card is the click target. When `onEdit` is
- *  supplied the renderer mounts the clickable variant of
- *  `<RailContentCard>` (a real `<button>` with hover + focus-visible
- *  affordances). When omitted, the card renders read-only.
- *
- *  2026-05-08 Phase 6 (re-recovery): migrated to the data-driven
- *  `<RailPanelRenderer>` pipeline. `ContactCard` is now a thin mount
- *  on a `kind: "single"` panel; the descriptor builder owns title +
- *  trailing items + meta rows + chip row composition.
- */
-
-interface ContactCardProps {
-  contact: ClientContact;
-  onEdit?: (c: ClientContact) => void;
-  showScope?: boolean;
-  /** Location names this person is assigned to (company cards only) */
-  assignedLocationNames?: string[];
-}
-
-function buildClientContactDescriptor({
-  contact,
-  onEdit,
-  showScope,
-  assignedLocationNames,
-}: {
-  contact: ClientContact;
-  onEdit?: (c: ClientContact) => void;
-  showScope?: boolean;
-  assignedLocationNames?: string[];
-}): RailCardDescriptor {
-  const nc = normalizeContact(contact);
-
-  // Format location names for display: "Oakville, RBC Plaza" or
-  // "Oakville, RBC Plaza +1 more". Cap at 2 visible.
-  const MAX_VISIBLE_LOCATIONS = 2;
-  const locationLabel =
-    assignedLocationNames && assignedLocationNames.length > 0
-      ? assignedLocationNames.length <= MAX_VISIBLE_LOCATIONS
-        ? assignedLocationNames.join(", ")
-        : `${assignedLocationNames.slice(0, MAX_VISIBLE_LOCATIONS).join(", ")} +${assignedLocationNames.length - MAX_VISIBLE_LOCATIONS} more`
-      : null;
-
-  // Title trailing — heterogeneous (icon + chip). Star comes first
-  // (primary indicator), Company chip second when applicable.
-  const trailing: RailTitleTrailing[] = [];
-  if (nc.isPrimary) {
-    trailing.push({ kind: "icon", icon: Star, ariaLabel: "Primary" });
-  }
-  if (showScope && nc.scope === "company") {
-    trailing.push({ kind: "chip", chip: { text: "Company" } });
-  }
-
-  // Phone + Email render as a single meta row with two icon-prefixed
-  // items (renderer applies `gap-3` between items in multi-item rows).
-  const phoneEmailItems: RailMetaItem[] = [];
-  if (nc.phone) phoneEmailItems.push({ icon: Phone, text: nc.phone });
-  if (nc.email) phoneEmailItems.push({ icon: Mail, text: nc.email, truncate: true });
-
-  const metaRows: RailMetaRowDescriptor[] = [];
-  if (phoneEmailItems.length > 0) {
-    metaRows.push({ items: phoneEmailItems });
-  }
-  if (locationLabel) {
-    metaRows.push({
-      items: [{ icon: MapPin, text: locationLabel, truncate: true }],
-    });
-  }
-
-  return {
-    key: contact.id,
-    onClick: onEdit ? () => onEdit(contact) : undefined,
-    testId: onEdit ? "contact-card-edit" : "contact-card",
-    ariaLabel: onEdit ? `Edit contact ${nc.displayName}` : undefined,
-    title: {
-      text: nc.displayName,
-      as: "span",
-      secondary: nc.jobTitle ? `(${nc.jobTitle})` : undefined,
-      trailing: trailing.length > 0 ? trailing : undefined,
-    },
-    metaRows: metaRows.length > 0 ? metaRows : undefined,
-    chipRow:
-      nc.roles.length > 0
-        ? nc.roles.map((r) => ({ text: r, className: "capitalize" }))
-        : undefined,
-  };
-}
-
-function ContactCard({
-  contact,
-  onEdit,
-  showScope = false,
-  assignedLocationNames,
-}: ContactCardProps) {
-  return (
-    <RailPanelRenderer
-      panel={{
-        kind: "single",
-        card: buildClientContactDescriptor({
-          contact,
-          onEdit,
-          showScope,
-          assignedLocationNames,
-        }),
-      }}
-      testIdPrefix="client-side"
-    />
-  );
-}
-
-// ContactFormDialog extracted to @/components/ContactFormDialog.tsx (2026-03-22)
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Normalize activity response — handles array, paginated object, null, undefined */
-function normalizeActivityPayload(payload: unknown): any[] {
-  if (!payload) return [];
-  if (Array.isArray(payload)) return payload;
-  if (typeof payload === "object" && payload !== null) {
-    const obj = payload as Record<string, unknown>;
-    if (Array.isArray(obj.items)) return obj.items;
-    if (Array.isArray(obj.data)) return obj.data;
-    if (Array.isArray(obj.events)) return obj.events;
-  }
-  return [];
-}

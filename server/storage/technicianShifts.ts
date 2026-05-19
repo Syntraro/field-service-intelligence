@@ -21,7 +21,7 @@
  *   updateException          — PATCH exception row
  *   deleteException          — hard-delete exception row (correction pointer only)
  */
-import { and, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   technicianShifts,
@@ -339,6 +339,37 @@ async function deleteException(
   return rows.length > 0;
 }
 
+/**
+ * Count non-exception Work shifts (shiftType = "normal") for a technician whose
+ * startsAt falls within [dayStart, dayEnd). Enforces the 2-per-day cap at the
+ * route layer. Pass excludeShiftId when checking during an edit so the existing
+ * row is not counted against itself.
+ */
+async function countWorkShiftsOnDay(
+  companyId: string,
+  technicianUserId: string,
+  dayStart: Date,
+  dayEnd: Date,
+  excludeShiftId?: string,
+): Promise<number> {
+  const conditions: ReturnType<typeof eq>[] = [
+    eq(technicianShifts.companyId, companyId),
+    eq(technicianShifts.technicianUserId, technicianUserId),
+    eq(technicianShifts.shiftType, "normal"),
+    isNull(technicianShifts.recurrenceParentId),
+    gte(technicianShifts.startsAt, dayStart),
+    lt(technicianShifts.startsAt, dayEnd),
+  ];
+  if (excludeShiftId) {
+    conditions.push(ne(technicianShifts.id, excludeShiftId) as any);
+  }
+  const rows = await db
+    .select({ id: technicianShifts.id })
+    .from(technicianShifts)
+    .where(and(...conditions));
+  return rows.length;
+}
+
 export const technicianShiftsRepository = {
   listBaseShiftsInWindow,
   listExceptionsForBases,
@@ -349,4 +380,5 @@ export const technicianShiftsRepository = {
   createException,
   updateException,
   deleteException,
+  countWorkShiftsOnDay,
 };

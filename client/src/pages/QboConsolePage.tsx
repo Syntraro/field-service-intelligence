@@ -65,6 +65,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   Collapsible,
   CollapsibleContent,
@@ -3532,32 +3533,20 @@ export default function QboConsolePage() {
       {/* 2026-04-09: Apply Confirmation Dialog REMOVED. Inbound payment
           reconcile-apply is retired — payments now sync one-way (App → QBO). */}
 
-      {/* Enable QBO Confirmation Dialog */}
-      <AlertDialog open={showEnableConfirm} onOpenChange={setShowEnableConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable QuickBooks Sync?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will allow syncing data from this app to QuickBooks Online.
-              Make sure your item/tax mappings are configured correctly.
-              {preflight?.qboEnvironment === "production" && (
-                <span className="block mt-2 text-destructive font-medium">
-                  Warning: You are connecting to the PRODUCTION QuickBooks environment.
-                </span>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => {
-              setShowEnableConfirm(false);
-              toggleEnabledMutation.mutate({ enabled: true, environment: preflight?.qboEnvironment });
-            }}>
-              Enable Sync to QuickBooks
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showEnableConfirm}
+        onOpenChange={setShowEnableConfirm}
+        title="Enable QuickBooks Sync?"
+        description="This will allow syncing data from this app to QuickBooks Online. Make sure your item/tax mappings are configured correctly."
+        emphasis={preflight?.qboEnvironment === "production" ? "Warning: You are connecting to the PRODUCTION QuickBooks environment." : undefined}
+        confirmLabel="Enable Sync to QuickBooks"
+        variant="neutral"
+        onConfirm={() => {
+          setShowEnableConfirm(false);
+          toggleEnabledMutation.mutate({ enabled: true, environment: preflight?.qboEnvironment });
+        }}
+        testIdPrefix="qbo-enable"
+      />
 
       {/* Import Customers Confirmation Dialog — requires typing IMPORT to proceed */}
       <AlertDialog open={showImportConfirm} onOpenChange={(open) => { setShowImportConfirm(open); if (!open) setImportConfirmText(""); }}>
@@ -3613,62 +3602,35 @@ export default function QboConsolePage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Catalog Sync Confirmation Dialog */}
-      <AlertDialog open={showCatalogSyncConfirm} onOpenChange={setShowCatalogSyncConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Sync Catalog to QuickBooks?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-2">
-                <p>
-                  This will create or update Products & Services in QuickBooks based on your catalog items.
-                </p>
-                {catalogSyncResult?.dryRun && catalogSyncResult.totals.eligible > 0 && (
-                  <p>
-                    Based on the preview: <strong>{catalogSyncResult.totals.creates}</strong> new items
-                    and <strong>{catalogSyncResult.totals.updates}</strong> updates.
-                  </p>
-                )}
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setShowCatalogSyncConfirm(false);
-                catalogSyncMutation.mutate({ dryRun: false });
-              }}
-            >
-              Sync Now
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showCatalogSyncConfirm}
+        onOpenChange={setShowCatalogSyncConfirm}
+        title="Sync Catalog to QuickBooks?"
+        description={
+          catalogSyncResult?.dryRun && catalogSyncResult.totals.eligible > 0
+            ? `This will create or update Products & Services in QuickBooks based on your catalog items. Based on the preview: ${catalogSyncResult.totals.creates} new items and ${catalogSyncResult.totals.updates} updates.`
+            : "This will create or update Products & Services in QuickBooks based on your catalog items."
+        }
+        confirmLabel="Sync Now"
+        variant="neutral"
+        onConfirm={() => {
+          setShowCatalogSyncConfirm(false);
+          catalogSyncMutation.mutate({ dryRun: false });
+        }}
+        testIdPrefix="qbo-catalog-sync"
+      />
 
-      {/* Disconnect Confirmation Dialog */}
-      <AlertDialog open={showDisconnectConfirm} onOpenChange={setShowDisconnectConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Disconnect QuickBooks?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the QuickBooks connection for your account.
-              Imported customers and item mappings will not be deleted.
-              You can reconnect at any time.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => disconnectMutation.mutate()}
-              disabled={disconnectMutation.isPending}
-            >
-              {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDisconnectConfirm}
+        onOpenChange={setShowDisconnectConfirm}
+        title="Disconnect QuickBooks?"
+        description="This will remove the QuickBooks connection for your account. Imported customers and item mappings will not be deleted. You can reconnect at any time."
+        confirmLabel="Disconnect"
+        variant="destructive"
+        isPending={disconnectMutation.isPending}
+        onConfirm={() => { setShowDisconnectConfirm(false); disconnectMutation.mutate(); }}
+        testIdPrefix="qbo-disconnect"
+      />
 
       {/* Link Item Dialog */}
       <AlertDialog open={showItemLinkDialog} onOpenChange={setShowItemLinkDialog}>

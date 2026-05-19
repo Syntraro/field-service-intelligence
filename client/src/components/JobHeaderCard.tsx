@@ -42,6 +42,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import type { Invoice } from "@shared/schema";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 
@@ -620,25 +621,16 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
       </Dialog>
 
       {/* Delete Confirmation */}
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent data-testid="dialog-delete-job">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Job</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this job? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => { onDelete(); setShowDeleteConfirm(false); }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        title="Delete Job"
+        description="Are you sure you want to delete this job? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => { onDelete(); setShowDeleteConfirm(false); }}
+        testIdPrefix="job-delete"
+      />
 
       {/* Invoiced Warning - cannot reopen */}
       <Dialog open={showInvoicedWarning} onOpenChange={setShowInvoicedWarning}>

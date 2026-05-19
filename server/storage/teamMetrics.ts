@@ -12,9 +12,9 @@
  *      evenly across job_visits.assignedTechnicianIds.
  *
  * Utilization:
- *   scheduledHours = sum of working_hours per day × (periodDays / 7)
+ *   scheduledHours = sum of normal shift durations clipped to [from, to].
  *   utilizationPct = hoursWorked / scheduledHours × 100, capped at 100.
- *   If no working_hours record: scheduledHours uses 40 hr/week default.
+ *   Technicians with no normal shifts in the period have scheduledHours = 0.
  */
 
 import { and, eq, gte, inArray, isNotNull, lt, ne } from "drizzle-orm";
@@ -26,10 +26,9 @@ import {
   leads,
   quotes,
   timeEntries,
-  workingHours,
 } from "@shared/schema";
-
-const DEFAULT_WEEKLY_HOURS = 40;
+import { availabilityEngine } from "../services/availabilityEngine";
+import { companyRepository } from "./company";
 
 export type MetricsPeriod = "last_30_days" | "last_90_days" | "last_12_months";
 
@@ -53,23 +52,6 @@ function periodWindow(period: MetricsPeriod, now: Date): { from: Date; to: Date 
   };
 }
 
-function parseTimeMinutes(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return (h ?? 0) * 60 + (m ?? 0);
-}
-
-function weeklyHoursFromRows(
-  rows: Array<{ isWorking: boolean; startTime: string | null; endTime: string | null }>,
-): number {
-  if (rows.length === 0) return DEFAULT_WEEKLY_HOURS;
-  let total = 0;
-  for (const r of rows) {
-    if (!r.isWorking || !r.startTime || !r.endTime) continue;
-    const mins = parseTimeMinutes(r.endTime) - parseTimeMinutes(r.startTime);
-    if (mins > 0) total += mins / 60;
-  }
-  return total > 0 ? total : DEFAULT_WEEKLY_HOURS;
-}
 
 export async function getTeamMetrics(
   companyId: string,
@@ -302,7 +284,7 @@ export async function getTeamMetrics(
     leadRevenueMap[r.userId] = (leadRevenueMap[r.userId] ?? 0) + amt;
   }
 
-  // 9. Working hours for utilization
+  // 9. Shift-derived scheduled hours for utilization
   const allUserIds = Array.from(
     new Set([
       ...Object.keys(hoursMap),
@@ -311,24 +293,20 @@ export async function getTeamMetrics(
     ]),
   );
 
-  const workingHoursRows = await db
-    .select({
-      userId: workingHours.userId,
-      dayOfWeek: workingHours.dayOfWeek,
-      startTime: workingHours.startTime,
-      endTime: workingHours.endTime,
-      isWorking: workingHours.isWorking,
-    })
-    .from(workingHours)
-    .where(inArray(workingHours.userId, allUserIds));
-
-  const workingHoursByUser: Record<
-    string,
-    Array<{ isWorking: boolean; startTime: string | null; endTime: string | null }>
-  > = {};
-  for (const r of workingHoursRows) {
-    if (!workingHoursByUser[r.userId]) workingHoursByUser[r.userId] = [];
-    workingHoursByUser[r.userId].push(r);
+  const shiftHoursByUser: Record<string, number> = {};
+  if (allUserIds.length > 0) {
+    const timezone = await companyRepository.getCompanyTimezone(companyId);
+    const shifts = await availabilityEngine.resolveTechnicianShifts(
+      companyId, allUserIds, from, to, timezone,
+    );
+    for (const s of shifts) {
+      if (s.shiftType !== "normal") continue;
+      const clippedStart = Math.max(s.startsAt.getTime(), from.getTime());
+      const clippedEnd = Math.min(s.endsAt.getTime(), to.getTime());
+      if (clippedEnd <= clippedStart) continue;
+      shiftHoursByUser[s.technicianUserId] =
+        (shiftHoursByUser[s.technicianUserId] ?? 0) + (clippedEnd - clippedStart) / 3_600_000;
+    }
   }
 
   // 10. Assemble results
@@ -341,9 +319,7 @@ export async function getTeamMetrics(
     const leadsGenerated = leadsMap[userId] ?? 0;
     const leadRevenue = Math.round((leadRevenueMap[userId] ?? 0) * 100) / 100;
 
-    const whRows = workingHoursByUser[userId] ?? [];
-    const weeklyHours = weeklyHoursFromRows(whRows);
-    const scheduledHoursInPeriod = Math.round(weeklyHours * weeks * 100) / 100;
+    const scheduledHoursInPeriod = Math.round((shiftHoursByUser[userId] ?? 0) * 100) / 100;
 
     const utilizationPct =
       scheduledHoursInPeriod > 0

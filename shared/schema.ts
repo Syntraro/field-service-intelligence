@@ -925,6 +925,14 @@ export const items = pgTable("items", {
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
+  // Optional client-presentable image (added 2026-05-18).
+  // Optimized/compressed on upload; original is never stored permanently.
+  imageFileId: varchar("image_file_id"),
+  imageStorageKey: text("image_storage_key"),
+  imageMimeType: text("image_mime_type"),
+  imageFileName: text("image_file_name"),
+  imageAltText: text("image_alt_text"),
+  thumbnailStorageKey: text("thumbnail_storage_key"),
 }, (table) => ({
   // Index for looking up items by QBO ID
   qboItemIdIdx: index("items_qbo_item_id_idx").on(table.companyId, table.qboItemId),
@@ -956,89 +964,6 @@ export const itemCategories = pgTable("item_categories", {
 });
 
 export type ItemCategory = typeof itemCategories.$inferSelect;
-
-// 2026-05-07 RALPH — Pricebook Groups: saved bundles of pricebook items
-// (e.g. "Service Call" = Labor + Truck Charge + Parking) that expand
-// into N line items when added to a job/quote/invoice.
-//
-// usageCount is incremented by the canonical pricebookUsageService when
-// a group is added; the picker right-rail orders by usageCount DESC,
-// name ASC. We chose a simple counter over a per-target usage table
-// per the brief's "If full usage tracking is too large: implement a
-// simple usage_count column" carve-out — recency weighting / per-
-// target analytics can plug into the service later without changing
-// the table shape.
-export const pricebookGroups = pgTable("pricebook_groups", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
-  name: text("name").notNull(),
-  description: text("description"),
-  // Display tag; future-proofing only. Picker rail does not consume yet.
-  color: text("color"),
-  icon: text("icon"),
-  isActive: boolean("is_active").notNull().default(true),
-  // Incremented atomically on bulk-add (POST /api/pricebook-groups/:id/usage).
-  usageCount: integer("usage_count").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-}, (table) => ({
-  // Unique active group name per tenant. Soft-archived groups
-  // (is_active = false) are excluded so a tenant can re-use a name
-  // after archiving.
-  nameUq: uniqueIndex("pricebook_groups_company_name_active_uq")
-    .on(table.companyId, table.name)
-    .where(sql`is_active = true`),
-  // Picker rail read predicate.
-  lookupIdx: index("idx_pricebook_groups_lookup")
-    .on(table.companyId, table.isActive, table.usageCount),
-}));
-
-// Junction table: child line items belonging to a group. Cascade-delete
-// from the parent group so removing a group cleans up its children.
-// Item FK uses ON DELETE CASCADE so a tenant deleting a pricebook item
-// auto-removes it from any groups (avoiding broken expansions).
-export const pricebookGroupItems = pgTable("pricebook_group_items", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  groupId: varchar("group_id").notNull().references(() => pricebookGroups.id, { onDelete: "cascade" }),
-  itemId: varchar("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
-  // Stored as numeric for parity with line_items.quantity; UI sends
-  // strings. Default "1" matches the picker's default qty.
-  quantity: numeric("quantity", { precision: 12, scale: 2 }).notNull().default("1"),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-}, (table) => ({
-  // Each (group, item) pair is unique — a child item appears at most
-  // once per group. Re-adding the same item bumps quantity instead.
-  uniqGroupItem: uniqueIndex("pricebook_group_items_group_item_uq")
-    .on(table.groupId, table.itemId),
-  groupLookupIdx: index("idx_pricebook_group_items_group")
-    .on(table.companyId, table.groupId, table.sortOrder),
-}));
-
-export const insertPricebookGroupSchema = createInsertSchema(pricebookGroups).omit({
-  id: true,
-  companyId: true,
-  userId: true,
-  usageCount: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
-export const insertPricebookGroupItemSchema = createInsertSchema(pricebookGroupItems).omit({
-  id: true,
-  companyId: true,
-  groupId: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
-export type PricebookGroup = typeof pricebookGroups.$inferSelect;
-export type PricebookGroupItem = typeof pricebookGroupItems.$inferSelect;
-export type InsertPricebookGroup = z.infer<typeof insertPricebookGroupSchema>;
-export type InsertPricebookGroupItem = z.infer<typeof insertPricebookGroupItemSchema>;
 
 export const clientParts = pgTable("client_parts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -8346,6 +8271,13 @@ export const serviceTemplates = pgTable("service_templates", {
   deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").notNull().default(sql`NOW()`),
   updatedAt: timestamp("updated_at"),
+  // Optional client-presentable image (added 2026-05-18).
+  imageFileId: varchar("image_file_id"),
+  imageStorageKey: text("image_storage_key"),
+  imageMimeType: text("image_mime_type"),
+  imageFileName: text("image_file_name"),
+  imageAltText: text("image_alt_text"),
+  thumbnailStorageKey: text("thumbnail_storage_key"),
 }, (table) => ({
   lookupIdx: index("idx_svc_templates_lookup")
     .on(table.companyId, table.isActive, table.usageCount),

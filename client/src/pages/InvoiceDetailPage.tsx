@@ -85,16 +85,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -2659,27 +2650,17 @@ const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: 
         />
       )}
 
-      {/* Delete Draft Confirmation — destructive → AlertDialog per CLAUDE.md taxonomy rule #1 */}
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Draft Invoice</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete invoice #{invoice.invoiceNumber}? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setShowDeleteConfirm(false)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteMutation.mutate()}
-              disabled={deleteMutation.isPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        title="Delete Draft Invoice"
+        description={`Are you sure you want to delete invoice #${invoice.invoiceNumber}? This action cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        testIdPrefix="invoice-delete"
+      />
 
       {/* Void Confirmation Modal */}
       <ConfirmVoidModal

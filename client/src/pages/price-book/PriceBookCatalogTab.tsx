@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Archive, AlertTriangle, Download, FolderOpen, Trash2, Zap } from "lucide-react";
+import { PricebookThumb } from "@/components/pricebook/ItemImageUpload";
 import { PriceBookPricingAdjustDialog } from "./PriceBookPricingAdjustDialog";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { WorkspaceCenterPane } from "@/components/workspace/WorkspaceCenterPane";
@@ -391,6 +392,25 @@ export function PriceBookCatalogTab({
               checked={selectedIds.has(row.id)}
               onCheckedChange={(checked) => handleSelectOne(row.id, checked as boolean)}
               aria-label={`Select ${row.name ?? "item"}`}
+            />
+          ),
+        },
+      },
+      {
+        id: "thumb",
+        kind: "body",
+        header: "",
+        ratio: 0.3,
+        minWidthPx: 40,
+        cell: {
+          type: "customRender",
+          reason: "THUMBNAIL — pricebook item image; no typed descriptor covers image thumbnail cells",
+          render: (row) => (
+            <PricebookThumb
+              entityType="item"
+              entityId={row.id}
+              thumbnailStorageKey={row.thumbnailStorageKey}
+              className="h-8 w-8"
             />
           ),
         },

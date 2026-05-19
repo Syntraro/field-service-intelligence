@@ -115,19 +115,6 @@ import {
   catalogItemToDraft,
   draftToJobPartPayload,
 } from "@/lib/entities/lineItemMapper";
-// 2026-05-07 RALPH (groups in service picker): the picker now also
-// surfaces saved Pricebook Groups under a separate "Groups" section.
-// Selecting a group expands its children into job_part rows via the
-// canonical mapper — same pipeline a single service uses, fanned out
-// over every active child of the group.
-import {
-  groupChildrenToDrafts,
-  type PricebookGroupSummaryDto,
-} from "@/components/line-items/pricebookHelpers";
-import {
-  recordPricebookGroupUsage,
-  usePricebookGroups,
-} from "@/lib/pricebook/usePricebookGroups";
 import type { JobVisit } from "@shared/schema";
 
 // ============================================================================
@@ -435,52 +422,6 @@ export function EditVisitModal({
   // (`catalogItemToDraft → draftToJobPartPayload → POST`). Every
   // child becomes its own job_part row; the GROUP is never persisted
   // as a line item itself — it stays an authoring construct.
-  // Quantity, unit price, cost, taxable, and type are all preserved
-  // verbatim from the group child snapshot.
-  const addGroupMutation = useMutation({
-    mutationFn: async (group: PricebookGroupSummaryDto) => {
-      const drafts = groupChildrenToDrafts(group);
-      // Sequential POSTs preserve sortOrder server-side. The volume
-      // is bounded (groups cap at 64 children) so a Promise.all
-      // would be marginally faster but harder to reason about for
-      // partial failures. Sequential keeps error attribution clean.
-      const failed: string[] = [];
-      for (const { draft, product } of drafts) {
-        try {
-          await apiRequest(`/api/jobs/${jobId}/parts`, {
-            method: "POST",
-            body: JSON.stringify(draftToJobPartPayload(draft)),
-          });
-        } catch {
-          failed.push(product.name || "service");
-        }
-      }
-      // Fire-and-forget usage bump so this group floats up the
-      // most-used ranking on the next picker open. Errors are
-      // intentionally swallowed — usage tracking is advisory.
-      recordPricebookGroupUsage(group.id, { target: "job" }).catch(
-        () => undefined,
-      );
-      return { addedCount: drafts.length - failed.length, failed };
-    },
-    onSuccess: (result, group) => {
-      invalidateJobParts(queryClient, jobId);
-      if (result.failed.length > 0) {
-        toast({
-          title: `Added ${result.addedCount} of ${group.itemCount} from "${group.name}"`,
-          description: `${result.failed.length} service(s) could not be attached.`,
-          variant: "destructive",
-        });
-      }
-    },
-    onError: (err: Error) =>
-      toast({
-        title: "Could not add group",
-        description: err.message,
-        variant: "destructive",
-      }),
-  });
-
   // ── Service "Create new …" modal (2026-05-13) ────────────────────────
   // Replaces the inline createServiceMutation that used to fire POST
   // /api/items immediately from the dropdown CommandItem. Clicking
@@ -947,7 +888,6 @@ export function EditVisitModal({
                     jobId={jobId}
                     selectedServices={selectedServices}
                     onAdd={(product) => addServiceMutation.mutate(product)}
-                    onAddGroup={(group) => addGroupMutation.mutate(group)}
                     onRemove={(jobPartId) => removeServiceMutation.mutate(jobPartId)}
                     onCreateNew={(name) => {
                       setCreateServiceInitialName(name);
@@ -955,8 +895,7 @@ export function EditVisitModal({
                     }}
                     busy={
                       addServiceMutation.isPending ||
-                      removeServiceMutation.isPending ||
-                      addGroupMutation.isPending
+                      removeServiceMutation.isPending
                     }
                   />
                   <EquipmentMultiSelect
@@ -1269,7 +1208,6 @@ function ServiceMultiSelect({
   jobId,
   selectedServices,
   onAdd,
-  onAddGroup,
   onRemove,
   onCreateNew,
   busy,
@@ -1277,10 +1215,6 @@ function ServiceMultiSelect({
   jobId: string;
   selectedServices: JobPartReadRow[];
   onAdd: (product: ProductOption) => void;
-  /** Fired when the user picks a Pricebook Group from the dropdown.
-   *  The host expands its children into job_part rows via the
-   *  canonical mapper (the group itself is never persisted). */
-  onAddGroup: (group: PricebookGroupSummaryDto) => void;
   onRemove: (jobPartId: string) => void;
   /** Called when the user clicks "Create service: '<name>'". The host
    *  opens AddProductModal with the name pre-filled; no immediate POST. */
@@ -1296,14 +1230,6 @@ function ServiceMultiSelect({
   const [open, setOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
   const { data: results = [], isLoading } = useProductSearch(searchText);
-  // Saved Pricebook Groups for the same dropdown. Only fetched while
-  // the popover is open so closed pickers don't pay for the round-
-  // trip; the canonical hook returns most-used-first ordering, which
-  // we filter client-side by the user's typed query.
-  const { data: allGroups = [], isLoading: groupsLoading } = usePricebookGroups({
-    enabled: open,
-  });
-
   // Filter to services only. The product-search endpoint returns mixed
   // types; we narrow on the client for the visit modal's purpose.
   const serviceResults = useMemo(
@@ -1352,21 +1278,6 @@ function ServiceMultiSelect({
     () => trimmed.length > 0 && serviceResults.some((r) => r.name.toLowerCase() === trimmed.toLowerCase()),
     [trimmed, serviceResults],
   );
-
-  // Group filtering. The picker rail and this dropdown share the
-  // same canonical query (cached at the React Query layer), so
-  // typing here doesn't re-fetch. Filter client-side by name +
-  // description on the trimmed query. Empty query shows all
-  // most-used-first groups so users can scan the catalog.
-  const filteredGroups = useMemo(() => {
-    if (!trimmed) return allGroups;
-    const q = trimmed.toLowerCase();
-    return allGroups.filter((g) => {
-      if (g.name.toLowerCase().includes(q)) return true;
-      if ((g.description ?? "").toLowerCase().includes(q)) return true;
-      return false;
-    });
-  }, [allGroups, trimmed]);
 
   return (
     // 2026-05-04 modal compression: single bordered container holds
@@ -1491,60 +1402,6 @@ function ServiceMultiSelect({
                 <CommandEmpty>Already attached to this job.</CommandEmpty>
               )}
 
-              {/*
-                Groups section — always rendered AFTER Services so the
-                visual order matches the brief ("Services section
-                should appear before Groups"). Uses the same canonical
-                most-used ordering the picker rail uses (the hook
-                returns groups already sorted). Fires
-                `onAddGroup(group)` on select, which the host expands
-                via `groupChildrenToDrafts → draftToJobPartPayload`.
-              */}
-              {open && filteredGroups.length > 0 && (
-                <CommandGroup heading="Groups">
-                  {filteredGroups.map((g) => {
-                    const childCountLabel = `${g.itemCount} item${
-                      g.itemCount === 1 ? "" : "s"
-                    }`;
-                    return (
-                      <CommandItem
-                        key={`group-${g.id}`}
-                        value={`group-${g.id}-${g.name}`}
-                        onSelect={() => {
-                          onAddGroup(g);
-                          setSearchText("");
-                          setOpen(false);
-                        }}
-                        data-testid={`option-group-${g.id}`}
-                      >
-                        <Check className="mr-2 h-3.5 w-3.5 opacity-0" />
-                        <span className="flex-1 truncate">{g.name}</span>
-                        <span
-                          className="ml-2 inline-flex items-center px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wider rounded border bg-violet-50 text-violet-700 border-violet-200"
-                          data-testid={`option-group-${g.id}-badge`}
-                        >
-                          Group
-                        </span>
-                        <span className="ml-2 text-[11px] text-muted-foreground tabular-nums shrink-0">
-                          {childCountLabel}
-                        </span>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              )}
-              {/*
-                Tiny inline loader for the groups read while the
-                services side has already settled. Hidden when
-                services are still loading because the spinner above
-                already covers the wait.
-              */}
-              {open && groupsLoading && !isLoading && filteredGroups.length === 0 && (
-                <div className="px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-2">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Loading groups…
-                </div>
-              )}
             </CommandList>
           </Command>
         </PopoverContent>

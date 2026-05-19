@@ -648,7 +648,6 @@ export function useDispatchPreviewMutations() {
         queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
       // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });

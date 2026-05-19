@@ -94,6 +94,7 @@ import {
   ModalFooter,
   ModalPrimaryAction,
   ModalSecondaryAction,
+  ConfirmModal,
 } from "@/components/ui/modal";
 import { FormField, FormLabel, FormRow } from "@/components/ui/form-field";
 import { expenseCategoryEnum } from "@shared/schema";
@@ -138,16 +139,6 @@ import { buildFinancialSummaryContent } from "@/components/detail-rail/buildFina
 // 2026-05-02 entity-number visual language: blue pill for current
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import type { User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
@@ -2476,26 +2467,16 @@ export default function JobDetailPage() {
         </aside>
       </div>
 
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent data-testid="dialog-delete-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Job</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete Job #{job.jobNumber}? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="button-confirm-delete"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        title="Delete Job"
+        description={`Are you sure you want to delete Job #${job.jobNumber}? This action cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={handleDelete}
+        testIdPrefix="job-delete"
+      />
 
       {/* 2026-05-01: <QuickAddJobDialog editJob=...> mount removed.
           The "Edit Job" modal exposed Location, Summary, and Team

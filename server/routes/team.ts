@@ -46,10 +46,7 @@ import {
   type MetricsPeriod,
 } from "../storage/teamMetrics";
 import { computeEfficiencyScore } from "../lib/efficiencyScore";
-import {
-  technicianScheduleOverrideRepository,
-  computeEffectiveScheduleRange,
-} from "../storage/technicianSchedule";
+import { technicianScheduleOverrideRepository } from "../storage/technicianSchedule";
 import { insertTechnicianScheduleOverrideSchema } from "@shared/schema";
 
 const router = Router();
@@ -93,36 +90,6 @@ const updateTechnicianProfileSchema = z.object({
   note: z.string().max(1000).transform(v => v === "" ? null : v).nullable().optional(),
 });
 
-const workingHourEntrySchema = z.object({
-  dayOfWeek: z.number().int().min(0).max(6),
-  startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
-  endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
-  isWorking: z.boolean(),
-}).refine(
-  (data) => {
-    // If working, both start and end times must be provided and end > start
-    if (data.isWorking) {
-      if (!data.startTime || !data.endTime) {
-        return false; // Working days require both times
-      }
-      // Compare times as strings (HH:MM format sorts correctly)
-      return data.endTime > data.startTime;
-    }
-    return true;
-  },
-  { message: "Working days require valid start and end times, with end time after start time" }
-);
-
-const setWorkingHoursSchema = z.object({
-  hours: z.array(workingHourEntrySchema).refine(
-    (hours) => {
-      // Check for duplicate dayOfWeek entries
-      const days = hours.map((h) => h.dayOfWeek);
-      return new Set(days).size === days.length;
-    },
-    { message: "Duplicate days of week are not allowed" }
-  ),
-});
 
 const setPermissionOverridesSchema = z.object({
   overrides: z.array(z.object({
@@ -361,57 +328,6 @@ router.get(
   })
 );
 
-// GET /api/team/technicians/working-hours - Bulk working hours for all schedulable technicians
-// Returns per-technician working hours (7 days each) plus company business hours as fallback.
-// Used by dispatch board to determine on-shift vs off-shift grouping.
-router.get(
-  "/technicians/working-hours",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const members = await storage.getTeamMembers(companyId);
-    const { schedulable } = filterSchedulableTechnicians(members, "GET /api/team/technicians/working-hours");
-
-    // Fetch company business hours (fallback for techs without custom schedule)
-    const companyHours = await storage.getCompanyBusinessHours(companyId);
-
-    // Fetch working hours for all schedulable technicians in parallel
-    const techHoursEntries = await Promise.all(
-      schedulable.map(async (m) => {
-        const hours = await storage.getWorkingHours(m.id);
-        return { technicianId: m.id, useCustomSchedule: m.useCustomSchedule ?? false, hours };
-      })
-    );
-
-    // Build response: per-technician schedule (custom or company default)
-    const technicianSchedules = techHoursEntries.map(({ technicianId, useCustomSchedule, hours }) => {
-      if (useCustomSchedule && hours.length > 0) {
-        return {
-          technicianId,
-          source: "custom" as const,
-          days: hours.map(h => ({
-            dayOfWeek: h.dayOfWeek,
-            isWorking: h.isWorking,
-            startTime: h.startTime,
-            endTime: h.endTime,
-          })),
-        };
-      }
-      // Fall back to company business hours
-      return {
-        technicianId,
-        source: "company" as const,
-        days: companyHours.map(ch => ({
-          dayOfWeek: ch.dayOfWeek,
-          isWorking: ch.isOpen,
-          startTime: ch.startMinutes != null ? `${String(Math.floor(ch.startMinutes / 60)).padStart(2, "0")}:${String(ch.startMinutes % 60).padStart(2, "0")}` : null,
-          endTime: ch.endMinutes != null ? `${String(Math.floor(ch.endMinutes / 60)).padStart(2, "0")}:${String(ch.endMinutes % 60).padStart(2, "0")}` : null,
-        })),
-      };
-    });
-
-    res.json({ technicianSchedules });
-  })
-);
 
 // GET /api/team/metrics — Per-member operational metrics for the Team Hub.
 // Returns hours, jobs completed, revenue per hour, utilization, and lead stats
@@ -983,25 +899,6 @@ router.put(
   })
 );
 
-// PUT /api/team/:userId/working-hours - Set working hours
-router.put(
-  "/:userId/working-hours",
-  requireRole(RESTRICTED_MANAGER_ROLES),
-  requirePermission("team.manage"),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { userId } = req.params;
-
-    const member = await storage.getTeamMember(req.companyId!, userId);
-    if (!member) {
-      throw createError(404, "Team member not found");
-    }
-
-    const { hours } = validateSchema(setWorkingHoursSchema, req.body);
-    const workingHours = await storage.setWorkingHours(userId, hours);
-
-    res.json(workingHours);
-  })
-);
 
 // ========================================
 // SCHEDULE OVERRIDES (2026-05-17 Phase 2)
@@ -1091,56 +988,6 @@ router.delete(
   }),
 );
 
-// GET /api/team/:userId/schedule/effective?start=YYYY-MM-DD&end=YYYY-MM-DD
-// Returns the effective working state for every date in the range, applying
-// the 4-layer precedence: time_off → date_override → weekly_default → company_default.
-// Used by the Phase 3 calendar grid in the Team Hub Schedule tab.
-router.get(
-  "/:userId/schedule/effective",
-  requireRole(RESTRICTED_MANAGER_ROLES),
-  requirePermission("team.manage"),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { userId } = req.params;
-    const companyId = req.companyId!;
-
-    const member = await storage.getTeamMember(companyId, userId);
-    if (!member) throw createError(404, "Team member not found");
-
-    const { start, end } = req.query as { start?: string; end?: string };
-    if (!start || !end) throw createError(400, "Query params start and end (YYYY-MM-DD) are required");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-      throw createError(400, "start and end must be YYYY-MM-DD");
-    }
-    if (end < start) throw createError(400, "end must be >= start");
-
-    const [companySettings, companyHours, workingHours] = await Promise.all([
-      storage.getCompanySettings(companyId),
-      storage.getCompanyBusinessHours(companyId),
-      storage.getWorkingHours(userId),
-    ]);
-
-    const timezone = companySettings?.timezone ?? "America/Toronto";
-    const companyDefaultHours = companyHours.map((ch) => ({
-      dayOfWeek: ch.dayOfWeek,
-      isOpen: ch.isOpen,
-    }));
-
-    const days = await computeEffectiveScheduleRange(
-      companyId,
-      userId,
-      start,
-      end,
-      timezone,
-      {
-        weeklyHours: workingHours.map((h) => ({ dayOfWeek: h.dayOfWeek, isWorking: h.isWorking })),
-        useCustomSchedule: member.useCustomSchedule ?? false,
-        companyDefaultHours,
-      },
-    );
-
-    res.json({ days });
-  }),
-);
 
 // PUT /api/team/:userId/permissions - Set permission overrides
 // 2026-05-04 PR 4: legacy bulk-override endpoint. Permission editing

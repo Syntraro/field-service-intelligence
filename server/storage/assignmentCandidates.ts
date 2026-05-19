@@ -18,15 +18,15 @@ import {
   teamSkills,
   technicianTimeOff,
   timeEntries,
-  workingHours,
   jobVisits,
   leadVisits,
 } from "@shared/schema";
 import type { CandidateMember } from "../lib/assignmentIntelligence";
 import { getTeamMetrics } from "./teamMetrics";
 import { computeEfficiencyScore } from "../lib/efficiencyScore";
+import { availabilityEngine } from "../services/availabilityEngine";
+import { companyRepository } from "./company";
 
-const DEFAULT_WEEKLY_HOURS = 40;
 const PERIOD_DAYS = 30; // Use last-30-days window for utilization context
 
 function startOfWeekFor(d: Date): Date {
@@ -45,26 +45,6 @@ function endOfWeekFor(d: Date): Date {
   return r;
 }
 
-function parseHHMMLocal(s: string | null | undefined): number | null {
-  if (!s) return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
-  if (!m) return null;
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
-function computeTargetWeeklyHoursLocal(
-  whRows: Array<{ isWorking: boolean; startTime: string | null; endTime: string | null }>,
-): number {
-  if (whRows.length === 0) return DEFAULT_WEEKLY_HOURS;
-  let total = 0;
-  for (const r of whRows) {
-    if (!r.isWorking || !r.startTime || !r.endTime) continue;
-    const s = parseHHMMLocal(r.startTime);
-    const e = parseHHMMLocal(r.endTime);
-    if (s != null && e != null && e > s) total += (e - s) / 60;
-  }
-  return total > 0 ? Math.round(total * 10) / 10 : DEFAULT_WEEKLY_HOURS;
-}
 
 export async function loadCandidates(
   companyId: string,
@@ -134,7 +114,7 @@ export async function loadCandidates(
   const weekStart = startOfWeekFor(now);
   const weekEnd = endOfWeekFor(now);
 
-  const [timeOffRows, workedRows, remainingJobVisitRows, remainingLeadVisitRows, whRows] = await Promise.all([
+  const [timeOffRows, workedRows, remainingJobVisitRows, remainingLeadVisitRows, timezone] = await Promise.all([
     db.select({
       technicianUserId: technicianTimeOff.technicianUserId,
       reason: technicianTimeOff.reason,
@@ -203,15 +183,21 @@ export async function loadCandidates(
         ),
       ),
 
-    // Working hours rows for targetWeeklyHours
-    db.select({
-      userId: workingHours.userId,
-      isWorking: workingHours.isWorking,
-      startTime: workingHours.startTime,
-      endTime: workingHours.endTime,
-    }).from(workingHours)
-      .where(inArray(workingHours.userId, memberIds)),
+    // Company timezone for shift resolution
+    companyRepository.getCompanyTimezone(companyId),
   ]);
+
+  // Shift-derived target weekly hours — normal shifts in [weekStart, weekEnd]
+  const weekShifts = await availabilityEngine.resolveTechnicianShifts(
+    companyId, memberIds, weekStart, weekEnd, timezone,
+  );
+  const targetHoursByUser: Record<string, number> = {};
+  for (const s of weekShifts) {
+    if (s.shiftType !== "normal") continue;
+    const ms = s.endsAt.getTime() - s.startsAt.getTime();
+    targetHoursByUser[s.technicianUserId] =
+      (targetHoursByUser[s.technicianUserId] ?? 0) + ms / 3_600_000;
+  }
 
   const timeOffByUser: Record<string, (typeof timeOffRows)[number]> = {};
   for (const tof of timeOffRows) {
@@ -242,12 +228,6 @@ export async function loadCandidates(
     }
   }
 
-  const whByUser: Record<string, typeof whRows> = {};
-  for (const r of whRows) {
-    if (!whByUser[r.userId]) whByUser[r.userId] = [];
-    whByUser[r.userId]!.push(r);
-  }
-
   // ── Assemble candidates ────────────────────────────────────────────────
   return members.map((m) => {
     const rawSkills = skillsByUser[m.userId] ?? [];
@@ -255,7 +235,7 @@ export async function loadCandidates(
     const tof = timeOffByUser[m.userId] ?? null;
     const workedHoursThisWeek = Math.round(((workedMinsByUser[m.userId] ?? 0) / 60) * 10) / 10;
     const remainingHoursThisWeek = Math.round(((remainingMinsByUser[m.userId] ?? 0) / 60) * 10) / 10;
-    const targetWeeklyHours = computeTargetWeeklyHoursLocal(whByUser[m.userId] ?? []);
+    const targetWeeklyHours = Math.round((targetHoursByUser[m.userId] ?? 0) * 10) / 10;
 
     return {
       userId: m.userId,

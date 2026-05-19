@@ -31,16 +31,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
   ModalShell,
   ModalHeader,
   ModalTitle,
@@ -49,6 +39,7 @@ import {
   ModalFooter,
   ModalPrimaryAction,
   ModalSecondaryAction,
+  ConfirmModal,
 } from "@/components/ui/modal";
 import {
   FormField,
@@ -767,29 +758,17 @@ function LibraryModal({ open, onOpenChange }: LibraryModalProps) {
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog
+      <ConfirmModal
         open={!!deleteTarget}
         onOpenChange={(v) => { if (!v) { setDeleteTarget(null); setDeleteError(null); } }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete "{deleteTarget?.name}"?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently remove the entry from the library. This action cannot be undone.
-              {deleteError && <span className="block mt-2 text-destructive">{deleteError}</span>}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={`Delete "${deleteTarget?.name}"?`}
+        description="This will permanently remove the entry from the library. This action cannot be undone."
+        emphasis={deleteError ?? undefined}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => { const t = deleteTarget; setDeleteTarget(null); setDeleteError(null); if (t) deleteMutation.mutate(t.id); }}
+        testIdPrefix="skill-library-delete"
+      />
     </>
   );
 }
@@ -992,29 +971,17 @@ export function MemberSkillsTab({ selectedMemberId }: Props) {
       <LibraryModal open={showLibrary} onOpenChange={setShowLibrary} />
 
       {/* Remove confirmation */}
-      <AlertDialog
+      <ConfirmModal
         open={!!removeTarget}
         onOpenChange={(v) => { if (!v) { setRemoveTarget(null); setRemoveError(null); } }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove "{removeTarget?.name}"?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the assignment from this member. The entry remains in the company library.
-              {removeError && <span className="block mt-2 text-destructive">{removeError}</span>}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => removeTarget && removeMutation.mutate(removeTarget.id)}
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={`Remove "${removeTarget?.name}"?`}
+        description="This will remove the assignment from this member. The entry remains in the company library."
+        emphasis={removeError ?? undefined}
+        confirmLabel="Remove"
+        variant="destructive"
+        onConfirm={() => { const t = removeTarget; setRemoveTarget(null); setRemoveError(null); if (t) removeMutation.mutate(t.id); }}
+        testIdPrefix="member-skill-remove"
+      />
     </div>
   );
 }

@@ -19,13 +19,12 @@ import {
   users,
   jobVisits,
   leadVisits,
-  technicianTimeOff,
   timeEntries,
-  workingHours as workingHoursTable,
-  companyBusinessHours as companyBusinessHoursTable,
   recurringJobInstances,
   recurringJobTemplates,
 } from "@shared/schema";
+import { availabilityEngine, type ResolvedShift } from "../services/availabilityEngine";
+import { companyRepository } from "./company";
 
 // ── Window types ─────────────────────────────────────────────────────────────
 
@@ -139,90 +138,53 @@ function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-// ── Working hours helpers ─────────────────────────────────────────────────────
+// ── Shift-based capacity helpers ──────────────────────────────────────────────
 
-function parseHHMM(s: string | null | undefined): number | null {
-  if (!s) return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
-  if (!m) return null;
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
-export type WorkingHourRow = { dayOfWeek: number; isWorking: boolean; startTime: string | null; endTime: string | null };
-export type CompanyHourRow = { dayOfWeek: number; isOpen: boolean; startMinutes: number | null; endMinutes: number | null };
-export type TimeOffRow = { startsAt: Date; endsAt: Date; allDay: boolean };
-
-/** Working minutes a member has on a given day-of-week (0=Sun). 0 = not working. */
-function workingMinutesForDow(
-  dow: number,
-  memberRows: WorkingHourRow[],
-  companyRows: CompanyHourRow[],
-): number {
-  const custom = memberRows.find((r) => r.dayOfWeek === dow);
-  if (custom !== undefined) {
-    if (!custom.isWorking) return 0;
-    const s = parseHHMM(custom.startTime);
-    const e = parseHHMM(custom.endTime);
-    if (s == null || e == null || e <= s) return 0;
-    return e - s;
-  }
-  const company = companyRows.find((r) => r.dayOfWeek === dow);
-  if (company) {
-    if (!company.isOpen) return 0;
-    const s = company.startMinutes ?? 0;
-    const e = company.endMinutes ?? 0;
-    return e > s ? e - s : 0;
-  }
-  return dow >= 1 && dow <= 5 ? 480 : 0; // Mon–Fri default: 8 hrs
-}
-
-/** Compute total available minutes across [rangeStart, rangeEnd] minus time-off. */
+/** Available minutes in [rangeStart, rangeEnd] from shift data.
+ *
+ *  Sums clipped normal-shift durations then subtracts overlapping unavailable
+ *  shifts (time-off). The `shifts` array comes from
+ *  `availabilityEngine.resolveTechnicianShifts`, which already merges
+ *  technician_time_off rows as synthetic unavailable shifts. */
 export function computeAvailableMinutes(
   rangeStart: Date,
   rangeEnd: Date,
-  memberRows: WorkingHourRow[],
-  companyRows: CompanyHourRow[],
-  tofs: TimeOffRow[],
+  shifts: ResolvedShift[],
 ): number {
-  let total = 0;
-  const cursor = new Date(rangeStart);
-  cursor.setHours(0, 0, 0, 0);
+  const rs = rangeStart.getTime();
+  const re = rangeEnd.getTime();
 
-  while (cursor <= rangeEnd) {
-    const dow = cursor.getDay();
-    const workingMins = workingMinutesForDow(dow, memberRows, companyRows);
-    if (workingMins > 0) {
-      const dayStartMs = cursor.getTime();
-      const dayEndMs = dayStartMs + 86_400_000;
-      let tofMins = 0;
-      for (const tof of tofs) {
-        const os = Math.max(tof.startsAt.getTime(), dayStartMs);
-        const oe = Math.min(tof.endsAt.getTime(), dayEndMs);
-        if (oe <= os) continue;
-        if (tof.allDay) {
-          tofMins += workingMins;
-        } else {
-          tofMins += Math.min(workingMins, Math.round((oe - os) / 60_000));
-        }
-      }
-      total += Math.max(0, workingMins - tofMins);
+  // Pre-collect unavailable intervals for overlap subtraction.
+  const unavailable = shifts
+    .filter((s) => s.shiftType === "unavailable")
+    .map((s) => ({ s: s.startsAt.getTime(), e: s.endsAt.getTime() }));
+
+  let total = 0;
+  for (const shift of shifts) {
+    if (shift.shiftType !== "normal") continue;
+    const os = Math.max(shift.startsAt.getTime(), rs);
+    const oe = Math.min(shift.endsAt.getTime(), re);
+    if (oe <= os) continue;
+    let mins = Math.round((oe - os) / 60_000);
+    for (const u of unavailable) {
+      const us = Math.max(u.s, os);
+      const ue = Math.min(u.e, oe);
+      if (ue > us) mins -= Math.round((ue - us) / 60_000);
     }
-    cursor.setDate(cursor.getDate() + 1);
+    total += Math.max(0, mins);
   }
   return total;
 }
 
-/** Weekly target hours derived from working_hours rows (fallback: 40). */
-export function computeTargetWeeklyHours(memberRows: WorkingHourRow[]): number {
-  if (memberRows.length === 0) return 40;
-  let total = 0;
-  for (const r of memberRows) {
-    if (!r.isWorking || !r.startTime || !r.endTime) continue;
-    const s = parseHHMM(r.startTime);
-    const e = parseHHMM(r.endTime);
-    if (s != null && e != null && e > s) total += (e - s) / 60;
+/** Sum of normal-shift hours from the provided shift list.
+ *  Returns 0 when no normal shifts exist (no 40-hr fallback). */
+export function computeTargetWeeklyHours(shifts: ResolvedShift[]): number {
+  let totalMs = 0;
+  for (const s of shifts) {
+    if (s.shiftType !== "normal") continue;
+    totalMs += s.endsAt.getTime() - s.startsAt.getTime();
   }
-  return total > 0 ? Math.round(total * 10) / 10 : 40;
+  return Math.round((totalMs / 3_600_000) * 10) / 10;
 }
 
 // ── Visit duration helper ─────────────────────────────────────────────────────
@@ -301,44 +263,12 @@ export async function getTeamCapacityForecast(
 
   const memberIds = memberRows.map((m) => m.userId);
 
-  // 2–7. Parallel batch queries
-  const [whRows, companyHours, timeOffRows, todayJobVisits, todayLeadVisits, workedRows, remainingJobVisits, remainingLeadVisits] = await Promise.all([
-    // 2. Working hours for all members
-    db.select({
-      userId: workingHoursTable.userId,
-      dayOfWeek: workingHoursTable.dayOfWeek,
-      startTime: workingHoursTable.startTime,
-      endTime: workingHoursTable.endTime,
-      isWorking: workingHoursTable.isWorking,
-    }).from(workingHoursTable)
-      .where(inArray(workingHoursTable.userId, memberIds)),
+  // 2–6. Parallel batch queries
+  const [timezone, todayJobVisits, todayLeadVisits, workedRows, remainingJobVisits, remainingLeadVisits] = await Promise.all([
+    // 2. Company timezone for shift resolution
+    companyRepository.getCompanyTimezone(companyId),
 
-    // 3. Company business hours
-    db.select({
-      dayOfWeek: companyBusinessHoursTable.dayOfWeek,
-      isOpen: companyBusinessHoursTable.isOpen,
-      startMinutes: companyBusinessHoursTable.startMinutes,
-      endMinutes: companyBusinessHoursTable.endMinutes,
-    }).from(companyBusinessHoursTable)
-      .where(eq(companyBusinessHoursTable.companyId, companyId)),
-
-    // 4. Time-off overlapping [weekStart, weekEnd]
-    db.select({
-      technicianUserId: technicianTimeOff.technicianUserId,
-      startsAt: technicianTimeOff.startsAt,
-      endsAt: technicianTimeOff.endsAt,
-      allDay: technicianTimeOff.allDay,
-    }).from(technicianTimeOff)
-      .where(
-        and(
-          eq(technicianTimeOff.companyId, companyId),
-          isNull(technicianTimeOff.archivedAt),
-          lte(technicianTimeOff.startsAt, weekEnd),
-          gte(technicianTimeOff.endsAt, weekStart),
-        ),
-      ),
-
-    // 5. Job visits today
+    // 3. Job visits today
     db.select({
       scheduledStart: jobVisits.scheduledStart,
       scheduledEnd: jobVisits.scheduledEnd,
@@ -356,7 +286,7 @@ export async function getTeamCapacityForecast(
         ),
       ),
 
-    // 6. Lead visits today
+    // 4. Lead visits today
     db.select({
       scheduledStart: leadVisits.scheduledStart,
       scheduledEnd: leadVisits.scheduledEnd,
@@ -373,7 +303,7 @@ export async function getTeamCapacityForecast(
         ),
       ),
 
-    // 7. Time entries this week (for worked hours)
+    // 5. Time entries this week (for worked hours)
     db.select({
       technicianId: timeEntries.technicianId,
       durationMinutes: timeEntries.durationMinutes,
@@ -389,7 +319,7 @@ export async function getTeamCapacityForecast(
         ),
       ),
 
-    // 8. Job visits remaining this week (from now)
+    // 6. Job visits remaining this week (from now)
     db.select({
       scheduledStart: jobVisits.scheduledStart,
       scheduledEnd: jobVisits.scheduledEnd,
@@ -408,7 +338,7 @@ export async function getTeamCapacityForecast(
         ),
       ),
 
-    // 9. Lead visits remaining this week
+    // 7. Lead visits remaining this week
     db.select({
       scheduledStart: leadVisits.scheduledStart,
       scheduledEnd: leadVisits.scheduledEnd,
@@ -427,27 +357,15 @@ export async function getTeamCapacityForecast(
       ),
   ]);
 
-  // Group working hours by userId
-  const whByUser: Record<string, WorkingHourRow[]> = {};
-  for (const r of whRows) {
-    if (!whByUser[r.userId]) whByUser[r.userId] = [];
-    whByUser[r.userId]!.push(r);
-  }
-
-  // Group time-off by userId (for today and for this-week tracking)
-  const todayTofByUser: Record<string, TimeOffRow[]> = {};
-  const weekTofByUser: Record<string, TimeOffRow[]> = {};
-  for (const t of timeOffRows) {
-    const row: TimeOffRow = { startsAt: new Date(t.startsAt), endsAt: new Date(t.endsAt), allDay: t.allDay };
-    if (!weekTofByUser[t.technicianUserId]) weekTofByUser[t.technicianUserId] = [];
-    weekTofByUser[t.technicianUserId]!.push(row);
-    // Today's subset
-    const os = Math.max(row.startsAt.getTime(), todayStart.getTime());
-    const oe = Math.min(row.endsAt.getTime(), todayEnd.getTime() + 1);
-    if (oe > os) {
-      if (!todayTofByUser[t.technicianUserId]) todayTofByUser[t.technicianUserId] = [];
-      todayTofByUser[t.technicianUserId]!.push(row);
-    }
+  // 8. Resolve week shifts — includes time-off as shiftType "unavailable"
+  const weekShifts = await availabilityEngine.resolveTechnicianShifts(
+    companyId, memberIds, weekStart, weekEnd, timezone,
+  );
+  const shiftsByUser = new Map<string, ResolvedShift[]>();
+  for (const s of weekShifts) {
+    const list = shiftsByUser.get(s.technicianUserId) ?? [];
+    list.push(s);
+    shiftsByUser.set(s.technicianUserId, list);
   }
 
   // Compute scheduled minutes per member (today)
@@ -473,11 +391,9 @@ export async function getTeamCapacityForecast(
   let teamAvailMins = 0;
   let teamSchedMins = 0;
   const members: MemberCapacityRow[] = memberRows.map((m) => {
-    const mwh = whByUser[m.userId] ?? [];
-    const todayTof = todayTofByUser[m.userId] ?? [];
-    const weekTof = weekTofByUser[m.userId] ?? [];
+    const userShifts = shiftsByUser.get(m.userId) ?? [];
 
-    const todayAvailMins = computeAvailableMinutes(todayStart, todayEnd, mwh, companyHours, todayTof);
+    const todayAvailMins = computeAvailableMinutes(todayStart, todayEnd, userShifts);
     const todaySchedMins = todayScheduledMap.get(m.userId) ?? 0;
     const todayAvailHours = Math.round((todayAvailMins / 60) * 10) / 10;
     const todaySchedHours = Math.round((todaySchedMins / 60) * 10) / 10;
@@ -490,7 +406,7 @@ export async function getTeamCapacityForecast(
     const workedHours = Math.round((workedMins / 60) * 10) / 10;
     const remainingHours = Math.round((remainingMins / 60) * 10) / 10;
     const forecastedHours = Math.round((workedHours + remainingHours) * 10) / 10;
-    const targetWeeklyHours = computeTargetWeeklyHours(mwh);
+    const targetWeeklyHours = computeTargetWeeklyHours(userShifts);
 
     teamAvailMins += todayAvailMins;
     teamSchedMins += todaySchedMins;

@@ -1,7 +1,7 @@
 // 2026-05-05 Team Hub member-centric restructure.
-// 2026-05-17 Performance redesign: tabs restructured to
-//   Performance / Schedule / Payroll & Cost / Permissions / Skills
-// The empty "select a member" state is replaced by TeamOverviewDashboard.
+// 2026-05-17 Performance redesign: tabs restructured.
+// 2026-05-18 Refinement pass: Profile + Scheduling tabs added; tab order canonical
+//   (identity → config → analytics); secondary tabs use compact segmented-control style.
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,30 +13,37 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { resolveTechnicianColor } from "@shared/colors";
 import {
-  BarChart2,
-  Calendar,
-  DollarSign,
-  Shield,
-  Wrench,
   Power,
   MessageSquare,
   Briefcase,
   MoreHorizontal,
+  Users,
 } from "lucide-react";
+import { MemberProfileTab } from "./MemberProfileTab";
 import { MemberPerformanceTab } from "./MemberPerformanceTab";
-import { SchedulesTab } from "./SchedulesTab";
 import { CompensationTab } from "./CompensationTab";
 import { RolesAccessTab } from "./RolesAccessTab";
 import { MemberSkillsTab } from "./MemberSkillsTab";
-import { TeamOverviewDashboard } from "./TeamOverviewDashboard";
+import { MemberSchedulingTab } from "./MemberSchedulingTab";
+import { TeamMetricsStrip } from "./TeamMetricsStrip";
 import type { Role, TeamMemberDetail } from "./types";
 
 export type WorkspaceTabId =
-  | "performance"
-  | "schedule"
-  | "payroll"
+  | "profile"
   | "permissions"
-  | "skills";
+  | "scheduling"
+  | "payroll"
+  | "skills"
+  | "performance";
+
+const MEMBER_TABS: { id: WorkspaceTabId; label: string }[] = [
+  { id: "profile", label: "Profile" },
+  { id: "permissions", label: "Permissions" },
+  { id: "scheduling", label: "Scheduling" },
+  { id: "payroll", label: "Payroll & Cost" },
+  { id: "skills", label: "Skills & Licenses" },
+  { id: "performance", label: "Performance" },
+];
 
 interface Props {
   selectedMemberId: string | null;
@@ -83,9 +90,25 @@ export function TeamMemberWorkspace({
     },
   });
 
-  // No member selected → show team overview dashboard
+  // No member selected → compact empty state with metrics strip
   if (!selectedMemberId) {
-    return <TeamOverviewDashboard onSelectMember={(id) => onSelectMember(id)} />;
+    return (
+      <Card data-testid="team-workspace-empty">
+        <CardContent className="pt-4 pb-6">
+          <TeamMetricsStrip />
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mb-3">
+              <Users className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <h3 className="text-sm font-medium mb-1">Select a team member</h3>
+            <p className="text-helper text-muted-foreground max-w-xs">
+              Choose a technician or staff member to view details, permissions, schedules,
+              and activity.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
   }
 
   const roleLabel =
@@ -94,7 +117,7 @@ export function TeamMemberWorkspace({
   const isPending = toggleStatus.isPending;
 
   return (
-    <div className="space-y-4" data-testid="team-workspace">
+    <div className="space-y-3" data-testid="team-workspace">
       {/* Member header — compact, operational-workspace style */}
       <Card>
         <CardContent className="py-3 px-4">
@@ -195,56 +218,29 @@ export function TeamMemberWorkspace({
         </CardContent>
       </Card>
 
-      {/* Member-level tabs */}
+      {/* Member-level tabs — compact segmented-control style, quieter than the primary workspace tabs */}
       <Tabs
         value={tab}
         onValueChange={(v) => onTabChange(v as WorkspaceTabId)}
-        className="space-y-4"
       >
-        <TabsList className="w-full md:w-auto md:inline-flex">
-          <TabsTrigger value="performance" data-testid="tab-workspace-performance">
-            <BarChart2 className="h-4 w-4 mr-1.5" />
-            Performance
-          </TabsTrigger>
-          <TabsTrigger value="schedule" data-testid="tab-workspace-schedule">
-            <Calendar className="h-4 w-4 mr-1.5" />
-            Schedule
-          </TabsTrigger>
-          <TabsTrigger value="payroll" data-testid="tab-workspace-payroll">
-            <DollarSign className="h-4 w-4 mr-1.5" />
-            Payroll &amp; Cost
-          </TabsTrigger>
-          <TabsTrigger value="permissions" data-testid="tab-workspace-permissions">
-            <Shield className="h-4 w-4 mr-1.5" />
-            Permissions
-          </TabsTrigger>
-          <TabsTrigger value="skills" data-testid="tab-workspace-skills">
-            <Wrench className="h-4 w-4 mr-1.5" />
-            Skills &amp; Licenses
-          </TabsTrigger>
+        <TabsList className="flex-wrap h-auto bg-muted/50 p-0.5 gap-0.5 mb-1">
+          {MEMBER_TABS.map(({ id, label }) => (
+            <TabsTrigger
+              key={id}
+              value={id}
+              className="h-7 px-3 py-0 text-xs rounded-sm data-[state=active]:shadow-none"
+              data-testid={`tab-workspace-${id}`}
+            >
+              {label}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
-        <TabsContent value="performance" className="mt-4">
-          <MemberPerformanceTab selectedMemberId={selectedMemberId} />
+        <TabsContent value="profile" className="mt-3">
+          <MemberProfileTab selectedMemberId={selectedMemberId} />
         </TabsContent>
 
-        <TabsContent value="schedule" className="mt-4">
-          <SchedulesTab
-            selectedMemberId={selectedMemberId}
-            onSelectMember={onSelectMember}
-            hideMemberList
-          />
-        </TabsContent>
-
-        <TabsContent value="payroll" className="mt-4">
-          <CompensationTab
-            selectedMemberId={selectedMemberId}
-            onSelectMember={onSelectMember}
-            hideMemberList
-          />
-        </TabsContent>
-
-        <TabsContent value="permissions" className="mt-4">
+        <TabsContent value="permissions" className="mt-3">
           <RolesAccessTab
             selectedMemberId={selectedMemberId}
             onSelectMember={onSelectMember}
@@ -252,8 +248,24 @@ export function TeamMemberWorkspace({
           />
         </TabsContent>
 
-        <TabsContent value="skills" className="mt-4">
+        <TabsContent value="scheduling" className="mt-3">
+          <MemberSchedulingTab selectedMemberId={selectedMemberId} />
+        </TabsContent>
+
+        <TabsContent value="payroll" className="mt-3">
+          <CompensationTab
+            selectedMemberId={selectedMemberId}
+            onSelectMember={onSelectMember}
+            hideMemberList
+          />
+        </TabsContent>
+
+        <TabsContent value="skills" className="mt-3">
           <MemberSkillsTab selectedMemberId={selectedMemberId} />
+        </TabsContent>
+
+        <TabsContent value="performance" className="mt-3">
+          <MemberPerformanceTab selectedMemberId={selectedMemberId} />
         </TabsContent>
       </Tabs>
     </div>

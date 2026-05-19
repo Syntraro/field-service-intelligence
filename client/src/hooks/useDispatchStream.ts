@@ -48,9 +48,6 @@ interface DispatchSignal {
 //                  ["/api/jobs", jobId, "notes"|"time-summary"|"time-entries"|"expenses"|"parts"]
 //   Jobs list: ["jobs", ...]
 //
-// Not invalidated (static config, not changed by mutations):
-//   ["/api/team/technicians/working-hours"]
-//
 
 
 /** Prefix-matched query keys for visit/job dispatch signals */

@@ -31,16 +31,7 @@ import { Button } from "@/components/ui/button";
 // hard delete, convert) route through canonical <AlertDialog> per
 // CLAUDE.md Modal Taxonomy rule #1. Radix AlertDialog gives stricter
 // focus-trap + escape-key semantics suited to confirmation flows.
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 // 2026-05-05 Lead Visits: canonical notes section + lead-visits card.
 import { EntityNotesPanel } from "@/components/notes/EntityNotesPanel";
 import { LeadVisitsCard } from "@/components/leads/LeadVisitsCard";
@@ -446,50 +437,30 @@ export default function LeadDetailPage() {
           success (setLocation("/leads") for archive/delete; setLocation
           ("/quotes/:id") for convert), so the close + navigate paths
           chain cleanly. */}
-      <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Archive this lead?</AlertDialogTitle>
-            <AlertDialogDescription>This will remove the lead from the active list. It can be restored later.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-archive-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => archiveMutation.mutate()}
-              disabled={archiveMutation.isPending}
-              data-testid="button-archive-confirm"
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {archiveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}Archive
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showArchiveConfirm}
+        onOpenChange={setShowArchiveConfirm}
+        title="Archive this lead?"
+        description="This will remove the lead from the active list. It can be restored later."
+        confirmLabel="Archive"
+        variant="neutral"
+        isPending={archiveMutation.isPending}
+        onConfirm={() => { setShowArchiveConfirm(false); archiveMutation.mutate(); }}
+        testIdPrefix="lead-archive"
+      />
 
-      <AlertDialog open={showHardDeleteConfirm} onOpenChange={setShowHardDeleteConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2 text-red-700">
-              <AlertTriangle className="h-5 w-5" />
-              Permanently delete this lead?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently destroy the lead and all of its notes. <strong>This cannot be undone.</strong> Use Archive instead if you may need to restore it.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-hard-delete-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => hardDeleteMutation.mutate()}
-              disabled={hardDeleteMutation.isPending}
-              data-testid="button-hard-delete-confirm"
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {hardDeleteMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}Delete Permanently
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={showHardDeleteConfirm}
+        onOpenChange={setShowHardDeleteConfirm}
+        title="Permanently delete this lead?"
+        description="This will permanently destroy the lead and all of its notes."
+        emphasis="This cannot be undone. Use Archive instead if you may need to restore it."
+        confirmLabel="Delete Permanently"
+        variant="destructive"
+        isPending={hardDeleteMutation.isPending}
+        onConfirm={() => { setShowHardDeleteConfirm(false); hardDeleteMutation.mutate(); }}
+        testIdPrefix="lead-hard-delete"
+      />
 
     </div>
   );

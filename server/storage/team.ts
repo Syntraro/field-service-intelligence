@@ -295,43 +295,6 @@ export class TeamRepository extends BaseRepository {
   }
 
   /**
-   * Set working hours (replace all)
-   */
-  async setWorkingHours(
-    userId: string,
-    hours: Array<{
-      dayOfWeek: number;
-      startTime?: string | null;
-      endTime?: string | null;
-      isWorking: boolean;
-    }>
-  ) {
-    return await db.transaction(async (tx) => {
-      // Delete existing
-      await tx.delete(workingHours).where(eq(workingHours.userId, userId));
-
-      // Insert new
-      if (hours.length > 0) {
-        await tx.insert(workingHours).values(
-          hours.map((h) => ({
-            userId,
-            dayOfWeek: h.dayOfWeek,
-            startTime: h.startTime,
-            endTime: h.endTime,
-            isWorking: h.isWorking,
-          }))
-        );
-      }
-
-      return await tx
-        .select()
-        .from(workingHours)
-        .where(eq(workingHours.userId, userId))
-        .orderBy(workingHours.dayOfWeek);
-    });
-  }
-
-  /**
    * Get user permission overrides (with caching)
    */
   async getUserPermissionOverrides(userId: string) {

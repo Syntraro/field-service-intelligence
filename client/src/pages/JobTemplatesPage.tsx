@@ -24,16 +24,7 @@ import {
 import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import { Plus, MoreHorizontal, Pencil, Star, Power, Loader2, ArrowLeft, FileText, Copy, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { Link } from "wouter";
 import { format } from "date-fns";
 import type { JobTemplate } from "@shared/schema";
@@ -359,29 +350,17 @@ export default function JobTemplatesPage() {
         template={editingTemplate}
       />
 
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Template</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to permanently delete "{templateToDelete?.name}"? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="button-confirm-delete"
-            >
-              {deleteMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-1" />
-              ) : null}
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete Template"
+        description={`Are you sure you want to permanently delete "${templateToDelete?.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+        testIdPrefix="template-delete"
+      />
     </div>
   );
 }

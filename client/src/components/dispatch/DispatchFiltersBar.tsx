@@ -89,19 +89,17 @@ export default function DispatchFiltersBar({
               </button>
             </>
           )}
-          {/* 2026-04-21 UX pass: footer utility link to Team Management →
-              Schedules tab. Lives below the checkbox list with its own
-              divider so it can't be confused with Select All / Clear All,
-              and doesn't affect selection state. Uses wouter <Link> so
-              route-level ProtectedRoute + URL-state still run normally. */}
+          {/* Footer utility link to Shift Management (canonical schedule surface).
+              Lives below the checkbox list with its own divider. Uses wouter
+              <Link> so route-level ProtectedRoute + URL-state still run normally. */}
           <div className="my-1.5 border-t border-slate-100" />
-          <Link href="/settings/team?tab=schedules">
+          <Link href="/shift-management">
             <a
               className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-900"
               data-testid="tech-filter-manage-team-link"
             >
               <Settings2 className="h-3 w-3" />
-              <span className="flex-1">Manage team</span>
+              <span className="flex-1">Manage schedules</span>
               <ExternalLink className="h-3 w-3 opacity-60" />
             </a>
           </Link>

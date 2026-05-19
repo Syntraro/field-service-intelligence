@@ -13,26 +13,22 @@ import {
 import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { PriceBookCatalogTab } from "./price-book/PriceBookCatalogTab";
 import { PriceBookKpiStrip } from "./price-book/PriceBookKpiStrip";
-import { PriceBookBundlesTab } from "./price-book/PriceBookBundlesTab";
 import { PriceBookCategoriesTab } from "./price-book/PriceBookCategoriesTab";
 import { PriceBookItemRail } from "./price-book/PriceBookItemRail";
-import { PriceBookBundleRail } from "./price-book/PriceBookBundleRail";
 import { PriceBookServiceTemplatesTab } from "./price-book/PriceBookServiceTemplatesTab";
 import { PriceBookServiceTemplateRail } from "./price-book/PriceBookServiceTemplateRail";
 import type { Part } from "@/components/products-services/types";
-import type { PricebookGroupSummaryDto } from "@/components/line-items/pricebookHelpers";
 import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
 
 // ─── View types ────────────────────────────────────────────────────────────────
 
-type PriceBookView = "services" | "materials" | "bundles" | "categories" | "flat_rate_services";
+type PriceBookView = "services" | "materials" | "categories" | "flat_rate_services";
 
 function readView(search: string): PriceBookView {
   const v = new URLSearchParams(search).get("view");
   if (
     v === "services" ||
     v === "materials" ||
-    v === "bundles" ||
     v === "categories" ||
     v === "flat_rate_services"
   )
@@ -43,7 +39,6 @@ function readView(search: string): PriceBookView {
 const ADD_LABELS: Record<PriceBookView, string> = {
   services: "New Service",
   materials: "New Material",
-  bundles: "New Bundle",
   categories: "New Category",
   flat_rate_services: "New Template",
 };
@@ -58,15 +53,13 @@ export default function PriceBookPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
 
-  // Right rail: selected catalog item (Services or Materials), bundle, or service template
+  // Right rail: selected catalog item (Services or Materials), or service template
   const [selectedItem, setSelectedItem] = useState<Part | null>(null);
-  const [selectedBundle, setSelectedBundle] = useState<PricebookGroupSummaryDto | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ServiceTemplateDto | null>(null);
 
   const isCatalogView = activeView === "services" || activeView === "materials";
   const railExpanded =
     (selectedItem !== null && isCatalogView) ||
-    (selectedBundle !== null && activeView === "bundles") ||
     (selectedTemplate !== null && activeView === "flat_rate_services");
 
   function navigate(view: PriceBookView) {
@@ -77,7 +70,6 @@ export default function PriceBookPage() {
     setLocation(`/price-book${qs ? `?${qs}` : ""}`);
     setSearchQuery("");
     setSelectedItem(null);
-    setSelectedBundle(null);
     setSelectedTemplate(null);
   }
 
@@ -88,7 +80,7 @@ export default function PriceBookPage() {
         iconColor="text-emerald-600"
         iconBg="bg-emerald-50"
         title="Price Book"
-        subtitle="Manage services, materials, bundles, and categories."
+        subtitle="Manage services, materials, flat-rate services, and categories."
         search={
           <div className="relative">
             <Search
@@ -99,7 +91,6 @@ export default function PriceBookPage() {
               placeholder={
                 activeView === "services" ? "Search services…"
                   : activeView === "materials" ? "Search materials…"
-                  : activeView === "bundles" ? "Search bundles…"
                   : activeView === "flat_rate_services" ? "Search templates…"
                   : "Search categories…"
               }
@@ -143,13 +134,6 @@ export default function PriceBookPage() {
             Materials
           </WorkspaceViewChip>
           <WorkspaceViewChip
-            active={activeView === "bundles"}
-            onClick={() => navigate("bundles")}
-            data-testid="pricebook-view-bundles"
-          >
-            Bundles
-          </WorkspaceViewChip>
-          <WorkspaceViewChip
             active={activeView === "categories"}
             onClick={() => navigate("categories")}
             data-testid="pricebook-view-categories"
@@ -187,15 +171,6 @@ export default function PriceBookPage() {
             onSelectedItemChange={setSelectedItem}
           />
         )}
-        {activeView === "bundles" && (
-          <PriceBookBundlesTab
-            searchQuery={searchQuery}
-            addOpen={addOpen}
-            onAddOpenChange={setAddOpen}
-            selectedBundleId={selectedBundle?.id ?? null}
-            onSelectedBundleChange={setSelectedBundle}
-          />
-        )}
         {activeView === "categories" && (
           <PriceBookCategoriesTab
             searchQuery={searchQuery}
@@ -216,7 +191,7 @@ export default function PriceBookPage() {
     </>
   );
 
-  // Rail node: catalog views use item rail, bundles view uses bundle rail, flat_rate_services uses template rail
+  // Rail node: catalog views use item rail, flat_rate_services uses template rail
   let railNode: React.ReactNode | undefined;
   if (isCatalogView) {
     railNode = selectedItem ? (
@@ -224,16 +199,6 @@ export default function PriceBookPage() {
         item={selectedItem}
         onClose={() => setSelectedItem(null)}
         onSaved={(updated) => setSelectedItem(updated)}
-      />
-    ) : (
-      <></>
-    );
-  } else if (activeView === "bundles") {
-    railNode = selectedBundle ? (
-      <PriceBookBundleRail
-        group={selectedBundle}
-        onClose={() => setSelectedBundle(null)}
-        onSaved={(updated) => setSelectedBundle(updated)}
       />
     ) : (
       <></>

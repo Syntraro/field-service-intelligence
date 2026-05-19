@@ -62,9 +62,14 @@ import { getDayUTCBounds, addCalendarDay } from "../lib/dayBoundaries";
 const router = Router();
 
 // ── Mount-level gates ────────────────────────────────────────────────────────
+// Auth + role required for all endpoints. The feature gate applies only to
+// write operations so that dispatch and calendar surfaces can always read
+// shift availability regardless of subscription tier.
 router.use(requireAuth);
 router.use(requireRole(MANAGER_ROLES));
-router.use(requireFeature("technician_shift_management"));
+
+// Feature gate for write operations — applied per-route below (POST/PATCH/DELETE).
+const requireShiftFeature = requireFeature("technician_shift_management");
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -106,6 +111,19 @@ function deriveShiftTimesFromHHMM(
   return { startsAt, endsAt };
 }
 
+/** Maximum Work shifts (shiftType = "normal") a technician may have on a single calendar day. */
+const MAX_WORK_SHIFTS_PER_DAY = 2;
+
+/** Format a UTC Date as YYYY-MM-DD in the given IANA timezone (for day-cap checks). */
+function dateToYmd(d: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
 /** Verify the technician belongs to the requesting tenant. Throws 404 if not. */
 async function assertTechnicianInCompany(
   companyId: string,
@@ -140,6 +158,7 @@ router.get(
 
 router.post(
   "/",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const body = validateSchema(insertShiftTemplateSchema, req.body);
     const companyId = req.companyId!;
@@ -166,6 +185,7 @@ router.post(
 
 router.patch(
   "/:id",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const body = validateSchema(updateShiftTemplateSchema, req.body);
@@ -192,6 +212,7 @@ router.patch(
 
 router.delete(
   "/:id",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const companyId = req.companyId!;
@@ -240,6 +261,7 @@ router.get(
 
 router.post(
   "/shifts",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const body = validateSchema(insertShiftSchema, req.body);
     const companyId = req.companyId!;
@@ -252,6 +274,17 @@ router.post(
     if (!body.allDay && body.timeOfDayStart && body.timeOfDayEnd) {
       const dateYmd = body.startsAt.slice(0, 10);
       ({ startsAt, endsAt } = deriveShiftTimesFromHHMM(dateYmd, body.timeOfDayStart, body.timeOfDayEnd, timezone));
+    }
+    // Work-shift-per-day cap: check only on the start date (first occurrence for recurring).
+    if (body.shiftType === "normal") {
+      const checkDate = body.startsAt.slice(0, 10);
+      const { start: dayStart, end: dayEnd } = getDayUTCBounds(checkDate, timezone);
+      const workCount = await technicianShiftsRepository.countWorkShiftsOnDay(
+        companyId, body.technicianUserId, dayStart, dayEnd,
+      );
+      if (workCount >= MAX_WORK_SHIFTS_PER_DAY) {
+        throw createError(400, "A technician can have up to 2 work shifts per day.");
+      }
     }
     const shift = await technicianShiftsRepository.create(
       companyId,
@@ -281,17 +314,38 @@ router.post(
 
 router.patch(
   "/shifts/:id",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const body = validateSchema(updateShiftSchema, req.body);
     const companyId = req.companyId!;
     const existing = await technicianShiftsRepository.findById(companyId, id);
     if (!existing) throw createError(404, "Shift not found");
+    // Fetch timezone once when needed for DST derivation or Work-shift cap check.
+    const resultingShiftType = body.shiftType ?? existing.shiftType;
+    const needsTimezone =
+      resultingShiftType === "normal" ||
+      (body.startsAt && body.timeOfDayStart && body.timeOfDayEnd && !body.allDay);
+    const timezone = needsTimezone
+      ? await companyRepository.getCompanyTimezone(companyId)
+      : undefined;
+    // Work-shift-per-day cap check.
+    if (resultingShiftType === "normal" && timezone) {
+      const checkDate = body.startsAt
+        ? body.startsAt.slice(0, 10)
+        : dateToYmd(existing.startsAt, timezone);
+      const { start: dayStart, end: dayEnd } = getDayUTCBounds(checkDate, timezone);
+      const workCount = await technicianShiftsRepository.countWorkShiftsOnDay(
+        companyId, existing.technicianUserId, dayStart, dayEnd, id,
+      );
+      if (workCount >= MAX_WORK_SHIFTS_PER_DAY) {
+        throw createError(400, "A technician can have up to 2 work shifts per day.");
+      }
+    }
     // Derive DST-safe UTC bounds when HH:MM times and a new date are both provided.
     let patchedStartsAt: Date | undefined = body.startsAt ? new Date(body.startsAt) : undefined;
     let patchedEndsAt: Date | undefined = body.endsAt ? new Date(body.endsAt) : undefined;
-    if (body.startsAt && body.timeOfDayStart && body.timeOfDayEnd && !body.allDay) {
-      const timezone = await companyRepository.getCompanyTimezone(companyId);
+    if (body.startsAt && body.timeOfDayStart && body.timeOfDayEnd && !body.allDay && timezone) {
       const dateYmd = body.startsAt.slice(0, 10);
       ({ startsAt: patchedStartsAt, endsAt: patchedEndsAt } = deriveShiftTimesFromHHMM(
         dateYmd,
@@ -328,6 +382,7 @@ router.patch(
 
 router.delete(
   "/shifts/:id",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const companyId = req.companyId!;
@@ -364,6 +419,7 @@ const splitAtBodySchema = z
 
 router.post(
   "/shifts/:id/split-at",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const body = validateSchema(splitAtBodySchema, req.body);
@@ -373,13 +429,23 @@ router.post(
     if (!base.recurrenceRule) {
       throw createError(400, "split-at requires a recurring shift");
     }
+    const timezone = await companyRepository.getCompanyTimezone(companyId);
+    // Work-shift-per-day cap: check new base start date before committing changes.
+    if (body.shiftType === "normal") {
+      const { start: dayStart, end: dayEnd } = getDayUTCBounds(body.occurrenceDate, timezone);
+      const workCount = await technicianShiftsRepository.countWorkShiftsOnDay(
+        companyId, base.technicianUserId, dayStart, dayEnd, id,
+      );
+      if (workCount >= MAX_WORK_SHIFTS_PER_DAY) {
+        throw createError(400, "A technician can have up to 2 work shifts per day.");
+      }
+    }
     // Truncate base series to the day before the split point.
     const splitDate = new Date(body.occurrenceDate + "T12:00:00Z");
     splitDate.setUTCDate(splitDate.getUTCDate() - 1);
     const truncateEndDate = splitDate.toISOString().slice(0, 10);
     await technicianShiftsRepository.update(companyId, id, { recurrenceEndDate: truncateEndDate });
     // Create new base starting at occurrenceDate.
-    const timezone = await companyRepository.getCompanyTimezone(companyId);
     let startsAt = new Date(body.startsAt);
     let endsAt = new Date(body.endsAt);
     if (!body.allDay && body.timeOfDayStart && body.timeOfDayEnd) {
@@ -422,6 +488,7 @@ router.post(
 
 router.post(
   "/shifts/:id/exceptions",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const body = validateSchema(insertShiftExceptionSchema, req.body);
@@ -465,6 +532,7 @@ router.post(
 
 router.patch(
   "/shifts/:id/exceptions/:exceptionId",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id, exceptionId } = validateSchema(technicianExceptionParamSchema, req.params);
     const body = validateSchema(updateShiftExceptionSchema, req.body);
@@ -508,6 +576,7 @@ router.patch(
 
 router.delete(
   "/shifts/:id/exceptions/:exceptionId",
+  requireShiftFeature,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id, exceptionId } = validateSchema(technicianExceptionParamSchema, req.params);
     const companyId = req.companyId!;

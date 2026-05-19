@@ -35,6 +35,13 @@ export interface ServiceTemplateDto {
   createdAt: string;
   updatedAt: string | null;
   components: ServiceTemplateComponentDto[];
+  // Optional item image (added 2026-05-18)
+  imageFileId?: string | null;
+  imageStorageKey?: string | null;
+  imageMimeType?: string | null;
+  imageFileName?: string | null;
+  imageAltText?: string | null;
+  thumbnailStorageKey?: string | null;
 }
 
 export interface CreateServiceTemplateBody {

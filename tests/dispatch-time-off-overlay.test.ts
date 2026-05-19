@@ -372,7 +372,7 @@ describe("DispatchPreview — wires timeOffEntriesByDay (with tech names)", () =
 
   it("derives timeOffEntriesByDay with technicianName resolved from the technicians roster", () => {
     expect(code).toMatch(/const timeOffEntriesByDay = useMemo/);
-    expect(code).toMatch(/techNameById\.get\(t\.technicianUserId\)/);
+    expect(code).toMatch(/techNameById\.get\(s\.technicianUserId\)/);
   });
 
   it("threads timeOffEntriesByDay into BOTH WeekDispatchGrid + MonthDispatchGrid", () => {

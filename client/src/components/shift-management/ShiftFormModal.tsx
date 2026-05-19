@@ -89,6 +89,8 @@ interface Props {
   defaultDate?: string;
   /** Company IANA timezone (e.g. "America/Toronto"). Used to display shift times correctly. */
   timezone?: string;
+  /** True when the cell already has 2 Work shifts — disables the Work type option. */
+  workShiftsFull?: boolean;
   onSuccess?: () => void;
 }
 
@@ -183,6 +185,7 @@ export default function ShiftFormModal({
   defaultTechnicianId,
   defaultDate,
   timezone,
+  workShiftsFull = false,
   onSuccess,
 }: Props) {
   const { toast } = useToast();
@@ -220,6 +223,8 @@ export default function ShiftFormModal({
         technicianUserId: defaultTechnicianId ?? (technicians[0]?.id ?? ""),
         date: defaultDate ?? format(new Date(), "yyyy-MM-dd"),
         customRecurrence: { days: [], interval: 1 },
+        // Default to On Call when Work slots are full so the user can still add other types.
+        shiftType: workShiftsFull ? "on_call" : "normal",
       });
     }
     setErrors({});
@@ -508,21 +513,28 @@ export default function ShiftFormModal({
         <FormField>
           <FormLabel>Type</FormLabel>
           <div className="flex gap-1" role="group" aria-label="Shift type" data-testid="shift-type-group">
-            {SHIFT_TYPE_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value}
-                type="button"
-                size="sm"
-                variant={form.shiftType === opt.value ? "default" : "outline"}
-                onClick={() => set("shiftType", opt.value)}
-                disabled={isPending}
-                data-testid={`shift-type-${opt.value}`}
-                className="flex-1"
-              >
-                {opt.label}
-              </Button>
-            ))}
+            {SHIFT_TYPE_OPTIONS.map((opt) => {
+              const isWorkBlocked = workShiftsFull && opt.value === "normal";
+              return (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="sm"
+                  variant={form.shiftType === opt.value ? "default" : "outline"}
+                  onClick={() => set("shiftType", opt.value)}
+                  disabled={isPending || isWorkBlocked}
+                  title={isWorkBlocked ? "A technician can have up to 2 work shifts per day." : undefined}
+                  data-testid={`shift-type-${opt.value}`}
+                  className="flex-1"
+                >
+                  {opt.label}
+                </Button>
+              );
+            })}
           </div>
+          {workShiftsFull && (
+            <FormHelperText>A technician can have up to 2 work shifts per day.</FormHelperText>
+          )}
         </FormField>
 
         {/* Unavailable reason */}

@@ -745,11 +745,6 @@
       "arbitrary": 10,
       "deprecated": 0
     },
-    "client/src/components/team-hub/SchedulesTab.tsx": {
-      "legacy": 16,
-      "arbitrary": 1,
-      "deprecated": 0
-    },
     "client/src/components/team-hub/TeamMemberList.tsx": {
       "legacy": 8,
       "arbitrary": 2,

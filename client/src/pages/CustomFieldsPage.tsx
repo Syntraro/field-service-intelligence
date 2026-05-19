@@ -21,10 +21,7 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -368,22 +365,16 @@ function DeactivateDialog({
   });
 
   return (
-    <AlertDialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Deactivate "{definition.label}"?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This will hide the field from future use but keep existing data intact.
-            You can reactivate it later by editing the field.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={() => mutation.mutate()} disabled={mutation.isPending}>
-            {mutation.isPending ? "Deactivating..." : "Deactivate"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={true}
+      onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}
+      title={`Deactivate "${definition.label}"?`}
+      description="This will hide the field from future use but keep existing data intact. You can reactivate it later by editing the field."
+      confirmLabel="Deactivate"
+      variant="neutral"
+      isPending={mutation.isPending}
+      onConfirm={() => mutation.mutate()}
+      testIdPrefix="custom-field-deactivate"
+    />
   );
 }

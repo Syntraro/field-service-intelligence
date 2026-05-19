@@ -96,14 +96,14 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberLis
   // editor) card body. Closed by default — most users should never
   // need to open it. Save endpoints + override state remain wired
   // through the existing pack list inside the disclosure.
+  // isSchedulable toggle moved to Profile tab (2026-05-18 refinement pass)
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const { data: members = [] } = useQuery<TeamMemberRow[]>({ queryKey: ["/api/team"] });
   const { data: roles = [] } = useQuery<Role[]>({ queryKey: ["/api/roles"] });
   const { data: permissions = [] } = useQuery<Permission[]>({ queryKey: ["/api/permissions"] });
 
-  // Local fallback only — see SchedulesTab/CompensationTab for the same
-  // pattern. Don't rewrite URL state just because the row was missing.
+  // Local fallback only — don't rewrite URL state just because this tab can't show the selected member.
   const displayedId = useMemo(() => {
     if (members.length === 0) return null;
     if (selectedMemberId && members.some((m) => m.id === selectedMemberId)) {

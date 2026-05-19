@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { Package, AlertCircle, AlertTriangle, BookMarked, TrendingUp } from "lucide-react";
+import { Package, AlertCircle, AlertTriangle, TrendingUp, Layers } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import { usePricebookGroups } from "@/lib/pricebook/usePricebookGroups";
 import { WorkspaceKpiStrip } from "@/components/workspace/WorkspaceKpiStrip";
 import type { Part } from "@/components/products-services/types";
+import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
 
 export function PriceBookKpiStrip() {
   const { data: itemsData } = useQuery<Part[]>({
@@ -18,14 +18,22 @@ export function PriceBookKpiStrip() {
     refetchIntervalInBackground: false,
   });
 
-  const { data: groups = [] } = usePricebookGroups();
+  const { data: templates = [] } = useQuery<ServiceTemplateDto[]>({
+    queryKey: ["/api/service-templates"],
+    queryFn: async () => {
+      const json = await apiRequest<unknown>("/api/service-templates");
+      return Array.isArray(json) ? (json as ServiceTemplateDto[]) : [];
+    },
+    staleTime: 30_000,
+    refetchIntervalInBackground: false,
+  });
 
   const allItems = itemsData ?? [];
   const loading = itemsData === undefined;
 
   const unsyncedCount = allItems.filter((i) => i.qboSyncStatus !== "SYNCED").length;
   const errorCount = allItems.filter((i) => i.qboSyncStatus === "ERROR").length;
-  const activeBundleCount = groups.filter((g) => g.isActive).length;
+  const activeTemplateCount = templates.filter((t) => t.isActive).length;
 
   const marginItems = allItems.filter(
     (i) => parseFloat(i.unitPrice || "0") > 0 && parseFloat(i.cost || "0") > 0,
@@ -75,15 +83,15 @@ export function PriceBookKpiStrip() {
       testId: "kpi-qbo-errors",
     },
     {
-      id: "active-bundles",
-      label: "Active Bundles",
-      value: loading ? "—" : String(activeBundleCount),
-      sub: "item groups",
-      icon: BookMarked,
+      id: "flat-rate-services",
+      label: "Flat-Rate Services",
+      value: loading ? "—" : String(activeTemplateCount),
+      sub: "service templates",
+      icon: Layers,
       iconColor: "text-violet-600",
       iconBg: "bg-violet-50",
       loading,
-      testId: "kpi-active-bundles",
+      testId: "kpi-flat-rate-services",
     },
     {
       id: "avg-margin",

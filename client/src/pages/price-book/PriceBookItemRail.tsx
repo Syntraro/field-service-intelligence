@@ -14,19 +14,11 @@ import {
 } from "@/components/ui/form-field";
 import { StatusChip } from "@/components/ui/chip";
 import { WorkspaceRailScrollContainer } from "@/components/workspace/WorkspaceRailScrollContainer";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { X, Lock, Loader2, AlertCircle, AlertTriangle } from "lucide-react";
 import { formatDateTime } from "@/lib/formatters";
 import { type Part, type ProductFormData } from "@/components/products-services/types";
+import { ItemImageUpload } from "@/components/pricebook/ItemImageUpload";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -485,6 +477,15 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
           </div>
         </FormSection>
 
+        {/* Item image */}
+        <ItemImageUpload
+          entityType="item"
+          entityId={item.id}
+          currentImage={item}
+          onChanged={onSaved}
+          invalidateKeys={[["/api/items"]]}
+        />
+
         {/* QuickBooks */}
         <FormSection title="QuickBooks" className="space-y-2">
           <div className="flex items-center gap-2">
@@ -582,29 +583,16 @@ export function PriceBookItemRail({ item, onClose, onSaved }: PriceBookItemRailP
         )}
       </div>
 
-      {/* Delete confirmation */}
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete item?</AlertDialogTitle>
-            <AlertDialogDescription>
-              "{item.name}" will be permanently deleted. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => {
-                setDeleteConfirmOpen(false);
-                deleteMutation.mutate();
-              }}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="Delete item?"
+        description={`"${item.name}" will be permanently deleted. This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => deleteMutation.mutate()}
+        testIdPrefix="pricebook-item-delete"
+      />
     </div>
   );
 }

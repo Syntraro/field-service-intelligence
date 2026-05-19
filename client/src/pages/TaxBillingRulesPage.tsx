@@ -36,16 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { FormField, FormLabel, FormHelperText, InlineInput } from "@/components/ui/form-field";
@@ -849,47 +840,27 @@ export default function TaxBillingRulesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Rate Confirmation */}
-      <AlertDialog open={!!deleteRateId} onOpenChange={() => setDeleteRateId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Tax Rate</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will deactivate the tax rate. It will be removed from any groups that reference it. This action can be undone by re-creating the rate.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteRateId && deleteRateMutation.mutate(deleteRateId)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={!!deleteRateId}
+        onOpenChange={() => setDeleteRateId(null)}
+        title="Delete Tax Rate"
+        description="This will deactivate the tax rate. It will be removed from any groups that reference it. This action can be undone by re-creating the rate."
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => { setDeleteRateId(null); deleteRateId && deleteRateMutation.mutate(deleteRateId); }}
+        testIdPrefix="tax-rate-delete"
+      />
 
-      {/* Delete Group Confirmation */}
-      <AlertDialog open={!!deleteGroupId} onOpenChange={() => setDeleteGroupId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Tax Group</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will deactivate the tax group. Existing invoices using this group will not be affected. This action can be undone by re-creating the group.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteGroupId && deleteGroupMutation.mutate(deleteGroupId)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={!!deleteGroupId}
+        onOpenChange={() => setDeleteGroupId(null)}
+        title="Delete Tax Group"
+        description="This will deactivate the tax group. Existing invoices using this group will not be affected. This action can be undone by re-creating the group."
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => { setDeleteGroupId(null); deleteGroupId && deleteGroupMutation.mutate(deleteGroupId); }}
+        testIdPrefix="tax-group-delete"
+      />
     </div>
   );
 }

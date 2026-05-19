@@ -135,15 +135,6 @@ import { catalogItemToDraft, draftToJobPartPayload } from "@/lib/entities/lineIt
 import { productOptionToCatalogItem } from "@/lib/entities/productEntity";
 // 2026-05-07 RALPH (groups in service picker): the QuickAdd service
 // dropdown now also surfaces saved Pricebook Groups under a
-// dedicated section. Selecting a group expands its children into
-// the local `selectedServices` array — it never adds the group as a
-// single line item.
-import {
-  usePricebookGroups,
-  recordPricebookGroupUsage,
-} from "@/lib/pricebook/usePricebookGroups";
-import type { PricebookGroupSummaryDto } from "@/components/line-items/pricebookHelpers";
-
 // ============================================================================
 // Duration options (static) — time uses native input, no option list needed
 // ============================================================================
@@ -355,91 +346,17 @@ interface SelectedService {
   estimatedDurationMinutes: number | null;
   unitPrice?: string | null;
   unitCost?: string | null;
-  /**
-   * Catalog row's canonical type. Defaults to "service" for entries
-   * the user picked from the Services section of the dropdown (the
-   * legacy path), and propagates each child's actual type when an
-   * entry came from a Pricebook Group expansion. The submit-time
-   * `productOptionToCatalogItem` reconstruction reads this so a
-   * group containing a Truck Charge (`type: "product"`) is persisted
-   * as a product line, not silently re-tagged as a service.
-   */
   type?: "product" | "service";
-  /**
-   * Catalog flag carried through from the group child snapshot. The
-   * catalog API already exposes `is_taxable`; without preserving it
-   * here, group expansion would default every line to `false` via
-   * `productOptionToCatalogItem`'s legacy fallback.
-   */
   isTaxable?: boolean;
-  /**
-   * 2026-05-07 RALPH (group-summary fix): when this entry was
-   * produced by a Pricebook Group expansion, these fields name the
-   * source group. The summary auto-builder uses them to emit the
-   * group label ONCE (at the position of the first child) instead
-   * of listing every child individually — a "Service Call" group
-   * with three children should auto-fill summary = "Service Call",
-   * not "Labor + Truck Charge + Parking".
-   *
-   * Persistence ignores these fields entirely. Job_part rows are
-   * built from `id` / `name` / `type` / `unitPrice` / `unitCost` /
-   * `isTaxable` only; the group origin is purely a UI label hint.
-   */
-  originGroupId?: string;
-  originGroupName?: string;
 }
 
-/**
- * Group-aware summary label builder (2026-05-07 RALPH).
- *
- * Walks the selected entries in insertion order and emits the labels
- * the auto-summary should join with " + ":
- *
- *   • Entry tagged with `originGroupId` → emit `originGroupName` ONCE
- *     (at the position of the first occurrence of that groupId);
- *     subsequent entries with the same groupId are skipped.
- *   • Entry without `originGroupId` (a single-service / single-item
- *     pick) → emit its own `name`.
- *
- * The result preserves order: a group expanded between two
- * individual picks shows up between them, exactly where its first
- * child sits in the array. Empty/blank labels are dropped.
- *
- * Pure function — no React, no state. The QuickAddJobDialog summary
- * auto-fill calls this once per `setSelectedServices` settle.
- *
- * Exported so vitest can exercise the behavior directly. Production
- * call site is the dialog's `autoSyncFromServices` branch.
- */
-export type SummarySelection = Pick<
-  SelectedService,
-  "name" | "originGroupId" | "originGroupName"
->;
+export type SummarySelection = Pick<SelectedService, "name">;
 export function buildSummaryLabels(
   list: ReadonlyArray<SummarySelection>,
 ): string[] {
-  const labels: string[] = [];
-  const seenGroupIds = new Set<string>();
-  // Treat whitespace-only labels as blank so a malformed entry never
-  // shows up as " " in the summary. The empty-string check alone
-  // wasn't enough — `"  "` is truthy in JS.
-  const isNonBlank = (s: string | undefined | null): s is string =>
-    typeof s === "string" && s.trim().length > 0;
-  for (const entry of list) {
-    if (entry.originGroupId) {
-      if (seenGroupIds.has(entry.originGroupId)) continue;
-      seenGroupIds.add(entry.originGroupId);
-      const groupLabel = isNonBlank(entry.originGroupName)
-        ? entry.originGroupName
-        : isNonBlank(entry.name)
-          ? entry.name
-          : null;
-      if (groupLabel) labels.push(groupLabel);
-      continue;
-    }
-    if (isNonBlank(entry.name)) labels.push(entry.name);
-  }
-  return labels;
+  return list
+    .map((e) => e.name)
+    .filter((n) => typeof n === "string" && n.trim().length > 0);
 }
 
 function formatEquipmentLabel(eq: LocationEquipment): string {
@@ -708,7 +625,6 @@ function ServicesMultiSelect({
   filteredServices,
   exactMatchExists,
   onAdd,
-  onAddGroup,
   onRemove,
   onCreateNew,
   createPending,
@@ -723,10 +639,6 @@ function ServicesMultiSelect({
   filteredServices: ServiceCatalogItem[];
   exactMatchExists: boolean;
   onAdd: (svc: SelectedService) => void;
-  /** Fired when the user picks a Pricebook Group. The host expands
-   *  its children into the local `selectedServices` array — the
-   *  group itself is never persisted. */
-  onAddGroup: (group: PricebookGroupSummaryDto) => void;
   onRemove: (id: string) => void;
   onCreateNew: (name: string) => void;
   createPending: boolean;
@@ -741,23 +653,7 @@ function ServicesMultiSelect({
   // services unused at this layer (filtering happens in the parent's memo);
   // accept it for API symmetry with Edit Visit.
   void services;
-  // Saved Pricebook Groups for the same dropdown. The canonical hook
-  // returns most-used-first ordering. Filter client-side by the
-  // typed query (name + description). Only fetched while the popover
-  // is open so closed dialogs don't pay for the round-trip.
-  const { data: allGroups = [], isLoading: groupsLoading } = usePricebookGroups({
-    enabled: searchOpen,
-  });
   const trimmedSearch = searchText.trim();
-  const filteredGroups = useMemo(() => {
-    if (!trimmedSearch) return allGroups;
-    const q = trimmedSearch.toLowerCase();
-    return allGroups.filter((g) => {
-      if (g.name.toLowerCase().includes(q)) return true;
-      if ((g.description ?? "").toLowerCase().includes(q)) return true;
-      return false;
-    });
-  }, [allGroups, trimmedSearch]);
 
   return (
     // 2026-05-07 RALPH (chip layout parity with Edit Visit): single
@@ -854,53 +750,6 @@ function ServicesMultiSelect({
                 <CommandEmpty>Already attached to this job.</CommandEmpty>
               )}
 
-              {/*
-                Groups section — always rendered AFTER Services (per
-                brief). The hook returns most-used-first ordering;
-                client-side filter narrows by typed query. Selecting
-                a group fans its children into the local
-                `selectedServices` array via the host's `onAddGroup`
-                — the group is never persisted as a single line.
-              */}
-              {searchOpen && filteredGroups.length > 0 && (
-                <CommandGroup heading="Groups">
-                  {filteredGroups.map((g) => {
-                    const childCountLabel = `${g.itemCount} item${
-                      g.itemCount === 1 ? "" : "s"
-                    }`;
-                    return (
-                      <CommandItem
-                        key={`group-${g.id}`}
-                        value={`group-${g.id}-${g.name}`}
-                        onSelect={() => {
-                          onAddGroup(g);
-                          onSearchTextChange("");
-                          onSearchOpenChange(false);
-                        }}
-                        data-testid={`option-group-${g.id}`}
-                      >
-                        <Check className="mr-2 h-3.5 w-3.5 opacity-0" />
-                        <span className="flex-1 truncate">{g.name}</span>
-                        <span
-                          className="ml-2 inline-flex items-center px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wider rounded border bg-violet-50 text-violet-700 border-violet-200"
-                          data-testid={`option-group-${g.id}-badge`}
-                        >
-                          Group
-                        </span>
-                        <span className="ml-2 text-[11px] text-muted-foreground tabular-nums shrink-0">
-                          {childCountLabel}
-                        </span>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              )}
-              {searchOpen && groupsLoading && filteredGroups.length === 0 && (
-                <div className="px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-2">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Loading groups…
-                </div>
-              )}
             </CommandList>
           </Command>
         </PopoverContent>
@@ -1353,72 +1202,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       autoSyncFromServices(next);
       return next;
     });
-  }
-
-  /**
-   * Expand a Pricebook Group into individual `SelectedService`
-   * entries. Skips children that are already in the selection so
-   * picking a group twice (or one that overlaps with an already-
-   * picked individual service) doesn't double-add. Auto-syncs
-   * Summary + Duration so the recomputed defaults reflect the
-   * expanded set.
-   *
-   * 2026-05-07 RALPH: persistence happens at submit time via the
-   * canonical pipeline (`productOptionToCatalogItem →
-   * catalogItemToDraft → draftToJobPartPayload`). The group itself
-   * is never persisted; only its children become job_part rows.
-   */
-  function addGroup(group: PricebookGroupSummaryDto) {
-    setSelectedServices((prev) => {
-      const seen = new Set(prev.map((s) => s.id));
-      const additions: SelectedService[] = [];
-      for (const child of group.children) {
-        // Skip rows with no itemId (defensive — the FK cascade
-        // should keep these in lockstep) and rows already in the
-        // selection (no double-add). Both filters are explicit and
-        // covered by tests; we no longer drop entries by `type`.
-        if (!child.itemId || seen.has(child.itemId)) continue;
-        seen.add(child.itemId);
-        // 2026-05-07 RALPH (group-count fix): the prior pass dropped
-        // non-service children (`if (child.type !== "service") continue`)
-        // which made a 3-item group expand to 2 selected entries
-        // when one child was type "product" (e.g. a "Truck Charge").
-        // Job line items can be either services OR products — the
-        // submit pipeline already routes through the canonical
-        // `productOptionToCatalogItem → catalogItemToDraft →
-        // draftToJobPartPayload` chain, which handles both types
-        // correctly. Carry each child's real type through so the
-        // persistence step reconstructs the right catalog snapshot.
-        const childType: "product" | "service" =
-          child.type === "product" ? "product" : "service";
-        additions.push({
-          id: child.itemId,
-          name: child.name ?? (childType === "product" ? "Item" : "Service"),
-          // Group children don't carry a duration in the
-          // /api/pricebook-groups response (the snapshot is
-          // intentionally minimal). Default to null; the user can
-          // still adjust the visit's overall duration manually.
-          estimatedDurationMinutes: null,
-          unitPrice: child.unitPrice ?? null,
-          unitCost: child.cost ?? null,
-          type: childType,
-          isTaxable: child.isTaxable ?? true,
-          // Tag this entry with its source group so the summary
-          // auto-builder knows to emit the group label once per
-          // distinct group rather than listing every child name.
-          originGroupId: group.id,
-          originGroupName: group.name,
-        });
-      }
-      if (additions.length === 0) return prev;
-      const next = [...prev, ...additions];
-      autoSyncFromServices(next);
-      return next;
-    });
-    // Fire-and-forget usage bump — float this group up the rail's
-    // most-used ordering on the next picker open. Errors are
-    // intentionally swallowed.
-    recordPricebookGroupUsage(group.id, { target: "job" }).catch(() => undefined);
   }
 
   /** When the services list changes, recompute Summary + Duration unless the
@@ -2134,7 +1917,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   filteredServices={filteredServices}
                   exactMatchExists={exactMatchExists}
                   onAdd={addService}
-                  onAddGroup={addGroup}
+
                   onRemove={removeService}
                   onCreateNew={handleOpenCreateService}
                   createPending={false}
@@ -2993,7 +2776,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         filteredServices={filteredServices}
                         exactMatchExists={exactMatchExists}
                         onAdd={addService}
-                        onAddGroup={addGroup}
+      
                         onRemove={removeService}
                         onCreateNew={handleOpenCreateService}
                         createPending={false}
