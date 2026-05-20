@@ -51,7 +51,6 @@ export function MidnightRolloverBanner() {
       if (!res.ok) return { notifications: [] };
       return res.json();
     },
-    refetchOnWindowFocus: true,
     staleTime: 30_000,
   });
 

@@ -3,34 +3,39 @@ import { ReceiptText, FileText, Clock, AlertCircle } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
 
-interface InvoiceStats {
-  outstanding: { amount: number; count: number };
-  overdue: { amount: number; count: number };
+// Shape of the canonical receivables counts endpoint — only the fields this strip uses.
+interface ReceivablesCounts {
+  outstandingCount: number;
+  outstandingAmount: number;
+  overdue: number;        // overdueCount (reuses existing badge count field)
+  overdueAmount: number;
   averageInvoice: number;
   averagePaymentTimeDays: number | null;
 }
 
 /** Invoice-specific KPI data → WorkspaceKpiStrip adapter for the Invoices workspace. */
 export function InvoiceKpiStrip() {
-  const { data: stats } = useQuery<InvoiceStats>({
-    queryKey: ["invoices", "stats"],
+  // Shares the canonical ["receivables","views","counts"] cache with InvoicesPage
+  // and InvoiceListPanel. All invoice mutations already invalidate this key.
+  const { data } = useQuery<ReceivablesCounts>({
+    queryKey: ["receivables", "views", "counts"],
     queryFn: async () => {
-      const res = await fetch("/api/invoices/stats", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch invoice stats");
+      const res = await fetch("/api/receivables/views/counts", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoice counts");
       return res.json();
     },
-    staleTime: 60_000,
+    staleTime: 120_000,
     refetchIntervalInBackground: false,
   });
 
-  const loading = stats === undefined;
+  const loading = data === undefined;
 
-  const outstandingAmount = stats?.outstanding?.amount ?? null;
-  const outstandingCount  = stats?.outstanding?.count  ?? null;
-  const overdueAmount     = stats?.overdue?.amount     ?? null;
-  const overdueCount      = stats?.overdue?.count      ?? null;
-  const avgInvoice        = stats?.averageInvoice       ?? null;
-  const avgPayDays        = stats?.averagePaymentTimeDays ?? null;
+  const outstandingAmount = data?.outstandingAmount      ?? null;
+  const outstandingCount  = data?.outstandingCount       ?? null;
+  const overdueAmount     = data?.overdueAmount          ?? null;
+  const overdueCount      = data?.overdue                ?? null;
+  const avgInvoice        = data?.averageInvoice         ?? null;
+  const avgPayDays        = data?.averagePaymentTimeDays ?? null;
 
   const outstandingSub =
     outstandingCount === null || outstandingCount === 0

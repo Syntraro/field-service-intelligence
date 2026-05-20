@@ -26,7 +26,7 @@ import { communicationTemplatesService } from "../services/communicationTemplate
 import { recipientResolverService } from "../services/recipientResolverService";
 import type { QuoteStatus } from "@shared/schema";
 import { tasks } from "@shared/schema";
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, notInArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { taskRepository } from "../storage/tasks";
 import { quoteNotes, users, quotes, insertQuoteNoteSchema, clientLocations } from "@shared/schema";
@@ -153,65 +153,89 @@ router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(paginated(result.items, result.meta));
 }));
 
-// GET /api/quotes/stats - Get quote statistics
-router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const stats = await quoteRepository.getQuoteStats(req.companyId!);
-  res.json(stats);
-}));
-
-// GET /api/quotes/views/counts - Badge counts for workspace view rail
+// GET /api/quotes/views/counts — canonical quote aggregate endpoint.
+//
+// Returns view-tab badge counts plus KPI aggregate fields in a single SQL
+// pass using COUNT(*)/SUM FILTER clauses. Replaces both the former
+// /api/quotes/stats (group-by + JS reduce) and the former /views/counts
+// (SELECT * + JS reduce). No row payloads transmitted; no JS counting.
+//
+// KPI fields consumed by QuoteKpiStrip: openPipelineTotal, averageQuote.
+// Badge count fields consumed by QuotesPage: all existing QuoteViewCounts keys.
+//
+// awaitingApproval semantics: sent quotes whose expiry_date is in the future
+// (or null — no expiry set). Mirrors the prior JS predicate exactly.
+// expiringSoon semantics: subset of awaitingApproval expiring within 7 days.
 router.get("/views/counts", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
-  const rows = await db
-    .select({
-      status: quotes.status,
-      assessmentStatus: quotes.assessmentStatus,
-      expiryDate: quotes.expiryDate,
-    })
-    .from(quotes)
-    .where(eq(quotes.companyId, companyId));
+  const result = await db.execute(sql`
+    SELECT
+      -- ── View badge counts ─────────────────────────────────────────────────
+      COUNT(*)::int AS "all",
 
-  const now = new Date();
-  const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      COUNT(*) FILTER (WHERE status = 'draft')::int AS "draft",
 
-  let all = 0, draft = 0, sent = 0, awaitingApproval = 0, expiringSoon = 0;
-  let approved = 0, expired = 0, declined = 0, converted = 0;
-  let needsAssessment = 0, assessmentScheduled = 0;
+      COUNT(*) FILTER (WHERE status = 'sent')::int AS "sent",
 
-  for (const row of rows) {
-    all++;
-    switch (row.status) {
-      case "draft":
-        draft++;
-        break;
-      case "sent": {
-        sent++;
-        const expiry = row.expiryDate ? new Date(row.expiryDate) : null;
-        if (!expiry || expiry > now) {
-          awaitingApproval++;
-          if (expiry && expiry <= sevenDaysFromNow) expiringSoon++;
-        }
-        break;
-      }
-      case "approved":
-        approved++;
-        break;
-      case "expired":
-        expired++;
-        break;
-      case "declined":
-        declined++;
-        break;
-      case "converted":
-        converted++;
-        break;
-    }
-    if (row.assessmentStatus === "required") needsAssessment++;
-    if (row.assessmentStatus === "scheduled") assessmentScheduled++;
-  }
+      COUNT(*) FILTER (
+        WHERE status = 'sent'
+        AND (expiry_date IS NULL OR expiry_date > NOW())
+      )::int AS "awaitingApproval",
 
-  res.json({ all, draft, sent, awaitingApproval, expiringSoon, approved, expired, declined, converted, needsAssessment, assessmentScheduled });
+      COUNT(*) FILTER (
+        WHERE status = 'sent'
+        AND expiry_date IS NOT NULL
+        AND expiry_date > NOW()
+        AND expiry_date <= NOW() + INTERVAL '7 days'
+      )::int AS "expiringSoon",
+
+      COUNT(*) FILTER (WHERE status = 'approved')::int AS "approved",
+
+      COUNT(*) FILTER (WHERE status = 'expired')::int AS "expired",
+
+      COUNT(*) FILTER (WHERE status = 'declined')::int AS "declined",
+
+      COUNT(*) FILTER (WHERE status = 'converted')::int AS "converted",
+
+      COUNT(*) FILTER (WHERE assessment_status = 'required')::int AS "needsAssessment",
+
+      COUNT(*) FILTER (WHERE assessment_status = 'scheduled')::int AS "assessmentScheduled",
+
+      -- ── KPI aggregate fields (for QuoteKpiStrip) ──────────────────────────
+      -- Open pipeline: draft + sent + approved totals
+      COALESCE(SUM(CAST(total AS numeric)) FILTER (
+        WHERE status IN ('draft', 'sent', 'approved')
+      ), 0) AS "openPipelineTotal",
+
+      -- Average quote: SUM / COUNT across all quotes (including terminal)
+      COALESCE(SUM(CAST(total AS numeric)), 0) AS "allTotalsSum"
+
+    FROM quotes
+    WHERE company_id = ${companyId}
+  `);
+
+  const row = result.rows[0] as Record<string, unknown>;
+  const allCount = Number(row.all ?? 0);
+  const allTotalsSum = Number(row.allTotalsSum ?? 0);
+
+  res.json({
+    // Badge counts (QuoteViewCounts — shape unchanged)
+    all:                 Number(row.all ?? 0),
+    draft:               Number(row.draft ?? 0),
+    sent:                Number(row.sent ?? 0),
+    awaitingApproval:    Number(row.awaitingApproval ?? 0),
+    expiringSoon:        Number(row.expiringSoon ?? 0),
+    approved:            Number(row.approved ?? 0),
+    expired:             Number(row.expired ?? 0),
+    declined:            Number(row.declined ?? 0),
+    converted:           Number(row.converted ?? 0),
+    needsAssessment:     Number(row.needsAssessment ?? 0),
+    assessmentScheduled: Number(row.assessmentScheduled ?? 0),
+    // KPI aggregates (QuoteKpiStrip — new fields)
+    openPipelineTotal: Number(row.openPipelineTotal ?? 0),
+    averageQuote: allCount > 0 ? Math.round((allTotalsSum / allCount) * 100) / 100 : null,
+  });
 }));
 
 // GET /api/quotes/:id - Get single quote

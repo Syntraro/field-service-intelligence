@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +28,7 @@ import {
   Lightbulb,
   ListChecks,
   Receipt,
+  RefreshCw,
   Target,
   TriangleAlert,
   Users,
@@ -406,7 +407,9 @@ function SnapshotBody({ range }: { range: RangeKey }) {
   const { data, isLoading, isError } = useQuery<SnapshotResponse>({
     queryKey: ["/api/reports/snapshot", range],
     queryFn: () => apiRequest<SnapshotResponse>(`/api/reports/snapshot?range=${range}`),
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // Parts Forecast feeds rule #7 (parts-setup issues). Fetched in parallel
@@ -418,7 +421,9 @@ function SnapshotBody({ range }: { range: RangeKey }) {
       apiRequest<PartsForecastResponse>(
         `/api/reports/parts-forecast?range=next_30_days`,
       ),
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // Must stay above both early returns — hooks must run on every render.
@@ -773,7 +778,9 @@ function FinancialBody({ range }: { range: RangeKey }) {
     queryKey: ["/api/reports/financial", range],
     queryFn: () =>
       apiRequest<FinancialResponse>(`/api/reports/financial?range=${range}`),
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   if (isLoading) {
@@ -1073,7 +1080,9 @@ function OperationsBody({ range }: { range: RangeKey }) {
     queryKey: ["/api/reports/operations", range],
     queryFn: () =>
       apiRequest<OperationsResponse>(`/api/reports/operations?range=${range}`),
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   if (isLoading) {
@@ -1441,7 +1450,9 @@ function SalesBody({ range }: { range: RangeKey }) {
   const { data, isLoading, isError } = useQuery<SalesResponse>({
     queryKey: ["/api/reports/sales", range],
     queryFn: () => apiRequest<SalesResponse>(`/api/reports/sales?range=${range}`),
-    staleTime: 60_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   if (isLoading) {
@@ -1499,10 +1510,33 @@ function SalesBody({ range }: { range: RangeKey }) {
 // Page
 // ---------------------------------------------------------------------------
 
+// Map each data-bearing tab to the query keys that need invalidating on Refresh.
+// "next_30_days" is a fixed range for the parts-forecast; the other keys use
+// the user-selected range. Snapshot invalidates two keys (snapshot + forecast).
+function getActiveQueryKeys(tab: ReportsTab, range: RangeKey): string[][] {
+  switch (tab) {
+    case "snapshot":
+      return [
+        ["/api/reports/snapshot", range],
+        ["/api/reports/parts-forecast", "next_30_days"],
+      ];
+    case "financial":
+      return [["/api/reports/financial", range]];
+    case "operations":
+      return [["/api/reports/operations", range]];
+    case "sales":
+      return [["/api/reports/sales", range]];
+    default:
+      return [];
+  }
+}
+
 export default function Reports() {
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<ReportsTab>("snapshot");
   const [range, setRange] = useState<RangeKey>("last_30_days");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const queryClient = useQueryClient();
 
   // 2026-05-02: deep-link support for the Reports Library page.
   // `/reports?tab=<x>&section=<testId>` opens the requested tab and
@@ -1560,6 +1594,21 @@ export default function Reports() {
     [],
   );
 
+  async function handleRefresh() {
+    const keys = getActiveQueryKeys(activeTab, range);
+    if (keys.length === 0) return;
+    setIsRefreshing(true);
+    try {
+      await Promise.all(
+        keys.map((key) =>
+          queryClient.invalidateQueries({ queryKey: key, refetchType: "active" }),
+        ),
+      );
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background" data-testid="reports-page">
       <main className="container mx-auto p-6 space-y-6">
@@ -1579,6 +1628,16 @@ export default function Reports() {
             >
               <ListChecks className="h-4 w-4 mr-2" />
               View all reports
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing || !getActiveQueryKeys(activeTab, range).length}
+              data-testid="button-refresh-report"
+            >
+              <RefreshCw className={cn("h-4 w-4 mr-2", isRefreshing && "animate-spin")} />
+              Refresh
             </Button>
             <Select value={range} onValueChange={(v) => setRange(v as RangeKey)}>
               <SelectTrigger className="w-44" data-testid="select-reports-range">

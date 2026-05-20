@@ -601,12 +601,13 @@ export default function ClientDetailPage() {
     return completed.reduce((max, d) => d > max ? d : max);
   }, [companyJobs]);
 
-  // Active maintenance count — same query key as ClientMaintenancePanelBody; cache shared.
+  // Active maintenance count — shares the canonical ["/api/recurring-templates"] cache key
+  // used by ServicePlansWorkspaceTab and ServicePlanKpiStrip; React Query deduplicates.
   const { data: allTemplates = [] } = useQuery<{ clientId?: string | null; locationId?: string | null }[]>({
-    queryKey: ["/api/recurring-templates", "for-client", companyId],
+    queryKey: ["/api/recurring-templates"],
     queryFn: () => apiRequest("/api/recurring-templates"),
     enabled: Boolean(companyId),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
   const activeMaintenanceCount = useMemo(

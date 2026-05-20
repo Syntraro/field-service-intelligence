@@ -88,8 +88,7 @@ export function ServicePlansWorkspaceTab({
       if (!res.ok) throw new Error("Failed to load service plans");
       return res.json();
     },
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    staleTime: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

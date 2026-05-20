@@ -27,7 +27,7 @@
 import { jobs, invoices, clientLocations as clients, customerCompanies, recurringJobInstances, recurringJobTemplates, quotes, payments, leads, leadVisits } from "@shared/schema";
 import { eq, and, or, sql, asc, desc, isNull, gte, lt, inArray } from "drizzle-orm";
 import type { QueryCtx } from "../lib/queryCtx";
-import { activeJobFilter } from "./jobFilters";
+import { activeJobFilter, readyToInvoiceFilter } from "./jobFilters";
 // 2026-04-09: activeInvoiceFilter dropped (permanent-delete model — no soft delete on invoices)
 import { UNPAID_INVOICE_STATUSES, UNPAID_INVOICE_STATUS_SQL } from "./invoicesFeed";
 import { db } from "../db";
@@ -172,18 +172,8 @@ import { effectiveEndExpr, locationDisplayNameExpr } from "../lib/queryHelpers";
 async function getJobCounts(ctx: QueryCtx) {
   const result = await ctx.db
     .select({
-      // 2026-04-19 Fix A: "ready for invoice" now requires both
-      // status='completed' AND zero existing invoices on the job. The
-      // prior filter over-counted jobs that already had invoices but
-      // hadn't transitioned to 'invoiced' status (e.g. manual invoice
-      // creation that bypassed the close-with-invoice flow).
       requiresInvoicingCount: sql<number>`
-        COUNT(*) FILTER (WHERE ${jobs.status} = 'completed'
-          AND NOT EXISTS (
-            SELECT 1 FROM ${invoices}
-            WHERE ${invoices.jobId} = ${jobs.id}
-              AND ${invoices.companyId} = ${jobs.companyId}
-          ))
+        COUNT(*) FILTER (WHERE ${readyToInvoiceFilter()})
       `.as("requires_invoicing_count"),
       activeCount: sql<number>`
         COUNT(*) FILTER (WHERE ${jobs.status} = 'open')
@@ -685,14 +675,7 @@ export async function getNeedsAttentionJobs(
           activeJobFilter(),
           or(
             and(eq(jobs.status, "open"), eq(jobs.openSubStatus, "on_hold")),
-            and(
-              eq(jobs.status, "completed"),
-              sql`NOT EXISTS (
-                SELECT 1 FROM ${invoices}
-                WHERE ${invoices.jobId} = ${jobs.id}
-                  AND ${invoices.companyId} = ${jobs.companyId}
-              )`,
-            ),
+            readyToInvoiceFilter(),
           )
         )
       )
@@ -1451,17 +1434,8 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
         eq(invoices.status, "draft"),
       )),
 
-    // 2026-04-21 Ready-to-invoice job count. Predicate IDENTICAL to
-    // getWorkflowSummary.getJobCounts.requiresInvoicingCount — must stay
-    // in lockstep. Bypass activeJobFilter on job lookup of invoices is
-    // fine because NOT EXISTS only checks count, not visibility.
     db.select({
-      count: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'completed'
-        AND NOT EXISTS (
-          SELECT 1 FROM ${invoices}
-          WHERE ${invoices.jobId} = ${jobs.id}
-            AND ${invoices.companyId} = ${jobs.companyId}
-        ))::int`,
+      count: sql<number>`COUNT(*) FILTER (WHERE ${readyToInvoiceFilter()})::int`,
     }).from(jobs)
       .where(and(
         eq(jobs.companyId, companyId),
@@ -1514,12 +1488,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       .where(and(
         eq(jobs.companyId, companyId),
         activeJobFilter(),
-        eq(jobs.status, "completed"),
-        sql`NOT EXISTS (
-          SELECT 1 FROM ${invoices}
-          WHERE ${invoices.jobId} = ${jobs.id}
-            AND ${invoices.companyId} = ${jobs.companyId}
-        )`,
+        readyToInvoiceFilter(),
       ))
       .orderBy(sql`COALESCE(${jobs.closedAt}, ${jobs.updatedAt}) ASC NULLS LAST`)
       .limit(6),

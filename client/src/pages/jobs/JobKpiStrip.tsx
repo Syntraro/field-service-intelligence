@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-fns";
 import { Calendar, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
-interface VisitFeedResponse { visits: unknown[]; count: number }
+interface VisitSummary { scheduledThisWeek: number; scheduledThisMonth: number; scheduledFromNow: number }
 interface FinancialSummary {
   revenue: { today: number; week: number; month: number; lastMonth: number };
   [key: string]: unknown;
@@ -23,38 +22,13 @@ function formatRevenue(amount: number): string {
 
 // ── JobKpiStrip ───────────────────────────────────────────────────────────────
 
-/**
- * Jobs-specific KPI data adapter → WorkspaceKpiStrip.
- * Fetches the same four data sources as the previous inline SummaryCard block.
- * No new endpoints; no metric changes.
- */
 export function JobKpiStrip() {
-  const weekStart  = startOfWeek(new Date(), { weekStartsOn: 1 }).toISOString();
-  const weekEnd    = endOfWeek(new Date(), { weekStartsOn: 1 }).toISOString();
-  const monthStart = startOfMonth(new Date()).toISOString();
-  const monthEnd   = endOfMonth(new Date()).toISOString();
-  const nowIso     = new Date().toISOString();
-
-  const { data: weekVisits } = useQuery<VisitFeedResponse>({
-    queryKey: ["visits", "summary-week", weekStart, weekEnd],
-    queryFn: () =>
-      apiRequest(`/api/visits?from=${encodeURIComponent(weekStart)}&to=${encodeURIComponent(weekEnd)}&excludeStatuses=cancelled`),
-    staleTime: 60_000,
-    refetchIntervalInBackground: false,
-  });
-
-  const { data: monthVisits } = useQuery<VisitFeedResponse>({
-    queryKey: ["visits", "summary-month", monthStart, monthEnd],
-    queryFn: () =>
-      apiRequest(`/api/visits?from=${encodeURIComponent(monthStart)}&to=${encodeURIComponent(monthEnd)}&excludeStatuses=cancelled`),
-    staleTime: 60_000,
-    refetchIntervalInBackground: false,
-  });
-
-  const { data: scheduledVisits } = useQuery<VisitFeedResponse>({
-    queryKey: ["visits", "summary-scheduled", nowIso],
-    queryFn: () =>
-      apiRequest(`/api/visits?from=${encodeURIComponent(nowIso)}&excludeStatuses=cancelled,completed`),
+  // Single aggregate query — server computes all three counts in one SQL pass.
+  // Key is stable (no date params) so React Query cache never drifts on re-render.
+  // SSE invalidation via useDispatchStream covers the ["visits"] prefix.
+  const { data: visitSummary } = useQuery<VisitSummary>({
+    queryKey: ["visits", "summary"],
+    queryFn: () => apiRequest("/api/visits/summary"),
     staleTime: 60_000,
     refetchIntervalInBackground: false,
   });
@@ -66,12 +40,12 @@ export function JobKpiStrip() {
     refetchIntervalInBackground: false,
   });
 
-  // ── Derived values (identical logic to the previous inline block) ──────────
+  // ── Derived values ────────────────────────────────────────────────────────
 
-  const visitsThisWeek  = weekVisits?.count      ?? 0;
-  const visitsThisMonth = monthVisits?.count      ?? 0;
-  const scheduledCount  = scheduledVisits?.count  ?? 0;
-  const revenueMonth    = financialData?.revenue.month     ?? 0;
+  const visitsThisWeek   = visitSummary?.scheduledThisWeek  ?? 0;
+  const visitsThisMonth  = visitSummary?.scheduledThisMonth ?? 0;
+  const scheduledCount   = visitSummary?.scheduledFromNow   ?? 0;
+  const revenueMonth     = financialData?.revenue.month     ?? 0;
   const revenueLastMonth = financialData?.revenue.lastMonth ?? 0;
 
   const revenueNote =
@@ -79,11 +53,7 @@ export function JobKpiStrip() {
       ? `${revenueMonth >= revenueLastMonth ? "+" : ""}${Math.round(((revenueMonth - revenueLastMonth) / revenueLastMonth) * 100)}% vs last month`
       : "From completed + invoiced work";
 
-  const loading =
-    weekVisits === undefined ||
-    monthVisits === undefined ||
-    scheduledVisits === undefined ||
-    financialData === undefined;
+  const loading = visitSummary === undefined || financialData === undefined;
 
   // ── Descriptor map ────────────────────────────────────────────────────────
 

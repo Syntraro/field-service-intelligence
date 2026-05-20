@@ -4,68 +4,35 @@ import { formatCurrency } from "@/lib/formatters";
 import { WorkspaceKpiStrip, type WorkspaceKpiDescriptor } from "@/components/workspace/WorkspaceKpiStrip";
 import { quoteKeys } from "@/lib/queryKeys/quotes";
 
-// Quote statuses that represent an active, open pipeline.
-// Terminal statuses (declined, expired, converted) are excluded from pipeline metrics.
-const OPEN_STATUSES = new Set(["draft", "sent", "approved"]);
-
-interface QuoteStatRow {
-  status: string;
-  count: number;
-  total: string;
-}
-
-interface QuoteViewCountsPartial {
+// Shape of the canonical quotes aggregate endpoint — only the fields this strip uses.
+interface QuoteAggregateCounts {
+  approved?: number;
   expiringSoon?: number;
+  openPipelineTotal?: number;
+  averageQuote?: number | null;
 }
 
 /** Quote-specific KPI data → WorkspaceKpiStrip adapter for the Quotes workspace. */
 export function QuoteKpiStrip() {
-  const { data: statsRows } = useQuery<QuoteStatRow[]>({
-    queryKey: quoteKeys.stats(),
-    queryFn: async () => {
-      const res = await fetch("/api/quotes/stats", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch quote stats");
-      return res.json();
-    },
-    staleTime: 60_000,
-    refetchIntervalInBackground: false,
-  });
-
-  // Shares the cache already established by QuotesPage — no duplicate network request.
-  const { data: viewCounts } = useQuery<QuoteViewCountsPartial | null>({
+  // Single canonical query — shares the cache with QuotesPage (no extra network round-trip).
+  // All quote mutations invalidate ["quotes"] prefix which covers this key.
+  const { data } = useQuery<QuoteAggregateCounts>({
     queryKey: quoteKeys.viewCounts(),
     queryFn: async () => {
       const res = await fetch("/api/quotes/views/counts", { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load quote counts: ${res.status}`);
       return res.json();
     },
-    staleTime: 30_000,
+    staleTime: 120_000,
     refetchIntervalInBackground: false,
   });
 
-  const loading = statsRows === undefined;
+  const loading = data === undefined;
 
-  // ── Derive KPI values from stats rows ───────────────────────────────────────
-
-  let openPipelineTotal = 0;
-  let approvedCount = 0;
-  let allTotal = 0;
-  let allCount = 0;
-
-  for (const row of statsRows ?? []) {
-    const rowTotal = parseFloat(row.total) || 0;
-    if (OPEN_STATUSES.has(row.status)) {
-      openPipelineTotal += rowTotal;
-    }
-    if (row.status === "approved") {
-      approvedCount = row.count;
-    }
-    allTotal += rowTotal;
-    allCount += row.count;
-  }
-
-  const avgQuote = allCount > 0 ? allTotal / allCount : null;
-  const expiringSoon = viewCounts?.expiringSoon ?? null;
+  const openPipelineTotal = data?.openPipelineTotal ?? 0;
+  const approvedCount     = data?.approved           ?? 0;
+  const avgQuote          = data?.averageQuote        ?? null;
+  const expiringSoon      = data?.expiringSoon        ?? null;
 
   // ── KPI descriptors ─────────────────────────────────────────────────────────
 

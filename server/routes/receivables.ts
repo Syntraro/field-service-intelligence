@@ -161,11 +161,17 @@ router.get(
       throw createError(400, "threshold must be a non-negative number");
     }
 
-    // Single compound query — all counts in one round-trip using conditional
-    // aggregation. Each view is a FILTER clause so the planner can share the
-    // same table scan across all views.
+    // Single compound query — all view badge counts + financial KPI aggregates
+    // in one round-trip. Every value is a FILTER clause so the planner shares
+    // the same invoices table scan across all columns.
+    //
+    // Financial fields (outstandingCount/Amount, overdueAmount, averageInvoice,
+    // issuedLast30DaysCount) mirror the predicates from the now-removed
+    // /api/invoices/stats endpoint. UNPAID statuses: awaiting_payment, sent,
+    // partial_paid — must stay in sync with shared/invoiceStatus.ts.
     const result = await db.execute(sql`
       SELECT
+        -- ── View badge counts (existing) ─────────────────────────────────────
         COUNT(*) FILTER (
           WHERE company_id = ${companyId}
           AND status != 'voided'
@@ -232,13 +238,94 @@ router.get(
           AND promised_payment_at IS NOT NULL
           AND balance > 0
           AND status NOT IN ('paid', 'voided')
-        )::int AS "promisedPayment"
+        )::int AS "promisedPayment",
+
+        -- ── Financial KPI aggregates (for InvoiceKpiStrip + InvoiceListPanel) ─
+        COUNT(*) FILTER (
+          WHERE company_id = ${companyId}
+          AND status IN ('awaiting_payment', 'sent', 'partial_paid')
+        )::int AS "outstandingCount",
+
+        COALESCE(SUM(CAST(balance AS numeric)) FILTER (
+          WHERE company_id = ${companyId}
+          AND status IN ('awaiting_payment', 'sent', 'partial_paid')
+        ), 0) AS "outstandingAmount",
+
+        COALESCE(SUM(CAST(balance AS numeric)) FILTER (
+          WHERE company_id = ${companyId}
+          AND status NOT IN ('draft', 'paid', 'voided')
+          AND balance > 0
+          AND due_date < CURRENT_DATE
+        ), 0) AS "overdueAmount",
+
+        COUNT(*) FILTER (
+          WHERE company_id = ${companyId}
+          AND status != 'draft'
+          AND issue_date >= CURRENT_DATE - INTERVAL '30 days'
+        )::int AS "issuedLast30DaysCount",
+
+        COALESCE(SUM(CAST(total AS numeric)) FILTER (
+          WHERE company_id = ${companyId}
+          AND status != 'draft'
+        ), 0) AS "totalIssuedAmount",
+
+        COUNT(*) FILTER (
+          WHERE company_id = ${companyId}
+          AND status != 'draft'
+        )::int AS "totalIssuedCount"
 
       FROM invoices
       WHERE company_id = ${companyId}
     `);
 
-    res.json(result.rows[0]);
+    const row = result.rows[0] as Record<string, unknown>;
+
+    // Compute averageInvoice from the SUM/COUNT returned above (avoids division by zero).
+    const totalIssuedCount = Number(row.totalIssuedCount ?? 0);
+    const totalIssuedAmount = Number(row.totalIssuedAmount ?? 0);
+    const averageInvoice =
+      totalIssuedCount > 0
+        ? Math.round((totalIssuedAmount / totalIssuedCount) * 100) / 100
+        : 0;
+
+    // Second query: average days from invoice issue to payment.
+    // Requires a payments JOIN; cannot share the invoices-only scan above.
+    const avgPayResult = await db.execute(sql`
+      SELECT AVG(
+        EXTRACT(EPOCH FROM (p.received_at - CAST(i.issue_date AS timestamp))) / 86400.0
+      ) AS "avgDays"
+      FROM payments p
+      INNER JOIN invoices i ON p.invoice_id = i.id
+      WHERE p.company_id = ${companyId}
+        AND p.payment_type = 'payment'
+        AND p.invoice_id IS NOT NULL
+        AND i.company_id = ${companyId}
+    `);
+    const avgDaysRaw = (avgPayResult.rows[0] as Record<string, unknown>)?.avgDays;
+    const averagePaymentTimeDays =
+      avgDaysRaw != null ? Math.round(Number(avgDaysRaw) * 10) / 10 : null;
+
+    res.json({
+      // View badge counts (unchanged shape for InvoicesPage ViewCounts)
+      all:             row.all,
+      overdue:         row.overdue,
+      awaitingPayment: row.awaitingPayment,
+      drafts:          row.drafts,
+      paid:            row.paid,
+      needsFollowUp:   row.needsFollowUp,
+      sentThisWeek:    row.sentThisWeek,
+      noRecentContact: row.noRecentContact,
+      highBalance:     row.highBalance,
+      disputed:        row.disputed,
+      promisedPayment: row.promisedPayment,
+      // Financial KPI fields (for InvoiceKpiStrip + InvoiceListPanel)
+      outstandingCount:      Number(row.outstandingCount ?? 0),
+      outstandingAmount:     Number(row.outstandingAmount ?? 0),
+      overdueAmount:         Number(row.overdueAmount ?? 0),
+      issuedLast30DaysCount: Number(row.issuedLast30DaysCount ?? 0),
+      averageInvoice,
+      averagePaymentTimeDays,
+    });
   }),
 );
 

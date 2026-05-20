@@ -34,7 +34,7 @@ import {
   invoices,
 } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
-import { activeJobFilter } from "./jobFilters";
+import { activeJobFilter, readyToInvoiceFilter } from "./jobFilters";
 import { effectiveEndExpr, locationDisplayNameExpr } from "../lib/queryHelpers";
 // 2026-04-12 (Option A): visit-derived crew resolver.
 import { getVisitCrewsForJobs, getVisitCrewForJob } from "./visitCrew";
@@ -494,15 +494,8 @@ export async function getJobsFeed(
     );
   }
 
-  // 2026-04-19 Fix A: canonical "ready to invoice" predicate. Matches
-  // the dashboard tile exactly (getJobCounts.requiresInvoicingCount).
   if (filters.readyToInvoiceOnly) {
-    conditions.push(eq(jobs.status, "completed"));
-    conditions.push(sql`NOT EXISTS (
-      SELECT 1 FROM ${invoices}
-      WHERE ${invoices.jobId} = ${jobs.id}
-        AND ${invoices.companyId} = ${jobs.companyId}
-    )`);
+    conditions.push(readyToInvoiceFilter());
   }
 
   // Date range

@@ -25,7 +25,7 @@ export function useLiveTechnicians(enabled = true) {
       return res.json();
     },
     enabled,
-    refetchInterval: 15_000, // 15-second auto-refresh
+    refetchInterval: 60_000, // 60-second auto-refresh (reduced from 15 s to limit DB compute)
     refetchIntervalInBackground: false,
     staleTime: 10_000,
   });

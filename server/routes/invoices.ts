@@ -69,7 +69,7 @@ import { logEventAsync } from "../lib/events";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 // Phase 5 Step A4: canonical invoice feed builders
 import { getQueryCtx } from "../lib/queryCtx";
-import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES, getReconciliationIssues } from "../storage/invoicesFeed";
+import { getInvoicesFeed, UNPAID_INVOICE_STATUSES, getReconciliationIssues } from "../storage/invoicesFeed";
 // 2026-04-08: P7 — Canonical line-item input schema (shared with quotes/jobs)
 // 2026-04-08: Stabilization pass — canonical money helpers for tax math
 import { canonicalLineItemInput, moneyString, parseMoney, formatMoney } from "@shared/lineItem";
@@ -527,39 +527,6 @@ router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   });
   // Preserve existing response shape for backward compatibility
   res.json(paginated(items, { limit: pagination.limit, hasMore: items.length >= pagination.limit }));
-}));
-
-// Canonical invoice stats — single source of truth for both Dashboard and Invoices page.
-// Returns shaped summary matching InvoiceStats client type.
-router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const ctx = getQueryCtx(req);
-  const stats = await getCanonicalInvoiceStats(ctx);
-
-  // Shape response for all consumers (Dashboard + Invoices page)
-  const totalIssued = stats.byStatus
-    .filter(s => s.status !== "draft")
-    .reduce((sum, s) => sum + s.count, 0);
-  const totalIssuedAmount = stats.byStatus
-    .filter(s => s.status !== "draft")
-    .reduce((sum, s) => sum + s.totalAmount, 0);
-  const averageInvoice = totalIssued > 0 ? totalIssuedAmount / totalIssued : 0;
-
-  // 2026-04-18 Phase 9 (collections visibility): `overdue.amount` now
-  // reflects an accurate `SUM(invoice.balance)` over past-due unpaid
-  // invoices rather than the pre-Phase-9 approximation that reused
-  // `totalOutstanding`. The shape is unchanged so existing dashboard
-  // / InvoicesList consumers continue to render with the same keys.
-  res.json({
-    outstanding: { amount: stats.totalOutstanding, count: stats.outstandingCount },
-    overdue: { amount: stats.totalOverdue, count: stats.overdueCount },
-    issuedLast30Days: { count: totalIssued },
-    averageInvoice: Math.round(averageInvoice * 100) / 100,
-    draftCount: stats.draftCount,
-    byStatus: stats.byStatus,
-    collectedLast30Days: stats.collectedLast30Days,
-    invoicesIssuedLast30Days: stats.invoicesIssuedLast30Days,
-    averagePaymentTimeDays: stats.averagePaymentTimeDays,
-  });
 }));
 
 // Phase 5 Step A4: GET /api/invoices/dashboard — canonical feed with dashboard preset

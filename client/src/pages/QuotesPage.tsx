@@ -73,9 +73,7 @@ export default function QuotesPage() {
       if (!res.ok) throw new Error(`Failed to load quote counts: ${res.status}`);
       return res.json();
     },
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
+    staleTime: 120_000,
     retry: false,
   });
 

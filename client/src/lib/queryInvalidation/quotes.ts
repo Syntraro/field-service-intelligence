@@ -5,14 +5,12 @@
  * migrated call-site-by-call-site without leaving stale cache entries.
  *
  * Canonical keys busted:
- *   - ["quotes"]               — root prefix (busts detail, list, stats, viewCounts)
+ *   - ["quotes"]               — root prefix (busts detail, list, viewCounts)
  *
  * Legacy keys busted explicitly (not caught by canonical prefix):
  *   - ["quote", id]            — old detailBroad prefix (busts old detail + notes)
  *   - ["/api/quotes"]          — URL-pattern list
  *   - ["/api/quotes/list"]     — alternate URL-pattern list
- *   - ["quotes", "stats"]      — KPI strip stats (was missing from original helper)
- *   - ["quotes", "views", "counts"] — view-tab counts (was missing from original helper)
  *
  * After full migration remove the legacy.* bust calls.
  */

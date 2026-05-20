@@ -337,7 +337,6 @@ export default function FinancialDashboard() {
     queryKey: ["dashboard", "financial"],
     queryFn: () => apiRequest<FinancialSummary>("/api/dashboard/financial"),
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
     enabled: financialQueryEnabled,
   });
 
@@ -375,7 +374,6 @@ export default function FinancialDashboard() {
     queryKey: ["dashboard", "workflow"],
     queryFn: () => apiRequest<WorkflowSummaryDto>("/api/dashboard/workflow"),
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
     enabled: workflowQueryEnabled,
   });
   const workflow = workflowQuery.data;
@@ -401,7 +399,6 @@ export default function FinancialDashboard() {
     queryKey: ["/api/dashboard/capacity", "today"],
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
     enabled: visibleSet.has("todays_schedule"),
   });
   const scheduleTechs = scheduleCapacityQuery.data?.technicians ?? [];
@@ -1204,7 +1201,6 @@ function TodaysScheduleCard({
     queryKey: ["/api/dashboard/capacity", "today"],
     queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
     // 2026-05-07 RALPH (regression fix): cap retries at 1 so a
     // backend error (e.g., missing time_off table) surfaces in
     // ~1-2 s instead of ~30 s through React Query's default

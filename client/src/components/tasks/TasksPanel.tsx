@@ -152,9 +152,8 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
   const { data, isLoading, error } = useQuery({
     queryKey: [tasksUrl],
     enabled: !deferFetch,
-    // SSE is primary; focus refetch + short staleTime are the fallback.
+    // SSE is primary; short staleTime is the fallback.
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
   });
 
   const allTasks: TaskRow[] = useMemo(() => {
@@ -416,7 +415,6 @@ export function useActiveTaskCount(options: { enabled?: boolean } = {}): number 
   const { data } = useQuery({
     queryKey: ["/api/tasks?offset=0&limit=50"],
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
     enabled,
   });
   if (!data) return 0;

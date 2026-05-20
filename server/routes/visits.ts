@@ -12,7 +12,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { getQueryCtx } from "../lib/queryCtx";
-import { getVisitFeed, type VisitFeedFilters } from "../storage/visits";
+import { getVisitFeed, getVisitSummary, type VisitFeedFilters } from "../storage/visits";
 
 const router = Router();
 
@@ -27,6 +27,21 @@ const visitFeedQuerySchema = z.object({
   jobId: z.string().uuid().optional(),
   locationId: z.string().uuid().optional(),
 });
+
+/**
+ * GET /api/visits/summary
+ *
+ * Returns three visit KPI counts in a single aggregate DB round-trip.
+ * No row payloads — counts only. Used by JobKpiStrip.
+ */
+router.get(
+  "/summary",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = getQueryCtx(req);
+    const summary = await getVisitSummary(ctx);
+    res.json(summary);
+  })
+);
 
 /**
  * GET /api/visits

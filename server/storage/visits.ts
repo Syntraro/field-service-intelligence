@@ -458,3 +458,72 @@ export async function getVisitFeed(
 
 // Re-export toVisitFeedItem for consumers that need to map existing EnrichedVisit results
 export { toVisitFeedItem };
+
+// ============================================================================
+// Aggregate: Visit KPI Summary
+// ============================================================================
+
+export interface VisitSummary {
+  scheduledThisWeek: number;
+  scheduledThisMonth: number;
+  scheduledFromNow: number;
+}
+
+/**
+ * Returns three visit KPI counts in a single aggregate SQL round-trip.
+ * Used by GET /api/visits/summary → JobKpiStrip.
+ *
+ * All three filters share the same base WHERE: active visits on active jobs
+ * for the tenant. FILTER clauses then narrow each bucket independently so
+ * Postgres scans the table once instead of three times.
+ *
+ * Exclusion semantics mirror the previous three /api/visits feed queries:
+ *   week / month  — exclude cancelled
+ *   from-now      — exclude cancelled + completed
+ */
+export async function getVisitSummary(ctx: QueryCtx): Promise<VisitSummary> {
+  const now = new Date();
+
+  // ISO-week Monday boundary (weekStartsOn: 1 matches the client-side date-fns call)
+  const daysFromMonday = (now.getDay() + 6) % 7;
+  const weekStart = new Date(now);
+  weekStart.setHours(0, 0, 0, 0);
+  weekStart.setDate(now.getDate() - daysFromMonday);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  weekEnd.setHours(23, 59, 59, 999);
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+  const [row] = await db
+    .select({
+      scheduledThisWeek: sql<string>`cast(count(*) filter (where
+        ${jobVisits.scheduledStart} >= ${weekStart} and
+        ${jobVisits.scheduledStart} <= ${weekEnd} and
+        ${jobVisits.status} <> 'cancelled'
+      ) as integer)`,
+      scheduledThisMonth: sql<string>`cast(count(*) filter (where
+        ${jobVisits.scheduledStart} >= ${monthStart} and
+        ${jobVisits.scheduledStart} <= ${monthEnd} and
+        ${jobVisits.status} <> 'cancelled'
+      ) as integer)`,
+      scheduledFromNow: sql<string>`cast(count(*) filter (where
+        ${jobVisits.scheduledStart} >= ${now} and
+        ${jobVisits.status} not in ('cancelled', 'completed')
+      ) as integer)`,
+    })
+    .from(jobVisits)
+    .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
+    .where(and(
+      eq(jobVisits.companyId, ctx.tenantId),
+      activeVisitGuard(),
+      activeJobFilter(),
+    ));
+
+  return {
+    scheduledThisWeek: Number(row.scheduledThisWeek),
+    scheduledThisMonth: Number(row.scheduledThisMonth),
+    scheduledFromNow: Number(row.scheduledFromNow),
+  };
+}

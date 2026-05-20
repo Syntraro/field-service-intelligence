@@ -343,9 +343,9 @@ export default function NotificationsPage() {
       if (!response.ok) throw new Error("Failed to fetch notifications");
       return response.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
-    staleTime: 15000,
+    staleTime: 30_000,
   });
 
   // Fetch active snoozes

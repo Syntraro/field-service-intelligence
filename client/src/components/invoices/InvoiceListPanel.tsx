@@ -71,11 +71,14 @@ interface EnrichedInvoice extends Invoice {
   isPastDue?: boolean;
 }
 
-interface InvoiceStats {
-  outstanding: { amount: number; count: number };
-  issuedLast30Days: { count: number };
+// Shape of the canonical receivables counts endpoint — only the fields this panel uses.
+interface ReceivablesCounts {
+  outstandingCount: number;
+  outstandingAmount: number;
+  overdue: number;           // overdueCount (reuses existing badge count field)
+  overdueAmount: number;
   averageInvoice: number;
-  overdue: { amount: number; count: number };
+  issuedLast30DaysCount: number;
 }
 
 const INVOICES_PAGE_SIZE = 50;
@@ -164,7 +167,6 @@ export function InvoiceListPanel({
         variant: data.failedCount > 0 ? "destructive" : undefined,
       });
       setSelectedIds(new Set());
-      queryClient.invalidateQueries({ queryKey: ["invoices", "stats"] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       // Reminder send updates lastEmailedAt, which affects noRecentContact view membership and counts.
       queryClient.invalidateQueries({ queryKey: receivablesKeys.invoicesRoot() });
@@ -214,13 +216,17 @@ export function InvoiceListPanel({
   const effectiveActiveFilter = receivablesMode ? (externalActiveFilter ?? "all") : activeFilter;
   const effectiveDateRange = receivablesMode ? (externalDateRange ?? null) : null;
 
-  const { data: stats } = useQuery<InvoiceStats>({
-    queryKey: ["invoices", "stats"],
+  // Shares the canonical ["receivables","views","counts"] cache with InvoicesPage
+  // and InvoiceKpiStrip. All invoice mutations already invalidate this key.
+  const { data: stats } = useQuery<ReceivablesCounts>({
+    queryKey: ["receivables", "views", "counts"],
     queryFn: async () => {
-      const res = await fetch("/api/invoices/stats", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch invoice stats");
+      const res = await fetch("/api/receivables/views/counts", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoice counts");
       return res.json();
     },
+    staleTime: 120_000,
+    refetchIntervalInBackground: false,
     enabled: !receivablesMode,
   });
 
@@ -245,12 +251,12 @@ export function InvoiceListPanel({
   });
   const reconciliationIssues = reconciliationData?.data ?? [];
 
-  const outstandingAmount = stats?.outstanding?.amount ?? 0;
-  const outstandingCount = stats?.outstanding?.count ?? 0;
-  const issuedCount30d = stats?.issuedLast30Days?.count ?? 0;
-  const overdueAmount = stats?.overdue?.amount ?? 0;
-  const overdueCount = stats?.overdue?.count ?? 0;
-  const averageInvoiceAmount = stats?.averageInvoice ?? 0;
+  const outstandingAmount = stats?.outstandingAmount      ?? 0;
+  const outstandingCount  = stats?.outstandingCount       ?? 0;
+  const issuedCount30d    = stats?.issuedLast30DaysCount  ?? 0;
+  const overdueAmount     = stats?.overdueAmount          ?? 0;
+  const overdueCount      = stats?.overdue                ?? 0;
+  const averageInvoiceAmount = stats?.averageInvoice      ?? 0;
 
   const enrichedInvoices = useMemo(() => {
     return baseInvoices.map(inv => ({

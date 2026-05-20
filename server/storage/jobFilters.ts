@@ -13,8 +13,8 @@
  * Use these helpers everywhere instead of sprinkling conditions manually.
  */
 
-import { isNull, eq, and, type SQL } from "drizzle-orm";
-import { jobs, clientLocations as clients, customerCompanies } from "@shared/schema";
+import { isNull, eq, and, sql, type SQL } from "drizzle-orm";
+import { jobs, invoices, clientLocations as clients, customerCompanies } from "@shared/schema";
 
 /**
  * Drizzle ORM filter: returns a composable SQL fragment requiring
@@ -72,6 +72,24 @@ export const JOB_ACTIVE_WORK_SQL_J =
  */
 export const JOB_ACTIVE_WORK_SQL =
   "jobs.deleted_at IS NULL AND jobs.is_active = true AND jobs.status = 'open'";
+
+/**
+ * Drizzle ORM filter: completed jobs that have no invoice yet.
+ * Composable — use in WHERE and() chains or inside sql`FILTER (WHERE ...)`.
+ *
+ * Semantics: jobs.status = 'completed' AND NOT EXISTS (any invoice for this job)
+ * Single source of truth for the "ready to invoice" predicate.
+ */
+export function readyToInvoiceFilter(): SQL {
+  return and(
+    eq(jobs.status, "completed"),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${invoices}
+      WHERE ${invoices.jobId} = ${jobs.id}
+        AND ${invoices.companyId} = ${jobs.companyId}
+    )`,
+  )!;
+}
 
 // ============================================================================
 // Client Location (clientLocations) Filters

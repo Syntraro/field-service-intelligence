@@ -171,7 +171,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
   // Fetch preview counts (what would be generated)
   const { data: previewData } = useQuery<PreviewResult>({
     queryKey: ["/api/recurring-templates/preview"],
-    refetchInterval: 60000, // Refresh every minute
+    staleTime: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

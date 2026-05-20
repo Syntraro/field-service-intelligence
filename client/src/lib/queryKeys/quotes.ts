@@ -6,7 +6,6 @@
  *   - quoteKeys.list(filters?)  → ["quotes", "list", filters ?? null]
  *   - quoteKeys.detail(id)      → ["quotes", "detail", id]
  *   - quoteKeys.notes(id)       → ["quotes", "detail", id, "notes"]
- *   - quoteKeys.stats()         → ["quotes", "stats"]
  *   - quoteKeys.viewCounts()    → ["quotes", "views", "counts"]
  *
  * LEGACY key shapes (still live in queries — busted via quoteKeys.legacy.*):
@@ -36,10 +35,7 @@ export const quoteKeys = {
   /** ["quotes", "detail", id, "notes"] — detail sub-resource (deferred migration) */
   notes: (id: string) => ["quotes", "detail", id, "notes"] as const,
 
-  /** ["quotes", "stats"] — KPI strip stats */
-  stats: () => ["quotes", "stats"] as const,
-
-  /** ["quotes", "views", "counts"] — view-tab counts */
+  /** ["quotes", "views", "counts"] — canonical quote aggregate: badge counts + KPI fields */
   viewCounts: () => ["quotes", "views", "counts"] as const,
 
   // ── Legacy keys (bridge period only — remove after full migration) ────────

@@ -93,7 +93,6 @@ export function TasksOverviewCard() {
   const { data, isLoading, isError } = useQuery<unknown>({
     queryKey: [tasksUrl],
     staleTime: 30_000,
-    refetchOnWindowFocus: true,
   });
 
   const allTasks: TaskRow[] = (() => {
