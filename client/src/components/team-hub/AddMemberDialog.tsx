@@ -10,13 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -128,16 +130,16 @@ export function AddMemberDialog({ open, onOpenChange }: AddMemberDialogProps) {
   });
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent data-testid="dialog-add-member">
-        <DialogHeader>
-          <DialogTitle>Add Team Member</DialogTitle>
-          <DialogDescription>
-            Creates a member directly. They'll need a password reset to log in.
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={handleClose} data-testid="dialog-add-member">
+      <ModalHeader>
+        <ModalTitle>Add Team Member</ModalTitle>
+        <ModalDescription>
+          Creates a member directly. They'll need a password reset to log in.
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-4 py-2">
+      <ModalBody>
+        <div className="space-y-4">
           {error && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -203,21 +205,21 @@ export function AddMemberDialog({ open, onOpenChange }: AddMemberDialogProps) {
             />
           </div>
         </div>
+      </ModalBody>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => handleClose(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => createMutation.mutate()}
-            disabled={!form.email || !form.fullName || !form.roleId || createMutation.isPending}
-            data-testid="button-create-member"
-          >
-            <UserPlus className="h-4 w-4 mr-2" />
-            {createMutation.isPending ? "Creating..." : "Create Member"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter>
+        <ModalSecondaryAction onClick={() => handleClose(false)}>
+          Cancel
+        </ModalSecondaryAction>
+        <ModalPrimaryAction
+          onClick={() => createMutation.mutate()}
+          disabled={!form.email || !form.fullName || !form.roleId || createMutation.isPending}
+          data-testid="button-create-member"
+        >
+          <UserPlus className="h-4 w-4 mr-2" />
+          {createMutation.isPending ? "Creating..." : "Create Member"}
+        </ModalPrimaryAction>
+      </ModalFooter>
+    </ModalShell>
   );
 }

@@ -32,13 +32,14 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+} from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -1790,30 +1791,29 @@ export default function PMWizardPage() {
           unless the user has opted out via the "Don't show this again"
           checkbox (persisted in localStorage). Blocks the redirect until
           dismissed so users can read it before navigating away. */}
-      <Dialog
+      <ModalShell
         open={explanationOpen}
         onOpenChange={(open) => {
           // Only allow programmatic close via the Got it button so the
           // user can't accidentally lose the redirect step on outside-click.
           if (!open) handleExplanationDismiss();
         }}
+        className="sm:max-w-md"
+        data-testid="pm-wizard-explanation-modal"
       >
-        <DialogContent
-          className="sm:max-w-md"
-          data-testid="pm-wizard-explanation-modal"
-        >
-          <DialogHeader>
-            <DialogTitle>Service plan created</DialogTitle>
-            <DialogDescription>
-              This plan will track upcoming service work based on the schedule
-              you selected. When service is due, it will appear on the
-              Service Plans page so you can create the work order.
-            </DialogDescription>
-          </DialogHeader>
+        <ModalHeader>
+          <ModalTitle>Service plan created</ModalTitle>
+          <ModalDescription>
+            This plan will track upcoming service work based on the schedule
+            you selected. When service is due, it will appear on the
+            Service Plans page so you can create the work order.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <p className="text-sm text-muted-foreground">
             We do this so you stay in control of what gets scheduled and when.
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 mt-3">
             <Checkbox
               id="pm-wizard-hide-explanation"
               checked={hideExplanationAgain}
@@ -1827,16 +1827,16 @@ export default function PMWizardPage() {
               Don't show this again
             </Label>
           </div>
-          <DialogFooter>
-            <Button
-              onClick={handleExplanationDismiss}
-              data-testid="pm-wizard-explanation-got-it"
-            >
-              Got it
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalPrimaryAction
+            onClick={handleExplanationDismiss}
+            data-testid="pm-wizard-explanation-got-it"
+          >
+            Got it
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </div>
   );
 }

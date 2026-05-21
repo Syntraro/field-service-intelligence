@@ -44,7 +44,7 @@
  */
 
 import { useMemo, useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ModalShell, ModalHeader, ModalTitle } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Trash2, Plus } from "lucide-react";
@@ -300,46 +300,44 @@ export function PartsSelectorModal({ open, onOpenChange, locationId, existingPar
   // ========================================
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl w-[95vw] max-h-[85vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>Location Parts</DialogTitle>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={onOpenChange} className="max-w-4xl w-[95vw] max-h-[85vh] flex flex-col">
+      <ModalHeader>
+        <ModalTitle>Location Parts</ModalTitle>
+      </ModalHeader>
 
-        <div className="flex-1 min-h-0 overflow-y-auto space-y-3 py-2 px-1">
-          {rows.map((row, idx) => (
-            <PartsSelectorRow
-              key={row.id}
-              row={row}
-              index={idx}
-              isCreating={!!creatingByRow[row.id]}
-              isDuplicate={!!(row.productId && productIdCounts[row.productId] > 1)}
-              onSelect={(product) => handleSelectProduct(row.id, product)}
-              onClear={() => handleClearProduct(row.id)}
-              onCreateNew={(text) => handleInlineCreate(row.id, text)}
-              onQtyChange={(qty) => updateQty(row.id, qty)}
-              onRemove={() => removeRow(row.id)}
-            />
-          ))}
-        </div>
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 py-2 px-5">
+        {rows.map((row, idx) => (
+          <PartsSelectorRow
+            key={row.id}
+            row={row}
+            index={idx}
+            isCreating={!!creatingByRow[row.id]}
+            isDuplicate={!!(row.productId && productIdCounts[row.productId] > 1)}
+            onSelect={(product) => handleSelectProduct(row.id, product)}
+            onClear={() => handleClearProduct(row.id)}
+            onCreateNew={(text) => handleInlineCreate(row.id, text)}
+            onQtyChange={(qty) => updateQty(row.id, qty)}
+            onRemove={() => removeRow(row.id)}
+          />
+        ))}
+      </div>
 
-        <div className="flex items-center justify-between pt-2 border-t">
-          <Button variant="outline" size="sm" onClick={addRow} data-testid="button-add-row">
-            <Plus className="h-4 w-4 mr-1" />
-            Add another part
+      <div className="flex items-center justify-between px-5 py-3 border-t">
+        <Button variant="outline" size="sm" onClick={addRow} data-testid="button-add-row">
+          <Plus className="h-4 w-4 mr-1" />
+          Add another part
+        </Button>
+
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-parts">
+            Cancel
           </Button>
-
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-parts">
-              Cancel
-            </Button>
-            <Button onClick={handleSave} disabled={!canSave} data-testid="button-save-parts">
-              {isSaving ? "Saving..." : "Save Parts"}
-            </Button>
-          </div>
+          <Button onClick={handleSave} disabled={!canSave} data-testid="button-save-parts">
+            {isSaving ? "Saving..." : "Save Parts"}
+          </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ModalShell>
   );
 }
 

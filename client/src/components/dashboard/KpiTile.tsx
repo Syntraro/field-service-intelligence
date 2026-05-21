@@ -75,7 +75,7 @@ const TONE_VALUE_COLOR: Record<KpiTileTone, string> = {
 // ── Shell chrome constants ────────────────────────────────────────────────
 
 const SHELL_BASE =
-  "rounded-md overflow-hidden border border-card-border shadow-sm";
+  "rounded-md overflow-hidden border border-card-border shadow-card";
 const SHELL_INTERACTIVE =
   "hover:border-primary transition-all focus:outline-none focus:ring-2 focus:ring-primary/40";
 
@@ -95,10 +95,10 @@ export function KpiTile({
   testId,
 }: KpiTileProps) {
   const inner = (
-    <div className={cn("flex flex-col h-full px-3.5 py-2.5", TONE_CARD_BG[tone])}>
-      <div className="flex items-center gap-2 mb-1.5">
+    <div className={cn("flex flex-col h-full px-4 py-3", TONE_CARD_BG[tone])}>
+      <div className="flex items-center gap-2 mb-2">
         {iconBg ? (
-          <div className={cn("p-1 rounded-md", iconBg)}>
+          <div className={cn("p-2 rounded-md", iconBg)}>
             <Icon className={cn("h-3.5 w-3.5", iconColor)} />
           </div>
         ) : (

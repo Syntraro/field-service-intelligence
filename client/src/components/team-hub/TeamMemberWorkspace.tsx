@@ -1,7 +1,8 @@
 // 2026-05-05 Team Hub member-centric restructure.
 // 2026-05-17 Performance redesign: tabs restructured.
-// 2026-05-18 Refinement pass: Profile + Scheduling tabs added; tab order canonical
-//   (identity → config → analytics); secondary tabs use compact segmented-control style.
+// 2026-05-18 Refinement pass: Profile + Scheduling tabs added; tab order canonical.
+// 2026-05-20 Density pass: Scheduling tab removed (merged into Profile); member
+//   header compacted; disabled placeholder actions removed.
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,26 +13,18 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { resolveTechnicianColor } from "@shared/colors";
-import {
-  Power,
-  MessageSquare,
-  Briefcase,
-  MoreHorizontal,
-  Users,
-} from "lucide-react";
+import { Power, Users } from "lucide-react";
 import { MemberProfileTab } from "./MemberProfileTab";
 import { MemberPerformanceTab } from "./MemberPerformanceTab";
 import { CompensationTab } from "./CompensationTab";
 import { RolesAccessTab } from "./RolesAccessTab";
 import { MemberSkillsTab } from "./MemberSkillsTab";
-import { MemberSchedulingTab } from "./MemberSchedulingTab";
 import { TeamMetricsStrip } from "./TeamMetricsStrip";
 import type { Role, TeamMemberDetail } from "./types";
 
 export type WorkspaceTabId =
   | "profile"
   | "permissions"
-  | "scheduling"
   | "payroll"
   | "skills"
   | "performance";
@@ -39,7 +32,6 @@ export type WorkspaceTabId =
 const MEMBER_TABS: { id: WorkspaceTabId; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "permissions", label: "Permissions" },
-  { id: "scheduling", label: "Scheduling" },
   { id: "payroll", label: "Payroll & Cost" },
   { id: "skills", label: "Skills & Licenses" },
   { id: "performance", label: "Performance" },
@@ -118,13 +110,13 @@ export function TeamMemberWorkspace({
 
   return (
     <div className="space-y-3" data-testid="team-workspace">
-      {/* Member header — compact, operational-workspace style */}
+      {/* Member header — compact */}
       <Card>
-        <CardContent className="py-3 px-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <Avatar className="h-11 w-11 shrink-0">
+        <CardContent className="py-2 px-4">
+          <div className="flex items-center gap-2.5">
+            <Avatar className="h-9 w-9 shrink-0">
               <AvatarFallback
-                className="text-sm text-white"
+                className="text-xs text-white"
                 style={{
                   backgroundColor: resolveTechnicianColor(
                     selectedMemberId,
@@ -139,7 +131,7 @@ export function TeamMemberWorkspace({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2
-                  className="text-base font-semibold truncate"
+                  className="text-sm font-semibold truncate"
                   data-testid="text-workspace-member-name"
                 >
                   {member ? getMemberDisplayName(member) : "Loading…"}
@@ -163,62 +155,31 @@ export function TeamMemberWorkspace({
               </p>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex items-center gap-1.5 shrink-0">
+            {/* Activate / Deactivate — only real action */}
+            {member && (
               <Button
-                variant="outline"
+                variant={isInactive ? "default" : "outline"}
                 size="sm"
-                className="h-8 text-xs"
-                disabled
-                title="Message (coming soon)"
+                className="h-7 text-xs shrink-0"
+                disabled={isPending}
+                onClick={() =>
+                  toggleStatus.mutate(isInactive ? "activate" : "deactivate")
+                }
+                data-testid="button-workspace-toggle-status"
               >
-                <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
-                Message
+                <Power className="h-3 w-3 mr-1.5" />
+                {isPending
+                  ? "Saving…"
+                  : isInactive
+                    ? "Activate"
+                    : "Deactivate"}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                disabled
-                title="Assign job (coming soon)"
-              >
-                <Briefcase className="h-3.5 w-3.5 mr-1.5" />
-                Assign Job
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 w-8 p-0"
-                disabled
-                title="More actions (coming soon)"
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-              {member && (
-                <Button
-                  variant={isInactive ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={isPending}
-                  onClick={() =>
-                    toggleStatus.mutate(isInactive ? "activate" : "deactivate")
-                  }
-                  data-testid="button-workspace-toggle-status"
-                >
-                  <Power className="h-3.5 w-3.5 mr-1.5" />
-                  {isPending
-                    ? "Saving…"
-                    : isInactive
-                      ? "Activate"
-                      : "Deactivate"}
-                </Button>
-              )}
-            </div>
+            )}
           </div>
         </CardContent>
       </Card>
 
-      {/* Member-level tabs — compact segmented-control style, quieter than the primary workspace tabs */}
+      {/* Member-level tabs — compact segmented-control style */}
       <Tabs
         value={tab}
         onValueChange={(v) => onTabChange(v as WorkspaceTabId)}
@@ -246,10 +207,6 @@ export function TeamMemberWorkspace({
             onSelectMember={onSelectMember}
             hideMemberList
           />
-        </TabsContent>
-
-        <TabsContent value="scheduling" className="mt-3">
-          <MemberSchedulingTab selectedMemberId={selectedMemberId} />
         </TabsContent>
 
         <TabsContent value="payroll" className="mt-3">

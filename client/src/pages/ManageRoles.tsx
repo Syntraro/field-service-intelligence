@@ -10,14 +10,16 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ConfirmModal } from "@/components/ui/modal";
+  ConfirmModal,
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import {
   Collapsible,
   CollapsibleContent,
@@ -564,14 +566,14 @@ export default function ManageRoles() {
       </div>
 
       {/* Create custom role dialog */}
-      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create custom role</DialogTitle>
-            <DialogDescription>
-              Add a new tenant role. Permissions can be configured after creation.
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <ModalHeader>
+          <ModalTitle>Create custom role</ModalTitle>
+          <ModalDescription>
+            Add a new tenant role. Permissions can be configured after creation.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-3">
             <div>
               <Label htmlFor="role-displayName">Display name</Label>
@@ -598,20 +600,20 @@ export default function ManageRoles() {
               select the new role on the left and click "Edit" to assign permissions.
             </p>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => createRoleMutation.mutate(newRole)}
-              disabled={!newRole.displayName.trim() || createRoleMutation.isPending}
-              data-testid="button-confirm-create-role"
-            >
-              {createRoleMutation.isPending ? "Creating…" : "Create role"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setShowCreateDialog(false)}>
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={() => createRoleMutation.mutate(newRole)}
+            disabled={!newRole.displayName.trim() || createRoleMutation.isPending}
+            data-testid="button-confirm-create-role"
+          >
+            {createRoleMutation.isPending ? "Creating…" : "Create role"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       <ConfirmModal
         open={showDeleteDialog}

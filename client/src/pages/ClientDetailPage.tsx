@@ -1,11 +1,11 @@
 ﻿/**
  * ClientDetailPage — Card-based client workspace.
  *
- * Layout (2026-05-02 refactor):
- *   [Header Card — full width: name + subtitle + scope-aware tag row +
- *                  KPIs + create actions + overflow]
- *   [Scope Bar — full width: "Viewing: All Locations (N) ▾" popover selector]
- *   [Body row: Workspace card (left) | Client Information rail (right)]
+ * Layout (2026-05-20 refactor):
+ *   [Elevated Header Card — name + subtitle + tags + actions + location selector +
+ *                           contextual metadata rows (address / site code) + tabs]
+ *   [Body row: scroll area with WorkspaceListCard per non-overview tab (left) |
+ *              Client Information rail (right)]
  *
  * The persistent left "Locations" rail was removed; switching scope
  * now flows entirely through the scope-bar popover. The right-side
@@ -118,7 +118,7 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 import { SectionLabel } from "@/components/ui/typography";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { ClientOverviewTab } from "@/pages/ClientOverviewTab";
-import { ClientKpiStrip } from "@/components/clients/ClientKpiStrip";
+import { WorkspaceListCard } from "@/components/workspace/WorkspaceListCard";
 import { ClientJobsTab } from "./clients/ClientJobsTab";
 import { ClientInvoicesTab } from "./clients/ClientInvoicesTab";
 import { ClientQuotesTab } from "./clients/ClientQuotesTab";
@@ -353,7 +353,13 @@ export default function ClientDetailPage() {
       setScopeType("company");
     }
     if (tabParam && WORKSPACE_TAB_KEYS.has(tabParam as WorkspaceTab)) {
-      setWorkspaceTab(tabParam as WorkspaceTab);
+      // equipment/parts are location-only — fall back to jobs if arriving
+      // on company scope via a stale or shared URL.
+      const inferredScope = locParam ? "location" : "company";
+      const tabIsLocationOnly = tabParam === "equipment" || tabParam === "parts";
+      setWorkspaceTab(
+        inferredScope === "company" && tabIsLocationOnly ? "jobs" : (tabParam as WorkspaceTab),
+      );
     }
   }, [routerSearch]);
 
@@ -585,35 +591,6 @@ export default function ClientDetailPage() {
 
   const activeJobsCount = companyJobs.filter(j => j.status === "open").length;
   const onHoldJobsCount = companyJobs.filter(j => j.status === "open" && (j as any).openSubStatus === "on_hold").length;
-  const overdueInvoicesCount = allInvoices.filter(i =>
-    i.status !== "paid" && i.status !== "voided" && i.dueDate && new Date(i.dueDate) < new Date()
-  ).length;
-  const pendingQuotesCount = clientQuotes.filter(q =>
-    q.status === "draft" || q.status === "sent"
-  ).length;
-
-  const lastServiceDate = useMemo<Date | null>(() => {
-    const completed = companyJobs
-      .filter(j => j.status === "completed" || j.status === "invoiced")
-      .map(j => new Date(j.updatedAt ?? j.createdAt))
-      .filter(d => !isNaN(d.getTime()));
-    if (completed.length === 0) return null;
-    return completed.reduce((max, d) => d > max ? d : max);
-  }, [companyJobs]);
-
-  // Active maintenance count — shares the canonical ["/api/recurring-templates"] cache key
-  // used by ServicePlansWorkspaceTab and ServicePlanKpiStrip; React Query deduplicates.
-  const { data: allTemplates = [] } = useQuery<{ clientId?: string | null; locationId?: string | null }[]>({
-    queryKey: ["/api/recurring-templates"],
-    queryFn: () => apiRequest("/api/recurring-templates"),
-    enabled: Boolean(companyId),
-    staleTime: 5 * 60_000,
-    refetchIntervalInBackground: false,
-  });
-  const activeMaintenanceCount = useMemo(
-    () => allTemplates.filter(t => t.clientId === companyId).length,
-    [allTemplates, companyId],
-  );
 
   // Company payments — fetched for the Payments center tab.
   const { data: companyPayments = [] } = useQuery<ClientPaymentRow[]>({
@@ -981,10 +958,7 @@ export default function ClientDetailPage() {
     );
   }
 
-  // Active scope entity name and tags for workspace header
-  const scopeEntityName = scopeType === "company"
-    ? "All Locations"
-    : (selectedLoc ? locationDisplayName(selectedLoc) : "");
+  // Active scope tags for workspace header
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
   // 2026-05-07 canonical rail extraction: per-tab `+ Add` buttons share
@@ -1149,301 +1123,263 @@ export default function ClientDetailPage() {
       {/* ── LEFT COLUMN: page header + scope bar + workspace body ── */}
       <div className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden">
 
-      {/* ═══ PAGE HEADER: IDENTITY + CREATE ACTIONS + KPI + OVERFLOW ═══
-           Create actions (Job / Quote / Invoice) live directly under the
-           client name/subtitle — not in a detached top-right row. The
-           info block (name + subtitle) and the action row are visually
-           separated by extra spacing + a hairline divider so they read
-           as two distinct header sections. Add Location lives in the
-           overflow dropdown so it doesn't visually dominate. */}
-      <div className="bg-white border-b border-slate-200 px-6 pt-4 pb-5">
-        <div className="flex items-start justify-between gap-4">
-          {/* Left block: name, subtitle, tags */}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-title text-slate-900 truncate">{companyName}</h1>
-              {parentCompany?.isActive === false && (
-                <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-xs px-1.5 py-0">Inactive</Badge>
-              )}
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5 truncate">
-              {isSingleLocation && soleLocation
-                ? (locationAddress(soleLocation) || locationDisplayName(soleLocation))
-                : `${locations.length} location${locations.length !== 1 ? "s" : ""}`}
-            </p>
+      {/* ═══ ELEVATED HEADER CARD ═══ */}
+      <div className="shrink-0 px-4 pt-5 pb-3">
+        <div className="bg-white rounded-md border border-slate-100 shadow-[0_1px_8px_rgba(0,0,0,0.05),0_1px_2px_rgba(0,0,0,0.03)]">
 
-            {(scopeTags.length > 0 || (scopeType === "company" ? Boolean(companyId) : Boolean(selectedLocationId))) && (
-              <div className="flex items-center flex-wrap gap-1.5 mt-1.5" data-testid="client-header-tags">
-                {scopeTags.map(tag => (
-                  <span
-                    key={tag.id}
-                    className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium text-white"
-                    style={{ backgroundColor: tag.color }}
-                    data-testid={`client-header-tag-${tag.id}`}
-                  >
-                    {tag.name}
-                  </span>
-                ))}
-                {scopeType === "company" && companyId ? (
-                  <button
-                    type="button"
-                    onClick={() => setEditClientTagsOpen(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:border-slate-400 transition-colors"
-                    data-testid="client-header-tags-edit"
-                    title="Edit client tags"
-                  >
-                    {scopeTags.length === 0 ? <Plus className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
-                    {scopeTags.length === 0 ? "Add tag" : "Edit"}
-                  </button>
-                ) : scopeType === "location" && selectedLocationId ? (
-                  <button
-                    type="button"
-                    onClick={() => setEditLocationTagsOpen(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:border-slate-400 transition-colors"
-                    data-testid="client-header-tags-edit"
-                    title="Edit location tags"
-                  >
-                    {scopeTags.length === 0 ? <Plus className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
-                    {scopeTags.length === 0 ? "Add tag" : "Edit"}
-                  </button>
-                ) : null}
-              </div>
-            )}
-          </div>
-
-          {/* Right block: primary action buttons + overflow — aligned with client name */}
-          <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5" data-testid="header-actions">
-            <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
-              Create Job
-            </Button>
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
-              Create Quote
-            </Button>
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
-              Create Invoice
-            </Button>
-            <ActionMenu
-              items={[
-                {
-                  id: "edit-client",
-                  label: "Edit Client",
-                  icon: Pencil,
-                  onSelect: () => setEditClientDialogOpen(true),
-                },
-                {
-                  id: "edit-client-tags",
-                  label: "Edit Client Tags",
-                  icon: Tag,
-                  onSelect: () => setEditClientTagsOpen(true),
-                  hidden: !(scopeType === "company" && Boolean(companyId)),
-                },
-                {
-                  id: "archive-client",
-                  label: "Archive Client",
-                  icon: Archive,
-                  onSelect: () => openArchiveDialog("company"),
-                  separator: true,
-                },
-                {
-                  id: "delete-client",
-                  label: "Delete Client",
-                  icon: Trash2,
-                  onSelect: () => openPermDeleteDialog("company"),
-                  tone: "destructive",
-                },
-              ] satisfies ActionMenuItemDescriptor[]}
-              trigger={
-                <Button variant="ghost" size="icon" data-testid="header-overflow">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              }
-              align="end"
-            />
-          </div>
-
-        </div>
-      </div>
-
-      {/* ═══ SCOPE BAR — compact location selector (2026-05-02 layout refactor)
-           Replaces the persistent left "Locations" rail. Sits directly
-           below the page header (above the body row) so it spans the
-           full content width on every breakpoint. The trigger reads
-           `Viewing: All Locations (N)` (or the selected location name);
-           the popover lists every location with its address subtitle
-           and any active-job badge, with `All Locations` and an
-           `Add Location` action bookending the list. */}
-      <div className="bg-white border-b border-slate-200 px-4 lg:px-6 py-2 flex items-center gap-2" data-testid="client-scope-bar">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500 flex-shrink-0">Viewing</span>
-        <Popover open={scopePopoverOpen} onOpenChange={setScopePopoverOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              data-testid="client-scope-trigger"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-800 max-w-[420px]"
-            >
-              {scopeType === "company" ? (
-                <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-              ) : (
-                <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
-              )}
-              <span className="truncate">
-                {scopeType === "company"
-                  ? `All Locations (${locations.length})`
-                  : selectedLoc
-                    ? locationDisplayName(selectedLoc)
-                    : "Select a location"}
-              </span>
-              <ChevronDown className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="start"
-            className="w-[320px] p-0 overflow-hidden"
-            data-testid="client-scope-popover"
-          >
-            {/* Search input — only when there are enough locations to
-                make the list awkward to eyeball. Reuses the same
-                `locationSearch` state that previously drove the left
-                rail's search box, so behavior is unchanged. */}
-            {locations.length > 5 && (
-              <div className="p-2 border-b border-slate-100">
-                <div className="relative">
-                  <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    placeholder="Search locations..."
-                    value={locationSearch}
-                    onChange={(e) => setLocationSearch(e.target.value)}
-                    className="h-7 pl-7 text-xs bg-slate-50/80 border-slate-200 focus:bg-white"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="max-h-[360px] overflow-y-auto">
-              {/* All Locations row */}
-              <button
-                type="button"
-                onClick={() => { handleSelectCompany(); setScopePopoverOpen(false); }}
-                data-testid="client-scope-option-all"
-                className={cn(
-                  "w-full text-left px-3 py-2 flex items-center gap-2.5 border-b border-slate-100 transition-colors",
-                  scopeType === "company"
-                    ? "bg-[rgba(118,176,84,0.08)]"
-                    : "hover:bg-slate-50",
+          {/* Identity row: name + actions */}
+          <div className="p-5 flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-title text-slate-900 truncate">{companyName}</h1>
+                {parentCompany?.isActive === false && (
+                  <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-xs px-1.5 py-0">Inactive</Badge>
                 )}
-              >
-                <Building2 className={cn("h-3.5 w-3.5 flex-shrink-0", scopeType === "company" ? "text-[#76B054]" : "text-slate-400")} />
-                <span className={cn("text-xs font-medium truncate flex-1", scopeType === "company" ? "text-[#5F9442]" : "text-slate-700")}>
-                  All Locations ({locations.length})
-                </span>
-                {scopeType === "company" && <Check className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />}
-              </button>
-
-              {/* Per-location rows */}
-              {filteredLocations.length > 0 ? filteredLocations.map((loc) => {
-                const isSelected = scopeType === "location" && selectedLocationId === loc.id;
-                const locActiveCount = activeJobCountByLocation.get(loc.id) ?? 0;
-                const subtitle = [loc.address, loc.city].filter(Boolean).join(", ");
-                return (
-                  <button
-                    key={loc.id}
-                    type="button"
-                    onClick={() => { handleSelectLocation(loc.id); setScopePopoverOpen(false); }}
-                    data-testid={`client-scope-option-${loc.id}`}
-                    className={cn(
-                      "w-full text-left px-3 py-2 flex items-start gap-2.5 border-b border-slate-100/80 transition-colors",
-                      isSelected ? "bg-[rgba(118,176,84,0.08)]" : "hover:bg-slate-50",
-                    )}
-                  >
-                    <MapPin className={cn("h-3.5 w-3.5 flex-shrink-0 mt-0.5", isSelected ? "text-[#76B054]" : "text-slate-400")} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1">
-                        <span className={cn("text-xs font-medium truncate", isSelected ? "text-[#5F9442]" : "text-slate-800")}>
-                          {locationDisplayName(loc)}
-                        </span>
-                        {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
-                      </div>
-                      {subtitle && (
-                        <p className="text-[11px] text-slate-500 truncate mt-0.5">{subtitle}</p>
-                      )}
-                    </div>
-                    {locActiveCount > 0 && (
-                      <span className={cn(
-                        "text-[11px] font-medium px-1.5 py-0 rounded flex-shrink-0 mt-0.5",
-                        isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500",
-                      )}>
-                        {locActiveCount}
-                      </span>
-                    )}
-                    {isSelected && locActiveCount === 0 && (
-                      <Check className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0 mt-0.5" />
-                    )}
-                  </button>
-                );
-              }) : (
-                <div className="px-3 py-4 text-center text-xs text-slate-400">
-                  {locationSearch ? `No match for "${locationSearch}"` : "No locations yet"}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5 truncate">
+                {isSingleLocation && soleLocation
+                  ? (locationAddress(soleLocation) || locationDisplayName(soleLocation))
+                  : `${locations.length} location${locations.length !== 1 ? "s" : ""}`}
+              </p>
+              {(scopeTags.length > 0 || (scopeType === "company" ? Boolean(companyId) : Boolean(selectedLocationId))) && (
+                <div className="flex items-center flex-wrap gap-1.5 mt-1.5" data-testid="client-header-tags">
+                  {scopeTags.map(tag => (
+                    <span
+                      key={tag.id}
+                      className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium text-white"
+                      style={{ backgroundColor: tag.color }}
+                      data-testid={`client-header-tag-${tag.id}`}
+                    >
+                      {tag.name}
+                    </span>
+                  ))}
+                  {scopeType === "company" && companyId ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditClientTagsOpen(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:border-slate-400 transition-colors"
+                      data-testid="client-header-tags-edit"
+                      title="Edit client tags"
+                    >
+                      {scopeTags.length === 0 ? <Plus className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
+                      {scopeTags.length === 0 ? "Add tag" : "Edit"}
+                    </button>
+                  ) : scopeType === "location" && selectedLocationId ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditLocationTagsOpen(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:border-slate-400 transition-colors"
+                      data-testid="client-header-tags-edit"
+                      title="Edit location tags"
+                    >
+                      {scopeTags.length === 0 ? <Plus className="h-3 w-3" /> : <Tag className="h-3 w-3" />}
+                      {scopeTags.length === 0 ? "Add tag" : "Edit"}
+                    </button>
+                  ) : null}
                 </div>
               )}
             </div>
 
-            {/* Add Location action — pinned at the bottom of the popover
-                so the user can always reach it without scrolling
-                through every existing location. Routes through the
-                same modal the legacy left rail used. */}
-            <div className="border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => { setScopePopoverOpen(false); setAddLocationDialogOpen(true); }}
-                data-testid="client-scope-add-location"
-                className="w-full text-left px-3 py-2 flex items-center gap-2 text-xs font-medium text-[#5F9442] hover:bg-[rgba(118,176,84,0.08)] transition-colors"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add Location
-              </button>
+            <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5" data-testid="header-actions">
+              <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
+                Create Job
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
+                Create Quote
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
+                Create Invoice
+              </Button>
+              <ActionMenu
+                items={[
+                  {
+                    id: "edit-client",
+                    label: "Edit Client",
+                    icon: Pencil,
+                    onSelect: () => setEditClientDialogOpen(true),
+                  },
+                  {
+                    id: "edit-client-tags",
+                    label: "Edit Client Tags",
+                    icon: Tag,
+                    onSelect: () => setEditClientTagsOpen(true),
+                    hidden: !(scopeType === "company" && Boolean(companyId)),
+                  },
+                  {
+                    id: "archive-client",
+                    label: "Archive Client",
+                    icon: Archive,
+                    onSelect: () => openArchiveDialog("company"),
+                    separator: true,
+                  },
+                  {
+                    id: "delete-client",
+                    label: "Delete Client",
+                    icon: Trash2,
+                    onSelect: () => openPermDeleteDialog("company"),
+                    tone: "destructive",
+                  },
+                ] satisfies ActionMenuItemDescriptor[]}
+                trigger={
+                  <Button variant="ghost" size="icon" data-testid="header-overflow">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                }
+                align="end"
+              />
             </div>
-          </PopoverContent>
-        </Popover>
+          </div>
 
-        {/* 2026-05-03 quick-jump pills — one per location next to the
-            canonical Viewing dropdown. Visible at every breakpoint;
-            the cap (3 / 6 / 10) is JS-driven via `scopePillCap` so we
-            can guarantee the active location is always in the visible
-            slice. The dropdown remains the canonical full list. */}
-        {locations.length > 0 && (() => {
-          // Pin the active location into the visible slice when its
-          // natural index is beyond the cap. Preserves natural order
-          // for the first `cap - 1` slots; bumps active into the last
-          // visible slot only when needed.
-          const naturalSlice = locations.slice(0, scopePillCap);
-          const activeId = scopeType === "location" ? selectedLocationId : null;
-          const activeInSlice = !!activeId && naturalSlice.some((l) => l.id === activeId);
-          const activeRow = activeId ? locations.find((l) => l.id === activeId) : null;
-          const displayed: Client[] = (
-            !activeId || activeInSlice || !activeRow
-              ? naturalSlice
-              : [...naturalSlice.slice(0, scopePillCap - 1), activeRow]
-          );
-          const hiddenCount = locations.length - displayed.length;
-          return (
-            <div
-              className="flex items-center gap-1 flex-shrink min-w-0 overflow-hidden"
-              data-testid="client-scope-pills"
-            >
-              {/* All-Locations shortcut */}
-              <FilterChip
-                selected={scopeType === "company"}
-                size="compact"
-                onClick={handleSelectCompany}
-                data-testid="client-scope-pill-all"
-                title="All Locations"
-                className="flex-shrink-0"
+          {/* Location selector — inside card, separated by hairline */}
+          <div className="border-t border-slate-100 px-5 py-2 flex items-center gap-2" data-testid="client-scope-bar">
+            <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500 flex-shrink-0">Viewing</span>
+            <Popover open={scopePopoverOpen} onOpenChange={setScopePopoverOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="client-scope-trigger"
+                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-800 max-w-[420px]"
+                >
+                  {scopeType === "company" ? (
+                    <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                  ) : (
+                    <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {scopeType === "company"
+                      ? `All Locations (${locations.length})`
+                      : selectedLoc
+                        ? locationDisplayName(selectedLoc)
+                        : "Select a location"}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="w-[320px] p-0 overflow-hidden"
+                data-testid="client-scope-popover"
               >
-                All
-              </FilterChip>
-              {displayed.map((loc) => {
-                const isActive = scopeType === "location" && selectedLocationId === loc.id;
-                const chipLabel = loc.location?.trim() || loc.address?.trim() || "Unnamed";
+                {locations.length > 5 && (
+                  <div className="p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        placeholder="Search locations..."
+                        value={locationSearch}
+                        onChange={(e) => setLocationSearch(e.target.value)}
+                        className="h-7 pl-7 text-xs bg-slate-50/80 border-slate-200 focus:bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="max-h-[360px] overflow-y-auto">
+                  <button
+                    type="button"
+                    onClick={() => { handleSelectCompany(); setScopePopoverOpen(false); }}
+                    data-testid="client-scope-option-all"
+                    className={cn(
+                      "w-full text-left px-3 py-2 flex items-center gap-2.5 border-b border-slate-100 transition-colors",
+                      scopeType === "company"
+                        ? "bg-[rgba(118,176,84,0.08)]"
+                        : "hover:bg-slate-50",
+                    )}
+                  >
+                    <Building2 className={cn("h-3.5 w-3.5 flex-shrink-0", scopeType === "company" ? "text-[#76B054]" : "text-slate-400")} />
+                    <span className={cn("text-xs font-medium truncate flex-1", scopeType === "company" ? "text-[#5F9442]" : "text-slate-700")}>
+                      All Locations ({locations.length})
+                    </span>
+                    {scopeType === "company" && <Check className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />}
+                  </button>
+                  {filteredLocations.length > 0 ? filteredLocations.map((loc) => {
+                    const isSelected = scopeType === "location" && selectedLocationId === loc.id;
+                    const locActiveCount = activeJobCountByLocation.get(loc.id) ?? 0;
+                    const subtitle = [loc.address, loc.city].filter(Boolean).join(", ");
+                    return (
+                      <button
+                        key={loc.id}
+                        type="button"
+                        onClick={() => { handleSelectLocation(loc.id); setScopePopoverOpen(false); }}
+                        data-testid={`client-scope-option-${loc.id}`}
+                        className={cn(
+                          "w-full text-left px-3 py-2 flex items-start gap-2.5 border-b border-slate-100/80 transition-colors",
+                          isSelected ? "bg-[rgba(118,176,84,0.08)]" : "hover:bg-slate-50",
+                        )}
+                      >
+                        <MapPin className={cn("h-3.5 w-3.5 flex-shrink-0 mt-0.5", isSelected ? "text-[#76B054]" : "text-slate-400")} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1">
+                            <span className={cn("text-xs font-medium truncate", isSelected ? "text-[#5F9442]" : "text-slate-800")}>
+                              {locationDisplayName(loc)}
+                            </span>
+                            {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
+                          </div>
+                          {subtitle && (
+                            <p className="text-[11px] text-slate-500 truncate mt-0.5">{subtitle}</p>
+                          )}
+                        </div>
+                        {locActiveCount > 0 && (
+                          <span className={cn(
+                            "text-[11px] font-medium px-1.5 py-0 rounded flex-shrink-0 mt-0.5",
+                            isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500",
+                          )}>
+                            {locActiveCount}
+                          </span>
+                        )}
+                        {isSelected && locActiveCount === 0 && (
+                          <Check className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0 mt-0.5" />
+                        )}
+                      </button>
+                    );
+                  }) : (
+                    <div className="px-3 py-4 text-center text-xs text-slate-400">
+                      {locationSearch ? `No match for "${locationSearch}"` : "No locations yet"}
+                    </div>
+                  )}
+                </div>
+                <div className="border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => { setScopePopoverOpen(false); setAddLocationDialogOpen(true); }}
+                    data-testid="client-scope-add-location"
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 text-xs font-medium text-[#5F9442] hover:bg-[rgba(118,176,84,0.08)] transition-colors"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add Location
+                  </button>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {locations.length > 0 && (() => {
+              const naturalSlice = locations.slice(0, scopePillCap);
+              const activeId = scopeType === "location" ? selectedLocationId : null;
+              const activeInSlice = !!activeId && naturalSlice.some((l) => l.id === activeId);
+              const activeRow = activeId ? locations.find((l) => l.id === activeId) : null;
+              const displayed: Client[] = (
+                !activeId || activeInSlice || !activeRow
+                  ? naturalSlice
+                  : [...naturalSlice.slice(0, scopePillCap - 1), activeRow]
+              );
+              const hiddenCount = locations.length - displayed.length;
+              return (
+                <div
+                  className="flex items-center gap-1 flex-shrink min-w-0 overflow-hidden"
+                  data-testid="client-scope-pills"
+                >
+                  <FilterChip
+                    selected={scopeType === "company"}
+                    size="compact"
+                    onClick={handleSelectCompany}
+                    data-testid="client-scope-pill-all"
+                    title="All Locations"
+                    className="flex-shrink-0"
+                  >
+                    All
+                  </FilterChip>
+                  {displayed.map((loc) => {
+                    const isActive = scopeType === "location" && selectedLocationId === loc.id;
+                    const chipLabel = loc.location?.trim() || loc.address?.trim() || "Unnamed";
                 const titleLabel = locationDisplayName(loc);
                 return (
                   <FilterChip
@@ -1459,10 +1395,6 @@ export default function ClientDetailPage() {
                   </FilterChip>
                 );
               })}
-              {/* Overflow indicator — clicking opens the canonical
-                  dropdown so the user can reach any location not on
-                  the pill row. Only rendered when something is
-                  actually hidden. */}
               {hiddenCount > 0 && (
                 <Chip
                   as="button"
@@ -1480,203 +1412,159 @@ export default function ClientDetailPage() {
             </div>
           );
         })()}
+          </div>
 
-        {/* 2026-05-03: the selected-location address used to render
-            here next to the pills. Removed because the same address
-            already appears in the main location header card below —
-            duplicating it crowded the scope row, especially with the
-            new wider pill cap. The pills + active pill state already
-            tell the user which location is selected. */}
-      </div>
-
-      {/* ═══ BODY — workspace card + recent activity (LEFT-COLUMN portion only) ═══
-           2026-05-07: the right utility rail was lifted to the page-
-           level outer flex row above, so the body here is now a
-           single-column workspace area. The rail spans the full
-           page-content height (top of the client header card →
-           bottom of the workspace card), no longer trapped beside
-           only the lower body. */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden" data-testid="client-detail-body">
-
-        {/* ── WORKSPACE SCROLL AREA — workspace card + recent activity ── */}
-        <div className="flex-1 min-w-0 lg:min-h-0 lg:overflow-y-auto p-4 space-y-3">
-                {/* ═══ MAIN WORKSPACE CARD ═══ */}
-                <div className="flex flex-col rounded-md border border-slate-200 bg-white overflow-hidden">
-                  {/* Workspace header + tabs.
-                      For single-location clients the page header already owns
-                      the client identity + address context, so we suppress
-                      the whole scope-header row and the address block here
-                      to avoid duplication. The one exception is when billing
-                      and service addresses differ — in that case we surface
-                      a compact labeled dual-address block above the tabs. */}
-                  <div className="border-b border-slate-200 px-5 pt-2.5 pb-0">
-                    {!isSingleLocation && (
-                      <>
-                        <div className="flex items-center justify-between gap-3 mb-1">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {scopeType === "company" && (
-                              <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                            )}
-                            {scopeType === "location" && (
-                              <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
-                            )}
-                            <h2 className="text-base font-bold text-slate-900 truncate">{scopeEntityName}</h2>
-                            {selectedLoc?.isPrimary && scopeType === "location" && (
-                              <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-1.5 py-0 hover:bg-amber-50">Primary</Badge>
-                            )}
-                            {/* 2026-05-02 layout refinement: tags moved
-                                to the scope-aware header tag row above
-                                the workspace card. Keeping the inline
-                                copy here would duplicate them. */}
-                          </div>
-                          {scopeType === "location" && selectedLoc && (
-                            <Button variant="ghost" size="sm" className="h-6 text-xs text-slate-500" onClick={() => setEditLocationModalOpen(true)}>
-                              <Pencil className="mr-1 h-3 w-3" />Edit
-                            </Button>
-                          )}
-                        </div>
-                        {scopeType === "location" && selectedLoc ? (
-                          <div className="mb-1 pl-6">
-                            {/* 2026-05-01 address consistency: multi-line
-                                rendering to match the Billing Address
-                                block in the dual-address card below. */}
-                            {(() => {
-                              const lines = locationAddressLines(selectedLoc);
-                              return lines.length > 0
-                                ? lines.map((line, i) => (
-                                    <p key={i} className="text-xs text-slate-700 leading-snug mt-1">{line}</p>
-                                  ))
-                                : <p className="text-xs text-slate-400 mt-1">—</p>;
-                            })()}
-                            {selectedLoc.roofLadderCode && (
-                              <p className="text-xs font-medium text-slate-700 mt-0.5">Site Code: {selectedLoc.roofLadderCode}</p>
-                            )}
-                          </div>
-                        ) : scopeType === "company" ? (
-                          <p className="text-xs text-slate-600 mb-1 pl-6">{companyName} &middot; Across {locations.length} location{locations.length !== 1 ? "s" : ""}</p>
-                        ) : null}
-                      </>
-                    )}
-                    {isSingleLocation && hasDistinctBillingAddress && soleLocation && (
-                      <div className="grid grid-cols-2 gap-4 pb-2" data-testid="single-loc-dual-address">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Service Address</p>
-                          {/* 2026-05-01 address consistency: same multi-line
-                              shape as the Billing Address column on the
-                              right. Both use the helper-array → <p> per
-                              line pattern. */}
-                          {(() => {
-                            const lines = locationAddressLines(soleLocation);
-                            return lines.length > 0
-                              ? lines.map((line, i) => (
-                                  <p key={i} className="text-xs text-slate-700 leading-snug">{line}</p>
-                                ))
-                              : <p className="text-xs text-slate-400">—</p>;
-                          })()}
-                          {soleLocation.roofLadderCode && (
-                            <p className="text-xs text-slate-500 mt-0.5">Site Code: {soleLocation.roofLadderCode}</p>
-                          )}
-                        </div>
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Billing Address</p>
-                          {billingAddressLines.length > 0 ? (
-                            billingAddressLines.map((line, i) => (
-                              <p key={i} className="text-xs text-slate-700 leading-snug">{line}</p>
-                            ))
-                          ) : (
-                            <p className="text-xs text-slate-400">—</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    {/* Site Code alone (single-loc, same address): show compactly so the code isn't lost. */}
-                    {isSingleLocation && !hasDistinctBillingAddress && soleLocation?.roofLadderCode && (
-                      <p className="text-xs text-slate-500 pb-2">Site Code: <span className="font-medium text-slate-700">{soleLocation.roofLadderCode}</span></p>
-                    )}
-                    {/* KPI strip — compact operational summary */}
-                    <ClientKpiStrip
-                      openJobs={activeJobsCount}
-                      outstanding={outstandingInvoices.total}
-                      overdueInvoices={overdueInvoicesCount}
-                      activeMaintenance={activeMaintenanceCount}
-                      totalLocations={locations.length}
-                      lastServiceDate={lastServiceDate}
-                    />
-
-                    {/* Tab bar */}
-                    <div className="flex -mb-px overflow-x-auto">
-                      {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
-                        <button
-                          key={t.key}
-                          onClick={() => handleTabChange(t.key)}
-                          data-testid={`workspace-tab-${t.key}`}
-                          className={`relative px-3 py-2 text-xs font-medium transition-colors whitespace-nowrap ${
-                            workspaceTab === t.key
-                              ? "text-[#76B054] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#76B054]"
-                              : "text-slate-500 hover:text-slate-700"
-                          }`}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Tab content */}
-                  <div className="p-4">
-                    {scopeType === "company" ? (
-                      <>
-                        {workspaceTab === "overview" && companyId && (
-                          <ClientOverviewTab
-                            customerCompanyId={companyId}
-                            companyName={companyName}
-                            onNavigate={setLocation}
-                            activeJobsCount={activeJobsCount}
-                            onHoldJobsCount={onHoldJobsCount}
-                            locationId={null}
-                          />
-                        )}
-                        {workspaceTab === "jobs" && <ClientJobsTab jobs={companyJobs} locations={locations} showLocation onNavigate={setLocation} />}
-                        {workspaceTab === "invoices" && <ClientInvoicesTab invoices={allInvoices} locations={locations} showLocation onNavigate={setLocation} />}
-                        {workspaceTab === "quotes" && <ClientQuotesTab quotes={clientQuotes} locations={locations} showLocation onNavigate={setLocation} />}
-                        {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments} showLocation onNavigate={setLocation} />}
-                      </>
-                    ) : selectedLoc ? (
-                      <>
-                        {workspaceTab === "overview" && companyId && (
-                          <ClientOverviewTab
-                            customerCompanyId={companyId}
-                            companyName={companyName}
-                            onNavigate={setLocation}
-                            activeJobsCount={activeJobsCount}
-                            onHoldJobsCount={onHoldJobsCount}
-                            locationId={selectedLocationId}
-                          />
-                        )}
-                        {workspaceTab === "jobs" && <ClientJobsTab jobs={locJobs} locations={locations} showLocation={false} onNavigate={setLocation} />}
-                        {workspaceTab === "invoices" && <ClientInvoicesTab invoices={locInvoices} locations={locations} showLocation={false} onNavigate={setLocation} />}
-                        {workspaceTab === "quotes" && <ClientQuotesTab quotes={locQuotes} locations={locations} showLocation={false} onNavigate={setLocation} />}
-                        {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments.filter(p => p.locationId === selectedLocationId)} showLocation={false} onNavigate={setLocation} />}
-                        {workspaceTab === "equipment" && (
-                          <ClientEquipmentTab
-                            equipment={locationEquipment}
-                            scopeType="location"
-                            onAdd={() => setEquipmentModalOpen(true)}
-                            onOpen={(eq) => setDetailEquipment(eq)}
-                          />
-                        )}
-                        {workspaceTab === "parts" && <ClientPartsTab parts={pmParts} scopeType="location" onManage={() => setPartsModalOpen(true)} />}
-                      </>
-                    ) : (
-                      <p className="text-sm text-slate-400 text-center py-12">Select a location from the scope selector above.</p>
-                    )}
-                  </div>
+          {/* Multi-location context: address + site code for selected location */}
+          {!isSingleLocation && scopeType === "location" && selectedLoc && (
+            <div className="border-t border-slate-100 px-5 py-2" data-testid="client-context-metadata">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  {selectedLoc.isPrimary && (
+                    <Badge className="mb-1 bg-amber-50 text-amber-700 border border-amber-200 text-xs px-1.5 py-0 hover:bg-amber-50">Primary</Badge>
+                  )}
+                  {(() => {
+                    const lines = locationAddressLines(selectedLoc);
+                    return lines.length > 0
+                      ? lines.map((line, i) => (
+                          <p key={i} className="text-xs text-slate-600 leading-snug">{line}</p>
+                        ))
+                      : null;
+                  })()}
+                  {selectedLoc.roofLadderCode && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Site Code: <span className="font-medium text-slate-700">{selectedLoc.roofLadderCode}</span>
+                    </p>
+                  )}
                 </div>
+                <Button variant="ghost" size="sm" className="h-6 text-xs text-slate-500 shrink-0 -mr-1" onClick={() => setEditLocationModalOpen(true)}>
+                  <Pencil className="mr-1 h-3 w-3" />Edit
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Single-location with distinct billing address: two-column service vs billing */}
+          {isSingleLocation && hasDistinctBillingAddress && soleLocation && (
+            <div className="border-t border-slate-100 px-5 py-2.5 grid grid-cols-2 gap-4" data-testid="single-loc-dual-address">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Service Address</p>
+                {(() => {
+                  const lines = locationAddressLines(soleLocation);
+                  return lines.length > 0
+                    ? lines.map((line, i) => (
+                        <p key={i} className="text-xs text-slate-700 leading-snug">{line}</p>
+                      ))
+                    : <p className="text-xs text-slate-400">—</p>;
+                })()}
+                {soleLocation.roofLadderCode && (
+                  <p className="text-xs text-slate-500 mt-0.5">Site Code: <span className="font-medium text-slate-700">{soleLocation.roofLadderCode}</span></p>
+                )}
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Billing Address</p>
+                {billingAddressLines.length > 0
+                  ? billingAddressLines.map((line, i) => (
+                      <p key={i} className="text-xs text-slate-700 leading-snug">{line}</p>
+                    ))
+                  : <p className="text-xs text-slate-400">—</p>
+                }
+              </div>
+            </div>
+          )}
+
+          {/* Single-location with only a site code */}
+          {isSingleLocation && !hasDistinctBillingAddress && soleLocation?.roofLadderCode && (
+            <div className="border-t border-slate-100 px-5 py-1.5">
+              <p className="text-xs text-slate-500">Site Code: <span className="font-medium text-slate-700">{soleLocation.roofLadderCode}</span></p>
+            </div>
+          )}
+
+          {/* Workspace tabs — final row of the header card */}
+          <div className="border-t border-slate-100 px-5 flex overflow-x-auto">
+            {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
+              <button
+                key={t.key}
+                onClick={() => handleTabChange(t.key)}
+                data-testid={`workspace-tab-${t.key}`}
+                className={`relative py-3.5 mr-5 text-xs font-medium transition-colors whitespace-nowrap ${
+                  workspaceTab === t.key
+                    ? "text-[#76B054] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#76B054]"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
         </div>
-
       </div>
-      {/* ═══ /BODY (left-column workspace) ═══ */}
+
+      {/* ── Tab content ── */}
+      <div className="flex-1 min-h-0 overflow-y-auto" data-testid="client-detail-body">
+        {scopeType === "company" ? (
+          <>
+            {workspaceTab === "overview" && companyId && (
+              <div className="px-4 pt-3 pb-4">
+                <ClientOverviewTab
+                  customerCompanyId={companyId}
+                  companyName={companyName}
+                  onNavigate={setLocation}
+                  activeJobsCount={activeJobsCount}
+                  onHoldJobsCount={onHoldJobsCount}
+                  locationId={null}
+                />
+              </div>
+            )}
+            {workspaceTab !== "overview" && (
+              <WorkspaceListCard className="flex-none mt-3 bg-card">
+                <div className="px-4 pt-3 pb-4">
+                  {workspaceTab === "jobs" && <ClientJobsTab jobs={companyJobs} locations={locations} showLocation onNavigate={setLocation} />}
+                  {workspaceTab === "invoices" && <ClientInvoicesTab invoices={allInvoices} locations={locations} showLocation onNavigate={setLocation} />}
+                  {workspaceTab === "quotes" && <ClientQuotesTab quotes={clientQuotes} locations={locations} showLocation onNavigate={setLocation} />}
+                  {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments} showLocation onNavigate={setLocation} />}
+                </div>
+              </WorkspaceListCard>
+            )}
+          </>
+        ) : selectedLoc ? (
+          <>
+            {workspaceTab === "overview" && companyId && (
+              <div className="px-4 pt-3 pb-4">
+                <ClientOverviewTab
+                  customerCompanyId={companyId}
+                  companyName={companyName}
+                  onNavigate={setLocation}
+                  activeJobsCount={activeJobsCount}
+                  onHoldJobsCount={onHoldJobsCount}
+                  locationId={selectedLocationId}
+                />
+              </div>
+            )}
+            {workspaceTab !== "overview" && (
+              <WorkspaceListCard className="flex-none mt-3 bg-card">
+                <div className="px-4 pt-3 pb-4">
+                  {workspaceTab === "jobs" && <ClientJobsTab jobs={locJobs} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                  {workspaceTab === "invoices" && <ClientInvoicesTab invoices={locInvoices} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                  {workspaceTab === "quotes" && <ClientQuotesTab quotes={locQuotes} locations={locations} showLocation={false} onNavigate={setLocation} />}
+                  {workspaceTab === "payments" && <ClientPaymentsTab payments={companyPayments.filter(p => p.locationId === selectedLocationId)} showLocation={false} onNavigate={setLocation} />}
+                  {workspaceTab === "equipment" && (
+                    <ClientEquipmentTab
+                      equipment={locationEquipment}
+                      scopeType="location"
+                      onAdd={() => setEquipmentModalOpen(true)}
+                      onOpen={(eq) => setDetailEquipment(eq)}
+                    />
+                  )}
+                  {workspaceTab === "parts" && <ClientPartsTab parts={pmParts} scopeType="location" onManage={() => setPartsModalOpen(true)} />}
+                </div>
+              </WorkspaceListCard>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-slate-400 text-center py-12">Select a location from the scope selector above.</p>
+        )}
+      </div>
 
       </div>
       {/* ═══ /LEFT COLUMN (page header + scope bar + body) ═══ */}

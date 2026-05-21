@@ -71,9 +71,8 @@ export function invalidateEntitlementsCache(companyId: string): void {
  */
 export function invalidateAllEntitlementsCache(): void {
   // Cache impl has no namespace wipe — safest is to bump a generation token.
-  // For now every write path that touches plans/features/plan_features calls
-  // this; since it's a short-TTL (5 min) cache, stale entries age out quickly.
-  // TODO(Phase 2 follow-up): add `cache.deleteByPrefix` for targeted wipes.
+  // Every write path that touches plans/features/plan_features calls this;
+  // short-TTL (5 min) cache means stale entries age out quickly.
   cache.clear();
 }
 

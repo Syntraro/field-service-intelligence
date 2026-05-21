@@ -22,8 +22,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import { apiRequest } from "@/lib/queryClient";
 import {
   RailContentCard,
@@ -170,13 +176,13 @@ export function ReferenceFieldsSection({
       </RailContentCard>
 
       {/* ── Edit Modal ── */}
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Reference Fields</DialogTitle>
-          </DialogHeader>
+      <ModalShell open={modalOpen} onOpenChange={setModalOpen} className="sm:max-w-md">
+        <ModalHeader>
+          <ModalTitle>Reference Fields</ModalTitle>
+        </ModalHeader>
 
-          <div className="space-y-3 py-2">
+        <ModalBody>
+          <div className="space-y-3">
             {editableFields.length === 0 ? (
               <p className="text-sm text-muted-foreground">No fields available.</p>
             ) : (
@@ -201,18 +207,18 @@ export function ReferenceFieldsSection({
               <p className="text-xs text-destructive">Failed to save. Please try again.</p>
             )}
           </div>
+        </ModalBody>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)} disabled={saveMutation.isPending}>
-              Cancel
-            </Button>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-              {saveMutation.isPending ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setModalOpen(false)} disabled={saveMutation.isPending}>
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+            {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+            {saveMutation.isPending ? "Saving..." : "Save"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </>
   );
 }

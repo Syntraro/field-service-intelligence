@@ -17,7 +17,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { parseCSV } from "@shared/csvParser";
@@ -528,25 +528,16 @@ export function ImportWizard({
         />
       )}
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Import {commitRows.length} {config.rowNoun}?</DialogTitle>
-            <DialogDescription>
-              {config.commitBanner ?? "This will write records directly to your account. Skipped duplicate rows won't be committed; failed rows are excluded automatically."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleCommitConfirm} disabled={commitMutation.isPending}>
-              {commitMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Confirm import
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmModal
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        variant="neutral"
+        title={`Import ${commitRows.length} ${config.rowNoun}?`}
+        description={config.commitBanner ?? "This will write records directly to your account. Skipped duplicate rows won't be committed; failed rows are excluded automatically."}
+        confirmLabel="Confirm import"
+        isPending={commitMutation.isPending}
+        onConfirm={handleCommitConfirm}
+      />
     </>
   );
 

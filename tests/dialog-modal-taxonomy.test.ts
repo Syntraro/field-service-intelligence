@@ -328,8 +328,12 @@ describe("App-wide — raw Dialog ceiling", () => {
   // Phase 4: PMScheduleCard hardDeleteDialogOpen → AlertDialog (−1).
   // Phase 5: FeedbackDialog → ModalShell (−1).
   // Phase 6: JobEquipmentSection "Add Equipment" → ModalShell (−1).
+  // P3 Batch A: TimezoneSetupDialog, AddMemberDialog, InvoiceRemindersSettingsPage, ReferenceFieldsSection → ModalShell (−4).
+  // P3 Batch B: EquipmentCatalogItemsSection (−2), ManageRoles (−1), TaxBillingRulesPage (−2), RecurringJobsPage (−2) → ModalShell (−7).
+  // P3 Batch C: EquipmentDetailModal (−1), PartsSelectorModal (−1), TimesheetReportPage (−1), PortalPaymentMethods (−2) → ModalShell (−5).
+  // P3 Batch D: PostVisitCompletionDialog (−1), ApplyTemplateModalBase (−1), PMWizardPage (−1), QuoteDetailPage (−1), InvoiceDetailPage (−1), ImportWizard → ConfirmModal (−1) → total (−6).
   // Lower this whenever a migration removes raw Dialog opens.
-  const DIALOG_CEILING = 31;
+  const DIALOG_CEILING = 9;
 
   it(`non-allowlisted raw <Dialog opens ≤ ${DIALOG_CEILING} (lower after each migration)`, () => {
     let total = 0;
@@ -398,8 +402,9 @@ describe("App-wide — AlertDialog health check", () => {
 
 describe("App-wide — ModalShell floor", () => {
   // ── Baseline: 34 files importing from @/components/ui/modal (2026-05-10).
+  // P3 Batch D: PostVisitCompletionDialog, ApplyTemplateModalBase, PMWizardPage, ImportWizard → +4 new importers.
   // Lower only if a modal file is intentionally deleted (not regressed).
-  const MODAL_SHELL_FLOOR = 34;
+  const MODAL_SHELL_FLOOR = 38;
 
   it(`files importing @/components/ui/modal ≥ ${MODAL_SHELL_FLOOR} (prevents ModalShell regressions)`, () => {
     let count = 0;
@@ -422,10 +427,11 @@ describe("App-wide — ModalShell floor", () => {
   });
 });
 
-// ── 10. InvoiceDetailPage — Phase 3 delete confirmation guard ─────────────────
+// ── 10. InvoiceDetailPage — Phase 3 delete + Batch D payment guard ───────────
 //
-// Pins that the showDeleteConfirm dialog uses ConfirmModal (migrated from AlertDialog).
-// The Dialog import is preserved for the remaining showPaymentDialog form.
+// Pins that showDeleteConfirm uses ConfirmModal (migrated from AlertDialog).
+// P3 Batch D: showPaymentDialog migrated from raw Dialog to ModalShell; Dialog
+// import fully removed.
 
 describe("InvoiceDetailPage Phase 3 — showDeleteConfirm uses ConfirmModal", () => {
   const invoiceSrc = readFileSync(
@@ -467,12 +473,12 @@ describe("InvoiceDetailPage Phase 3 — showDeleteConfirm uses ConfirmModal", ()
     expect(invoiceCode).toContain("deleteMutation.mutate()");
   });
 
-  it("Dialog import retained (showPaymentDialog form still uses raw Dialog)", () => {
-    expect(invoiceSrc).toMatch(/from\s+["']@\/components\/ui\/dialog["']/);
+  it("Dialog import removed (showPaymentDialog migrated to ModalShell in Batch D)", () => {
+    expect(invoiceSrc).not.toMatch(/from\s+["']@\/components\/ui\/dialog["']/);
   });
 
-  it("showPaymentDialog still uses raw Dialog (not migrated in Phase 2)", () => {
-    expect(invoiceCode).toMatch(/<Dialog\s+open=\{showPaymentDialog\}/);
+  it("showPaymentDialog uses ModalShell (migrated in Batch D)", () => {
+    expect(invoiceCode).toMatch(/<ModalShell\s+open=\{showPaymentDialog\}/);
   });
 
   it("showDeleteConfirm no longer uses raw Dialog", () => {

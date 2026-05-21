@@ -12,9 +12,15 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -108,17 +114,17 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
   const selectedTemplate = activeTemplates.find((t) => t.id === selectedTemplateId);
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Icon className="h-5 w-5" />
-            Apply Template
-          </DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={handleClose} className="sm:max-w-md">
+      <ModalHeader>
+        <ModalTitle className="flex items-center gap-2">
+          <Icon className="h-5 w-5" />
+          Apply Template
+        </ModalTitle>
+        <ModalDescription>{description}</ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-4 py-4">
+      <ModalBody>
+        <div className="space-y-4">
           {/* Template Selection */}
           <div className="space-y-2">
             <Label>Template</Label>
@@ -188,21 +194,21 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
             </div>
           )}
         </div>
+      </ModalBody>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={handleClose} disabled={applyMutation.isPending}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleApply}
-            disabled={!selectedTemplateId || applyMutation.isPending || activeTemplates.length === 0}
-            data-testid={applyTestId}
-          >
-            {applyMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            Apply Template
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter>
+        <ModalSecondaryAction onClick={handleClose} disabled={applyMutation.isPending}>
+          Cancel
+        </ModalSecondaryAction>
+        <ModalPrimaryAction
+          onClick={handleApply}
+          disabled={!selectedTemplateId || applyMutation.isPending || activeTemplates.length === 0}
+          data-testid={applyTestId}
+        >
+          {applyMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+          Apply Template
+        </ModalPrimaryAction>
+      </ModalFooter>
+    </ModalShell>
   );
 }

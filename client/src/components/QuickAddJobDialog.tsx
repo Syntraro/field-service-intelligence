@@ -133,8 +133,6 @@ import { formatDuration as formatServiceDuration } from "@/components/products-s
 // SelectedService state and pipe through these helpers.
 import { catalogItemToDraft, draftToJobPartPayload } from "@/lib/entities/lineItemMapper";
 import { productOptionToCatalogItem } from "@/lib/entities/productEntity";
-// 2026-05-07 RALPH (groups in service picker): the QuickAdd service
-// dropdown now also surfaces saved Pricebook Groups under a
 // ============================================================================
 // Duration options (static) — time uses native input, no option list needed
 // ============================================================================
@@ -1627,12 +1625,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         const partFailures: string[] = [];
         for (const svc of selectedServices) {
           try {
-            // 2026-05-07 RALPH (group-count fix): preserve each
-            // entry's real catalog type. Single-service picks
-            // default to "service" (the dropdown's existing flow);
-            // group expansions carry the child's actual type
-            // ("service" or "product") so a Truck Charge child is
-            // persisted as a product line, not silently re-tagged.
             const reconstructedType: "product" | "service" =
               svc.type === "product" ? "product" : "service";
             const draft = catalogItemToDraft(

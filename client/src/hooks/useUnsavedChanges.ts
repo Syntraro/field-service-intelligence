@@ -59,8 +59,7 @@ export function useUnsavedChanges(): UnsavedChanges {
         action();
         return;
       }
-      // Native confirm matches the rest of the app's destructive prompts
-      // (e.g. Phase 3 SchedulesTab). Good enough for an internal tool; avoids
+      // Native confirm. Good enough for an internal tool; avoids
       // building a custom modal just for this.
       if (window.confirm(message)) {
         action();

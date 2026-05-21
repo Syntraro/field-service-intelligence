@@ -78,14 +78,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { ActionMenu, type ActionMenuItemDescriptor } from "@/components/ui/action-menu";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ConfirmModal } from "@/components/ui/modal";
+  ConfirmModal,
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalSecondaryAction,
+  ModalPrimaryAction,
+} from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -138,8 +140,7 @@ import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
 // existing checkout / refund routes; no new backend writes.
 // 2026-05-06 PR3: StaffTakeCardDialog is no longer mounted from this page;
 // the unified CollectPaymentDialog now owns card payments via embedded
-// Stripe Elements + multi-invoice allocation. The dialog file remains in
-// the repo for now — it's still a valid component, just unmounted here.
+// Stripe Elements + multi-invoice allocation.
 import { CollectPaymentDialog } from "@/components/invoice/CollectPaymentDialog";
 import { RefundPaymentDialog } from "@/components/invoice/RefundPaymentDialog";
 import { computeAlreadyOffset } from "@shared/paymentRefundability";
@@ -246,10 +247,7 @@ function isValidUUID(str: string): boolean {
 export const MONO = "font-mono tabular-nums";
 
 /** Status pill — warm-gray-on-tint palette mapped from the existing badge variant. */
-// 2026-05-02 strict-replication pass: exported so /invoices/new can mount
-// the same canonical pill with `status="draft"` instead of a one-off
-// inline span. Live behavior unchanged — purely an additive `export`.
-export function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
+function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
   const { label, tone } = (() => {
     if (isPastDue) return { label: "PAST DUE",          tone: "danger"  as const };
     switch (status) {
@@ -2482,14 +2480,14 @@ const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: 
         isSaving={savingCreatedProduct}
       />
 
-      <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Record Payment</DialogTitle>
-            <DialogDescription>
-              Balance due: {formatCurrency(invoice.balance)}
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+        <ModalHeader>
+          <ModalTitle>Record Payment</ModalTitle>
+          <ModalDescription>
+            Balance due: {formatCurrency(invoice.balance)}
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-4">
             <div>
               <Label htmlFor="payment-amount">Amount</Label>
@@ -2548,20 +2546,20 @@ const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: 
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowPaymentDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleRecordPayment}
-              disabled={createPaymentMutation.isPending}
-              data-testid="button-save-payment"
-            >
-              {createPaymentMutation.isPending ? "Saving..." : "Record Payment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setShowPaymentDialog(false)}>
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleRecordPayment}
+            disabled={createPaymentMutation.isPending}
+            data-testid="button-save-payment"
+          >
+            {createPaymentMutation.isPending ? "Saving..." : "Record Payment"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       {/* Phase 12 (2026-04-12): Jobber-style send modal. Loads recipients +
           rendered preview from backend, lets user edit subject/body/recipients,
@@ -2616,9 +2614,7 @@ const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: 
           multi-invoice allocation flow (cash / cheque / e-transfer /
           debit / external card / other). Writes via POST /api/payments
           which creates ONE payment row + N allocations + per-invoice
-          balance updates atomically. Stripe is intentionally NOT
-          involved here — the overflow "Charge credit card (Stripe)"
-          item still mounts the canonical StaffTakeCardDialog above. */}
+          balance updates atomically. */}
       <CollectPaymentDialog
         open={showCollectPaymentDialog}
         onOpenChange={setShowCollectPaymentDialog}

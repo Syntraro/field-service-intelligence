@@ -26,14 +26,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import { ArrowDown, ArrowUp, ArrowUpDown, Download, Loader2, Settings } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -687,76 +688,71 @@ function PayrollSettingsDialog({
     },
   });
 
+  const handleOpen = () => {
+    setFrequency(settings?.payFrequency ?? "biweekly");
+    setAnchor(settings?.payAnchorDate ?? "");
+    setOpen(true);
+  };
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (o) {
-          setFrequency(settings?.payFrequency ?? "biweekly");
-          setAnchor(settings?.payAnchorDate ?? "");
-        }
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button variant="outline" className="w-full">
-          <Settings className="h-4 w-4 mr-1" />
-          Payroll Settings
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Payroll Settings</DialogTitle>
-          <DialogDescription>
+    <>
+      <Button variant="outline" className="w-full" onClick={handleOpen}>
+        <Settings className="h-4 w-4 mr-1" />
+        Payroll Settings
+      </Button>
+      <ModalShell open={open} onOpenChange={setOpen}>
+        <ModalHeader>
+          <ModalTitle>Payroll Settings</ModalTitle>
+          <ModalDescription>
             Save your pay cycle once, then use Current / Previous / Next Pay Period filters
             on every report. Semimonthly and monthly are coming soon.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div>
-            <Label className="text-xs">Pay Frequency</Label>
-            <Select value={frequency} onValueChange={setFrequency}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="weekly">Weekly</SelectItem>
-                <SelectItem value="biweekly">Biweekly</SelectItem>
-                <SelectItem value="semimonthly" disabled>
-                  Semimonthly (coming soon)
-                </SelectItem>
-                <SelectItem value="monthly" disabled>
-                  Monthly (coming soon)
-                </SelectItem>
-              </SelectContent>
-            </Select>
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Pay Frequency</Label>
+              <Select value={frequency} onValueChange={setFrequency}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="biweekly">Biweekly</SelectItem>
+                  <SelectItem value="semimonthly" disabled>
+                    Semimonthly (coming soon)
+                  </SelectItem>
+                  <SelectItem value="monthly" disabled>
+                    Monthly (coming soon)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Anchor / Start Date</Label>
+              <CanonicalDatePicker
+                value={anchor}
+                onChange={(next) => setAnchor(next ?? "")}
+                className="w-full text-sm"
+              />
+              <p className="text-helper text-muted-foreground mt-1">
+                Any date that was the first day of one concrete pay period. All other periods are
+                derived by multiples of the frequency.
+              </p>
+            </div>
           </div>
-          <div>
-            <Label className="text-xs">Anchor / Start Date</Label>
-            <CanonicalDatePicker
-              value={anchor}
-              onChange={(next) => setAnchor(next ?? "")}
-              className="w-full text-sm"
-            />
-            <p className="text-helper text-muted-foreground mt-1">
-              Any date that was the first day of one concrete pay period. All other periods are
-              derived by multiples of the frequency.
-            </p>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setOpen(false)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
             onClick={() => save.mutate()}
             disabled={!anchor || save.isPending || frequency === "semimonthly" || frequency === "monthly"}
           >
             {save.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
             Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
+    </>
   );
 }

@@ -2126,6 +2126,8 @@ export const invoiceLines = pgTable("invoice_lines", {
   metadata: text("metadata"), // JSON string for future use
   // Source tracking - manual vs job-derived
   source: text("source").notNull().default("manual"), // "manual" or "job"
+  // Service template attribution (Phase 2 — flat-rate service integration)
+  serviceTemplateId: varchar("service_template_id").references(() => serviceTemplates.id, { onDelete: "set null" }),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -2162,6 +2164,7 @@ export const updateInvoiceLineSchema = z.object({
   qboItemRefId: z.string().nullable().optional(),
   qboTaxCodeRefId: z.string().nullable().optional(),
   metadata: z.string().nullable().optional(),
+  serviceTemplateId: z.string().nullable().optional(),
 });
 
 export type InsertInvoiceLine = z.infer<typeof insertInvoiceLineSchema>;

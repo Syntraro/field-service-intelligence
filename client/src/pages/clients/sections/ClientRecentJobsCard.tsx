@@ -4,7 +4,7 @@ import { StatusChip } from "@/components/ui/chip";
 import { EntityNumber } from "@/components/common/EntityNumber";
 import { getJobStatusMeta } from "@/lib/statusBadges";
 
-export interface OverviewJob {
+interface OverviewJob {
   id: string;
   jobNumber: number;
   summary?: string | null;

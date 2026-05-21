@@ -101,11 +101,11 @@ export function TeamMemberList({ selectedMemberId, onSelect }: Props) {
       </CardHeader>
 
       <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
-        <ul className="space-y-1">
+        <ul className="space-y-0.5">
           {isLoading ? (
-            <li className="p-3 text-sm text-muted-foreground">Loading…</li>
+            <li className="p-3 text-helper text-muted-foreground">Loading…</li>
           ) : filtered.length === 0 ? (
-            <li className="p-3 text-sm text-muted-foreground">
+            <li className="p-3 text-helper text-muted-foreground">
               {search || statusFilter !== "active" || roleFilter !== "all"
                 ? "No matches."
                 : "No team members yet."}
@@ -124,7 +124,7 @@ export function TeamMemberList({ selectedMemberId, onSelect }: Props) {
                   <button
                     type="button"
                     onClick={() => onSelect(m.id)}
-                    className={`w-full flex items-center gap-2 px-2 py-2.5 rounded-md text-left text-sm transition-colors ${
+                    className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left transition-colors ${
                       active ? "bg-primary/10 ring-1 ring-primary/20" : "hover:bg-muted"
                     }`}
                     data-testid={`button-team-list-select-${m.id}`}
@@ -140,7 +140,7 @@ export function TeamMemberList({ selectedMemberId, onSelect }: Props) {
                     </Avatar>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="truncate text-foreground font-medium text-[13px]">
+                        <span className="truncate text-foreground font-medium text-helper">
                           {getMemberDisplayName(m)}
                         </span>
                         {isInactive && (
@@ -149,7 +149,7 @@ export function TeamMemberList({ selectedMemberId, onSelect }: Props) {
                           </Badge>
                         )}
                       </div>
-                      <div className="text-[11px] text-muted-foreground truncate">
+                      <div className="text-helper text-muted-foreground truncate">
                         {roleLabel}
                       </div>
                     </div>

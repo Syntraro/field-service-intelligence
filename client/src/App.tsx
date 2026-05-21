@@ -68,10 +68,7 @@ import FinancialDashboard from "@/pages/FinancialDashboard";
 // owner could open them. Platform-admin functionality is exclusively at
 // `/platform/*` and is gated by `<PlatformAuthRoute>` (psid session +
 // capability). The page files for the QBO oversight + tenants list have
-// been deleted; `Admin.tsx` is quarantined on disk pending a follow-up
-// migration of its still-useful tenant-scoped tabs (bulk archived-job
-// cleanup, calendar start-hour, feedback) into existing tenant settings
-// surfaces. Do NOT reintroduce a `/admin/*` route in this router.
+// been deleted; `Admin.tsx` has been deleted. Do NOT reintroduce a `/admin/*` route in this router.
 // 2026-05-04 Phase 7: dropped the lazy `SupportConsole` import — its
 // only consumer route (`/support-console`) was removed once the
 // `requirePlatformAdmin` ProtectedRoute flag became dead code.
@@ -493,9 +490,7 @@ function Router() {
           structurally unreachable, so the route was dead. Platform
           ops now lives exclusively at `/platform/*` under
           `<PlatformAuthRoute>` (psid cookie, separate identity
-          surface). The `SupportConsole` page file remains on disk
-          for reference if any of its UI is migrated to a /platform
-          surface in a future PR. */}
+          surface). SupportConsole has been deleted. */}
 
       {/* Phase 6: Platform Ops Portal (any platform role). */}
       <Route path="/platform">
@@ -1041,8 +1036,7 @@ function AppContent() {
   // is its own standalone surface; /platform/* protected routes mount their
   // own PlatformLayout (header + nav) inside <PlatformAuthRoute>. The tenant
   // shell never wraps either case. This handles unauthenticated visitors AND
-  // signed-in tenant users; the isPlatformUser branch below still handles
-  // signed-in platform users who hit a non-platform tenant path.
+  // signed-in tenant users.
   if (isPlatformPage) {
     appRouteTrace("AppContent BRANCH=isPlatformPage → bare Router", { location });
     return <Router />;

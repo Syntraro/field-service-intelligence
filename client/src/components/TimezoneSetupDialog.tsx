@@ -11,13 +11,14 @@ import { Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+} from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -106,58 +107,57 @@ export function TimezoneSetupDialog() {
   if (!shouldShow) return null;
 
   return (
-    <Dialog open modal>
-      <DialogContent
-        className="sm:max-w-md"
-        // Prevent closing via escape or outside click
-        onPointerDownOutside={(e) => e.preventDefault()}
-        onEscapeKeyDown={(e) => e.preventDefault()}
-        // Hide the close button by not rendering it (DialogContent renders one by default via [data-radix-close])
-        onInteractOutside={(e) => e.preventDefault()}
-      >
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Globe className="h-5 w-5" />
-            Set Your Company Timezone
-          </DialogTitle>
-          <DialogDescription>
-            Choose the timezone for your business. This is used for scheduling,
-            calendar display, and invoice dates. You can change it later in
-            Regional Settings.
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell
+      open
+      onOpenChange={() => undefined}
+      modal
+      className="sm:max-w-md"
+      onPointerDownOutside={(e) => e.preventDefault()}
+      onEscapeKeyDown={(e) => e.preventDefault()}
+      onInteractOutside={(e) => e.preventDefault()}
+    >
+      <ModalHeader>
+        <ModalTitle className="flex items-center gap-2">
+          <Globe className="h-5 w-5" />
+          Set Your Company Timezone
+        </ModalTitle>
+        <ModalDescription>
+          Choose the timezone for your business. This is used for scheduling,
+          calendar display, and invoice dates. You can change it later in
+          Regional Settings.
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-4 py-2">
-          <div className="space-y-2">
-            <Label htmlFor="setup-timezone">Timezone</Label>
-            <Select value={selectedTz} onValueChange={setSelectedTz}>
-              <SelectTrigger id="setup-timezone" data-testid="select-setup-timezone">
-                <SelectValue placeholder="Select timezone" />
-              </SelectTrigger>
-              <SelectContent>
-                {TIMEZONE_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-helper text-muted-foreground">
-              Detected from your browser: {getBrowserTimezone()}
-            </p>
-          </div>
+      <ModalBody>
+        <div className="space-y-2">
+          <Label htmlFor="setup-timezone">Timezone</Label>
+          <Select value={selectedTz} onValueChange={setSelectedTz}>
+            <SelectTrigger id="setup-timezone" data-testid="select-setup-timezone">
+              <SelectValue placeholder="Select timezone" />
+            </SelectTrigger>
+            <SelectContent>
+              {TIMEZONE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-helper text-muted-foreground">
+            Detected from your browser: {getBrowserTimezone()}
+          </p>
         </div>
+      </ModalBody>
 
-        <DialogFooter>
-          <Button
-            onClick={() => confirmMutation.mutate(selectedTz)}
-            disabled={confirmMutation.isPending || !selectedTz}
-            data-testid="button-confirm-timezone"
-          >
-            {confirmMutation.isPending ? "Saving..." : "Confirm Timezone"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter>
+        <ModalPrimaryAction
+          onClick={() => confirmMutation.mutate(selectedTz)}
+          disabled={confirmMutation.isPending || !selectedTz}
+          data-testid="button-confirm-timezone"
+        >
+          {confirmMutation.isPending ? "Saving..." : "Confirm Timezone"}
+        </ModalPrimaryAction>
+      </ModalFooter>
+    </ModalShell>
   );
 }

@@ -12,14 +12,15 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogClose,
-  DialogDescription,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import {
   Select,
   SelectContent,
@@ -255,12 +256,12 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
       )}
 
       {/* Add Item Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Add Catalog Item</DialogTitle>
-            <DialogDescription>Associate a catalog item with this equipment for reference.</DialogDescription>
-          </DialogHeader>
+      <ModalShell open={addDialogOpen} onOpenChange={setAddDialogOpen} className="sm:max-w-md">
+        <ModalHeader>
+          <ModalTitle>Add Catalog Item</ModalTitle>
+          <ModalDescription>Associate a catalog item with this equipment for reference.</ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-3">
             <div>
               <Label className="text-xs">Catalog Item</Label>
@@ -303,31 +304,23 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
               </div>
             </div>
           </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button variant="outline" size="sm">Cancel</Button>
-            </DialogClose>
-            <Button
-              size="sm"
-              onClick={handleAdd}
-              disabled={!selectedItemId || addMutation.isPending}
-            >
-              {addMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-              Add
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setAddDialogOpen(false)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction onClick={handleAdd} disabled={!selectedItemId || addMutation.isPending}>
+            {addMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+            Add
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       {/* Edit Dialog */}
-      <Dialog open={!!editRow} onOpenChange={(open) => { if (!open) setEditRow(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit Association</DialogTitle>
-            <DialogDescription>
-              {editRow?.catalogItem.name || "Item"}
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell open={!!editRow} onOpenChange={(open) => { if (!open) setEditRow(null); }} className="sm:max-w-md">
+        <ModalHeader>
+          <ModalTitle>Edit Association</ModalTitle>
+          <ModalDescription>{editRow?.catalogItem.name || "Item"}</ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-3">
             <div className="flex gap-3">
               <div className="w-24">
@@ -351,21 +344,15 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
               </div>
             </div>
           </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button variant="outline" size="sm">Cancel</Button>
-            </DialogClose>
-            <Button
-              size="sm"
-              onClick={handleUpdate}
-              disabled={updateMutation.isPending}
-            >
-              {updateMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setEditRow(null)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction onClick={handleUpdate} disabled={updateMutation.isPending}>
+            {updateMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+            Save
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </div>
   );
 }

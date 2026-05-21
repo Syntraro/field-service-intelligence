@@ -3,13 +3,19 @@
  * flat-rate service templates.
  *
  * Upload → server compresses (sharp) → R2 storage.
- * Supports: upload, replace, remove.
+ * Supports: upload, replace, remove, fullscreen viewer.
  * Formats: jpg/jpeg/png/webp · max 5 MB raw.
+ *
+ * Exports:
+ *   ItemImageUpload       — upload/replace/remove control for the detail rail
+ *   PricebookThumb        — compact thumbnail for list/table rows (click-to-expand)
+ *   PricebookImageViewer  — fullscreen portal overlay (used by both above)
  */
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ImageIcon, Upload, X, Loader2, RefreshCw } from "lucide-react";
+import { ImageIcon, Upload, X, Loader2, RefreshCw, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FormSection } from "@/components/ui/form-field";
 import { useToast } from "@/hooks/use-toast";
@@ -58,6 +64,109 @@ function useItemImageUrls(entityType: ImageEntityType, entityId: string, hasImag
   });
 }
 
+// ── Fullscreen image viewer ───────────────────────────────────────────────────
+
+interface PricebookImageViewerProps {
+  /** Full-size image URL to display. */
+  imageUrl: string;
+  /** Alt text for the image — propagated from entity's imageAltText or imageFileName. */
+  altText?: string;
+  /** Optional filename shown below image. */
+  filename?: string | null;
+  /** Called when user closes the viewer (Escape, backdrop click, close button). */
+  onClose: () => void;
+}
+
+/**
+ * Fullscreen portal overlay for viewing price book item images.
+ *
+ * - Renders into document.body via createPortal (above rail/workspace stacking).
+ * - Locks body scroll while open; restores on unmount.
+ * - Closes on Escape key, backdrop click, or close button.
+ * - Focuses the close button on mount for keyboard accessibility.
+ * - Caller is responsible for returning focus to the trigger element
+ *   (pass a requestAnimationFrame callback to onClose).
+ *
+ * Performance: the imageUrl signed URL is already cached in TanStack Query
+ * from the parent's useItemImageUrls hook — no extra network round-trip.
+ * Browser fetches actual image bytes only when the <img> tag renders (on open).
+ */
+export function PricebookImageViewer({
+  imageUrl,
+  altText,
+  filename,
+  onClose,
+}: PricebookImageViewerProps) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Lock body scroll while the overlay is mounted.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Escape key closes the viewer.
+  useEffect(() => {
+    const handle = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  }, [onClose]);
+
+  // Focus the close button immediately on mount so keyboard users can close.
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const label = altText ? `Image: ${altText}` : "Image viewer";
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90"
+      data-testid="pricebook-image-viewer"
+      onClick={onClose}
+    >
+      {/* Close button — top-right, always accessible */}
+      <button
+        ref={closeButtonRef}
+        type="button"
+        aria-label="Close image viewer"
+        data-testid="pricebook-image-viewer-close"
+        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white/80 hover:bg-white/20 hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+      >
+        <X className="h-5 w-5" />
+      </button>
+
+      {/* Image container — stopPropagation prevents backdrop-click when clicking image */}
+      <div
+        className="flex flex-col items-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={imageUrl}
+          alt={altText ?? ""}
+          className="max-h-[88vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+          data-testid="pricebook-image-viewer-img"
+        />
+        {filename && (
+          <p className="mt-3 max-w-[80vw] truncate text-sm text-white/50">
+            {filename}
+          </p>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ── Upload / replace / remove control (detail rail) ──────────────────────────
+
 export function ItemImageUpload({
   entityType,
   entityId,
@@ -67,7 +176,9 @@ export function ItemImageUpload({
 }: ItemImageUploadProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const expandButtonRef = useRef<HTMLButtonElement>(null);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   const apiPath = entityType === "item"
     ? `/api/items/${entityId}/image`
@@ -154,11 +265,34 @@ export function ItemImageUpload({
   const isMutating = uploadMutation.isPending || removeMutation.isPending;
   const displayUrl = localPreview ?? imageUrls?.imageUrl ?? null;
 
+  // Full-size URL is available when not using a local preview (local preview is
+  // a blob URL — viewer waits for the server-issued signed URL instead).
+  const viewerImageUrl = imageUrls?.imageUrl ?? null;
+
+  function handleExpandClose() {
+    setViewerOpen(false);
+    requestAnimationFrame(() => expandButtonRef.current?.focus());
+  }
+
   return (
     <FormSection title="Item image" className="space-y-2">
       {hasImage || localPreview ? (
         <div className="space-y-2">
-          <div className="relative rounded-md overflow-hidden border border-border/60 bg-muted/10 flex items-center justify-center min-h-[120px]">
+          {/*
+           * Image container is a tap/click target for expand.
+           * cursor-zoom-in signals the affordance on desktop.
+           * The Maximize2 icon overlay provides a visible hint on all devices.
+           * Disabled while mutating to prevent opening during upload.
+           */}
+          <button
+            ref={expandButtonRef}
+            type="button"
+            aria-label="View full image"
+            data-testid="pricebook-image-expand"
+            disabled={isMutating || !viewerImageUrl}
+            className="relative w-full rounded-md overflow-hidden border border-border/60 bg-muted/10 flex items-center justify-center min-h-[120px] cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+            onClick={() => setViewerOpen(true)}
+          >
             {displayUrl ? (
               <img
                 src={displayUrl}
@@ -166,14 +300,24 @@ export function ItemImageUpload({
                 className="max-h-48 max-w-full object-contain"
               />
             ) : (
-              <ImageIcon className="h-8 w-8 text-muted-foreground/30" />
+              <ImageIcon className="h-8 w-8 text-muted-foreground/30" aria-hidden="true" />
             )}
             {isMutating && (
               <div className="absolute inset-0 bg-background/60 flex items-center justify-center">
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
             )}
-          </div>
+            {/* Expand affordance icon — pointer-events-none so the button gets the click */}
+            {!isMutating && displayUrl && (
+              <div
+                className="absolute bottom-1.5 right-1.5 rounded bg-black/40 p-1 text-white/90 pointer-events-none"
+                aria-hidden="true"
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+              </div>
+            )}
+          </button>
+
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -233,11 +377,20 @@ export function ItemImageUpload({
         className="sr-only"
         onChange={handleFileSelected}
       />
+
+      {viewerOpen && viewerImageUrl && (
+        <PricebookImageViewer
+          imageUrl={viewerImageUrl}
+          altText={currentImage.imageAltText ?? currentImage.imageFileName ?? undefined}
+          filename={currentImage.imageFileName}
+          onClose={handleExpandClose}
+        />
+      )}
     </FormSection>
   );
 }
 
-// ── Compact thumbnail for list/table rows ────────────────────────────────────
+// ── Compact thumbnail for list/table rows (click-to-expand) ──────────────────
 
 interface PricebookThumbProps {
   entityType: ImageEntityType;
@@ -248,6 +401,8 @@ interface PricebookThumbProps {
 
 export function PricebookThumb({ entityType, entityId, thumbnailStorageKey, className }: PricebookThumbProps) {
   const { data } = useItemImageUrls(entityType, entityId, Boolean(thumbnailStorageKey));
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const thumbButtonRef = useRef<HTMLButtonElement>(null);
 
   if (!thumbnailStorageKey) {
     return (
@@ -261,11 +416,38 @@ export function PricebookThumb({ entityType, entityId, thumbnailStorageKey, clas
     return <div className={`rounded bg-muted/40 animate-pulse ${className ?? "h-8 w-8"}`} />;
   }
 
+  function handleThumbClose() {
+    setViewerOpen(false);
+    requestAnimationFrame(() => thumbButtonRef.current?.focus());
+  }
+
   return (
-    <img
-      src={data.thumbnailUrl}
-      alt=""
-      className={`rounded object-cover ${className ?? "h-8 w-8"}`}
-    />
+    <>
+      <button
+        ref={thumbButtonRef}
+        type="button"
+        aria-label="View item image"
+        data-testid={`pricebook-thumb-${entityId}`}
+        className={`rounded overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${className ?? "h-8 w-8"}`}
+        onClick={() => setViewerOpen(true)}
+      >
+        <img
+          src={data.thumbnailUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-contain"
+        />
+      </button>
+
+      {/* Full-size URL is already in cache from useItemImageUrls — no extra fetch.
+          Browser loads actual image bytes only when this img tag mounts (on open). */}
+      {viewerOpen && data.imageUrl && (
+        <PricebookImageViewer
+          imageUrl={data.imageUrl}
+          onClose={handleThumbClose}
+        />
+      )}
+    </>
   );
 }

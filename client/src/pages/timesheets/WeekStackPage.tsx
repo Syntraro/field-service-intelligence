@@ -10,7 +10,7 @@
  * Mon–Sun | Week Total). Reduces cognitive load for payroll review.
  */
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, type MutableRefObject } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { addDays, format, parseISO, startOfWeek, subDays } from "date-fns";
@@ -53,6 +53,18 @@ import type { WeekMatrixViewModel } from "@/components/timesheets/matrix/buildWe
 import { TimeEntryModal } from "@/components/time";
 import type { TechnicianWeeklySummary } from "@shared/schema";
 
+export interface TimesheetActions {
+  exportCsv: () => void;
+  approve: () => void;
+  addEntry: () => void;
+}
+
+export interface TimesheetMeta {
+  isApproved: boolean;
+  hasTech: boolean;
+  isPendingApproval: boolean;
+}
+
 interface WeekStackUser {
   id: string;
   fullName: string | null;
@@ -94,9 +106,13 @@ function getMonday(date: Date): string {
 export default function WeekStackPage({
   embedded = false,
   basePath = "/timesheets",
+  actionsRef,
+  onMetaChange,
 }: {
   embedded?: boolean;
   basePath?: string;
+  actionsRef?: MutableRefObject<TimesheetActions | null>;
+  onMetaChange?: (meta: TimesheetMeta) => void;
 }) {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -226,6 +242,25 @@ export default function WeekStackPage({
     }
   };
 
+  // Sync imperative action handles for the parent header (runs every render to keep fresh).
+  useEffect(() => {
+    if (actionsRef) {
+      actionsRef.current = {
+        exportCsv: handleExportCsv,
+        approve: () => approveMutation.mutate(),
+        addEntry: () => { if (techId) setAddEntryOpen(true); },
+      };
+    }
+  });
+
+  useEffect(() => {
+    onMetaChange?.({
+      isApproved: !!currentSummary?.approved,
+      hasTech: !!techId,
+      isPendingApproval: approveMutation.isPending,
+    });
+  }, [currentSummary?.approved, techId, approveMutation.isPending]);
+
   if (!isManager) {
     return (
       <div className="p-6">
@@ -260,44 +295,44 @@ export default function WeekStackPage({
 
   return (
     <div className="p-4 space-y-4" data-testid="week-stack-page">
-      {/* Header — title suppressed when embedded inside TeamWorkspacePage */}
-      <div className={`flex items-start flex-wrap gap-3 ${embedded ? "justify-end" : "justify-between"}`}>
-        {!embedded && (
+      {/* Header — hidden when embedded; actions are hoisted to TeamWorkspacePage header */}
+      {!embedded && (
+        <div className="flex items-start flex-wrap gap-3 justify-between">
           <div>
             <h1 className="text-title">Timesheets</h1>
             <p className="text-muted-foreground text-row">Weekly review of technician time entries.</p>
           </div>
-        )}
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setLocation("/reports/timesheets")}>
-            <FileText className="h-4 w-4 mr-1.5" />
-            Timesheet Reports
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExportCsv}>
-            <Download className="h-4 w-4 mr-1.5" />
-            Export
-          </Button>
-          {currentSummary?.approved ? (
-            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 h-9 px-3">
-              <LockKeyhole className="h-3 w-3 mr-1" />
-              Approved
-            </Badge>
-          ) : (
-            <Button
-              size="sm"
-              onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending || !techId}
-            >
-              {approveMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-              ) : (
-                <CheckCircle2 className="h-4 w-4 mr-1.5" />
-              )}
-              Approve Week
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setLocation("/reports/timesheets")}>
+              <FileText className="h-4 w-4 mr-1.5" />
+              Timesheet Reports
             </Button>
-          )}
+            <Button variant="outline" size="sm" onClick={handleExportCsv}>
+              <Download className="h-4 w-4 mr-1.5" />
+              Export
+            </Button>
+            {currentSummary?.approved ? (
+              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 h-9 px-3">
+                <LockKeyhole className="h-3 w-3 mr-1" />
+                Approved
+              </Badge>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => approveMutation.mutate()}
+                disabled={approveMutation.isPending || !techId}
+              >
+                {approveMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4 mr-1.5" />
+                )}
+                Approve Week
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Controls row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -355,16 +390,18 @@ export default function WeekStackPage({
           </div>
         </div>
 
-        <Button
-          size="sm"
-          onClick={() => { if (techId) setAddEntryOpen(true); }}
-          disabled={!techId}
-          className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
-          data-testid="button-add-entry-global"
-        >
-          <Plus className="h-3.5 w-3.5 mr-1" />
-          Add Entry
-        </Button>
+        {!embedded && (
+          <Button
+            size="sm"
+            onClick={() => { if (techId) setAddEntryOpen(true); }}
+            disabled={!techId}
+            className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
+            data-testid="button-add-entry-global"
+          >
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            Add Entry
+          </Button>
+        )}
       </div>
 
       {/* Technician context header */}

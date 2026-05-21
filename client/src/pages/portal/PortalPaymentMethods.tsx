@@ -29,13 +29,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -313,7 +315,7 @@ export default function PortalPaymentMethods() {
       />
 
       {/* ── Remove confirmation dialog ─────────────────────────────── */}
-      <Dialog
+      <ModalShell
         open={!!removeTarget}
         onOpenChange={(open) => {
           if (!open) {
@@ -321,48 +323,45 @@ export default function PortalPaymentMethods() {
             setActionError(null);
           }
         }}
+        className="sm:max-w-md"
       >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Remove this card?</DialogTitle>
-            <DialogDescription>
-              {removeTarget && (
-                <>
-                  {brandLabel(removeTarget.cardBrand)} •••• {removeTarget.cardLast4}{" "}
-                  will no longer be available for future payments. You can add
-                  it again later if you change your mind.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRemoveTarget(null)}
-              disabled={removeMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="default"
-              className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={() => {
-                if (removeTarget) removeMutation.mutate(removeTarget.id);
-              }}
-              disabled={removeMutation.isPending}
-              data-testid="portal-pm-confirm-remove"
-            >
-              {removeMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Removing…
-                </>
-              ) : (
-                "Remove card"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <ModalHeader>
+          <ModalTitle>Remove this card?</ModalTitle>
+          <ModalDescription>
+            {removeTarget && (
+              <>
+                {brandLabel(removeTarget.cardBrand)} •••• {removeTarget.cardLast4}{" "}
+                will no longer be available for future payments. You can add
+                it again later if you change your mind.
+              </>
+            )}
+          </ModalDescription>
+        </ModalHeader>
+        <ModalFooter>
+          <ModalSecondaryAction
+            onClick={() => setRemoveTarget(null)}
+            disabled={removeMutation.isPending}
+          >
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            className="bg-red-600 hover:bg-red-700 text-white"
+            onClick={() => {
+              if (removeTarget) removeMutation.mutate(removeTarget.id);
+            }}
+            disabled={removeMutation.isPending}
+            data-testid="portal-pm-confirm-remove"
+          >
+            {removeMutation.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Removing…
+              </>
+            ) : (
+              "Remove card"
+            )}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </div>
   );
 }
@@ -419,16 +418,16 @@ function AddCardDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={(o) => (o ? null : onClose())}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add a card</DialogTitle>
-          <DialogDescription>
-            Save a card for future invoice payments. We never store card
-            numbers — your card details are tokenized by Stripe.
-          </DialogDescription>
-        </DialogHeader>
+    <ModalShell open={open} onOpenChange={(o) => (o ? undefined : onClose())} className="sm:max-w-md">
+      <ModalHeader>
+        <ModalTitle>Add a card</ModalTitle>
+        <ModalDescription>
+          Save a card for future invoice payments. We never store card
+          numbers — your card details are tokenized by Stripe.
+        </ModalDescription>
+      </ModalHeader>
 
+      <ModalBody>
         {createIntent.isPending || (!intent && !intentError) ? (
           <div className="py-6 flex flex-col items-center gap-2">
             <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
@@ -451,8 +450,8 @@ function AddCardDialog({
             </Elements>
           )
         )}
-      </DialogContent>
-    </Dialog>
+      </ModalBody>
+    </ModalShell>
   );
 }
 
@@ -509,7 +508,7 @@ function AddCardForm({
         with Stripe for future authorized payments. You can remove the card
         at any time from the portal.
       </p>
-      <DialogFooter className="gap-2">
+      <div className="flex gap-2 justify-end">
         <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
           Cancel
         </Button>
@@ -529,7 +528,7 @@ function AddCardForm({
             </>
           )}
         </Button>
-      </DialogFooter>
+      </div>
     </form>
   );
 }

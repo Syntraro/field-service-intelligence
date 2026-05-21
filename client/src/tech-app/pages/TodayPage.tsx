@@ -5,11 +5,8 @@
  *   - Removed mock visit data (INITIAL_VISITS, TEAM_VISITS, MOCK_TECHNICIANS)
  *   - Removed Team View (no real multi-tech endpoint for technician role)
  *   - Added loading, empty, and error states
- *   - Clock-in/out remains local-only (deferred to Phase 2 — tightly coupled
- *     to visit action flow, wiring it here without visit status mutations
- *     would create partial state that's hard to reconcile)
  *   - FAB retained with static permission mock (future: derive from user role)
- *   - Visit card tap navigates to /tech/visit/:id (detail stays mock until Phase 2)
+ *   - Visit card tap navigates to /tech/visit/:id
  */
 
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";

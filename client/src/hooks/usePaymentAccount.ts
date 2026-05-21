@@ -107,11 +107,10 @@ export interface RefreshPaymentAccountResult {
 }
 
 // ============================================================================
-// Canonical query key — exported so mutation onSuccess invalidates
-// the same cache slot the read hook owns.
+// Canonical query key.
 // ============================================================================
 
-export const PAYMENT_ACCOUNT_QUERY_KEY = ["/api/payments/account"] as const;
+const PAYMENT_ACCOUNT_QUERY_KEY = ["/api/payments/account"] as const;
 
 // ============================================================================
 // useTenantPaymentAccount — read snapshot.

@@ -42,10 +42,7 @@ import {
   isSequenceWithinShiftHours,
   isTechShiftedOnDate,
 } from "@/components/dispatch/shiftUtils";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 
 import DispatchBoardHeader, { type DispatchView } from "@/components/dispatch/DispatchBoardHeader";
@@ -141,10 +138,6 @@ export default function DispatchPreview() {
   const { data: liveTechnicians } = useLiveTechnicians(showMap);
 
   // ── Hover linkage between map markers and calendar visit cards ──
-  // 2026-04-08: Hover state moved to module-scoped external store in
-  // dispatchHoverContext.ts. The previous useState in this component caused
-  // every hover to re-render the entire DispatchPreview tree. Now consumers
-  // subscribe via useHoverSetter / useIsVisitHovered with per-id granularity.
 
   // Item 4: Dynamic timeline config from 24h toggle
   const tlConfig = useMemo(() => getTimelineConfig(show24Hour), [show24Hour]);
@@ -374,8 +367,6 @@ export default function DispatchPreview() {
   }, [unavailableShifts, technicians]);
 
   // ── Mutations ──
-  // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
-  // actions now routed through canonical EditVisitModal.
   // 2026-04-21 Phase 1: updateVisitCrew, updateVisitStatus removed from this
   // destructure — dispatch board no longer performs those quick-actions. Crew
   // and status changes go through EditVisitModal (canonical visit editor).
@@ -1296,9 +1287,6 @@ export default function DispatchPreview() {
     });
   }, [scheduleVisit]);
 
-  // 2026-03-22: handleOpenVisitEditor removed — visits now open EditVisitModal
-  // directly from handleSelectVisit. No intermediate dispatch panel for real visits.
-  //
   // 2026-04-21 Phase 1 canonical visit mutation architecture:
   // handleUpdateStatus, handleUpdateCrew, handleUpdateVisitNotes removed.
   // DispatchDetailPanel does not mount for visits (visit-read-only rule),
@@ -1513,8 +1501,6 @@ export default function DispatchPreview() {
     // Reset drag offset so next open starts centered
     setPanelDragOffset({ x: 0, y: 0 });
   }, []);
-
-  // 2026-03-21: handleDeleteVisit removed — delete now handled by canonical EditVisitModal.
 
   const selectedVisit = useMemo(
     () => selectedVisitId ? allVisits.find(v => v.id === selectedVisitId) ?? null : null,
@@ -1972,84 +1958,40 @@ export default function DispatchPreview() {
           Cancel → no-op. Assign anyway → invokes the deferred
           mutation, which forwards `overrideTimeOffConflict: true` to
           the server so the time-off check is bypassed. */}
-      <AlertDialog
+      <ConfirmModal
         open={!!timeOffConfirm}
-        onOpenChange={(open) => {
-          if (!open) setTimeOffConfirm(null);
-        }}
-      >
-        <AlertDialogContent data-testid="dispatch-time-off-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Assign visit on technician's time off?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              <strong>{timeOffConfirm?.techName}</strong> is marked off
-              {timeOffConfirm?.reason ? ` (${timeOffConfirm.reason})` : ""}{" "}
-              during this time. Assign the visit anyway?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              onClick={() => setTimeOffConfirm(null)}
-              data-testid="dispatch-time-off-confirm-cancel"
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                timeOffConfirm?.action();
-                setTimeOffConfirm(null);
-              }}
-              data-testid="dispatch-time-off-confirm-accept"
-            >
-              Assign anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onOpenChange={(open) => { if (!open) setTimeOffConfirm(null); }}
+        title="Assign visit on technician's time off?"
+        description={`${timeOffConfirm?.techName} is marked off${timeOffConfirm?.reason ? ` (${timeOffConfirm.reason})` : ""} during this time. Assign the visit anyway?`}
+        confirmLabel="Assign anyway"
+        variant="neutral"
+        onConfirm={() => { timeOffConfirm?.action(); setTimeOffConfirm(null); }}
+        testIdPrefix="dispatch-time-off-confirm"
+      />
 
       {/* Off-shift assignment confirmation dialog */}
-      <AlertDialog open={!!offShiftConfirm} onOpenChange={(open) => { if (!open) setOffShiftConfirm(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Assign to off-shift technician{(offShiftConfirm?.count ?? 1) > 1 ? "s" : ""}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              <strong>{offShiftConfirm?.techName}</strong> {(offShiftConfirm?.count ?? 1) > 1 ? "are" : "is"} not scheduled to work during this time. Are you sure you want to proceed?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setOffShiftConfirm(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => {
-              offShiftConfirm?.action();
-              setOffShiftConfirm(null);
-            }}>
-              Assign anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={!!offShiftConfirm}
+        onOpenChange={(open) => { if (!open) setOffShiftConfirm(null); }}
+        title={`Assign to off-shift technician${(offShiftConfirm?.count ?? 1) > 1 ? "s" : ""}?`}
+        description={`${offShiftConfirm?.techName} ${(offShiftConfirm?.count ?? 1) > 1 ? "are" : "is"} not scheduled to work during this time. Are you sure you want to proceed?`}
+        confirmLabel="Assign anyway"
+        variant="neutral"
+        onConfirm={() => { offShiftConfirm?.action(); setOffShiftConfirm(null); }}
+        testIdPrefix="dispatch-off-shift-confirm"
+      />
 
       {/* 2026-03-30: Multi-day visit confirmation dialog */}
-      <AlertDialog open={!!multiDayConfirm} onOpenChange={(open) => { if (!open) setMultiDayConfirm(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Create multi-day visit?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This change will create a multi-day visit that crosses midnight into the next day. Are you sure?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setMultiDayConfirm(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => {
-              multiDayConfirm?.action();
-              setMultiDayConfirm(null);
-            }}>
-              Confirm
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmModal
+        open={!!multiDayConfirm}
+        onOpenChange={(open) => { if (!open) setMultiDayConfirm(null); }}
+        title="Create multi-day visit?"
+        description="This change will create a multi-day visit that crosses midnight into the next day. Are you sure?"
+        confirmLabel="Confirm"
+        variant="neutral"
+        onConfirm={() => { multiDayConfirm?.action(); setMultiDayConfirm(null); }}
+        testIdPrefix="dispatch-multi-day-confirm"
+      />
 
       {/* 2026-04-20: Canonical quick-create launcher — shared with
           Dashboard. Owns the chooser Dialog + QuickAddJobDialog +

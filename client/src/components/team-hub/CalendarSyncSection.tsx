@@ -1,7 +1,7 @@
 /**
  * CalendarSyncSection — Phase 1 external calendar subscription UI.
  *
- * Mounted on the Team member detail page. Owner/admin/manager can:
+ * Mounted on the Team member profile tab. Owner/admin/manager can:
  *   • Create (or view) the technician's private ICS feed URL
  *   • Copy it to clipboard
  *   • Regenerate the token (invalidates any currently-subscribed calendar)
@@ -11,6 +11,10 @@
  * server/services/technicianCalendarIcsService.ts. This component has no
  * knowledge of what goes into the ICS; it only manages the subscription
  * URL and explains how to use it.
+ *
+ * 2026-05-20 Color cleanup: hardcoded hex values replaced with semantic
+ * Tailwind tokens (bg-emerald-50, text-emerald-600, text-foreground,
+ * text-muted-foreground, border-border).
  */
 
 import { useState } from "react";
@@ -129,19 +133,19 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
     <Card data-testid="calendar-sync-section">
       <CardContent className="pt-4 pb-4 space-y-3">
         <div className="flex items-start gap-3">
-          <div className="p-2 rounded-md bg-[#F0F5F0] shrink-0">
-            <Calendar className="h-4 w-4 text-[#76B054]" />
+          <div className="p-2 rounded-md bg-emerald-50 dark:bg-emerald-950/25 shrink-0">
+            <Calendar className="h-4 w-4 text-emerald-600" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-[#111827]">Calendar Sync</h3>
+              <h3 className="text-sm font-semibold text-foreground">Calendar Sync</h3>
               {hasToken && (
                 <Badge variant={isActive ? "default" : "secondary"} className="text-[10px]">
                   {isActive ? "Active" : "Disabled"}
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-[#4b5563] mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5">
               Give {firstName} a read-only subscription URL so their assigned visits show up in
               Google Calendar, Apple Calendar, or Outlook. Changes always happen in {BRAND.product} —
               external calendars can't write back.
@@ -150,8 +154,8 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
         </div>
 
         {!hasToken && !isLoading && (
-          <div className="flex items-center justify-between gap-3 p-3 rounded-md border border-dashed border-[#e2e8f0]">
-            <p className="text-xs text-[#4b5563]">No calendar link yet.</p>
+          <div className="flex items-center justify-between gap-3 p-3 rounded-md border border-dashed border-border">
+            <p className="text-xs text-muted-foreground">No calendar link yet.</p>
             <Button
               size="sm"
               onClick={() => createMutation.mutate()}
@@ -251,21 +255,21 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
         )}
 
         {hasToken && isActive && feedUrl && (
-          <details className="text-xs text-[#4b5563]">
-            <summary className="cursor-pointer font-medium text-[#111827]">
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer font-medium text-foreground">
               How to subscribe
             </summary>
             <div className="pt-2 space-y-1.5 leading-relaxed">
               <p>
-                <span className="font-semibold text-[#111827]">Google Calendar</span> →
+                <span className="font-semibold text-foreground">Google Calendar</span> →
                 Settings → Add calendar → From URL → paste the link above.
               </p>
               <p>
-                <span className="font-semibold text-[#111827]">Apple Calendar</span> (iPhone
+                <span className="font-semibold text-foreground">Apple Calendar</span> (iPhone
                 or Mac) → File → New Calendar Subscription → paste the link.
               </p>
               <p>
-                <span className="font-semibold text-[#111827]">Outlook</span> → Add calendar →
+                <span className="font-semibold text-foreground">Outlook</span> → Add calendar →
                 Subscribe from web → paste the link.
               </p>
               <p className="italic">

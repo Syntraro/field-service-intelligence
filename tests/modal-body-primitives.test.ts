@@ -365,15 +365,15 @@ describe("PricebookPickerModal — error/empty use ModalStateBody", () => {
   });
 
   it("renders <ModalStateBody variant=\"empty\"> for empty-search state", () => {
-    expect(PRICEBOOK_SRC).toMatch(/<ModalStateBody[\s\S]{0,100}?variant="empty"[\s\S]{0,200}?pricebook-empty-search/);
+    expect(PRICEBOOK_SRC).toMatch(/<ModalStateBody[\s\S]{0,100}?variant="empty"[\s\S]{0,600}?pricebook-empty-search/);
   });
 
   it("renders <ModalStateBody variant=\"empty\"> for empty-catalog state", () => {
-    expect(PRICEBOOK_SRC).toMatch(/<ModalStateBody[\s\S]{0,100}?variant="empty"[\s\S]{0,200}?pricebook-empty[^-]/);
+    expect(PRICEBOOK_SRC).toMatch(/<ModalStateBody[\s\S]{0,100}?variant="empty"[\s\S]{0,900}?pricebook-empty[^-]/);
   });
 
   it("passes onRetry to the error ModalStateBody", () => {
-    expect(PRICEBOOK_SRC).toMatch(/onRetry=\{\(\) => refetch\(\)\}/);
+    expect(PRICEBOOK_SRC).toMatch(/onRetry=\{\(\) => refetchItems\(\)\}/);
   });
 
   it("does NOT contain raw border-rose-200 bg-rose-50 error div", () => {

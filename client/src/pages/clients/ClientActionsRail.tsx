@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { format, parseISO } from "date-fns";
 import { Users } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/formatters";
+import { formatCurrency, formatDate } from "@/lib/formatters";
 import { WorkspaceRailEntityCard } from "@/components/workspace/WorkspaceRailEntityCard";
 import { StatusChip } from "@/components/ui/chip";
 import { getClientGroupStatusMeta } from "@/lib/statusBadges";
@@ -40,19 +39,13 @@ interface ContactsResponse {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  try { return format(parseISO(iso), "MMM d, yyyy"); }
-  catch { return "—"; }
-}
-
 function deriveLastServiceDate(jobs: OverviewJob[]): string {
   const dates = jobs
     .filter((j) => j.status === "completed" || j.status === "invoiced")
     .map((j) => j.scheduledStart ?? j.createdAt)
     .filter(Boolean) as string[];
   if (dates.length === 0) return "—";
-  return fmt(dates.reduce((a, b) => (a > b ? a : b)));
+  return formatDate(dates.reduce((a, b) => (a > b ? a : b)));
 }
 
 // ── ClientActionsRail ─────────────────────────────────────────────────────────

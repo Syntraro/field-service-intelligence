@@ -47,7 +47,7 @@ export function ClientKpiStrip({
 }: ClientKpiStripProps) {
   return (
     <div
-      className="flex items-center gap-4 -mx-5 px-5 py-2 mt-1.5 border-t border-b border-slate-100 bg-slate-50/60 flex-wrap"
+      className="shrink-0 flex items-center gap-4 px-4 lg:px-6 py-2 border-b border-slate-100 bg-slate-50/60 flex-wrap"
       data-testid="client-kpi-strip"
     >
       <KpiCell label="Open Jobs" value={openJobs} muted={openJobs === 0} />

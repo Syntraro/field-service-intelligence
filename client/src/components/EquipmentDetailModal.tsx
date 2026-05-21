@@ -31,12 +31,11 @@ import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { ModalShell } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Loader2, Pencil, Wrench, Info } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
@@ -195,11 +194,13 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
   ];
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="sm:max-w-[720px] max-h-[88vh] flex flex-col p-0 gap-0 bg-card"
-        data-testid="equipment-detail-modal"
-      >
+    <>
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="sm:max-w-[720px] max-h-[88vh] flex flex-col bg-card"
+      data-testid="equipment-detail-modal"
+    >
         {/* ── Header — single-row layout: title (with type inline in
              muted parens) on the left, Edit button on the right, and
              shadcn's built-in close `<X>` floating absolute at
@@ -353,7 +354,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
             )}
           </section>
         </div>
-      </DialogContent>
+    </ModalShell>
 
       {/* 2026-04-30: canonical edit surface. Reuses AddEquipmentDialog
           in `mode="edit"`, prefilled from the current equipment record.
@@ -373,7 +374,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
         onOpenChange={setEditEquipmentOpen}
         onSaved={(updated) => setLocalEquipment(updated)}
       />
-    </Dialog>
+    </>
   );
 }
 

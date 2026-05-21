@@ -1,7 +1,6 @@
 import { useState, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
-import { format, isValid, parseISO, isPast } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 // Phase 12 (2026-04-12): Jobber-style send modal with backend-rendered preview.
 // 2026-05-02 (Audit #2 PR 2): SendQuoteModal wrapper deleted — it was a
@@ -46,20 +45,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-// Schedule Assessment (form modal, line ~899) still uses raw Dialog —
-// per CLAUDE.md Modal Taxonomy, form modals are deferred to a future
-// sprint. The four destructive/consequence-bearing confirms (Approve,
-// Decline, Delete, Convert to Job) migrated to <AlertDialog> on
-// 2026-05-06 per Rule #1.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ConfirmModal } from "@/components/ui/modal";
+  ConfirmModal,
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalSecondaryAction,
+  ModalPrimaryAction,
+} from "@/components/ui/modal";
 import {
   Tooltip,
   TooltipContent,
@@ -99,8 +95,7 @@ import {
 } from "@/components/line-items";
 import { invalidateQuote, invalidateQuoteList } from "@/lib/queryInvalidation";
 import { quoteKeys } from "@/lib/queryKeys/quotes";
-import { ApplyServiceTemplateDialog } from "./quotes/ApplyServiceTemplateDialog";
-import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
+import { safeFormatDate } from "@/components/quotes/shared/quoteFormatters";
 
 interface QuoteDetails {
   quote: Quote;
@@ -110,11 +105,6 @@ interface QuoteDetails {
   isExpired?: boolean;
 }
 
-function safeFormatDate(value: unknown): string {
-  if (!value) return "-";
-  const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : new Date(String(value));
-  return isValid(d) ? format(d, "MMM d, yyyy") : "-";
-}
 
 export default function QuoteDetailPage() {
   const [, params] = useRoute("/quotes/:id");
@@ -158,7 +148,6 @@ export default function QuoteDetailPage() {
   // reacts via `openAddNoteSignal`.
   const [notesAddSignal, setNotesAddSignal] = useState(0);
 
-  const [applyTemplateOpen, setApplyTemplateOpen] = useState(false);
 
   // Canonical Product/Service create flow — same pattern as Invoice.
   // One AddProductModal instance lives at the page level; the canonical
@@ -357,21 +346,6 @@ export default function QuoteDetailPage() {
     },
   });
 
-  const applyTemplateMutation = useMutation({
-    mutationFn: (template: ServiceTemplateDto) =>
-      apiRequest(`/api/quotes/${quoteId}/apply-template`, {
-        method: "POST",
-        body: JSON.stringify({ templateId: template.id }),
-      }),
-    onSuccess: () => {
-      invalidateQuote(queryClient, quoteId);
-      toast({ title: "Flat-rate service added" });
-      setApplyTemplateOpen(false);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to apply template", description: error.message, variant: "destructive" });
-    },
-  });
 
   const convertToJobMutation = useMutation({
     mutationFn: () =>
@@ -819,19 +793,6 @@ export default function QuoteDetailPage() {
               }}
               description={quote.notesCustomer ?? null}
             />
-            {/* Flat-rate service template shortcut — visible only when quote is draft */}
-            {isDraft && (
-              <div className="flex justify-end px-1 -mb-1">
-                <button
-                  type="button"
-                  onClick={() => setApplyTemplateOpen(true)}
-                  className="text-helper text-slate-500 hover:text-slate-700 underline underline-offset-2"
-                  data-testid="button-apply-service-template"
-                >
-                  + Add flat-rate service
-                </button>
-              </div>
-            )}
             {/* Line Items — canonical 2026-04-29 (Phase 2). The card
                 chrome / header metrics / column header / row bodies /
                 bottom action row / empty state all live in
@@ -1011,13 +972,6 @@ export default function QuoteDetailPage() {
         isSaving={savingCreatedProduct}
       />
 
-      <ApplyServiceTemplateDialog
-        open={applyTemplateOpen}
-        onOpenChange={setApplyTemplateOpen}
-        onApply={(template) => applyTemplateMutation.mutate(template)}
-        isPending={applyTemplateMutation.isPending}
-      />
-
       {/* Apply Template Modal */}
       <ApplyQuoteTemplateModal
         open={showApplyTemplateModal}
@@ -1026,14 +980,13 @@ export default function QuoteDetailPage() {
         quoteNumber={quote.quoteNumber || undefined}
       />
 
-      {/* Phase 2: Schedule Assessment Dialog */}
-      <Dialog open={showScheduleAssessment} onOpenChange={setShowScheduleAssessment}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Schedule Quote Assessment</DialogTitle>
-            <DialogDescription>Schedule a site assessment for {quote.quoteNumber || "this quote"}.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
+      <ModalShell open={showScheduleAssessment} onOpenChange={setShowScheduleAssessment}>
+        <ModalHeader>
+          <ModalTitle>Schedule Quote Assessment</ModalTitle>
+          <ModalDescription>Schedule a site assessment for {quote.quoteNumber || "this quote"}.</ModalDescription>
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-4">
             <div className="space-y-2">
               <Label>Date & Time *</Label>
               <Input type="datetime-local" value={assessmentDate} onChange={(e) => setAssessmentDate(e.target.value)} />
@@ -1052,17 +1005,17 @@ export default function QuoteDetailPage() {
               </select>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowScheduleAssessment(false)}>Cancel</Button>
-            <Button
-              onClick={() => scheduleAssessmentMutation.mutate()}
-              disabled={!assessmentDate || scheduleAssessmentMutation.isPending}
-            >
-              {scheduleAssessmentMutation.isPending ? "Scheduling..." : "Schedule Assessment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setShowScheduleAssessment(false)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={() => scheduleAssessmentMutation.mutate()}
+            disabled={!assessmentDate || scheduleAssessmentMutation.isPending}
+          >
+            {scheduleAssessmentMutation.isPending ? "Scheduling..." : "Schedule Assessment"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
     </>
   );
 }

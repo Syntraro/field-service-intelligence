@@ -39,16 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CanonicalCreateHeader } from "@/components/create/CanonicalCreateHeader";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
 import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
@@ -78,9 +69,6 @@ export default function CreateLeadPage() {
   const [estimatedValue, setEstimatedValue] = useState("");
   const [capturedByUserId, setCapturedByUserId] = useState(user?.id ?? "");
 
-  // Discard-confirm dialog visibility for the dirty-form guard. Uses
-  // the canonical AlertDialog primitive (modal taxonomy rule #1) so the
-  // surface matches the rest of the app's destructive confirmations.
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   // 2026-05-08 (create-page rail canonicalization): canonical right-rail
@@ -170,9 +158,7 @@ export default function CreateLeadPage() {
       ? `Add ${missingFields.join(" and ")} to create the lead.`
       : null;
 
-  // ── Cancel / back — clean form navigates immediately; dirty form
-  // routes through the AlertDialog discard-confirm (modal taxonomy
-  // rule #1: destructive confirmations use AlertDialog). ──
+  // ── Cancel / back — clean form navigates immediately; dirty form routes through discard confirm. ──
   const navigateBack = () => {
     if (isDirty) {
       setShowDiscardConfirm(true);
@@ -352,32 +338,18 @@ export default function CreateLeadPage() {
         initialValues={{ companyName: createClientInitialName }}
       />
 
-      {/* Discard-confirm dialog — fires when Cancel/back is pressed
-          on a dirty form. Uses AlertDialog per modal taxonomy rule #1
-          (destructive confirmation). Action button is the destructive
-          variant; Cancel keeps the user on /leads/new. */}
-      <AlertDialog open={showDiscardConfirm} onOpenChange={setShowDiscardConfirm}>
-        <AlertDialogContent className="sm:max-w-[400px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Discard this lead?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Your changes haven't been saved. If you leave now, the lead won't be created.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-discard-cancel">
-              Keep editing
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDiscard}
-              data-testid="button-discard-confirm"
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Discard
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Discard-confirm dialog — fires when Cancel/back is pressed on a dirty form. */}
+      <ConfirmModal
+        open={showDiscardConfirm}
+        onOpenChange={setShowDiscardConfirm}
+        title="Discard this lead?"
+        description="Your changes haven't been saved. If you leave now, the lead won't be created."
+        cancelLabel="Keep editing"
+        confirmLabel="Discard"
+        variant="destructive"
+        onConfirm={confirmDiscard}
+        testIdPrefix="lead-discard"
+      />
     </div>
   );
 }

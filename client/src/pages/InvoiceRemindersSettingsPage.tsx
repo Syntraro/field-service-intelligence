@@ -35,12 +35,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { FormField, FormLabel, FormErrorText, FormHelperText } from "@/components/ui/form-field";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+  ModalFooter,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import { Bell, Loader2, Eye, ArrowLeft } from "lucide-react";
 
 interface CompanySettingsResponse {
@@ -397,14 +398,17 @@ export default function InvoiceRemindersSettingsPage() {
         </Card>
       </div>
 
-      {/* Preview modal — uses canonical Dialog component so Escape + outside-click
-          + X button behaviors match every other dialog in the app. The page
-          layout behind the modal stays fixed. */}
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-2xl" data-testid="dialog-reminder-preview">
-          <DialogHeader>
-            <DialogTitle>Preview Reminder Email</DialogTitle>
-          </DialogHeader>
+      {/* Preview modal */}
+      <ModalShell
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        className="max-w-2xl"
+        data-testid="dialog-reminder-preview"
+      >
+        <ModalHeader>
+          <ModalTitle>Preview Reminder Email</ModalTitle>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-3">
             <div>
               <div className="text-helper text-muted-foreground mb-1">Subject</div>
@@ -425,17 +429,16 @@ export default function InvoiceRemindersSettingsPage() {
               Rendered with sample data. Real sends use each invoice's actual values.
             </FormHelperText>
           </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setPreviewOpen(false)}
-              data-testid="btn-close-preview"
-            >
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction
+            onClick={() => setPreviewOpen(false)}
+            data-testid="btn-close-preview"
+          >
+            Close
+          </ModalSecondaryAction>
+        </ModalFooter>
+      </ModalShell>
     </div>
   );
 }

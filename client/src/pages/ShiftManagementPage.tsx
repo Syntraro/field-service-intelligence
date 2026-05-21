@@ -11,7 +11,7 @@
  *  - All CRUD goes through /api/shift-management/shifts.
  *  - Time-off terminology replaced by "Unavailable" in all UI labels.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, type MutableRefObject } from "react";
 import { startOfWeek, addWeeks, addDays, format } from "date-fns";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CalendarRange, Plus, Loader2 } from "lucide-react";
@@ -138,7 +138,13 @@ function DeleteShiftScopeModal({
 
 // ── Main page ────────────────────────────────────────────────────────
 
-export default function ShiftManagementPage({ embedded = false }: { embedded?: boolean }) {
+export default function ShiftManagementPage({
+  embedded = false,
+  addShiftRef,
+}: {
+  embedded?: boolean;
+  addShiftRef?: MutableRefObject<(() => void) | null>;
+}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isEnabled = useFeatureEnabled("technician_shift_management");
@@ -252,6 +258,11 @@ export default function ShiftManagementPage({ embedded = false }: { embedded?: b
 
   // ── Handlers ──────────────────────────────────────────────────────
 
+  // Keep the ref in sync so TeamWorkspacePage's header button can trigger this.
+  useEffect(() => {
+    if (addShiftRef) addShiftRef.current = () => handleAddShift();
+  });
+
   function handleAddShift(techId?: string, date?: string, workShiftsFull?: boolean) {
     setEditShift(null);
     setDefaultTechId(techId);
@@ -308,7 +319,7 @@ export default function ShiftManagementPage({ embedded = false }: { embedded?: b
   if (isEnabled === false) {
     return (
       <div className="flex flex-col gap-0 h-full">
-        <PageHeader onAdd={() => handleAddShift()} addDisabled hideTitle={embedded} />
+        {!embedded && <PageHeader onAdd={() => handleAddShift()} addDisabled />}
         <FeatureDisabledState />
       </div>
     );
@@ -318,7 +329,7 @@ export default function ShiftManagementPage({ embedded = false }: { embedded?: b
 
   return (
     <div className="flex flex-col gap-0 h-full" data-testid="shift-management-page">
-      <PageHeader onAdd={() => handleAddShift()} hideTitle={embedded} />
+      {!embedded && <PageHeader onAdd={() => handleAddShift()} />}
 
       <div className="flex-1 overflow-auto p-4 sm:p-6">
         {isLoading ? (
@@ -387,20 +398,15 @@ export default function ShiftManagementPage({ embedded = false }: { embedded?: b
 interface PageHeaderProps {
   onAdd: () => void;
   addDisabled?: boolean;
-  hideTitle?: boolean;
 }
 
-function PageHeader({ onAdd, addDisabled, hideTitle }: PageHeaderProps) {
+function PageHeader({ onAdd, addDisabled }: PageHeaderProps) {
   return (
-    <div
-      className={`flex items-center border-b border-slate-200 bg-white px-4 py-3 sm:px-6 ${hideTitle ? "justify-end" : "justify-between"}`}
-    >
-      {!hideTitle && (
-        <div className="flex items-center gap-2">
-          <CalendarRange className="h-5 w-5 text-slate-500" />
-          <h1 className="text-header font-semibold text-slate-900">Shift Management</h1>
-        </div>
-      )}
+    <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
+      <div className="flex items-center gap-2">
+        <CalendarRange className="h-5 w-5 text-slate-500" />
+        <h1 className="text-header font-semibold text-slate-900">Shift Management</h1>
+      </div>
       <Button
         size="sm"
         onClick={onAdd}

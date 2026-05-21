@@ -29,12 +29,12 @@ import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+} from "@/components/ui/modal";
 import { Loader2, FileText, Clock, Calendar, CalendarOff, Archive } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { invalidateJob } from "@/lib/queryInvalidation";
@@ -180,26 +180,25 @@ export function PostVisitCompletionDialog({
     : "Completes the job. Invoice can be created later.";
 
   return (
-    <Dialog
+    <ModalShell
       open={open}
       onOpenChange={(next) => {
         // Don't allow closing while a mutation is in flight.
         if (isPending) return;
         onOpenChange(next);
       }}
+      className="sm:max-w-[520px]"
+      data-testid="post-visit-completion-dialog"
     >
-      <DialogContent
-        className="sm:max-w-[520px]"
-        data-testid="post-visit-completion-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>{titleText}</DialogTitle>
-          <DialogDescription>
-            {visitsLoading ? "Loading job state…" : descriptionText}
-          </DialogDescription>
-        </DialogHeader>
+      <ModalHeader>
+        <ModalTitle>{titleText}</ModalTitle>
+        <ModalDescription>
+          {visitsLoading ? "Loading job state…" : descriptionText}
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="flex flex-col gap-2 py-2" data-testid="post-visit-options">
+      <ModalBody>
+        <div className="flex flex-col gap-2" data-testid="post-visit-options">
           {/* Option 1: Close job & invoice now */}
           <button
             type="button"
@@ -290,7 +289,7 @@ export function PostVisitCompletionDialog({
             )}
           </button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </ModalBody>
+    </ModalShell>
   );
 }

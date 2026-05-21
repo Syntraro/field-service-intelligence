@@ -208,6 +208,7 @@ export class R2StorageProvider implements StorageProvider {
     objectKey: string,
     buffer: Buffer,
     contentType: string,
+    cacheControl?: string,
   ): Promise<void> {
     await this.client.send(
       new PutObjectCommand({
@@ -216,6 +217,7 @@ export class R2StorageProvider implements StorageProvider {
         Body: buffer,
         ContentType: contentType,
         ContentLength: buffer.byteLength,
+        ...(cacheControl ? { CacheControl: cacheControl } : {}),
       }),
     );
   }

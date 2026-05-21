@@ -20,6 +20,10 @@ import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { items, serviceTemplates, files } from "@shared/schema";
+// Cache-Control applied to R2 objects at upload time. UUID keys are immutable
+// (same key → same content), so browser/CDN may cache the image bytes for the
+// duration of a signed URL session (≤ 10 min). 1 day is safe for immutable blobs.
+const IMAGE_CACHE_CONTROL = "public, max-age=86400";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { requirePermission } from "../permissions";
@@ -93,29 +97,48 @@ async function storeProcessedImage(
   const imageKey = pricebookImageKey(companyId, entityType, entityId, fileId);
   const thumbKey = pricebookThumbKey(companyId, entityType, entityId, fileId);
 
-  // Upload both versions to R2 in parallel.
-  await Promise.all([
-    provider.putObjectBuffer(bucket, imageKey, processed.optimizedBuffer, "image/webp"),
-    provider.putObjectBuffer(bucket, thumbKey, processed.thumbnailBuffer, "image/webp"),
-  ]);
+  // Upload both versions to R2 in parallel. Track which keys succeeded so
+  // we can compensate if one upload fails and the other was already written.
+  const uploadedKeys: string[] = [];
+  try {
+    await Promise.all([
+      provider.putObjectBuffer(bucket, imageKey, processed.optimizedBuffer, "image/webp", IMAGE_CACHE_CONTROL)
+        .then(() => { uploadedKeys.push(imageKey); }),
+      provider.putObjectBuffer(bucket, thumbKey, processed.thumbnailBuffer, "image/webp", IMAGE_CACHE_CONTROL)
+        .then(() => { uploadedKeys.push(thumbKey); }),
+    ]);
+  } catch (r2Err) {
+    // At least one upload failed. Delete any keys that did succeed to prevent orphans.
+    if (uploadedKeys.length > 0) {
+      await provider.deleteObjectsBatch(bucket, uploadedKeys).catch(() => {});
+    }
+    throw r2Err;
+  }
 
-  // Create a files metadata row for the optimized image (status=uploaded directly).
-  const [fileRow] = await db
-    .insert(files)
-    .values({
-      id: fileId,
-      companyId,
-      storageProvider: "r2",
-      bucket,
-      storageKey: imageKey,
-      originalName: originalFilename,
-      mimeType: "image/webp",
-      size: processed.optimizedBytes,
-      status: "uploaded",
-      category: "other",
-      createdBy: userId,
-    })
-    .returning({ id: files.id });
+  // Create a files metadata row. If the INSERT fails, both R2 objects are
+  // orphaned — delete them before re-throwing.
+  let fileRow: { id: string };
+  try {
+    [fileRow] = await db
+      .insert(files)
+      .values({
+        id: fileId,
+        companyId,
+        storageProvider: "r2",
+        bucket,
+        storageKey: imageKey,
+        originalName: originalFilename,
+        mimeType: "image/webp",
+        size: processed.optimizedBytes,
+        status: "uploaded",
+        category: "other",
+        createdBy: userId,
+      })
+      .returning({ id: files.id });
+  } catch (dbErr) {
+    await provider.deleteObjectsBatch(bucket, [imageKey, thumbKey]).catch(() => {});
+    throw dbErr;
+  }
 
   return {
     imageFileId: fileRow.id,
@@ -190,21 +213,29 @@ router.post(
       req.file.mimetype,
     );
 
+    // If the DB update fails after the R2 upload succeeded, compensate by
+    // deleting the newly uploaded objects and their files row.
     const [updated] = await db
       .update(items)
       .set({ ...meta, imageAltText: req.body.altText ?? null, updatedAt: new Date() })
       .where(and(eq(items.id, existing.id), eq(items.companyId, companyId)))
-      .returning();
+      .returning()
+      .catch(async (updateErr) => {
+        const p = getR2Provider();
+        await p.deleteObjectsBatch(p.defaultBucket, [meta.imageStorageKey, meta.thumbnailStorageKey]).catch(() => {});
+        await db.delete(files).where(eq(files.id, meta.imageFileId)).catch(() => {});
+        throw updateErr;
+      });
 
-    // Queue old image for cleanup after the new one is committed.
+    // Non-fatal: enqueue old image cleanup. If this fails, the old R2 objects
+    // remain until the next background sweep (storage waste, not data corruption).
     if (existing.imageStorageKey || existing.thumbnailStorageKey) {
-      const provider = getR2Provider();
-      await enqueueOldImageCleanup(
-        companyId,
-        provider.defaultBucket,
-        existing,
-        "item_image_replace",
-      );
+      try {
+        const provider = getR2Provider();
+        await enqueueOldImageCleanup(companyId, provider.defaultBucket, existing, "item_image_replace");
+      } catch (cleanupErr) {
+        console.error("[pricebook] Failed to queue old item image cleanup:", cleanupErr);
+      }
     }
 
     res.json(updated);
@@ -307,16 +338,21 @@ router.post(
       .where(
         and(eq(serviceTemplates.id, existing.id), eq(serviceTemplates.companyId, companyId)),
       )
-      .returning();
+      .returning()
+      .catch(async (updateErr) => {
+        const p = getR2Provider();
+        await p.deleteObjectsBatch(p.defaultBucket, [meta.imageStorageKey, meta.thumbnailStorageKey]).catch(() => {});
+        await db.delete(files).where(eq(files.id, meta.imageFileId)).catch(() => {});
+        throw updateErr;
+      });
 
     if (existing.imageStorageKey || existing.thumbnailStorageKey) {
-      const provider = getR2Provider();
-      await enqueueOldImageCleanup(
-        companyId,
-        provider.defaultBucket,
-        existing,
-        "template_image_replace",
-      );
+      try {
+        const provider = getR2Provider();
+        await enqueueOldImageCleanup(companyId, provider.defaultBucket, existing, "template_image_replace");
+      } catch (cleanupErr) {
+        console.error("[pricebook] Failed to queue old template image cleanup:", cleanupErr);
+      }
     }
 
     res.json(updated);
@@ -411,6 +447,9 @@ router.get(
         : Promise.resolve(null),
     ]);
 
+    // Prevent HTTP-level caching of time-limited signed URLs.
+    // TanStack Query with staleTime=8min is the sole cache layer.
+    res.set("Cache-Control", "private, no-store");
     res.json({
       imageUrl: imageSigned.url,
       thumbnailUrl: thumbSigned?.url ?? null,
@@ -453,6 +492,7 @@ router.get(
         : Promise.resolve(null),
     ]);
 
+    res.set("Cache-Control", "private, no-store");
     res.json({
       imageUrl: imageSigned.url,
       thumbnailUrl: thumbSigned?.url ?? null,

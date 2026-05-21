@@ -1,11 +1,17 @@
 // Team Management Workspace — Members tab within /team workspace.
 //
 // Left rail: real team members only (no pseudo-member rows).
-// Right panel: TeamMemberWorkspace with Profile / Permissions / Scheduling /
+// Right panel: TeamMemberWorkspace with Profile / Permissions /
 //   Payroll & Cost / Skills & Licenses / Performance tabs.
 //
 // URL state: ?member=<id>&tab=<tabId> — both persisted across refreshes.
 // Legacy tab aliases preserved so old deep-links keep working.
+//
+// When embedded=true (inside TeamWorkspacePage):
+//   - No header or action buttons rendered here; TeamWorkspacePage owns those.
+//   - Grid starts immediately with the member rail + workspace.
+// When embedded=false (standalone at legacy /settings/team route):
+//   - Renders its own title, subtitle, and Invite / Add Member buttons.
 import { useCallback, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -22,7 +28,6 @@ import {
 const VALID_TABS = [
   "profile",
   "permissions",
-  "scheduling",
   "payroll",
   "skills",
   "performance",
@@ -35,9 +40,10 @@ const LEGACY_TAB_ALIAS: Record<string, WorkspaceTabId> = {
   compensation: "payroll",
   access: "permissions",
   members: "profile",
-  // Old schedule aliases now go to the Scheduling tab
-  schedule: "scheduling",
-  schedules: "scheduling",
+  // Scheduling tab removed 2026-05-20 — redirects to Profile
+  schedule: "profile",
+  schedules: "profile",
+  scheduling: "profile",
 };
 
 const isValidTab = (v: string | null): v is WorkspaceTabId =>
@@ -91,9 +97,10 @@ export default function TeamHubPage({ embedded = false }: { embedded?: boolean }
 
   return (
     <div className={embedded ? undefined : "bg-background min-h-screen"}>
-      <div className={embedded ? "p-4 md:p-6" : "max-w-7xl mx-auto p-4 md:p-6"}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-          {!embedded && (
+      <div className={embedded ? "px-4 md:px-6 pt-4 pb-6" : "max-w-7xl mx-auto p-4 md:p-6"}>
+        {/* Standalone mode only — header + actions */}
+        {!embedded && (
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
             <div>
               <h1
                 className="text-2xl md:text-3xl font-bold"
@@ -108,30 +115,30 @@ export default function TeamHubPage({ embedded = false }: { embedded?: boolean }
                 Team performance, payroll, and access management.
               </p>
             </div>
-          )}
-          <div className={cn("flex gap-2", embedded && "ml-auto")}>
-            <Button
-              variant="outline"
-              onClick={() => setInviteOpen(true)}
-              data-testid="button-invite"
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              Invite
-            </Button>
-            <Button
-              onClick={() => setAddOpen(true)}
-              data-testid="button-add-member"
-            >
-              <UserPlus className="h-4 w-4 mr-2" />
-              Add Member
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setInviteOpen(true)}
+                data-testid="button-invite"
+              >
+                <Mail className="h-4 w-4 mr-2" />
+                Invite
+              </Button>
+              <Button
+                onClick={() => setAddOpen(true)}
+                data-testid="button-add-member"
+              >
+                <UserPlus className="h-4 w-4 mr-2" />
+                Add Member
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* 2-column workspace: shared left rail + member detail right pane.
+        {/* 2-column workspace: shared left rail (256px) + member detail right pane.
             When no member is selected the right pane shows the empty state (metrics strip
             + "Select a team member" prompt). Performance analytics live in the Performance tab. */}
-        <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-[256px_1fr] gap-4">
           <TeamMemberList
             selectedMemberId={selectedMember}
             onSelect={setSelectedMember}
@@ -145,8 +152,13 @@ export default function TeamHubPage({ embedded = false }: { embedded?: boolean }
         </div>
       </div>
 
-      <AddMemberDialog open={addOpen} onOpenChange={setAddOpen} />
-      <InviteMemberDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+      {/* Standalone mode only — dialogs */}
+      {!embedded && (
+        <>
+          <AddMemberDialog open={addOpen} onOpenChange={setAddOpen} />
+          <InviteMemberDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+        </>
+      )}
     </div>
   );
 }

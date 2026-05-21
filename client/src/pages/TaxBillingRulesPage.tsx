@@ -21,14 +21,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Table,
   TableBody,
   TableCell,
@@ -36,7 +28,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ConfirmModal } from "@/components/ui/modal";
+import {
+  ConfirmModal,
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { FormField, FormLabel, FormHelperText, InlineInput } from "@/components/ui/form-field";
@@ -712,14 +714,14 @@ export default function TaxBillingRulesPage() {
       </Card>
 
       {/* Rate Dialog */}
-      <Dialog open={rateDialogOpen} onOpenChange={setRateDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingRate ? "Edit Tax Rate" : "Add Tax Rate"}</DialogTitle>
-            <DialogDescription>
-              {editingRate ? "Update the tax rate details." : "Create a new individual tax rate."}
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell open={rateDialogOpen} onOpenChange={setRateDialogOpen}>
+        <ModalHeader>
+          <ModalTitle>{editingRate ? "Edit Tax Rate" : "Add Tax Rate"}</ModalTitle>
+          <ModalDescription>
+            {editingRate ? "Update the tax rate details." : "Create a new individual tax rate."}
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-4">
             <InlineInput
               id="rate-name"
@@ -748,28 +750,28 @@ export default function TaxBillingRulesPage() {
               data-testid="input-rate-description"
             />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRateDialogOpen(false)}>Cancel</Button>
-            <Button
-              onClick={handleSaveRate}
-              disabled={createRateMutation.isPending || updateRateMutation.isPending}
-              data-testid="button-save-rate"
-            >
-              {(createRateMutation.isPending || updateRateMutation.isPending) ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setRateDialogOpen(false)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleSaveRate}
+            disabled={createRateMutation.isPending || updateRateMutation.isPending}
+            data-testid="button-save-rate"
+          >
+            {(createRateMutation.isPending || updateRateMutation.isPending) ? "Saving..." : "Save"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       {/* Group Dialog */}
-      <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{editingGroup ? "Edit Tax Group" : "Add Tax Group"}</DialogTitle>
-            <DialogDescription>
-              {editingGroup ? "Update the tax group and its rates." : "Create a group that combines multiple tax rates."}
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell open={groupDialogOpen} onOpenChange={setGroupDialogOpen} className="max-w-lg">
+        <ModalHeader>
+          <ModalTitle>{editingGroup ? "Edit Tax Group" : "Add Tax Group"}</ModalTitle>
+          <ModalDescription>
+            {editingGroup ? "Update the tax group and its rates." : "Create a group that combines multiple tax rates."}
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
           <div className="space-y-4">
             <InlineInput
               id="group-name"
@@ -827,18 +829,18 @@ export default function TaxBillingRulesPage() {
               </Label>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setGroupDialogOpen(false)}>Cancel</Button>
-            <Button
-              onClick={handleSaveGroup}
-              disabled={createGroupMutation.isPending || updateGroupMutation.isPending}
-              data-testid="button-save-group"
-            >
-              {(createGroupMutation.isPending || updateGroupMutation.isPending) ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setGroupDialogOpen(false)}>Cancel</ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleSaveGroup}
+            disabled={createGroupMutation.isPending || updateGroupMutation.isPending}
+            data-testid="button-save-group"
+          >
+            {(createGroupMutation.isPending || updateGroupMutation.isPending) ? "Saving..." : "Save"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       <ConfirmModal
         open={!!deleteRateId}

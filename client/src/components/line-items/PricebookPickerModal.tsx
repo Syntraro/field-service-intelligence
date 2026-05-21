@@ -10,16 +10,25 @@
  *   - Plus increments quantity on the same selection entry (no dupes).
  *   - Minus decrements; quantity 0 → unselected.
  *   - Submit is disabled when the selection is empty.
- *   - Submit calls `onSubmit(drafts)` where each item with qty N is
- *     ONE draft with quantity N.
- *   - Selection survives search filter changes; cleared on close.
+ *   - Submit calls `onSubmit(entries)` where each selected row with qty N
+ *     becomes ONE draft with quantity N. Pricebook items carry product;
+ *     template rows carry product=null with serviceTemplateId set.
+ *   - Selection survives search/filter changes; cleared on close.
  *   - Submit label is caller-driven via `surface`.
+ *
+ * Data sources:
+ *   - GET /api/items?sort=most_used — pricebook catalog items (services + materials)
+ *   - GET /api/service-templates    — flat-rate service templates
+ *
+ * Ordering (All view): items in server most_used order, then templates by
+ * usageCount DESC. Type filters narrow to a single source.
  */
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Minus, Plus, Search } from "lucide-react";
 import { ModalStateBody } from "@/components/ui/modal";
+import { FilterChip } from "@/components/ui/chip";
 
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -40,41 +49,52 @@ import {
 } from "@/lib/entities/productEntity";
 import { formatCurrency } from "@/lib/formatters";
 import type { LineItemDraft } from "@shared/lineItem";
+import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
 import type { LineItemsAdapter } from "./types";
 import {
   decrementSelection,
-  filterPricebookItems,
+  filterCatalogRows,
   incrementSelection,
   pricebookSubmitLabel,
   selectedCount,
-  selectedTotal,
-  selectionsToDrafts,
+  catalogSelectedTotal,
+  catalogSelectionsToDrafts,
   type PricebookSelections,
 } from "./pricebookHelpers";
+import {
+  normalizePricebookRow,
+  normalizeTemplateRow,
+  type CatalogPickerRow,
+} from "./catalogPickerTypes";
+import { ServiceTemplateCard } from "./ServiceTemplateCard";
+
+// ── Type filter ────────────────────────────────────────────────────────────────
+
+type TypeFilter = "all" | "service" | "product" | "template";
+
+// ── Props ─────────────────────────────────────────────────────────────────────
 
 export interface PricebookPickerModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   surface: LineItemsAdapter["surface"];
   /**
-   * Submit handler. Receives one entry per selected item with quantity
-   * pre-applied; re-shapes for `useLineItemsDrafts.appendMany`. Caller
-   * is responsible for closing the modal — we leave that to the host
-   * so it can also fire toasts / focus changes alongside.
+   * Submit handler. Receives one entry per selected row with quantity
+   * pre-applied. Pricebook rows carry `product: ProductOption`;
+   * template rows carry `product: null` with `serviceTemplateId` set
+   * on the draft. Caller is responsible for closing the modal.
    */
   onSubmit: (
-    entries: Array<{ draft: LineItemDraft; product: ProductOption }>,
+    entries: Array<{ draft: LineItemDraft; product: ProductOption | null }>,
   ) => void;
 }
 
+// ── Data fetching ─────────────────────────────────────────────────────────────
+
 /**
- * Pricebook fetch — single bulk read of the catalog.
- *
- *   • Empty search  → `?sort=most_used&limit=200`. The route ranks
- *     items by historical usage count across invoice_lines,
- *     quote_lines, and job_parts (tenant-scoped).
- *   • Non-empty search → `?q=…&limit=200`. Server applies case-
- *     insensitive ILIKE search across name / sku / description.
+ * Pricebook items fetch.
+ *   • Empty search  → `?sort=most_used&limit=200`
+ *   • Non-empty     → `?q=…&limit=200` (server ILIKE across name/sku/description)
  */
 function usePricebookItems(searchText: string) {
   return useQuery<ProductOption[]>({
@@ -92,6 +112,19 @@ function usePricebookItems(searchText: string) {
   });
 }
 
+/** Service templates fetch — full list, client-side filtered. */
+function usePickerTemplates(open: boolean) {
+  return useQuery<ServiceTemplateDto[]>({
+    queryKey: ["/api/service-templates"],
+    queryFn: () => apiRequest<ServiceTemplateDto[]>("/api/service-templates"),
+    staleTime: 30_000,
+    // Only fetch when modal is open — avoids new network traffic on unrelated pages.
+    enabled: open,
+  });
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+
 export function PricebookPickerModal({
   open,
   onOpenChange,
@@ -99,35 +132,78 @@ export function PricebookPickerModal({
   onSubmit,
 }: PricebookPickerModalProps) {
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selections, setSelections] = useState<PricebookSelections>(new Map());
 
-  // Selection survives search filter changes (per brief). Cleared only
-  // on close — re-opening yields a fresh canvas.
+  // Selection, search, and type filter clear on close; re-opening yields a fresh canvas.
   useEffect(() => {
     if (!open) {
       setSelections(new Map());
       setSearch("");
+      setTypeFilter("all");
     }
   }, [open]);
 
-  const { data: serverItems = [], isLoading, isError, refetch } =
-    usePricebookItems(search);
+  const {
+    data: serverItems = [],
+    isLoading: itemsLoading,
+    isError,
+    refetch: refetchItems,
+  } = usePricebookItems(search);
 
-  // Client-side filter as a preview while typing — keeps the grid
-  // responsive even before the server query settles.
-  const visibleItems = useMemo(
-    () => filterPricebookItems(serverItems, search),
-    [serverItems, search],
+  const {
+    data: serverTemplates = [],
+    isLoading: templatesLoading,
+  } = usePickerTemplates(open);
+
+  // Active templates only, sorted by usageCount DESC.
+  const activeTemplates = useMemo(
+    () =>
+      serverTemplates
+        .filter((t) => t.isActive && !t.deletedAt)
+        .slice()
+        .sort((a, b) => b.usageCount - a.usageCount),
+    [serverTemplates],
+  );
+
+  // Merged row array: items (server most_used order) then templates (usageCount DESC).
+  const allRows = useMemo<CatalogPickerRow[]>(() => {
+    const itemRows = serverItems.map(normalizePricebookRow);
+    const templateRows = activeTemplates.map(normalizeTemplateRow);
+    return [...itemRows, ...templateRows];
+  }, [serverItems, activeTemplates]);
+
+  // Apply type filter.
+  const typeFilteredRows = useMemo<CatalogPickerRow[]>(() => {
+    switch (typeFilter) {
+      case "service":
+        return allRows.filter(
+          (r) => r._source === "pricebook" && r._raw.type === "service",
+        );
+      case "product":
+        return allRows.filter(
+          (r) => r._source === "pricebook" && r._raw.type === "product",
+        );
+      case "template":
+        return allRows.filter((r) => r._source === "template");
+      default:
+        return allRows;
+    }
+  }, [allRows, typeFilter]);
+
+  // Client-side text search on top of the type-filtered set.
+  const visibleRows = useMemo(
+    () => filterCatalogRows(typeFilteredRows, search),
+    [typeFilteredRows, search],
   );
 
   const itemCount = selectedCount(selections);
   const itemTotal = useMemo(
-    () => selectedTotal(selections, serverItems),
-    [selections, serverItems],
+    () => catalogSelectedTotal(selections, allRows),
+    [selections, allRows],
   );
 
-  // Stable per-item callbacks. Passing these to the memoized card
-  // means clicking + on one card does NOT re-render the others.
+  // Stable per-row callbacks — clicking + on one card does NOT re-render siblings.
   const onIncrement = useCallback((itemId: string) => {
     setSelections((prev) => incrementSelection(prev, itemId));
   }, []);
@@ -136,15 +212,18 @@ export function PricebookPickerModal({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    const entries = selectionsToDrafts(selections, serverItems);
+    const entries = catalogSelectionsToDrafts(selections, allRows);
     if (entries.length === 0) return;
     onSubmit(entries);
     setSelections(new Map());
     onOpenChange(false);
-  }, [selections, serverItems, onSubmit, onOpenChange]);
+  }, [selections, allRows, onSubmit, onOpenChange]);
 
   const submitLabel = pricebookSubmitLabel(surface);
   const submitDisabled = itemCount === 0;
+
+  // Show skeleton only when items are loading (templates populate the grid in background).
+  const isLoading = itemsLoading && serverItems.length === 0;
 
   return (
     <ModalShell
@@ -171,6 +250,45 @@ export function PricebookPickerModal({
             data-testid="pricebook-search-input"
           />
         </div>
+        <div
+          className="flex gap-1.5"
+          role="group"
+          aria-label="Filter by item type"
+          data-testid="pricebook-type-filters"
+        >
+          <FilterChip
+            selected={typeFilter === "all"}
+            size="compact"
+            onClick={() => setTypeFilter("all")}
+            data-testid="pricebook-filter-all"
+          >
+            All
+          </FilterChip>
+          <FilterChip
+            selected={typeFilter === "service"}
+            size="compact"
+            onClick={() => setTypeFilter("service")}
+            data-testid="pricebook-filter-services"
+          >
+            Services
+          </FilterChip>
+          <FilterChip
+            selected={typeFilter === "product"}
+            size="compact"
+            onClick={() => setTypeFilter("product")}
+            data-testid="pricebook-filter-materials"
+          >
+            Materials
+          </FilterChip>
+          <FilterChip
+            selected={typeFilter === "template"}
+            size="compact"
+            onClick={() => setTypeFilter("template")}
+            data-testid="pricebook-filter-flat-rate"
+          >
+            Flat-Rate Services
+          </FilterChip>
+        </div>
       </ModalHeader>
 
       <div
@@ -190,21 +308,41 @@ export function PricebookPickerModal({
           <ModalStateBody
             variant="error"
             message="Couldn't load pricebook items. Please try again."
-            onRetry={() => refetch()}
+            onRetry={() => refetchItems()}
             data-testid="pricebook-error"
           />
-        ) : visibleItems.length === 0 ? (
+        ) : visibleRows.length === 0 ? (
           search.trim().length > 0 ? (
             <ModalStateBody
               variant="empty"
-              message={`No pricebook items match "${search.trim()}".`}
+              message={
+                typeFilter === "template"
+                  ? `No flat-rate services match "${search.trim()}".`
+                  : typeFilter === "service"
+                    ? `No services match "${search.trim()}".`
+                    : typeFilter === "product"
+                      ? `No materials match "${search.trim()}".`
+                      : `No items match "${search.trim()}".`
+              }
               data-testid="pricebook-empty-search"
             />
           ) : (
             <ModalStateBody
               variant="empty"
-              message="You don't have any saved pricebook items yet."
-              submessage="Add items from Settings → Pricebook to use the bulk picker."
+              message={
+                typeFilter === "template"
+                  ? "You don't have any flat-rate service templates yet."
+                  : typeFilter === "service"
+                    ? "You don't have any saved services yet."
+                    : typeFilter === "product"
+                      ? "You don't have any saved materials yet."
+                      : "You don't have any saved pricebook items yet."
+              }
+              submessage={
+                typeFilter === "template"
+                  ? "Create flat-rate service templates from Settings → Service Templates."
+                  : "Add items from Settings → Pricebook to use the bulk picker."
+              }
               data-testid="pricebook-empty"
             />
           )
@@ -214,16 +352,25 @@ export function PricebookPickerModal({
             style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
             data-testid="pricebook-items"
           >
-            {visibleItems.map((item) => {
-              const qty = selections.get(item.id) ?? 0;
+            {visibleRows.map((row) => {
+              const qty = selections.get(row.id) ?? 0;
               return (
-                <li key={item.id}>
-                  <PricebookItemCard
-                    item={item}
-                    quantity={qty}
-                    onIncrement={onIncrement}
-                    onDecrement={onDecrement}
-                  />
+                <li key={row.id}>
+                  {row._source === "template" ? (
+                    <ServiceTemplateCard
+                      row={row}
+                      quantity={qty}
+                      onIncrement={onIncrement}
+                      onDecrement={onDecrement}
+                    />
+                  ) : (
+                    <PricebookItemCard
+                      item={row._raw}
+                      quantity={qty}
+                      onIncrement={onIncrement}
+                      onDecrement={onDecrement}
+                    />
+                  )}
                 </li>
               );
             })}
@@ -260,7 +407,7 @@ export function PricebookPickerModal({
   );
 }
 
-// ── Item card ────────────────────────────────────────────────────────
+// ── Pricebook item card ────────────────────────────────────────────────────────
 
 interface PricebookItemCardProps {
   item: ProductOption;

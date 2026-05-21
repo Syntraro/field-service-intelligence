@@ -166,7 +166,7 @@ export function TasksOverviewCard() {
 
       {/* Filter band — technician Select on left, Open/Done status tabs on right */}
       <div
-        className="px-4 py-1.5 flex items-center justify-between gap-2 border-b border-card-border shrink-0"
+        className="px-4 py-2 flex items-center justify-between gap-2 border-b border-card-border shrink-0"
         data-testid="tasks-overview-filters"
       >
         <Select value={techFilter} onValueChange={setTechFilter}>
@@ -242,7 +242,7 @@ export function TasksOverviewCard() {
                 <li
                   key={t.id}
                   className={cn(
-                    "px-4 py-1.5 flex items-center gap-2 cursor-pointer hover:bg-primary/5 transition-colors",
+                    "px-4 py-2 flex items-center gap-2 cursor-pointer hover:bg-primary/5 transition-colors",
                     !isLast && "border-b border-card-border",
                   )}
                   onClick={() => handleRowClick(t.id)}

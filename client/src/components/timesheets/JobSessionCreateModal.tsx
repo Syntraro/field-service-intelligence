@@ -44,16 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { ConfirmModal } from "@/components/ui/modal";
 import { Input } from "@/components/ui/input";
 import { FormField, FormLabel, FormErrorText, InlineTextarea } from "@/components/ui/form-field";
 import { Button } from "@/components/ui/button";
@@ -657,28 +648,16 @@ export function JobSessionCreateModal({
         condition is `isJobClosedOrInvoiced` (status !== "open" OR
         invoiceId set). Opens INSIDE the modal — Cancel returns to
         the modal with state intact; Confirm runs the canonical save. */}
-    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-      <AlertDialogContent data-testid="closed-job-confirm">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Add time to a closed or invoiced job?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This job is closed or already invoiced. Time will be added to the
-            timesheet only and will not update the invoice automatically.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel data-testid="closed-job-confirm-cancel">
-            Cancel
-          </AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handleConfirmedSave}
-            data-testid="closed-job-confirm-action"
-          >
-            Add time
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmModal
+      open={confirmOpen}
+      onOpenChange={setConfirmOpen}
+      title="Add time to a closed or invoiced job?"
+      description="This job is closed or already invoiced. Time will be added to the timesheet only and will not update the invoice automatically."
+      confirmLabel="Add time"
+      variant="neutral"
+      onConfirm={handleConfirmedSave}
+      testIdPrefix="closed-job-confirm"
+    />
     </>
   );
 }

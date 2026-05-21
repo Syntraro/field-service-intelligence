@@ -32,13 +32,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+  ModalSecondaryAction,
+  ModalPrimaryAction,
+} from "@/components/ui/modal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2, RefreshCw, Calendar, Clock, List, ExternalLink, Ban, SkipForward, ArrowLeft } from "lucide-react";
@@ -656,21 +658,24 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
       />
 
       {/* Edit-only Dialog — retained for editing existing recurring templates */}
-      <Dialog open={isEditDialogOpen} onOpenChange={(open) => {
-        if (!open) {
-          setEditingTemplate(null);
-          resetForm();
-        }
-      }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Edit Template</DialogTitle>
-            <DialogDescription>
-              Changes affect future generated jobs only; existing jobs are not modified.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
+      <ModalShell
+        open={isEditDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingTemplate(null);
+            resetForm();
+          }
+        }}
+        className="max-w-lg"
+      >
+        <ModalHeader>
+          <ModalTitle>Edit Template</ModalTitle>
+          <ModalDescription>
+            Changes affect future generated jobs only; existing jobs are not modified.
+          </ModalDescription>
+        </ModalHeader>
+        <ModalBody>
+          <div className="space-y-4">
             {/* Title */}
             <div className="space-y-2">
               <Label htmlFor="title">Title *</Label>
@@ -830,46 +835,41 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
             </div>
           </div>
 
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setEditingTemplate(null);
-                resetForm();
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={
-                !formData.title ||
-                !formData.startDate ||
-                (formData.recurrenceKind === "weekly" && formData.daysOfWeek.length === 0) ||
-                updateMutation.isPending
-              }
-            >
-              Save Changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction
+            onClick={() => {
+              setEditingTemplate(null);
+              resetForm();
+            }}
+          >
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            onClick={handleSubmit}
+            disabled={
+              !formData.title ||
+              !formData.startDate ||
+              (formData.recurrenceKind === "weekly" && formData.daysOfWeek.length === 0) ||
+              updateMutation.isPending
+            }
+          >
+            Save Changes
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </ModalShell>
 
       {/* View Instances Dialog */}
-      <Dialog open={viewingTemplate !== null} onOpenChange={(open) => {
-        if (!open) setViewingTemplate(null);
-      }}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle>
-              Instances: {viewingTemplate?.title}
-            </DialogTitle>
-            <DialogDescription>
-              Next 60 days of scheduled instances
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex-1 overflow-auto">
+      <ModalShell
+        open={viewingTemplate !== null}
+        onOpenChange={(open) => { if (!open) setViewingTemplate(null); }}
+        className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+      >
+        <ModalHeader>
+          <ModalTitle>Instances: {viewingTemplate?.title}</ModalTitle>
+          <ModalDescription>Next 60 days of scheduled instances</ModalDescription>
+        </ModalHeader>
+        <ModalBody className="flex-1 overflow-auto p-0">
             {instancesLoading ? (
               <div className="text-center py-8 text-muted-foreground">Loading instances...</div>
             ) : instances.length === 0 ? (
@@ -939,15 +939,11 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                 </TableBody>
               </Table>
             )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setViewingTemplate(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+        <ModalFooter>
+          <ModalSecondaryAction onClick={() => setViewingTemplate(null)}>Close</ModalSecondaryAction>
+        </ModalFooter>
+      </ModalShell>
     </div>
   );
 }

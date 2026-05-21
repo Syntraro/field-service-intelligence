@@ -80,7 +80,7 @@ interface LeadNote {
   updatedAt: string | null;
 }
 
-// 2026-05-06 PR1: STATUS_BADGE moved to shared/leadBadges.ts so the
+// 2026-05-06 PR1: STATUS_BADGE moved to components/leads/shared/leadBadges.ts so the
 // detail page and the future create page render identical status pills
 // from a single source. Imported by LeadSummaryCard.
 

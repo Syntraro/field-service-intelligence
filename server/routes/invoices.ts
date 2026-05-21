@@ -1211,6 +1211,11 @@ const updateInvoiceLineSchema = z.object({
   taxAmount: moneyString.optional(),
   lineTotal: moneyString.optional(),
   productId: z.string().uuid().nullable().optional(),
+  // serviceTemplateId: attribution-only field passed through the canonical
+  // payload; the column now exists on invoice_lines (migration 2026_05_20).
+  // Including it here prevents the .strict() rejection that blocked any line
+  // edit when serviceTemplateId was null in the canonical payload.
+  serviceTemplateId: z.string().uuid().nullable().optional(),
   overrideQboLock: z.boolean().optional(),
   overrideReason: z.string().min(10).max(500).optional(),
 }).strict();

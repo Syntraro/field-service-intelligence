@@ -148,8 +148,6 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // label. Shared with InvoiceDetailPage so both surfaces apply the same
 // raw-only / no-customer-duplicate rule.
 import { resolveServiceLocationName } from "@/lib/serviceAddress";
-import { ApplyServiceTemplateDialog } from "./quotes/ApplyServiceTemplateDialog";
-import type { ServiceTemplateDto } from "@/lib/serviceTemplates/serviceTemplateTypes";
 
 // ============================================================================
 // PERMISSION HELPERS - Role-based action availability
@@ -483,23 +481,6 @@ function LineItemsTable({
     });
   }, [rowsRaw]);
 
-  const [applyTemplateOpen, setApplyTemplateOpen] = useState(false);
-  const applyTemplateMutation = useMutation({
-    mutationFn: (template: ServiceTemplateDto) =>
-      apiRequest(`/api/jobs/${jobId}/apply-template`, {
-        method: "POST",
-        body: JSON.stringify({ templateId: template.id }),
-      }),
-    onSuccess: async () => {
-      await queryClient.refetchQueries({ queryKey: jobKeys.parts(jobId) });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      toast({ title: "Flat-rate service added" });
-      setApplyTemplateOpen(false);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to apply template", description: error.message, variant: "destructive" });
-    },
-  });
 
   // ── Canonical Product/Service create flow (resolver pattern) ──────
   // One AddProductModal instance lives at this component level; the
@@ -751,17 +732,6 @@ function LineItemsTable({
 
   return (
     <>
-      {/* Flat-rate service template shortcut */}
-      <div className="flex justify-end px-1 -mb-1">
-        <button
-          type="button"
-          onClick={() => setApplyTemplateOpen(true)}
-          className="text-helper text-slate-500 hover:text-slate-700 underline underline-offset-2"
-          data-testid="button-apply-service-template-job"
-        >
-          + Add flat-rate service
-        </button>
-      </div>
       <LineItemsCard<JobPartDisplayLine>
         adapter={jobPartsAdapter}
         drafts={drafts}
@@ -777,12 +747,6 @@ function LineItemsTable({
         onClose={handleCreateCancel}
         onSave={handleCreateSave}
         isSaving={createSaving}
-      />
-      <ApplyServiceTemplateDialog
-        open={applyTemplateOpen}
-        onOpenChange={setApplyTemplateOpen}
-        onApply={(template) => applyTemplateMutation.mutate(template)}
-        isPending={applyTemplateMutation.isPending}
       />
     </>
   );

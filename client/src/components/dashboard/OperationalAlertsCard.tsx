@@ -210,7 +210,7 @@ export function OperationalAlertsCard({
               {sectionIdx > 0 && (
                 <div className="mx-4 border-t border-card-border/60" />
               )}
-              <div className={cn("px-4 pb-1.5", sectionIdx === 0 ? "pt-3" : "pt-4")}>
+              <div className={cn("px-4 pb-2", sectionIdx === 0 ? "pt-3" : "pt-4")}>
                 <SectionLabel>{section.label}</SectionLabel>
               </div>
               <ul>
